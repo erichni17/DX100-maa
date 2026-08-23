@@ -430,6 +430,9 @@ std::ostream &operator<<(std::ostream &out, const ConfigurationBase &config) {
 
 #ifdef MAA
 int tile1s[NUM_CORES], tile2s[NUM_CORES], tile3s[NUM_CORES];
+#ifdef MAA_XRAGE_RUNTIME_ARMS
+int tile4s[NUM_CORES];
+#endif
 int reg1s[NUM_CORES], reg2s[NUM_CORES], reg3s[NUM_CORES];
 #ifdef MAA_XRAGE_RUNTIME_ARMS
 int reg4s[NUM_CORES], reg5s[NUM_CORES], reg6s[NUM_CORES], reg7s[NUM_CORES];
@@ -498,6 +501,10 @@ void setup_MAA() {
             reg2s[tid] = get_new_reg<int>();
             reg3s[tid] = get_new_reg<int>(1);
 #ifdef MAA_XRAGE_RUNTIME_ARMS
+            // A token-bound FP64 materializer needs a distinct two-tile
+            // destination. tile1 is the native INT32 index tile and cannot
+            // legally be reinterpreted as an FP64 tile pair.
+            tile4s[tid] = get_new_tile<double>();
             reg4s[tid] = get_new_reg<double>(3.0);
             // Immutable page-local bounds for the non-fused backed XRAGE
             // arm.  The direct-index producer owns reg1/reg2/reg3 until its
@@ -563,6 +570,7 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
         int tile1, tile2, tile3;
         int reg1, reg2, reg3;
 #ifdef MAA_XRAGE_RUNTIME_ARMS
+        int tile4;
         int reg4, reg5, reg6, reg7;
 #endif
         int tid = omp_get_thread_num();
@@ -573,6 +581,7 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
         reg2 = reg2s[tid];
         reg3 = reg3s[tid];
 #ifdef MAA_XRAGE_RUNTIME_ARMS
+        tile4 = tile4s[tid];
         reg4 = reg4s[tid];
         reg5 = reg5s[tid];
         reg6 = reg6s[tid];
@@ -610,11 +619,11 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
                 for (int page_offset = 0; page_offset < maa_tile_size;
                      page_offset += page_elements) {
                     if (page_offset != 0)
-                        wait_ready(tile1);
+                        wait_ready(tile4);
                     maa_stream_load_virtual_page<double>(
                         virtual_backing.data() + j + page_offset, tile2,
-                        reg5, reg6, reg7, tile1);
-                    maa_alu_scalar<double>(tile1, reg4, tile3,
+                        reg5, reg6, reg7, tile4);
+                    maa_alu_scalar<double>(tile4, reg4, tile3,
                                            Operation_t::MUL_OP);
                     maa_stream_store<double>(
                         dense.data() + j + page_offset, reg5, reg6, reg7,

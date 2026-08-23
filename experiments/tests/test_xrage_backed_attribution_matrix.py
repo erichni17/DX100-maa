@@ -92,6 +92,8 @@ class XrageBackedAttributionMatrixTest(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
         self.assertNotIn("maa_virtual_tile_alu_scalar_store", backed)
         self.assertIn("reg5, reg6, reg7", backed)
+        self.assertIn("reg5, reg6, reg7, tile4", backed)
+        self.assertIn("tile4s[tid] = get_new_tile<double>()", source)
         main = (ROOT / "benchmarks/spatter/src/main.cc").read_text(
             encoding="utf-8"
         )
