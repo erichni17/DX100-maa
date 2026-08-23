@@ -9,6 +9,7 @@ import hashlib
 import importlib.util
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -28,6 +29,15 @@ EXPECTED_INPUT_SHA256 = (
     "70e3d82973d7a93300db950d2c81e9db5b6a37273b0f21da8344302ce53022d9"
 )
 EXPECTED_ARMS = ("native16", "native4", "backed16", "backed4")
+EXPECTED_OPCODES = {
+    "native16": (4, 4, 4, 4),
+    "native4": (16, 16, 16, 16),
+    # Token-bound page materializers are intercepted before ordinary stream
+    # dispatch and therefore do not increment numInst_STRRD. Their dedicated
+    # submit/page/retire counters below are the execution proof.
+    "backed16": (4, 0, 16, 16),
+    "backed4": (4, 0, 16, 16),
+}
 HARDWARE_REPORT_BOUNDARY = {
     "active_payload_capacity_bytes_semantics": (
         "payload-capacity subtotal only; not total hardware, area, or PPA"
@@ -331,12 +341,6 @@ def analyze(root: Path) -> dict[str, object]:
     ] = {}
     backed_commands: dict[tuple[str, int], tuple[list[str], int]] = {}
     backed_capacities: dict[tuple[str, int], dict[str, int]] = {}
-    expected_opcodes = {
-        "native16": (4, 4, 4, 4),
-        "native4": (16, 16, 16, 16),
-        "backed16": (4, 16, 16, 16),
-        "backed4": (4, 16, 16, 16),
-    }
     arm_lookup = {str(arm["name"]): arm for arm in arms}
     for arm_name in EXPECTED_ARMS:
         arm = arm_lookup[arm_name]
@@ -386,7 +390,7 @@ def analyze(root: Path) -> dict[str, object]:
                     "numInst_STRWR",
                 )
             )
-            if opcodes != expected_opcodes[arm_name]:
+            if opcodes != EXPECTED_OPCODES[arm_name]:
                 raise ValueError(
                     f"{arm_name}/{replica}: wrong non-fused opcode signature {opcodes}"
                 )
@@ -548,11 +552,32 @@ def analyze(root: Path) -> dict[str, object]:
         raise ValueError(
             "backed payload-capacity delta does not equal exact SPD delta"
         )
+    analysis_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    analysis_status = subprocess.run(
+        ["git", "status", "--short"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    if analysis_status:
+        raise ValueError("analysis requires a clean source worktree")
     return {
         "schema": "dx100.xrage_backed_attribution_analysis.v1",
         "status": "PASS",
         "exact_correctness_key": next(iter(correctness)),
         "metric": "first ROI simTicks only",
+        "analysis_provenance": {
+            "source_commit": analysis_commit,
+            "analyzer_sha256": sha256_file(Path(__file__)),
+            "source_status": "clean",
+        },
         "records": records,
         "arm_roi_first_window_simTicks": by_arm,
         "arm_median_roi_first_window_simTicks": medians,
@@ -631,9 +656,11 @@ def write_outputs(root: Path, report: dict[str, object]) -> None:
         "The backed restores have one resolved treatment delta: "
         "`physical_tile_elements=16384` versus `4096`. Their exact global SPD "
         f"payload and total active-payload difference is {delta['physical_spd_payload_delta_bytes']} bytes. "
-        "Both execute four direct-index instructions, sixteen token-bound page "
-        "materializations, sixteen ordinary scalar ALUs, and sixteen ordinary "
-        "stream stores; all materializer and direct-retirement fallbacks are zero.",
+        "Both execute four direct-index instructions, sixteen controller-managed "
+        "token-bound page materializations, sixteen ordinary scalar ALUs, and "
+        "sixteen ordinary stream stores. The materializations do not increment "
+        "ordinary `numInst_STRRD`; their dedicated submit/page/retire counters "
+        "prove execution. All materializer and direct-retirement fallbacks are zero.",
         "",
         "`active_payload_capacity_bytes` is a payload-capacity subtotal, not "
         "total hardware or area. Backed16 and backed4 retain identical logical16 "

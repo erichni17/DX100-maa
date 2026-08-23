@@ -203,6 +203,14 @@ class XrageBackedAttributionMatrixTest(unittest.TestCase):
         self.assertEqual(issue["direct_index_requests"], 2)
         self.assertEqual(issue["non_direct_index_requests"], 0)
 
+    def test_materializers_use_dedicated_not_ordinary_stream_counters(self):
+        self.assertEqual(analyzer.EXPECTED_OPCODES["native16"], (4, 4, 4, 4))
+        self.assertEqual(
+            analyzer.EXPECTED_OPCODES["native4"], (16, 16, 16, 16)
+        )
+        self.assertEqual(analyzer.EXPECTED_OPCODES["backed16"], (4, 0, 16, 16))
+        self.assertEqual(analyzer.EXPECTED_OPCODES["backed4"], (4, 0, 16, 16))
+
     def test_materializer_trace_exposes_static_capacity(self):
         line = (
             "event=page_materialization_submit schema=1 "
