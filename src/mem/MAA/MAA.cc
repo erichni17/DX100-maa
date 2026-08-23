@@ -1529,9 +1529,8 @@ MAA::submitPageMaterialization(InstructionPtr instruction)
         direct_retirement_line_handoff &&
         DirectRetirementPortDomain::eligible(num_cores,
                                               cacheSidePorts.size()) &&
-        num_tile_elements == HybridConsumerPipeline::LogicalElements &&
-        physical_tile_elements ==
-            HybridConsumerPipeline::ProducerPageElements &&
+        HybridConsumerPipeline::materializationPayloadCapacityEligible(
+            num_tile_elements, physical_tile_elements) &&
         (wordBytes == 4 || wordBytes == 8) && minimum == 0 &&
         maximum ==
             static_cast<int>(HybridConsumerPipeline::ProducerPageElements) &&

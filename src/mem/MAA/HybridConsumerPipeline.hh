@@ -47,6 +47,21 @@ class HybridConsumerPipeline
     // this finite so it cannot silently recreate the rejected per-line scan.
     static constexpr uint8_t MaxEarlyWakeupBatches = 16;
 
+    /**
+     * The backed page materializer always moves one 4K producer page.  Its
+     * destination may be either the bounded 4K SPD payload or the native
+     * 16K payload used by the matched capacity control.  Keep this an exact
+     * allow-list: other logical/physical geometries remain fail-closed.
+     */
+    static constexpr bool
+    materializationPayloadCapacityEligible(uint32_t logicalElements,
+                                           uint32_t physicalElements)
+    {
+        return logicalElements == LogicalElements &&
+            (physicalElements == ProducerPageElements ||
+             physicalElements == LogicalElements);
+    }
+
     static constexpr bool
     isEarlyWakeupLine(uint16_t pageLine, uint16_t pageLines,
                       uint8_t batches)

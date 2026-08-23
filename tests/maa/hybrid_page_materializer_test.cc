@@ -135,6 +135,24 @@ class BoundedCommitHarness
 };
 
 void
+testBackedPayloadCapacityGate()
+{
+    CHECK(Pipeline::materializationPayloadCapacityEligible(
+        Pipeline::LogicalElements, Pipeline::ProducerPageElements));
+    CHECK(Pipeline::materializationPayloadCapacityEligible(
+        Pipeline::LogicalElements, Pipeline::LogicalElements));
+
+    // The capacity exception is deliberately exact.  It must not admit a
+    // smaller page, an intermediate capacity, or a different logical tile.
+    CHECK(!Pipeline::materializationPayloadCapacityEligible(
+        Pipeline::LogicalElements, Pipeline::ProducerPageElements / 2));
+    CHECK(!Pipeline::materializationPayloadCapacityEligible(
+        Pipeline::LogicalElements, 2 * Pipeline::ProducerPageElements));
+    CHECK(!Pipeline::materializationPayloadCapacityEligible(
+        Pipeline::ProducerPageElements, Pipeline::ProducerPageElements));
+}
+
+void
 testFourPageABIAndPreRegistrationRetry()
 {
     constexpr uint64_t root = 0x800000;
@@ -694,6 +712,7 @@ testLateAckForwardingCommitTickAndTwoChargedPages()
 int
 main()
 {
+    testBackedPayloadCapacityGate();
     testFourPageABIAndPreRegistrationRetry();
     testBoundedEarlyWakeupMilestones();
     testAuthenticatedMaskedFragmentAccumulation();
