@@ -169,7 +169,9 @@ def make_arms(
     pingpong: bool,
     future: list[dict[str, str]],
     page0_prearm: bool = False,
+    backed_physical16: list[dict[str, str]] | None = None,
 ) -> list[dict[str, object]]:
+    backed_physical16 = backed_physical16 or []
     if has_hybrid and workload in ("gapbs-pr", "gapbs-bfs"):
         raise ValueError(
             "GAPBS has exact native16/native4 controls but no wired general "
@@ -194,7 +196,7 @@ def make_arms(
         },
     ]
     if not has_hybrid:
-        if pingpong or page0_prearm or future:
+        if pingpong or page0_prearm or future or backed_physical16:
             raise ValueError("hybrid-only arms require --hybrid")
         return arms
     for selector, role in (
@@ -247,6 +249,21 @@ def make_arms(
             }
         )
     existing = {str(arm["name"]) for arm in arms}
+    for item in backed_physical16:
+        name = item["name"]
+        if name in existing:
+            raise ValueError(f"duplicate arm name: {name}")
+        existing.add(name)
+        arms.append(
+            {
+                "name": name,
+                "profile": "native16",
+                "binary": "hybrid",
+                "checkpoint_group": name,
+                "selector": selector_payload(workload, item["selector"]),
+                "role": "backed_physical16_treatment",
+            }
+        )
     for item in future:
         name = item["name"]
         if name in existing:
@@ -761,6 +778,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--future-arm", action="append", default=[], type=parse_future_arm
     )
+    parser.add_argument(
+        "--backed-physical16-arm",
+        action="append",
+        default=[],
+        type=parse_future_arm,
+        help=(
+            "run one explicitly named hybrid-selector treatment with the "
+            "native16 physical profile; pair it with a --future-arm using "
+            "the same selector to isolate physical payload virtualization"
+        ),
+    )
     parser.add_argument("--extra-gem5-arg", action="append", default=[])
     parser.add_argument(
         "--restore-arm-gem5-arg",
@@ -822,6 +850,7 @@ def main() -> int:
             args.pingpong,
             args.future_arm,
             args.page0_prearm,
+            args.backed_physical16_arm,
         )
         require_inputs(args)
         if args.shared_native16_hybrid_checkpoint:
@@ -861,6 +890,7 @@ def main() -> int:
                 args.shared_native16_hybrid_checkpoint
             ),
             "restore_arm_gem5_args": restore_arm_args,
+            "backed_physical16_arms": args.backed_physical16_arm,
             "note": (
                 "token_stream_ld arms are correctness controls; explicit "
                 "future arms are not assumed equivalent"

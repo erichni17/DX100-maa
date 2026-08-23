@@ -499,6 +499,27 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
         self.assertEqual(future["selector"], "generic_line")
         self.assertNotEqual(future["selector"], "token_stream_ld")
 
+    def test_backed_physical16_arm_uses_hybrid_guest_and_native16_profile(
+        self,
+    ):
+        arms = runner.make_arms(
+            "api",
+            True,
+            False,
+            [{"name": "backed4", "selector": "token_stream_ld"}],
+            backed_physical16=[
+                {"name": "backed16", "selector": "token_stream_ld"}
+            ],
+        )
+        backed16 = next(arm for arm in arms if arm["name"] == "backed16")
+        backed4 = next(arm for arm in arms if arm["name"] == "backed4")
+        self.assertEqual(backed16["profile"], "native16")
+        self.assertEqual(backed16["binary"], "hybrid")
+        self.assertEqual(backed16["selector"], "token_stream_ld 4096")
+        self.assertEqual(backed16["role"], "backed_physical16_treatment")
+        self.assertEqual(backed4["profile"], "hybrid")
+        self.assertEqual(backed4["selector"], backed16["selector"])
+
     def test_deferred_options_require_exact_selector_placeholder(self) -> None:
         selector = Path("/evidence/treatment.txt")
         self.assertEqual(
