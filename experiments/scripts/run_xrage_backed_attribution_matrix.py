@@ -207,6 +207,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--native16", required=True, type=Path)
     parser.add_argument("--native4", required=True, type=Path)
     parser.add_argument("--input", required=True, type=Path)
+    parser.add_argument("--simulator-provenance", required=True, type=Path)
+    parser.add_argument("--guest-build-manifest", required=True, type=Path)
+    parser.add_argument("--guest-build-artifacts", required=True, type=Path)
     parser.add_argument("--replicas", type=int, default=2)
     parser.add_argument("--max-parallel-restores", type=int, default=4)
     parser.add_argument("--execute", action="store_true")
@@ -229,6 +232,9 @@ def require_files(args: argparse.Namespace) -> None:
             args.native16,
             args.native4,
             args.input,
+            args.simulator_provenance,
+            args.guest_build_manifest,
+            args.guest_build_artifacts,
         )
         if not path.is_file()
     ]
@@ -316,6 +322,9 @@ def main() -> int:
         "native16": args.native16.resolve(),
         "native4": args.native4.resolve(),
         "workload_input": args.input.resolve(),
+        "simulator_provenance": args.simulator_provenance.resolve(),
+        "guest_build_manifest": args.guest_build_manifest.resolve(),
+        "guest_build_artifacts": args.guest_build_artifacts.resolve(),
     }
     names = {
         "gem5": "gem5.opt",
@@ -324,6 +333,9 @@ def main() -> int:
         "native16": "spatter_maa_xrage_runtime_verify_16K",
         "native4": "spatter_maa_xrage_runtime_verify_4K",
         "workload_input": "xrage_gather0_64k.json",
+        "simulator_provenance": "simulator-provenance.json",
+        "guest_build_manifest": "guest-build-manifest.txt",
+        "guest_build_artifacts": "guest-build-artifacts.sha256",
     }
     artifacts: dict[str, Path] = {}
     hashes: dict[str, str] = {}
@@ -369,6 +381,54 @@ def main() -> int:
         capture_output=True,
         text=True,
     ).stdout.strip()
+    simulator_provenance = json.loads(
+        artifacts["simulator_provenance"].read_text(encoding="utf-8")
+    )
+    simulator_source_commit = str(simulator_provenance["source_commit"])
+    simulator_tree_match = subprocess.run(
+        [
+            "git",
+            "diff",
+            "--quiet",
+            simulator_source_commit,
+            "HEAD",
+            "--",
+            "src",
+            "configs",
+            "SConstruct",
+            "ext/ramulator2",
+        ],
+        cwd=ROOT,
+        check=False,
+    )
+    if simulator_tree_match.returncode != 0:
+        general.atomic_text(out / "campaign.exit", "1\n")
+        print(
+            "error: reused simulator source tree differs from the lead branch",
+            file=sys.stderr,
+        )
+        return 1
+    guest_build_values = {}
+    for line in (
+        artifacts["guest_build_manifest"]
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ):
+        key, value = line.split("=", 1)
+        guest_build_values[key] = value
+    guest_source_commit = guest_build_values["source_commit"]
+    guest_is_ancestor = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", guest_source_commit, "HEAD"],
+        cwd=ROOT,
+        check=False,
+    )
+    if guest_is_ancestor.returncode != 0:
+        general.atomic_text(out / "campaign.exit", "1\n")
+        print(
+            "error: guest build commit is not in the lead history",
+            file=sys.stderr,
+        )
+        return 1
     manifest: dict[str, object] = {
         "schema": "dx100.xrage_backed_attribution_matrix.v1",
         "source_commit": source_commit,
@@ -388,6 +448,12 @@ def main() -> int:
             for key, path in artifacts.items()
         },
         "config_tree": config_identity,
+        "provenance": {
+            "simulator_source_commit": simulator_source_commit,
+            "simulator_source_tree_matches_lead": True,
+            "guest_source_commit": guest_source_commit,
+            "guest_source_commit_in_lead_history": True,
+        },
     }
     general.atomic_json(out / "manifest.json", manifest)
 

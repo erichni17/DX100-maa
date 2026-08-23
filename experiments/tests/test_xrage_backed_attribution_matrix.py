@@ -105,6 +105,17 @@ class XrageBackedAttributionMatrixTest(unittest.TestCase):
         self.assertIn("spatter_maa_xrage_runtime_verify_4K", script)
         self.assertIn('"${targets[@]/#/$build/}"', script)
 
+    def test_runner_requires_simulator_and_guest_build_provenance(self):
+        source = RUNNER_PATH.read_text(encoding="utf-8")
+        for option in (
+            "--simulator-provenance",
+            "--guest-build-manifest",
+            "--guest-build-artifacts",
+        ):
+            self.assertIn(option, source)
+        self.assertIn("simulator_source_tree_matches_lead", source)
+        self.assertIn("guest_source_commit_in_lead_history", source)
+
     def test_exact_payload_capacity_accounting(self):
         parser = configparser.RawConfigParser()
         parser.read_dict(

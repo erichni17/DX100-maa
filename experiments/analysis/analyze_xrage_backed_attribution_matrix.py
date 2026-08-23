@@ -80,6 +80,17 @@ def read_exit(path: Path) -> int:
         raise ValueError(f"invalid exit marker {path}") from error
 
 
+def artifact_hashes(path: Path) -> dict[str, str]:
+    records: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        expected, raw_path = line.split(maxsplit=1)
+        artifact = Path(raw_path)
+        if not artifact.is_file() or sha256_file(artifact) != expected:
+            raise ValueError(f"guest build artifact changed: {artifact}")
+        records[artifact.name] = expected
+    return records
+
+
 def section(path: Path) -> configparser.SectionProxy:
     config = configparser.RawConfigParser(strict=False)
     config.read(path)
@@ -273,6 +284,46 @@ def analyze(root: Path) -> dict[str, object]:
         raise ValueError(
             "XRAGE input identity does not match the accepted 64K case"
         )
+    provenance = manifest.get("provenance")
+    if not isinstance(provenance, dict) or not (
+        provenance.get("simulator_source_tree_matches_lead") is True
+        and provenance.get("guest_source_commit_in_lead_history") is True
+    ):
+        raise ValueError("simulator/guest source provenance is not lead-bound")
+    simulator = json.loads(
+        Path(artifacts["simulator_provenance"]["path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    if simulator.get("source_commit") != provenance["simulator_source_commit"]:
+        raise ValueError("simulator source provenance commit mismatch")
+    simulator_gem5 = simulator.get("artifacts", {}).get("gem5", {})
+    if simulator_gem5.get("sha256") != artifacts["gem5"]["sha256"]:
+        raise ValueError(
+            "gem5 hash does not match accepted simulator provenance"
+        )
+    guest_manifest = {}
+    for line in (
+        Path(artifacts["guest_build_manifest"]["path"])
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ):
+        key, value = line.split("=", 1)
+        guest_manifest[key] = value
+    if (
+        guest_manifest.get("source_commit")
+        != provenance["guest_source_commit"]
+    ):
+        raise ValueError("guest build source commit mismatch")
+    guest_hashes = artifact_hashes(
+        Path(artifacts["guest_build_artifacts"]["path"])
+    )
+    for key, name in (
+        ("native16", "spatter_maa_xrage_runtime_verify_16K"),
+        ("native4", "spatter_maa_xrage_runtime_verify_4K"),
+    ):
+        if guest_hashes.get(name) != artifacts[key]["sha256"]:
+            raise ValueError(f"{key} does not match its guest build record")
 
     records: list[dict[str, object]] = []
     backed_digests: dict[
