@@ -136,6 +136,36 @@ class XrageBackedAttributionMatrixTest(unittest.TestCase):
             1536 * 1024,
         )
 
+    def test_hardware_report_boundary_rejects_area_overclaim(self):
+        boundary = analyzer.HARDWARE_REPORT_BOUNDARY
+        self.assertIn(
+            "payload-capacity subtotal only",
+            boundary["active_payload_capacity_bytes_semantics"],
+        )
+        self.assertTrue(
+            boundary[
+                "backed_pair_retains_identical_logical16_row_offset_metadata"
+            ]
+        )
+        self.assertEqual(
+            boundary["excluded_from_active_payload_capacity_bytes"],
+            [
+                "descriptor, header, and readiness bits",
+                "nonpayload tags and control beyond separately emitted materializer controls",
+                "ports, arbitration, and wiring",
+                "SRAM periphery",
+                "synthesized area, power, and timing",
+            ],
+        )
+        self.assertIn(
+            "not total DX100 hardware cost",
+            boundary["prohibited_interpretation"],
+        )
+        source = ANALYZER_PATH.read_text(encoding="utf-8")
+        self.assertIn("active payload-capacity subtotal", source)
+        self.assertIn("retain identical logical16", source)
+        self.assertIn("is not total DX100 hardware cost", source)
+
     def test_request_digest_and_direct_index_trace_are_fail_closed(self):
         digest_lines = "\n".join(
             f"0: global: unit=0 instruction_tick={tick} count={count} "

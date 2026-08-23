@@ -28,6 +28,26 @@ EXPECTED_INPUT_SHA256 = (
     "70e3d82973d7a93300db950d2c81e9db5b6a37273b0f21da8344302ce53022d9"
 )
 EXPECTED_ARMS = ("native16", "native4", "backed16", "backed4")
+HARDWARE_REPORT_BOUNDARY = {
+    "active_payload_capacity_bytes_semantics": (
+        "payload-capacity subtotal only; not total hardware, area, or PPA"
+    ),
+    "matched_claim": (
+        "exact 1,572,864-byte physical SPD payload reduction with a fixed "
+        "instruction path and fixed logical16 metadata"
+    ),
+    "backed_pair_retains_identical_logical16_row_offset_metadata": True,
+    "excluded_from_active_payload_capacity_bytes": [
+        "descriptor, header, and readiness bits",
+        "nonpayload tags and control beyond separately emitted materializer controls",
+        "ports, arbitration, and wiring",
+        "SRAM periphery",
+        "synthesized area, power, and timing",
+    ],
+    "prohibited_interpretation": (
+        "the 1,572,864-byte delta is not total DX100 hardware cost"
+    ),
+}
 EXIT = re.compile(
     r"Exiting @ tick \d+ because m5_exit instruction encountered"
 )
@@ -498,6 +518,7 @@ def analyze(root: Path) -> dict[str, object]:
             "physical_spd_payload_delta_bytes": expected_delta,
             "active_payload_capacity_delta_bytes": capacity_delta,
         },
+        "hardware_report_boundary": HARDWARE_REPORT_BOUNDARY,
         "fused_direct_sink_separate": True,
     }
 
@@ -544,7 +565,7 @@ def write_outputs(root: Path, report: dict[str, object]) -> None:
         "",
         f"Status: **{report['status']}**. Metric: {report['metric']}.",
         "",
-        "| arm | replica | first-ROI simTicks | INDRD/STRRD/ALUS/STRWR | SPD payload | active payload capacity |",
+        "| arm | replica | first-ROI simTicks | INDRD/STRRD/ALUS/STRWR | SPD payload | active payload-capacity subtotal |",
         "|---|---:|---:|---:|---:|---:|",
     ]
     for record in records:
@@ -562,6 +583,16 @@ def write_outputs(root: Path, report: dict[str, object]) -> None:
         "Both execute four direct-index instructions, sixteen token-bound page "
         "materializations, sixteen ordinary scalar ALUs, and sixteen ordinary "
         "stream stores; all materializer and direct-retirement fallbacks are zero.",
+        "",
+        "`active_payload_capacity_bytes` is a payload-capacity subtotal, not "
+        "total hardware or area. Backed16 and backed4 retain identical logical16 "
+        "Row/Offset metadata. The subtotal excludes descriptor/header/readiness "
+        "bits; nonpayload tags/control beyond the separately emitted materializer "
+        "controls; ports, arbitration, wiring, and SRAM periphery; and synthesized "
+        "area, power, or timing. The defensible matched claim is only the exact "
+        f"{delta['physical_spd_payload_delta_bytes']}-byte physical SPD payload "
+        "reduction with a fixed instruction path and fixed logical metadata; it "
+        "is not total DX100 hardware cost.",
         "",
         "The prior fused/direct-sink optimization is excluded: transparent SPD "
         "mode is zero and direct-retirement descriptor/read/ALU/write counters are zero.",
