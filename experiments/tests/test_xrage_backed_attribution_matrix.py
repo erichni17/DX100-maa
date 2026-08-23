@@ -176,6 +176,10 @@ class XrageBackedAttributionMatrixTest(unittest.TestCase):
         )
         source = ANALYZER_PATH.read_text(encoding="utf-8")
         self.assertIn("active payload-capacity subtotal", source)
+        self.assertIn("payload-capacity-subtotal difference", source)
+        self.assertNotIn("total active-payload difference", source)
+        self.assertIn('"materializer_submits": mechanism', source)
+        self.assertIn('"direct_retirement_descriptors"', source)
         self.assertIn("retain identical logical16", source)
         self.assertIn("is not total DX100 hardware cost", source)
 

@@ -483,6 +483,15 @@ def analyze(root: Path) -> dict[str, object]:
                     "numInst_STRWR": opcodes[3],
                     **issue,
                     **capacity,
+                    "materializer_submits": mechanism["materializer_submits"],
+                    "materializer_pages_ready": mechanism[
+                        "materializer_pages_ready"
+                    ],
+                    "materializer_retires": mechanism["materializer_retires"],
+                    "materializer_fallback_events": mechanism[
+                        "materializer_fallback_events"
+                    ],
+                    **direct_stats,
                     "materializer_control_bytes_cpp_static": (
                         capacity_trace["control_bytes"]
                         if capacity_trace
@@ -625,6 +634,15 @@ def write_outputs(root: Path, report: dict[str, object]) -> None:
         "destination_combiner_bytes",
         "materializer_line_buffer_bytes",
         "active_payload_capacity_bytes",
+        "materializer_submits",
+        "materializer_pages_ready",
+        "materializer_retires",
+        "materializer_fallback_events",
+        "direct_retirement_descriptors",
+        "direct_retirement_read_issues",
+        "direct_retirement_alu_issues",
+        "direct_retirement_write_issues",
+        "direct_retirement_fallbacks",
         "materializer_control_bytes_cpp_static",
         "materializer_direct_stage_control_bytes",
     ]
@@ -641,13 +659,16 @@ def write_outputs(root: Path, report: dict[str, object]) -> None:
         "",
         f"Status: **{report['status']}**. Metric: {report['metric']}.",
         "",
-        "| arm | replica | first-ROI simTicks | INDRD/STRRD/ALUS/STRWR | SPD payload | active payload-capacity subtotal |",
-        "|---|---:|---:|---:|---:|---:|",
+        "| arm | replica | first-ROI simTicks | INDRD/STRRD/ALUS/STRWR | materializer S/P/R/F | direct-sink descriptors | SPD payload | active payload-capacity subtotal |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for record in records:
         lines.append(
             f"| {record['arm']} | {record['replica']} | {record['roi_first_window_simTicks']} | "
             f"{record['numInst_INDRD']}/{record['numInst_STRRD']}/{record['numInst_ALUS']}/{record['numInst_STRWR']} | "
+            f"{record['materializer_submits']}/{record['materializer_pages_ready']}/"
+            f"{record['materializer_retires']}/{record['materializer_fallback_events']} | "
+            f"{record['direct_retirement_descriptors']} | "
             f"{record['physical_spd_payload_bytes']} B | {record['active_payload_capacity_bytes']} B |"
         )
     delta = report["backed_treatment_delta"]
@@ -655,7 +676,7 @@ def write_outputs(root: Path, report: dict[str, object]) -> None:
         "",
         "The backed restores have one resolved treatment delta: "
         "`physical_tile_elements=16384` versus `4096`. Their exact global SPD "
-        f"payload and total active-payload difference is {delta['physical_spd_payload_delta_bytes']} bytes. "
+        f"payload and payload-capacity-subtotal difference is {delta['physical_spd_payload_delta_bytes']} bytes. "
         "Both execute four direct-index instructions, sixteen controller-managed "
         "token-bound page materializations, sixteen ordinary scalar ALUs, and "
         "sixteen ordinary stream stores. The materializations do not increment "
