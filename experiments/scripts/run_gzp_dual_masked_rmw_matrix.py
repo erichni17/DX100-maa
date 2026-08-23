@@ -542,6 +542,18 @@ def main() -> int:
         for name in ("gem5", "native16", "native4", "hybrid"):
             frozen[name].chmod(0o555)
         env["LD_LIBRARY_PATH"] = str(inputs.resolve())
+        ldd = subprocess.run(
+            ["ldd", str(frozen["gem5"])],
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        atomic_text(inputs / "gem5.ldd.txt", ldd.stdout + ldd.stderr)
+        if ldd.returncode != 0 or str(frozen["ramulator_library"]) not in ldd.stdout:
+            raise RuntimeError(
+                "frozen gem5 did not resolve the frozen Ramulator library"
+            )
 
         checkpoints: dict[str, dict[str, object]] = {}
         checkpoint_roots: dict[str, Path] = {}
