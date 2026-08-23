@@ -85,6 +85,8 @@ def test_runner_binds_exact_hardware_and_completion_ledgers() -> None:
         '"provenance_permits_native_reference_comparison": True',
         '"selector_binding": "one immutable checkpointed Process.cmd path per hybrid arm"',
         'raise RuntimeError("normalized hybrid restore commands differ")',
+        '"--debug-flags=MAAVirtualTrace,MAATrace"',
+        '"prior_dual_instrumentation_incomplete"',
     ):
         assert contract in source
 
@@ -115,6 +117,10 @@ def test_publisher_trace_requires_every_exact_writeresp(
 
     trace.write_text(publisher_trace(module, responses=255), encoding="utf-8")
     with pytest.raises(RuntimeError, match="page/order/response"):
+        module.analyze_publisher_trace(trace)
+
+    trace.write_text("", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="terminal count"):
         module.analyze_publisher_trace(trace)
 
 

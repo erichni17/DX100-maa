@@ -107,6 +107,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--adopt-native16-replica1-start-time", type=int)
     parser.add_argument("--stopped-parent-pid", type=int)
     parser.add_argument("--stopped-parent-start-time", type=int)
+    parser.add_argument("--rerun-dual-with-publisher-trace", action="store_true")
     parser.add_argument("--execute", action="store_true")
     args = parser.parse_args()
     if args.n != ELEMENTS:
@@ -515,6 +516,7 @@ def resume_existing(args: argparse.Namespace) -> int:
     if (args.out / "campaign.exit").read_text(encoding="utf-8").strip() not in (
         "running",
         "recovery",
+        "1",
     ):
         raise RuntimeError("existing campaign is already terminal")
 
@@ -605,11 +607,16 @@ def resume_existing(args: argparse.Namespace) -> int:
     env["OMP_PROC_BIND"] = "false"
     env["LD_LIBRARY_PATH"] = str((args.out / "inputs").resolve())
     recovery_commit = git_output("rev-parse", "HEAD")
-    corrected_hybrid = args.out / "inputs" / f"hybrid-{recovery_commit[:8]}"
-    if corrected_hybrid.exists():
-        raise RuntimeError("corrected recovery hybrid artifact already exists")
-    corrected_compile_command = compile_guest(corrected_hybrid, env, 16384, True)
-    corrected_hybrid.chmod(0o555)
+    existing_hybrids = sorted((args.out / "inputs").glob("hybrid-*"))
+    if len(existing_hybrids) > 1:
+        raise RuntimeError("multiple corrected recovery hybrid artifacts exist")
+    if existing_hybrids:
+        corrected_hybrid = existing_hybrids[0]
+        corrected_compile_command: list[str] | str = "reused_existing"
+    else:
+        corrected_hybrid = args.out / "inputs" / f"hybrid-{recovery_commit[:8]}"
+        corrected_compile_command = compile_guest(corrected_hybrid, env, 16384, True)
+        corrected_hybrid.chmod(0o555)
     frozen["hybrid"] = corrected_hybrid.resolve()
     checkpoint_selectors: dict[str, Path] = {}
 
@@ -617,7 +624,17 @@ def resume_existing(args: argparse.Namespace) -> int:
         group, payload = item
         directory = args.out / "checkpoints" / group
         if directory.exists():
-            raise RuntimeError(f"corrected checkpoint {group} already exists")
+            selector = directory / "selector.txt"
+            exit_path = directory / "checkpoint.exit"
+            if (
+                not exit_path.is_file()
+                or exit_path.read_text(encoding="utf-8").strip() != "0"
+                or not selector.is_file()
+                or selector.read_text(encoding="utf-8") != payload + "\n"
+                or selector.stat().st_mode & 0o222
+            ):
+                raise RuntimeError(f"existing corrected checkpoint {group} is invalid")
+            return group, selector
         directory.mkdir(parents=True)
         selector = directory / "selector.txt"
         atomic_text(selector, payload + "\n")
@@ -646,13 +663,21 @@ def resume_existing(args: argparse.Namespace) -> int:
     checkpoint_identities = {
         name: common.tree_identity(path) for name, path in checkpoints.items()
     }
+
+    def recovery_run(arm: dict[str, object], replica: int) -> Path:
+        suffix = f"replica-{replica}"
+        if args.rerun_dual_with_publisher_trace and str(arm["name"]).startswith(
+            "dual_"
+        ):
+            suffix += "-publisher-trace"
+        return args.out / "arms" / str(arm["name"]) / suffix
+
     completed: dict[tuple[str, int], dict[str, object]] = {}
     pending: list[tuple[dict[str, object], int]] = []
-    recovery_runs: list[dict[str, object]] = []
     for arm in ARMS:
         for replica in range(1, args.replicas + 1):
             key = (str(arm["name"]), replica)
-            run = args.out / "arms" / key[0] / f"replica-{replica}"
+            run = recovery_run(arm, replica)
             exit_path = run / "restore.exit"
             if exit_path.is_file():
                 if exit_path.read_text(encoding="utf-8").strip() != "0":
@@ -670,7 +695,7 @@ def resume_existing(args: argparse.Namespace) -> int:
     def execute(job: tuple[dict[str, object], int]) -> dict[str, object]:
         arm, replica = job
         name = str(arm["name"])
-        run = args.out / "arms" / name / f"replica-{replica}"
+        run = recovery_run(arm, replica)
         if live_restore_for(run):
             raise RuntimeError(f"{name}/{replica}: duplicate live restore")
         run.mkdir(parents=True, exist_ok=False)
@@ -700,20 +725,16 @@ def resume_existing(args: argparse.Namespace) -> int:
             args.l3_ports,
             list(HYBRID_OPTIONS) if arm["profile"] == "hybrid" else [],
         )
+        if args.rerun_dual_with_publisher_trace and name.startswith("dual_"):
+            debug = "--debug-flags=MAAVirtualTrace"
+            if command.count(debug) != 1:
+                raise RuntimeError(f"{name}/{replica}: debug flag is not unique")
+            command[command.index(debug)] = "--debug-flags=MAAVirtualTrace,MAATrace"
         if run_logged(command, run / "restore.log", env) != 0:
             raise RuntimeError(f"{name}/replica-{replica}: restore failed")
         if selector_hash is not None and sha256(selector) != selector_hash:
             raise RuntimeError(f"{name}/{replica}: selector changed during restore")
         row = analyze_run(run, arm, replica)
-        recovery_runs.append(
-            {
-                "arm": name,
-                "replica": replica,
-                "selector": arm["selector"],
-                "selector_sha256": selector_hash,
-                "command_sha256": sha256(run / "restore.command.json"),
-            }
-        )
         return row
 
     atomic_text(args.out / "campaign.exit", "recovery\n")
@@ -758,19 +779,15 @@ def resume_existing(args: argparse.Namespace) -> int:
                 result.append("--outdir=RUN")
             elif argument.startswith("--checkpoint-dir="):
                 result.append("--checkpoint-dir=CHECKPOINT")
+            elif argument.startswith("--debug-flags="):
+                result.append("--debug-flags=INSTRUMENTATION")
             else:
                 result.append(argument)
         return result
 
     hybrid_command_norms = {
         json.dumps(
-            normalized_command(
-                args.out
-                / "arms"
-                / str(arm["name"])
-                / f"replica-{replica}"
-                / "restore.command.json"
-            )
+            normalized_command(recovery_run(arm, replica) / "restore.command.json")
         )
         for arm in ARMS
         if arm["selector"] is not None
@@ -813,20 +830,73 @@ def resume_existing(args: argparse.Namespace) -> int:
             "speedup": baseline_ticks / dual_ticks,
             "dual_improves": dual_ticks < baseline_ticks,
         }
+    all_run_records = []
+    for arm in ARMS:
+        for replica in range(1, args.replicas + 1):
+            run = recovery_run(arm, replica)
+            selector_hash = None
+            if arm["selector"] is not None:
+                selector_hash = sha256(checkpoint_selectors[str(arm["checkpoint"])])
+            all_run_records.append(
+                {
+                    "arm": arm["name"],
+                    "replica": replica,
+                    "path": str(run.resolve()),
+                    "selector": arm["selector"],
+                    "selector_sha256": selector_hash,
+                    "debug_flags": (
+                        "MAAVirtualTrace,MAATrace"
+                        if args.rerun_dual_with_publisher_trace
+                        and str(arm["name"]).startswith("dual_")
+                        else "MAAVirtualTrace"
+                    ),
+                    "command_sha256": sha256(run / "restore.command.json"),
+                    "exit_sha256": sha256(run / "restore.exit"),
+                }
+            )
+    execution_launched_keys = [
+        [str(arm["name"]), replica]
+        for arm in ARMS
+        for replica in range(1, args.replicas + 1)
+        if not (arm["name"] == "native16" and replica == 1)
+    ]
+    prior_dual_instrumentation_incomplete = []
+    if args.rerun_dual_with_publisher_trace:
+        for replica in range(1, args.replicas + 1):
+            prior = (
+                args.out
+                / "arms/dual_masked_index_owner64_pre_a_context64"
+                / f"replica-{replica}"
+            )
+            prior_dual_instrumentation_incomplete.append(
+                {
+                    "replica": replica,
+                    "path": str(prior.resolve()),
+                    "command_sha256": sha256(prior / "restore.command.json"),
+                    "restore_log_sha256": sha256(prior / "restore.log"),
+                    "reason": "MAATrace absent; zero spd_publish_terminal events",
+                    "accepted_for_final_matrix": False,
+                }
+            )
     recovery = {
         "schema": "dx100.gzp_dual_masked_rmw_recovery.v1",
         "recovery_commit": git_output("rev-parse", "HEAD"),
         "original_launch_commit": "86bbbfbde3f565bd3e51c11a8c22da257856ba5b",
+        "parallel_execution_commit": "8285fd091665fb5c746a188663ee2f193e4a48dd",
         "max_parallel_restores": args.max_parallel_restores,
-        "reused_keys": [list(key) for key in sorted(set(completed) - set(futures))],
-        "launched_keys": [list(key) for key in sorted(futures)],
+        "adopted_keys": [["native16", 1]],
+        "parallel_execution_launched_keys": execution_launched_keys,
+        "finalizer_reran_keys": [list(key) for key in sorted(futures)],
+        "instrumentation_only_rerun": args.rerun_dual_with_publisher_trace,
+        "instrumentation_delta": "dual only: MAAVirtualTrace -> MAAVirtualTrace,MAATrace",
+        "prior_dual_instrumentation_incomplete": prior_dual_instrumentation_incomplete,
         "corrected_hybrid_sha256": sha256(frozen["hybrid"]),
         "corrected_compile_command": corrected_compile_command,
         "selector_binding": "one immutable checkpointed Process.cmd path per hybrid arm",
         "selector_identities": selector_identities,
-        "normalized_hybrid_command_delta": "outdir,checkpoint-dir,immutable-selector-payload only",
+        "normalized_hybrid_command_delta": "outdir,checkpoint-dir,immutable-selector-payload,dual-debug-instrumentation only",
         "checkpoint_identities": checkpoint_identities,
-        "runs": recovery_runs,
+        "runs": all_run_records,
     }
     atomic_json(args.out / "recovery.json", recovery)
     atomic_json(args.out / "results.json", {"rows": rows, "comparisons": comparisons})
