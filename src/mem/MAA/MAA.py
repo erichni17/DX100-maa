@@ -205,6 +205,15 @@ class MAA(ClockedObject):
         "Active SoA/JIT A-line contexts (8, 16, 32, or default-off 64; "
         "fixed maximum hardware is 64)",
     )
+    soa_jit_old_result_partial_credits = Param.Unsigned(
+        8,
+        "Concurrent partial old-result pressure writes (1, 2, 4, or 8; "
+        "uses the fixed eight-line buffer)",
+    )
+    soa_jit_old_result_pressure_policy = Param.String(
+        "original_oldest",
+        "Partial old-result pressure selection: original_oldest or densest",
+    )
     soa_jit_value_lookahead = Param.Unsigned(
         1,
         "Ordered alias value-read credits per SoA/JIT context "

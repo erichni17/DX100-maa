@@ -461,6 +461,8 @@ public:
     std::vector<Addr> virtual_index_range_boundaries;
     unsigned int virtual_index_filter_words_per_cycle;
     unsigned int soa_jit_active_contexts;
+    unsigned int soa_jit_old_result_partial_credits;
+    bool soa_jit_old_result_dense_pressure;
     unsigned int soa_jit_value_lookahead;
     bool soa_jit_value_cache_enable;
     bool soa_jit_pre_a_value_lookahead;
@@ -1227,6 +1229,12 @@ public:
         std::vector<statistics::Scalar *> IND_SoaJitOldResultCaptures;
         std::vector<statistics::Scalar *> IND_SoaJitOldResultWriteIssues;
         std::vector<statistics::Scalar *> IND_SoaJitOldResultWriteResponses;
+        std::vector<statistics::Scalar *> IND_SoaJitOldResultPressureIssues;
+        std::vector<statistics::Scalar *>
+            IND_SoaJitOldResultPartialCreditLimit;
+        std::vector<statistics::Scalar *>
+            IND_SoaJitOldResultPartialCreditHighWater;
+        std::vector<statistics::Scalar *> IND_SoaJitOldResultDensePolicy;
         std::vector<statistics::Scalar *> IND_SoaJitOldResultCreditHighWater;
         std::vector<statistics::Scalar *> IND_SoaJitOldResultStalls;
         std::vector<statistics::Scalar *> IND_SoaJitContextHighWater;

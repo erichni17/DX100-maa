@@ -9,6 +9,7 @@
 #include "mem/MAA/SoaJitOldResultBuffer.hh"
 
 using gem5::SoaJitOldResultBuffer;
+using PressurePolicy = SoaJitOldResultBuffer::PressurePolicy;
 using Oracle = gem5::maa::LogicalTileRmwContract;
 
 #define CHECK(condition)                                                     \
@@ -140,14 +141,14 @@ runPressurePacking()
           SoaJitOldResultBuffer::Result::Full);
 
     SoaJitOldResultBuffer::Request pressure;
-    CHECK(buffer.issueForPressure(&pressure) ==
+    CHECK(buffer.issueForPressure(&pressure, 1, PressurePolicy::Densest) ==
           SoaJitOldResultBuffer::Result::Accepted);
     CHECK(pressure.identity.lineAddress == Base);
     CHECK(pressure.identity.validWords == 1);
     CHECK(buffer.filling() == 7);
     CHECK(buffer.awaitingResponses() == 1);
     SoaJitOldResultBuffer::Request blocked;
-    CHECK(buffer.issueForPressure(&blocked) ==
+    CHECK(buffer.issueForPressure(&blocked, 1, PressurePolicy::Densest) ==
           SoaJitOldResultBuffer::Result::NoReadyLine);
     CHECK(blocked.payload == nullptr);
     CHECK(buffer.filling() == 7);
@@ -249,14 +250,14 @@ runPressureDensitySelection()
           SoaJitOldResultBuffer::Result::Full);
 
     SoaJitOldResultBuffer::Request pressure;
-    CHECK(buffer.issueForPressure(&pressure) ==
+    CHECK(buffer.issueForPressure(&pressure, 1, PressurePolicy::Densest) ==
           SoaJitOldResultBuffer::Result::Accepted);
     CHECK(pressure.identity.lineAddress ==
           Base + 2 * SoaJitOldResultBuffer::LineBytes);
     CHECK(pressure.identity.validWords == 0xff);
     CHECK(buffer.awaitingResponses() == 2);
     SoaJitOldResultBuffer::Request blocked;
-    CHECK(buffer.issueForPressure(&blocked) ==
+    CHECK(buffer.issueForPressure(&blocked, 1, PressurePolicy::Densest) ==
           SoaJitOldResultBuffer::Result::NoReadyLine);
     CHECK(blocked.payload == nullptr);
     CHECK(buffer.acknowledge(pressure.identity) ==
@@ -278,6 +279,98 @@ runPressureDensitySelection()
     }
     CHECK(buffer.complete());
     CHECK(buffer.finish() == SoaJitOldResultBuffer::Result::Accepted);
+}
+
+static void
+runPressureCreditLimits()
+{
+    constexpr std::array<size_t, 4> Limits{{1, 2, 4, 8}};
+    constexpr std::array<PressurePolicy, 2> Policies{{
+        PressurePolicy::OriginalOldest, PressurePolicy::Densest}};
+    constexpr std::array<uint32_t, SoaJitOldResultBuffer::Credits>
+        Densities{{1, 8, 3, 7, 2, 6, 4, 5}};
+    constexpr std::array<uint32_t, SoaJitOldResultBuffer::Credits>
+        DenseOrder{{1, 3, 5, 7, 6, 2, 4, 0}};
+    for (size_t policyIndex = 0; policyIndex < Policies.size();
+         ++policyIndex) {
+        for (size_t limit : Limits) {
+            constexpr uint64_t Base = 0x7000;
+            constexpr uint32_t LogicalWords =
+                SoaJitOldResultBuffer::Credits *
+                SoaJitOldResultBuffer::WordsPerLine;
+            const uint64_t generation = 10 + policyIndex * 10 + limit;
+            SoaJitOldResultBuffer buffer;
+            CHECK(buffer.begin(generation, Base, LogicalWords) ==
+                  SoaJitOldResultBuffer::Result::Accepted);
+            uint32_t selected = 0;
+            for (uint32_t line = 0;
+                 line < SoaJitOldResultBuffer::Credits; ++line) {
+                for (uint32_t word = 0; word < Densities[line]; ++word) {
+                    const float old = static_cast<float>(line * 100 + word);
+                    CHECK(buffer.capture(
+                              generation, line,
+                              line * SoaJitOldResultBuffer::WordsPerLine +
+                                  word,
+                              reinterpret_cast<const uint8_t *>(&old),
+                              sizeof(old)) ==
+                          SoaJitOldResultBuffer::Result::Accepted);
+                    ++selected;
+                }
+            }
+            CHECK(buffer.closeSelection(selected, LogicalWords - selected) ==
+                  SoaJitOldResultBuffer::Result::Accepted);
+
+            std::array<SoaJitOldResultBuffer::Identity,
+                       SoaJitOldResultBuffer::Credits> identities{};
+            size_t issued = 0;
+            SoaJitOldResultBuffer::Request request;
+            while (buffer.issueForPressure(
+                       &request, limit, Policies[policyIndex]) ==
+                   SoaJitOldResultBuffer::Result::Accepted) {
+                CHECK(issued < limit);
+                const uint32_t expectedLine =
+                    Policies[policyIndex] == PressurePolicy::OriginalOldest
+                    ? issued : DenseOrder[issued];
+                CHECK(request.identity.lineAddress ==
+                      Base + expectedLine * SoaJitOldResultBuffer::LineBytes);
+                CHECK(request.identity.validWords ==
+                      (uint16_t{1} << Densities[expectedLine]) - 1);
+                identities[issued++] = request.identity;
+            }
+            CHECK(issued == limit);
+            CHECK(buffer.partialAwaitingResponses() == limit);
+            CHECK(buffer.filling() ==
+                  SoaJitOldResultBuffer::Credits - limit);
+            for (size_t issue = 0; issue < issued; ++issue) {
+                CHECK(buffer.acknowledge(identities[issue]) ==
+                      SoaJitOldResultBuffer::Result::Accepted);
+            }
+            while (buffer.issue(&request, true) ==
+                   SoaJitOldResultBuffer::Result::Accepted) {
+                CHECK(buffer.acknowledge(request.identity) ==
+                      SoaJitOldResultBuffer::Result::Accepted);
+            }
+            CHECK(buffer.complete());
+            CHECK(buffer.finish() ==
+                  SoaJitOldResultBuffer::Result::Accepted);
+        }
+    }
+
+    SoaJitOldResultBuffer invalid;
+    CHECK(invalid.begin(20, 0x9000, 16) ==
+          SoaJitOldResultBuffer::Result::Accepted);
+    const float old = 1.0F;
+    CHECK(invalid.capture(20, 0, 0,
+                          reinterpret_cast<const uint8_t *>(&old),
+                          sizeof(old)) ==
+          SoaJitOldResultBuffer::Result::Accepted);
+    SoaJitOldResultBuffer::Request request;
+    CHECK(invalid.issueForPressure(
+              &request, 3, PressurePolicy::OriginalOldest) ==
+          SoaJitOldResultBuffer::Result::InvalidPressureCredits);
+    CHECK(invalid.issueForPressure(
+              &request, 1, static_cast<PressurePolicy>(99)) ==
+          SoaJitOldResultBuffer::Result::InvalidPressurePolicy);
 }
 
 int
@@ -334,6 +427,7 @@ main()
 
     runPressurePacking();
     runPressureDensitySelection();
+    runPressureCreditLimits();
 
     std::cout << "SOA_JIT_OLD_RESULT_TEST_PASS\n";
     return 0;

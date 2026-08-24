@@ -26,6 +26,11 @@ class SoaJitOldResultBuffer
     static constexpr size_t Credits = 8;
     static constexpr size_t MaxLogicalWords = 16 * 1024;
     static constexpr size_t MaxContexts = 64;
+    static constexpr size_t PressureCreditControlBits = 2;
+    static constexpr size_t PressurePolicyControlBits = 1;
+    static constexpr size_t PressureControlBits =
+        PressureCreditControlBits + PressurePolicyControlBits;
+    static constexpr size_t DenseScanSlots = Credits;
 
     enum class Result : uint8_t
     {
@@ -35,6 +40,8 @@ class SoaJitOldResultBuffer
         InvalidGeneration,
         InvalidBase,
         InvalidLogicalWords,
+        InvalidPressureCredits,
+        InvalidPressurePolicy,
         InvalidContext,
         InvalidOrdinal,
         NullValue,
@@ -67,6 +74,12 @@ class SoaJitOldResultBuffer
         Identity identity{};
         const uint8_t *payload = nullptr;
         const uint16_t *contexts = nullptr;
+    };
+
+    enum class PressurePolicy : uint8_t
+    {
+        OriginalOldest,
+        Densest,
     };
 
     Result begin(uint64_t generation, uint64_t resultBase,
@@ -193,21 +206,28 @@ class SoaJitOldResultBuffer
     /**
      * Evict at most one partial line for capacity pressure.
      *
-     * Once a pressure eviction owns a credit, retain every other filling line
-     * until some exact WriteResp frees capacity.  This keeps a single miss
-     * from turning the fixed eight-line buffer into an eight-line partial
-     * drain.  The bounded scan chooses the currently densest line and uses age
-     * only as a deterministic tie-break.  Full-line publication and terminal
-     * draining continue to use issue() directly.
+     * Retain filling lines once the configured partial-response limit is
+     * reached.  OriginalOldest with eight credits reproduces the accepted
+     * issue(forcePartial) pressure loop.  Densest performs a bounded scan of
+     * the same eight slots and uses age only as a deterministic tie-break.
+     * Full-line publication and terminal draining continue to use issue()
+     * directly.
      */
-    Result issueForPressure(Request *request)
+    Result issueForPressure(Request *request, size_t partialCredits,
+                            PressurePolicy policy)
     {
         if (request != nullptr)
             *request = Request{};
         if (!active)
             return Result::Inactive;
-        if (partialResponseOutstanding())
+        if (!validPressureCredits(partialCredits))
+            return Result::InvalidPressureCredits;
+        if (partialAwaitingResponses() >= partialCredits)
             return Result::NoReadyLine;
+        if (policy == PressurePolicy::OriginalOldest)
+            return issue(request, true);
+        if (policy != PressurePolicy::Densest)
+            return Result::InvalidPressurePolicy;
         Slot *chosen = nullptr;
         size_t chosenWords = 0;
         for (auto &candidate : slots) {
@@ -284,6 +304,22 @@ class SoaJitOldResultBuffer
             count += slot.state == State::AwaitingResponse ? 1 : 0;
         return count;
     }
+    size_t partialAwaitingResponses() const
+    {
+        size_t count = 0;
+        for (const auto &slot : slots) {
+            count += slot.state == State::AwaitingResponse &&
+                    slot.validWords !=
+                        std::numeric_limits<uint16_t>::max()
+                ? 1
+                : 0;
+        }
+        return count;
+    }
+    static bool validPressureCredits(size_t credits)
+    {
+        return credits == 1 || credits == 2 || credits == 4 || credits == 8;
+    }
     size_t captured() const { return capturedWords; }
     size_t rejected() const { return rejectedWords; }
     size_t issues() const { return issuedLines; }
@@ -314,16 +350,6 @@ class SoaJitOldResultBuffer
             validWords >>= 1;
         }
         return count;
-    }
-
-    bool partialResponseOutstanding() const
-    {
-        for (const auto &slot : slots) {
-            if (slot.state == State::AwaitingResponse &&
-                slot.validWords != std::numeric_limits<uint16_t>::max())
-                return true;
-        }
-        return false;
     }
 
     Result issueSlot(Slot *chosen, Request *request)

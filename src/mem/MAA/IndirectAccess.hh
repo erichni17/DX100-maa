@@ -651,6 +651,8 @@ protected:
     uint64_t soa_jit_old_result_captures = 0;
     uint64_t soa_jit_old_result_write_issues = 0;
     uint64_t soa_jit_old_result_write_responses = 0;
+    uint64_t soa_jit_old_result_pressure_issues = 0;
+    uint64_t soa_jit_old_result_partial_high_water = 0;
     uint64_t soa_jit_old_result_stalls = 0;
     bool soa_jit_old_result_selection_closed = false;
     bool soa_jit_old_result_finished = false;

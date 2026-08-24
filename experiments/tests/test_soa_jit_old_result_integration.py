@@ -11,6 +11,11 @@ class SoaJitOldResultIntegration(unittest.TestCase):
         cls.cpu = (ROOT / "src/mem/MAA/CpuSidePort.cc").read_text()
         cls.indirect = (ROOT / "src/mem/MAA/IndirectAccess.cc").read_text()
         cls.header = (ROOT / "src/mem/MAA/IndirectAccess.hh").read_text()
+        cls.maa_header = (ROOT / "src/mem/MAA/MAA.hh").read_text()
+        cls.maa_source = (ROOT / "src/mem/MAA/MAA.cc").read_text()
+        cls.maa_params = (ROOT / "src/mem/MAA/MAA.py").read_text()
+        cls.options = (ROOT / "configs/common/Options.py").read_text()
+        cls.maa_config = (ROOT / "configs/common/MAAConfig.py").read_text()
         cls.buffer = (
             ROOT / "src/mem/MAA/SoaJitOldResultBuffer.hh"
         ).read_text()
@@ -38,10 +43,14 @@ class SoaJitOldResultIntegration(unittest.TestCase):
         self.assertIn("static constexpr size_t Credits = 8", self.buffer)
         self.assertNotIn("std::vector", self.buffer)
         self.assertIn("issueForPressure", self.buffer)
-        self.assertIn("partialResponseOutstanding()", self.buffer)
-        self.assertIn("slot.validWords !=", self.buffer)
+        self.assertIn("partialAwaitingResponses()", self.buffer)
+        self.assertIn(
+            "partialAwaitingResponses() >= partialCredits", self.buffer
+        )
         self.assertIn("validWordCount(candidate.validWords)", self.buffer)
         self.assertIn("words == chosenWords", self.buffer)
+        self.assertIn("PressurePolicy::OriginalOldest", self.buffer)
+        self.assertIn("PressurePolicy::Densest", self.buffer)
         self.assertIn("sizeof(SoaJitOldResultBuffer) == 1128", self.buffer)
         self.assertIn("SoaJitOldResultWriteMode::Pressure", self.indirect)
         self.assertIn("SoaJitOldResultWriteMode::Drain", self.indirect)
@@ -51,6 +60,41 @@ class SoaJitOldResultIntegration(unittest.TestCase):
         self.assertIn("completeSoaJitOldResultWrite(identity)", self.indirect)
         self.assertIn(
             "bypass_deferred_queue at its default false", self.indirect
+        )
+
+    def test_pressure_policy_and_credits_are_bounded_runtime_controls(self):
+        self.assertIn(
+            "soa_jit_old_result_partial_credits = Param.Unsigned(\n        8,",
+            self.maa_params,
+        )
+        self.assertIn(
+            "soa_jit_old_result_pressure_policy = Param.String(\n"
+            '        "original_oldest",',
+            self.maa_params,
+        )
+        self.assertIn(
+            '"--maa_soa_jit_old_result_partial_credits"', self.options
+        )
+        self.assertIn("choices=(1, 2, 4, 8)", self.options)
+        self.assertIn(
+            '"--maa_soa_jit_old_result_pressure_policy"', self.options
+        )
+        self.assertIn('choices=("original_oldest", "densest")', self.options)
+        self.assertIn(
+            'opts["soa_jit_old_result_partial_credits"]', self.maa_config
+        )
+        self.assertIn(
+            'opts["soa_jit_old_result_pressure_policy"]', self.maa_config
+        )
+        self.assertIn("soa_jit_old_result_partial_credits", self.maa_header)
+        self.assertIn("soa_jit_old_result_dense_pressure", self.maa_header)
+        self.assertIn("PressureControlBits", self.indirect)
+        self.assertIn("PressureControlBits =", self.buffer)
+        self.assertIn("DenseScanSlots = Credits", self.buffer)
+        self.assertIn("popcount_scan_slots=%u", self.indirect)
+        self.assertIn("IND_SoaJitOldResultPressureIssues", self.maa_source)
+        self.assertIn(
+            "IND_SoaJitOldResultPartialCreditHighWater", self.maa_source
         )
 
     def test_receive_staging_and_aliases_fail_closed(self):
