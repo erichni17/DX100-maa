@@ -17,7 +17,9 @@
 #ifndef NUM_CORES
 #define NUM_CORES 4
 #endif
+#ifndef NUM_TILES_PER_CORE
 #define NUM_TILES_PER_CORE 8
+#endif
 #define NUM_REGS_PER_CORE 8
 #define NUM_TILES (NUM_CORES * NUM_TILES_PER_CORE)
 #define NUM_SCALAR_REGS (NUM_CORES * NUM_REGS_PER_CORE)

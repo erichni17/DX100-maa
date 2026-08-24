@@ -57,6 +57,7 @@ class LogicalTilePageSchedulerLiveContract(unittest.TestCase):
         self.assertEqual(self.runner.count("restore_cmd=("), 1)
         self.assertIn("--maa_logical_tile_page_scheduler", self.runner)
         self.assertIn("--maa_num_tiles_per_core=4", self.runner)
+        self.assertIn("-DNUM_TILES_PER_CORE=4", self.runner)
         self.assertIn("comparison_arms=0", self.runner)
         self.assertNotIn("native4", self.runner.lower())
         self.assertNotIn("native16_cmd", self.runner.lower())
