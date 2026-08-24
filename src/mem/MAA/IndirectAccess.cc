@@ -4877,7 +4877,8 @@ bool IndirectAccessUnit::applySoaJitValue(
             capture ==
                 SoaJitOldResultBuffer::Result::LineAwaitingResponse) {
             soa_jit_old_result_stalls++;
-            serviceSoaJitOldResultWrites(true);
+            serviceSoaJitOldResultWrites(
+                SoaJitOldResultWriteMode::Pressure);
             return false;
         }
         panic_if(capture != SoaJitOldResultBuffer::Result::Accepted,
@@ -4886,7 +4887,8 @@ bool IndirectAccessUnit::applySoaJitValue(
                  my_indirect_id, soa_jit_generation, context_index,
                  logical_itr, static_cast<unsigned>(capture));
         soa_jit_old_result_captures++;
-        serviceSoaJitOldResultWrites(false);
+        serviceSoaJitOldResultWrites(
+            SoaJitOldResultWriteMode::FullOnly);
     }
     if (isSoaJitScalarRmw()) {
         panic_if(value == nullptr ||
@@ -4929,14 +4931,20 @@ bool IndirectAccessUnit::applySoaJitValue(
 }
 
 bool
-IndirectAccessUnit::serviceSoaJitOldResultWrites(bool force_partial)
+IndirectAccessUnit::serviceSoaJitOldResultWrites(
+    SoaJitOldResultWriteMode mode)
 {
     if (!isSoaJitOldResultRmw())
         return false;
     bool progressed = false;
     SoaJitOldResultBuffer::Request write;
-    while (soa_jit_old_result_buffer.issue(&write, force_partial) ==
-           SoaJitOldResultBuffer::Result::Accepted) {
+    auto issue = [&]() {
+        if (mode == SoaJitOldResultWriteMode::Pressure)
+            return soa_jit_old_result_buffer.issueForPressure(&write);
+        return soa_jit_old_result_buffer.issue(
+            &write, mode == SoaJitOldResultWriteMode::Drain);
+    };
+    while (issue() == SoaJitOldResultBuffer::Result::Accepted) {
         const Addr vaddr = write.identity.lineAddress;
         panic_if(write.payload == nullptr || write.identity.validWords == 0 ||
                      vaddr < my_result_addr || vaddr >= my_result_max_addr ||
@@ -6388,7 +6396,8 @@ void IndirectAccessUnit::executeInstruction() {
                     maa->getTicksToCycles(curTick() - my_build_start_tick);
                 my_build_start_tick = 0;
             }
-            bool progressed = serviceSoaJitOldResultWrites(false);
+            bool progressed = serviceSoaJitOldResultWrites(
+                SoaJitOldResultWriteMode::FullOnly);
             progressed = serviceSoaJitLookahead() || progressed;
             const size_t active_contexts = soaJitActiveContextCount();
             if (!soa_jit_all_rows_claimed &&
@@ -6489,7 +6498,8 @@ void IndirectAccessUnit::executeInstruction() {
                             static_cast<unsigned>(result));
                         soa_jit_old_result_selection_closed = true;
                     }
-                    progressed = serviceSoaJitOldResultWrites(true) ||
+                    progressed = serviceSoaJitOldResultWrites(
+                                     SoaJitOldResultWriteMode::Drain) ||
                         progressed;
                     if (!soa_jit_old_result_buffer.complete()) {
                         if (progressed)

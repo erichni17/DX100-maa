@@ -756,7 +756,13 @@ protected:
     bool applySoaJitValue(SoaJitContext &context, uint16_t context_index,
                           uint16_t a_word, uint32_t logical_itr,
                           const uint8_t *value);
-    bool serviceSoaJitOldResultWrites(bool force_partial);
+    enum class SoaJitOldResultWriteMode : uint8_t
+    {
+        FullOnly,
+        Pressure,
+        Drain,
+    };
+    bool serviceSoaJitOldResultWrites(SoaJitOldResultWriteMode mode);
     bool completeSoaJitOldResultWrite(
         const SoaJitOldResultBuffer::Identity &identity);
     void issueSoaJitWrite(SoaJitContext &context);

@@ -112,10 +112,85 @@ runGeneration(uint64_t generation, std::array<float, 64> &target,
     }
 }
 
+static void
+runPressurePacking()
+{
+    constexpr uint64_t Base = 0x5000;
+    constexpr uint32_t Lines = 9;
+    constexpr uint32_t LogicalWords =
+        Lines * SoaJitOldResultBuffer::WordsPerLine;
+    constexpr uint32_t PackedLines = 7;
+    constexpr uint32_t SelectedWords = 1 +
+        PackedLines * SoaJitOldResultBuffer::WordsPerLine + 1;
+    SoaJitOldResultBuffer buffer;
+    CHECK(buffer.begin(6, Base, LogicalWords) ==
+          SoaJitOldResultBuffer::Result::Accepted);
+
+    for (uint32_t line = 0; line < SoaJitOldResultBuffer::Credits; ++line) {
+        const float old = static_cast<float>(line);
+        CHECK(buffer.capture(
+                  6, line, line * SoaJitOldResultBuffer::WordsPerLine,
+                  reinterpret_cast<const uint8_t *>(&old), sizeof(old)) ==
+              SoaJitOldResultBuffer::Result::Accepted);
+    }
+    const float ninth = 9.0F;
+    CHECK(buffer.capture(
+              6, 9, 8 * SoaJitOldResultBuffer::WordsPerLine,
+              reinterpret_cast<const uint8_t *>(&ninth), sizeof(ninth)) ==
+          SoaJitOldResultBuffer::Result::Full);
+
+    SoaJitOldResultBuffer::Request pressure;
+    CHECK(buffer.issueForPressure(&pressure) ==
+          SoaJitOldResultBuffer::Result::Accepted);
+    CHECK(pressure.identity.lineAddress == Base);
+    CHECK(pressure.identity.validWords == 1);
+    CHECK(buffer.filling() == 7);
+    CHECK(buffer.awaitingResponses() == 1);
+    SoaJitOldResultBuffer::Request blocked;
+    CHECK(buffer.issueForPressure(&blocked) ==
+          SoaJitOldResultBuffer::Result::NoReadyLine);
+    CHECK(blocked.payload == nullptr);
+    CHECK(buffer.filling() == 7);
+
+    for (uint32_t line = 1; line < SoaJitOldResultBuffer::Credits; ++line) {
+        for (uint32_t word = 1;
+             word < SoaJitOldResultBuffer::WordsPerLine; ++word) {
+            const float old = static_cast<float>(line * 100 + word);
+            CHECK(buffer.capture(
+                      6, line,
+                      line * SoaJitOldResultBuffer::WordsPerLine + word,
+                      reinterpret_cast<const uint8_t *>(&old), sizeof(old)) ==
+                  SoaJitOldResultBuffer::Result::Accepted);
+        }
+    }
+    CHECK(buffer.acknowledge(pressure.identity) ==
+          SoaJitOldResultBuffer::Result::Accepted);
+    CHECK(buffer.capture(
+              6, 9, 8 * SoaJitOldResultBuffer::WordsPerLine,
+              reinterpret_cast<const uint8_t *>(&ninth), sizeof(ninth)) ==
+          SoaJitOldResultBuffer::Result::Accepted);
+    CHECK(buffer.closeSelection(SelectedWords,
+                                LogicalWords - SelectedWords) ==
+          SoaJitOldResultBuffer::Result::Accepted);
+
+    uint32_t fullLines = 0;
+    SoaJitOldResultBuffer::Request request;
+    while (buffer.issue(&request, true) ==
+           SoaJitOldResultBuffer::Result::Accepted) {
+        fullLines += request.identity.validWords == 0xffff ? 1 : 0;
+        CHECK(buffer.acknowledge(request.identity) ==
+              SoaJitOldResultBuffer::Result::Accepted);
+    }
+    CHECK(fullLines == PackedLines);
+    CHECK(buffer.issues() == 9);
+    CHECK(buffer.complete());
+    CHECK(buffer.finish() == SoaJitOldResultBuffer::Result::Accepted);
+}
+
 int
 main()
 {
-    static_assert(sizeof(SoaJitOldResultBuffer) < 2048);
+    static_assert(sizeof(SoaJitOldResultBuffer) == 1128);
     std::array<float, 64> target{};
     std::array<float, 64> result{};
     target[5] = 10;
@@ -163,6 +238,8 @@ main()
     CHECK(delayed.closeSelection(1, 0) ==
           SoaJitOldResultBuffer::Result::Accepted);
     CHECK(delayed.selectionIsClosed());
+
+    runPressurePacking();
 
     std::cout << "SOA_JIT_OLD_RESULT_TEST_PASS\n";
     return 0;

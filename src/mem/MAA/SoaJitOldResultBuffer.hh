@@ -204,6 +204,26 @@ class SoaJitOldResultBuffer
         return Result::Accepted;
     }
 
+    /**
+     * Evict at most one partial line for capacity pressure.
+     *
+     * Once a pressure eviction owns a credit, retain every other filling line
+     * until some exact WriteResp frees capacity.  This keeps a single miss
+     * from turning the fixed eight-line buffer into an eight-line partial
+     * drain.  Full-line publication and terminal draining continue to use
+     * issue() directly.
+     */
+    Result issueForPressure(Request *request)
+    {
+        if (request != nullptr)
+            *request = Request{};
+        if (!active)
+            return Result::Inactive;
+        if (awaitingResponses() != 0)
+            return Result::NoReadyLine;
+        return issue(request, true);
+    }
+
     Result acknowledge(const Identity &identity)
     {
         if (!active)
@@ -321,6 +341,7 @@ class SoaJitOldResultBuffer
 
 static_assert(SoaJitOldResultBuffer::Credits == 8);
 static_assert(SoaJitOldResultBuffer::WordBytes == sizeof(float));
+static_assert(sizeof(SoaJitOldResultBuffer) == 1128);
 
 } // namespace gem5
 

@@ -37,6 +37,11 @@ class SoaJitOldResultIntegration(unittest.TestCase):
     def test_publication_is_bounded_and_response_bearing(self):
         self.assertIn("static constexpr size_t Credits = 8", self.buffer)
         self.assertNotIn("std::vector", self.buffer)
+        self.assertIn("issueForPressure", self.buffer)
+        self.assertIn("awaitingResponses() != 0", self.buffer)
+        self.assertIn("sizeof(SoaJitOldResultBuffer) == 1128", self.buffer)
+        self.assertIn("SoaJitOldResultWriteMode::Pressure", self.indirect)
+        self.assertIn("SoaJitOldResultWriteMode::Drain", self.indirect)
         self.assertIn("SoaJitOldResultSenderState", self.header)
         self.assertIn("MemCmd::WriteReq", self.indirect)
         self.assertIn("req->setByteEnable(byte_enable)", self.indirect)
