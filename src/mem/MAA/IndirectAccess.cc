@@ -3504,15 +3504,21 @@ void IndirectAccessUnit::fillRowTable(
         if (my_cond_tile != -1) {
             num_spd_read_condidx_accesses++;
         }
-        const bool condition_taken = isSoaJitRmw()
-            ? soaPredicateValue(logical_itr)
-            : (my_cond_tile == -1 ||
-               maa->spd->getData<uint32_t>(my_cond_tile, logical_itr) != 0);
-        if (isSoaJitRmw()) {
-            if (condition_taken)
-                soa_jit_selected++;
-            else
-                soa_jit_predicate_rejected++;
+        bool condition_taken;
+        if (isSoaJitRmw() && soa_jit_retry_valid) {
+            panic_if(logical_itr != soa_jit_retry_ordinal ||
+                         my_i != soa_jit_retry_ordinal,
+                     "I[%d] SoA/JIT pressure retry changed ordinal "
+                     "%d/%d (cursor=%d)\n",
+                     my_indirect_id, logical_itr, soa_jit_retry_ordinal,
+                     my_i);
+            condition_taken = soa_jit_retry_condition;
+        } else {
+            condition_taken = isSoaJitRmw()
+                ? soaPredicateValue(logical_itr)
+                : (my_cond_tile == -1 ||
+                   maa->spd->getData<uint32_t>(my_cond_tile,
+                                               logical_itr) != 0);
         }
         bool direct_index_descriptor_inserted = false;
         bool direct_index_predicate_rejected = false;
@@ -3838,6 +3844,9 @@ void IndirectAccessUnit::fillRowTable(
                             maa->num_offset_table_epoch_entries);
                     offset_table_drain = true;
                     needDrain = true;
+                    if (isSoaJitRmw())
+                        rememberSoaJitPressureRetry(logical_itr,
+                                                    condition_taken);
                     recordReorderSurvivalDrain(
                         ReorderSurvivalTracker::DrainReason::OffsetEpochFull);
                     (*maa->stats.IND_NumOTEpochDrain[my_indirect_id])++;
@@ -3884,6 +3893,9 @@ void IndirectAccessUnit::fillRowTable(
                             attribution_execute_sequence - 1, logical_itr,
                             my_RT_idx, grow_addr);
                     needDrain = true;
+                    if (isSoaJitRmw())
+                        rememberSoaJitPressureRetry(logical_itr,
+                                                    condition_taken);
                     recordReorderSurvivalDrain(
                         ReorderSurvivalTracker::DrainReason::RowTableFull);
                     (*maa->stats.IND_NumRTFull[my_indirect_id])++;
@@ -4122,6 +4134,8 @@ void IndirectAccessUnit::fillRowTable(
                     BoundedGrowPassPlan::resultName(commit_result));
             }
         }
+        if (isSoaJitRmw())
+            commitSoaJitSourceOrdinal(logical_itr, condition_taken);
         my_i++;
     }
 }
@@ -4314,9 +4328,87 @@ IndirectAccessUnit::serviceSoaJitValuePrefetch()
     return progressed;
 }
 
+void
+IndirectAccessUnit::rememberSoaJitPressureRetry(
+    int logical_itr, bool condition_taken)
+{
+    panic_if(!isSoaJitRmw() || !condition_taken || logical_itr != my_i ||
+                 logical_itr < 0 || logical_itr >= my_max ||
+                 static_cast<uint64_t>(logical_itr) !=
+                     soa_jit_next_source_ordinal ||
+                 soa_jit_epoch_drained || soa_jit_all_rows_claimed,
+             "I[%d] invalid SoA/JIT pressure retry at logical=%d "
+             "cursor=%d next=%lu\n",
+             my_indirect_id, logical_itr, my_i,
+             soa_jit_next_source_ordinal);
+    if (soa_jit_retry_valid) {
+        panic_if(soa_jit_retry_ordinal != logical_itr ||
+                     soa_jit_retry_condition != condition_taken,
+                 "I[%d] SoA/JIT pressure retry identity changed\n",
+                 my_indirect_id);
+        return;
+    }
+    soa_jit_retry_valid = true;
+    soa_jit_retry_condition = condition_taken;
+    soa_jit_retry_ordinal = logical_itr;
+}
+
+void
+IndirectAccessUnit::commitSoaJitSourceOrdinal(
+    int logical_itr, bool condition_taken)
+{
+    panic_if(!isSoaJitRmw() || logical_itr < 0 || logical_itr >= my_max ||
+                 logical_itr != my_i ||
+                 static_cast<uint64_t>(logical_itr) !=
+                     soa_jit_next_source_ordinal,
+             "I[%d] SoA/JIT source ordinal duplicate/skip at logical=%d "
+             "cursor=%d next=%lu\n",
+             my_indirect_id, logical_itr, my_i,
+             soa_jit_next_source_ordinal);
+    if (soa_jit_retry_valid) {
+        panic_if(soa_jit_retry_ordinal != logical_itr ||
+                     soa_jit_retry_condition != condition_taken,
+                 "I[%d] SoA/JIT committed a different pressure retry\n",
+                 my_indirect_id);
+        soa_jit_retry_valid = false;
+        soa_jit_retry_condition = false;
+        soa_jit_retry_ordinal = -1;
+    }
+    if (condition_taken)
+        soa_jit_selected++;
+    else
+        soa_jit_predicate_rejected++;
+    soa_jit_next_source_ordinal++;
+}
+
+void
+IndirectAccessUnit::resetSoaJitEpochTables()
+{
+    panic_if(!isSoaJitRmw() || !soa_jit_epoch_drained ||
+                 !soaJitContextsEmpty() ||
+                 offset_table->occupancy() != 0 ||
+                 soa_jit_epoch_resume_i != my_i ||
+                 static_cast<uint64_t>(my_i) !=
+                     soa_jit_next_source_ordinal ||
+                 !soa_jit_retry_valid ||
+                 soa_jit_retry_ordinal != my_i,
+             "I[%d] SoA/JIT epoch cannot reset at cursor=%d next=%lu "
+             "resume=%d occupancy=%d retry=%d/%d\n",
+             my_indirect_id, my_i, soa_jit_next_source_ordinal,
+             soa_jit_epoch_resume_i, offset_table->occupancy(),
+             soa_jit_retry_valid, soa_jit_retry_ordinal);
+    offset_table->check_reset();
+    for (int slice = 0; slice < num_RT_slices[my_RT_config]; ++slice) {
+        RT[my_RT_config][slice].check_reset();
+        RT[my_RT_config][slice].reset();
+        my_RT_req_sent[my_RT_config][slice] = false;
+    }
+}
+
 bool IndirectAccessUnit::serviceSoaJitBuild()
 {
-    panic_if(!isSoaJitRmw() || !my_fill_finished,
+    panic_if(!isSoaJitRmw() || soa_jit_epoch_drained ||
+                 soa_jit_all_rows_claimed,
              "I[%d] invalid SoA/JIT build state\n", my_indirect_id);
     auto context = std::find_if(
         soa_jit_contexts.begin(),
@@ -4375,7 +4467,46 @@ bool IndirectAccessUnit::serviceSoaJitBuild()
             fillSoaJitLookahead(context_index);
         return true;
     }
-    soa_jit_all_rows_claimed = true;
+    if (my_fill_finished) {
+        panic_if(soa_jit_retry_valid ||
+                     soa_jit_next_source_ordinal !=
+                         static_cast<uint64_t>(my_max),
+                 "I[%d] SoA/JIT final rows claimed before exact source "
+                 "closure (%lu/%d retry=%d)\n",
+                 my_indirect_id, soa_jit_next_source_ordinal, my_max,
+                 soa_jit_retry_valid);
+        soa_jit_all_rows_claimed = true;
+        DPRINTF(MAAVirtualTrace,
+                "event=soa_jit_all_rows_claimed schema=1 unit=%d "
+                "operation_tick=%lu generation=%lu cursor=%d "
+                "selected=%lu rejected=%lu epoch_drains=%lu\n",
+                my_indirect_id, my_decode_start_tick, soa_jit_generation,
+                my_i, soa_jit_selected, soa_jit_predicate_rejected,
+                soa_jit_epoch_drains);
+    } else {
+        panic_if(!soa_jit_retry_valid ||
+                     soa_jit_retry_ordinal != my_i ||
+                     soa_jit_next_source_ordinal ==
+                         soa_jit_epoch_start_ordinal ||
+                     soa_jit_epoch_drains ==
+                         std::numeric_limits<uint64_t>::max(),
+                 "I[%d] SoA/JIT pressure epoch made no bounded progress "
+                 "at cursor=%d start=%lu retry=%d/%d\n",
+                 my_indirect_id, my_i, soa_jit_epoch_start_ordinal,
+                 soa_jit_retry_valid, soa_jit_retry_ordinal);
+        soa_jit_epoch_drained = true;
+        soa_jit_epoch_resume_i = my_i;
+        soa_jit_epoch_drains++;
+        DPRINTF(MAAVirtualTrace,
+                "event=soa_jit_epoch_rows_claimed schema=1 unit=%d "
+                "operation_tick=%lu generation=%lu epoch=%lu cursor=%d "
+                "epoch_begin=%lu selected=%lu rejected=%lu "
+                "offset_occupancy=%d contexts=%lu\n",
+                my_indirect_id, my_decode_start_tick, soa_jit_generation,
+                soa_jit_epoch_drains, my_i, soa_jit_epoch_start_ordinal,
+                soa_jit_selected, soa_jit_predicate_rejected,
+                offset_table->occupancy(), soaJitActiveContextCount());
+    }
     return false;
 }
 bool
@@ -5018,6 +5149,13 @@ void IndirectAccessUnit::checkSoaJitTerminal()
         my_predicate_addr == 0 ? 0 : static_cast<uint64_t>(my_max);
     panic_if(!isSoaJitRmw() || soa_jit_generation == 0 ||
                  !soa_jit_all_rows_claimed || !soaJitContextsEmpty() ||
+                 soa_jit_epoch_drained || soa_jit_retry_valid ||
+                 soa_jit_retry_condition || soa_jit_retry_ordinal != -1 ||
+                 soa_jit_epoch_resume_i != -1 ||
+                 soa_jit_next_source_ordinal !=
+                     static_cast<uint64_t>(my_max) ||
+                 soa_jit_epoch_start_ordinal >
+                     soa_jit_next_source_ordinal ||
                  offset_table->occupancy() != 0 ||
                  !soaPredicateLinesEmpty() ||
                  soa_jit_selected + soa_jit_predicate_rejected !=
@@ -5099,6 +5237,9 @@ void IndirectAccessUnit::checkSoaJitTerminal()
                      soa_jit_generation),
              "I[%d] SoA/JIT terminal accounting failed\n",
              my_indirect_id);
+    offset_table->check_reset();
+    for (int slice = 0; slice < num_RT_slices[my_RT_config]; ++slice)
+        RT[my_RT_config][slice].check_reset();
 }
 void IndirectAccessUnit::executeInstruction() {
     if (state == Status::Idle) {
@@ -5441,6 +5582,14 @@ void IndirectAccessUnit::executeInstruction() {
         soa_jit_apply_lane_pool.configure(soa_jit_apply_lanes);
         soa_jit_apply_lane_pool.reset();
         soa_jit_all_rows_claimed = false;
+        soa_jit_epoch_drained = false;
+        soa_jit_retry_valid = false;
+        soa_jit_retry_condition = false;
+        soa_jit_retry_ordinal = -1;
+        soa_jit_epoch_resume_i = -1;
+        soa_jit_epoch_drains = 0;
+        soa_jit_epoch_start_ordinal = 0;
+        soa_jit_next_source_ordinal = 0;
         soa_jit_generation = 0;
         soa_jit_selected = 0;
         soa_jit_predicate_rejected = 0;
@@ -5557,13 +5706,14 @@ void IndirectAccessUnit::executeInstruction() {
                          "I[%d] SoA/JIT RMW does not admit range passes, "
                          "descriptor spooling, or GZP/global merge\n",
                          my_indirect_id);
-                panic_if(my_max > offset_table->capacity() ||
-                             my_max > static_cast<int>(
-                                          maa->num_offset_table_epoch_entries),
-                         "I[%d] SoA/JIT RMW requires one full logical "
-                         "Row/Offset window: logical=%d capacity=%d "
-                         "epoch=%u\n",
-                         my_indirect_id, my_max, offset_table->capacity(),
+                panic_if(offset_table->capacity() <= 0 ||
+                             maa->num_offset_table_epoch_entries == 0 ||
+                             maa->num_offset_table_epoch_entries >
+                                 static_cast<uint32_t>(
+                                     offset_table->capacity()),
+                         "I[%d] invalid bounded SoA/JIT Offset geometry: "
+                         "capacity=%d epoch=%u\n",
+                         my_indirect_id, offset_table->capacity(),
                          maa->num_offset_table_epoch_entries);
             }
             my_idx_tile_ready = true;
@@ -5803,10 +5953,14 @@ void IndirectAccessUnit::executeInstruction() {
         fillRowTable(finished, waitForFinish, waitForElement, needDrain,
                      num_spd_read_condidx_accesses, num_rowtable_accesses,
                      num_direct_index_filter_words);
-        panic_if(isSoaJitRmw() && needDrain,
-                 "I[%d] SoA/JIT RMW could not retain one full logical "
-                 "Row/Offset window; increase metadata capacity\n",
-                 my_indirect_id);
+        panic_if(isSoaJitRmw() && needDrain &&
+                     (!soa_jit_retry_valid ||
+                      soa_jit_retry_ordinal != my_i ||
+                      soa_jit_epoch_drained || my_fill_finished),
+                 "I[%d] invalid SoA/JIT Row/Offset pressure boundary at "
+                 "cursor=%d retry=%d/%d epoch_drained=%d\n",
+                 my_indirect_id, my_i, soa_jit_retry_valid,
+                 soa_jit_retry_ordinal, soa_jit_epoch_drained);
         bool buildReady = false;
         if (waitForFinish) {
             DPRINTF(MAAVirtualTrace,
@@ -5844,6 +5998,19 @@ void IndirectAccessUnit::executeInstruction() {
                     my_indirect_id, my_i, virtual_source_expected,
                     virtual_source_received, virtual_reserved_responses,
                     virtual_outstanding_writes);
+            if (isSoaJitRmw()) {
+                DPRINTF(MAAVirtualTrace,
+                        "event=soa_jit_epoch_pressure schema=1 unit=%d "
+                        "operation_tick=%lu generation=%lu next_epoch=%lu "
+                        "cursor=%d epoch_begin=%lu offset_occupancy=%d "
+                        "selected=%lu rejected=%lu retry_ordinal=%d\n",
+                        my_indirect_id, my_decode_start_tick,
+                        soa_jit_generation, soa_jit_epoch_drains + 1,
+                        my_i, soa_jit_epoch_start_ordinal,
+                        offset_table->occupancy(), soa_jit_selected,
+                        soa_jit_predicate_rejected,
+                        soa_jit_retry_ordinal);
+            }
             my_fill_finished = false;
             buildReady = true;
         } else {
@@ -6206,6 +6373,7 @@ void IndirectAccessUnit::executeInstruction() {
             progressed = serviceSoaJitLookahead() || progressed;
             const size_t active_contexts = soaJitActiveContextCount();
             if (!soa_jit_all_rows_claimed &&
+                !soa_jit_epoch_drained &&
                 active_contexts <
                     static_cast<size_t>(soa_jit_active_contexts)) {
                 if (my_request_start_tick != 0) {
@@ -6222,6 +6390,7 @@ void IndirectAccessUnit::executeInstruction() {
                 break;
             }
             if (!soa_jit_all_rows_claimed &&
+                !soa_jit_epoch_drained &&
                 active_contexts ==
                     static_cast<size_t>(soa_jit_active_contexts))
                 soa_jit_context_stalls++;
@@ -6234,7 +6403,43 @@ void IndirectAccessUnit::executeInstruction() {
                     scheduleExecuteInstructionEvent(1);
                 break;
             }
-            if (!soa_jit_all_rows_claimed) {
+            if (soa_jit_epoch_drained) {
+                resetSoaJitEpochTables();
+                if (debug::MAAReorderTrace &&
+                    reorder_survival.drainPending())
+                    closeReorderSurvivalEpoch(false);
+                DPRINTF(MAAVirtualTrace,
+                        "event=soa_jit_epoch_complete schema=1 unit=%d "
+                        "operation_tick=%lu generation=%lu epoch=%lu "
+                        "cursor=%d next_source=%lu selected=%lu "
+                        "rejected=%lu offset_occupancy=%d contexts=0 "
+                        "old_result_selection_closed=%d\n",
+                        my_indirect_id, my_decode_start_tick,
+                        soa_jit_generation, soa_jit_epoch_drains, my_i,
+                        soa_jit_next_source_ordinal, soa_jit_selected,
+                        soa_jit_predicate_rejected,
+                        offset_table->occupancy(),
+                        soa_jit_old_result_selection_closed);
+                panic_if(soa_jit_old_result_selection_closed ||
+                             soa_jit_all_rows_claimed ||
+                             my_fill_finished,
+                         "I[%d] SoA/JIT epoch closed terminal selection\n",
+                         my_indirect_id);
+                soa_jit_epoch_drained = false;
+                soa_jit_epoch_resume_i = -1;
+                soa_jit_epoch_start_ordinal =
+                    soa_jit_next_source_ordinal;
+                if (my_request_start_tick != 0) {
+                    finishVirtualRequestInterval();
+                    (*maa->stats.IND_CyclesRequest[my_indirect_id]) +=
+                        maa->getTicksToCycles(
+                            curTick() - my_request_start_tick);
+                    my_request_start_tick = 0;
+                }
+                state = Status::Fill;
+                transitionAttributionStage(AttributionStage::Fill,
+                                           "soa_epoch_refill");
+            } else if (!soa_jit_all_rows_claimed) {
                 if (my_request_start_tick != 0) {
                     finishVirtualRequestInterval();
                     (*maa->stats.IND_CyclesRequest[my_indirect_id]) +=
@@ -6735,7 +6940,20 @@ void IndirectAccessUnit::executeInstruction() {
                 soa_jit_context_high_water;
             (*maa->stats.IND_SoaJitContextStalls[my_indirect_id]) +=
                 soa_jit_context_stalls;
+            (*maa->stats.IND_SoaJitEpochDrains[my_indirect_id]) +=
+                soa_jit_epoch_drains;
             (*maa->stats.IND_SoaJitTerminalCompletions[my_indirect_id])++;
+            DPRINTF(MAAVirtualTrace,
+                    "event=soa_jit_epoch_summary schema=1 unit=%d "
+                    "operation_tick=%lu generation=%lu logical=%d "
+                    "next_source=%lu epoch_drains=%lu selected=%lu "
+                    "rejected=%lu duplicate_ordinals=0 skipped_ordinals=0 "
+                    "old_result_ordered=%d scalar=%d terminal=1\n",
+                    my_indirect_id, my_decode_start_tick,
+                    soa_jit_generation, my_max,
+                    soa_jit_next_source_ordinal, soa_jit_epoch_drains,
+                    soa_jit_selected, soa_jit_predicate_rejected,
+                    isSoaJitOldResultRmw(), isSoaJitScalarRmw());
             DPRINTF(MAAVirtualTrace,
                     "event=soa_jit_old_result_complete schema=1 unit=%d "
                     "operation_tick=%lu enabled=%d generation=%lu "

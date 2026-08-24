@@ -7514,6 +7514,10 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitContextStalls"),
             statistics::units::Count::get(),
             "A-line claims blocked by the bounded context scoreboard"));
+        IND_SoaJitEpochDrains.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitEpochDrains"),
+            statistics::units::Count::get(),
+            "ordered SoA/JIT Row/Offset pressure epochs drained"));
         IND_SoaJitTerminalCompletions.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitTerminalCompletions"),
             statistics::units::Count::get(),

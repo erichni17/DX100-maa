@@ -598,6 +598,16 @@ protected:
     int soa_jit_apply_lanes = 1;
     SoaJitApplyLanePool soa_jit_apply_lane_pool;
     bool soa_jit_all_rows_claimed = false;
+    // Fixed operation state only: pressure never allocates an operation-sized
+    // ordinal bitmap or spills Row/Offset metadata.
+    bool soa_jit_epoch_drained = false;
+    bool soa_jit_retry_valid = false;
+    bool soa_jit_retry_condition = false;
+    int soa_jit_retry_ordinal = -1;
+    int soa_jit_epoch_resume_i = -1;
+    uint64_t soa_jit_epoch_drains = 0;
+    uint64_t soa_jit_epoch_start_ordinal = 0;
+    uint64_t soa_jit_next_source_ordinal = 0;
     uint64_t soa_jit_next_generation = 1;
     uint64_t soa_jit_generation = 0;
     uint64_t soa_jit_selected = 0;
@@ -729,6 +739,11 @@ protected:
     int64_t soaSourcePosition(int logical_itr) const;
     bool serviceSoaJitValuePrefetch();
     bool soaJitValuePrefetchComplete() const;
+    void rememberSoaJitPressureRetry(int logical_itr,
+                                     bool condition_taken);
+    void commitSoaJitSourceOrdinal(int logical_itr,
+                                   bool condition_taken);
+    void resetSoaJitEpochTables();
     bool serviceSoaJitBuild();
     bool receiveSoaJitData(Addr addr, uint8_t *dataptr,
                            bool is_block_cached);
