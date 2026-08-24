@@ -49,6 +49,8 @@ def test_small_ab_fail_closes_correctness_accounting_and_performance():
         "incremental_bytes_four_units=121856",
         "incremental_a_lookahead_payload_bytes_four_units=28672",
         "incremental_fraction_of_873_28_kib_lower_bound_pct=13.6",
+        "expected_ramulator_sha=76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753",
+        'realpath "$resolved_ramulator"',
         "search_banking=none",
         "timing_qualified_3_2ghz=false",
         "at_least_one_kernel_not_faster",

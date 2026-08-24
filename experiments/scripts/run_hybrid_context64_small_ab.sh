@@ -8,8 +8,10 @@ gem5=$(realpath "${1:?usage: $0 GEM5 OUT}")
 out=${2:?usage: $0 GEM5 OUT}
 config=$root/configs/deprecated/example/se.py
 ramulator=$root/ext/ramulator2/ramulator2/example_gem5_config.yaml
+frozen_ramulator=/data1/nier/dx100-runs/2026-08-12-hybrid-line-handoff-8a5c7712/input/libramulator.so
 
 readonly expected_gem5_sha=1e079112469892681d661925db09ccfbc845d1a2ce45c79e1d9a4902c19a9863
+readonly expected_ramulator_sha=76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753
 readonly sssp_root=/data1/nier/dx100-runs/2026-08-24-sssp-old-result-small-23e924da-r3
 readonly hashjoin_root=/data1/nier/dx100-runs/2026-08-24-hashjoin-hybrid-small-a77f77f1
 readonly hashjoin_guest_default=/data1/nier/worktrees/codex-coordination/sessions/hybrid-shared-hotpath-20260824-063057-b94e79a6/evidence/context64-small-ab-r2/inputs/hashjoin
@@ -24,6 +26,11 @@ hashjoin_guest=${HASHJOIN_HYBRID_GUEST:-$hashjoin_guest_default}
 }
 [[ $(sha256sum "$gem5" | awk '{print $1}') == $expected_gem5_sha ]] || {
     echo "gem5 hash differs from the frozen dense4 binary" >&2
+    exit 2
+}
+[[ $(sha256sum "$frozen_ramulator" | awk '{print $1}') == \
+    $expected_ramulator_sha ]] || {
+    echo "frozen Ramulator hash mismatch" >&2
     exit 2
 }
 [[ $(sha256sum "$sssp_guest" | awk '{print $1}') == \
@@ -42,7 +49,9 @@ chmod 0444 "$out/inputs/sssp.wsg"
 sssp_guest=$out/inputs/sssp
 sssp_graph=$out/inputs/sssp.wsg
 hashjoin_guest=$out/inputs/hashjoin
-export LD_LIBRARY_PATH="$root/ext/ramulator2/ramulator2:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="$(dirname "$frozen_ramulator"):${LD_LIBRARY_PATH:-}"
+resolved_ramulator=$(ldd "$gem5" | awk '$1 == "libramulator.so" {print $3}')
+[[ $(realpath "$resolved_ramulator") == $(realpath "$frozen_ramulator") ]]
 
 checkpoint_identity() {
     local checkpoint=$1
@@ -298,6 +307,8 @@ hashjoin_checkpoint_after=$(checkpoint_identity "$hashjoin_root/PRO/checkpoint")
     printf 'candidate_only=1\nnative_reruns=0\nfull_run_roots_touched=0\n'
     printf 'source_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
     printf 'gem5_path=%s\ngem5_sha256=%s\n' "$gem5" "$expected_gem5_sha"
+    printf 'ramulator_library_path=%s\nramulator_library_sha256=%s\n' \
+        "$frozen_ramulator" "$expected_ramulator_sha"
     printf 'sssp_checkpoint=%s\nsssp_checkpoint_sha256=%s\n' \
         "$sssp_root/checkpoint" "$sssp_checkpoint_before"
     printf 'hashjoin_checkpoint=%s\nhashjoin_checkpoint_sha256=%s\n' \
