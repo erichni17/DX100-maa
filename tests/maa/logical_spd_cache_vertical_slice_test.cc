@@ -701,6 +701,25 @@ testGeometryEnumAndJointLifecycleGates()
 }
 
 void
+testTypedFP32GeometryAndScalarExecution()
+{
+    CHECK(Slice::wordBytes(Slice::Float32DataType) == sizeof(float));
+    CHECK(Slice::backingBytes(Slice::Float32DataType) ==
+          16384 * sizeof(float));
+    CHECK(Slice::pageBytes(Slice::Float32DataType, Slice::PageElements) ==
+          Slice::PageElements * sizeof(float));
+    std::array<float, 4> input{{1.0f, -2.0f, 3.5f, 0.0f}};
+    std::array<float, 4> output{};
+    uint64_t scalarBits = 0;
+    const float scalar = 2.0f;
+    std::memcpy(&scalarBits, &scalar, sizeof(scalar));
+    CHECK(Datapath::transform32(Datapath::Operation::Mul, input.data(),
+                                output.data(), input.size(), scalarBits) ==
+          Datapath::Result::Accepted);
+    CHECK(output[0] == 2.0f && output[1] == -4.0f && output[2] == 7.0f);
+}
+
+void
 testBackingRangeArithmeticBeforeMutation()
 {
     const uint64_t maximum = std::numeric_limits<uint64_t>::max();
@@ -1000,6 +1019,7 @@ int
 main()
 {
     testTypedFP64PayloadGeometryAndInitialObjects();
+    testTypedFP32GeometryAndScalarExecution();
     testAuthenticatedVerticalAll16KDelayedAckAndDestinationRefill(
         Runtime::Mode::Serial4K);
     testAuthenticatedVerticalAll16KDelayedAckAndDestinationRefill(

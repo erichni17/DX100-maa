@@ -36,7 +36,17 @@ class LogicalSPDCacheSlice
     static constexpr std::size_t CacheLineBytes = 64;
     static constexpr std::size_t LinesPerPage = PageBytes / CacheLineBytes;
     static constexpr std::size_t OperationMemorySerials = Pages * 3;
+    static constexpr uint8_t Float32DataType = 2;
     static constexpr uint8_t Float64DataType = 5;
+    static constexpr std::size_t wordBytes(uint8_t type)
+    {
+        return type == Float32DataType ? sizeof(float) :
+               type == Float64DataType ? sizeof(double) : 0;
+    }
+    static constexpr std::size_t backingBytes(uint8_t type)
+    { return LogicalElements * wordBytes(type); }
+    static constexpr std::size_t pageBytes(uint8_t type, std::size_t elements)
+    { return elements * wordBytes(type); }
 
     enum class DescriptorRole : uint8_t
     {
@@ -280,9 +290,9 @@ class LogicalSPDCacheSlice
     std::size_t activePages() const { return pageCount; }
     std::size_t activeSlots() const { return slotCount; }
     std::size_t activePageElements() const { return elementsPerPage; }
-    std::size_t activePageBytes() const
+    std::size_t activePageBytes(uint8_t type = Float64DataType) const
     {
-        return elementsPerPage * sizeof(double);
+        return pageBytes(type, elementsPerPage);
     }
 
   private:
@@ -300,7 +310,7 @@ class LogicalSPDCacheSlice
         Controller::InPlaceReservation inPlaceReservation{};
     };
 
-    static bool validBacking(BackingSpan backing);
+    static bool validBacking(BackingSpan backing, uint8_t type);
     static bool overlaps(BackingSpan left, BackingSpan right);
     static bool validOperation(Operation operation);
     static bool validPageOperation(PageOperation operation);
@@ -419,9 +429,10 @@ LogicalSPDCacheSlice::reject(Status status)
 }
 
 inline bool
-LogicalSPDCacheSlice::validBacking(BackingSpan backing)
+LogicalSPDCacheSlice::validBacking(BackingSpan backing, uint8_t type)
 {
-    return backing.bytes == BackingBytes && backing.base % BackingBytes == 0 &&
+    const std::size_t bytes = backingBytes(type);
+    return bytes != 0 && backing.bytes == bytes && backing.base % bytes == 0 &&
            backing.base <= std::numeric_limits<uint64_t>::max() -
                                static_cast<uint64_t>(backing.bytes);
 }
@@ -462,7 +473,7 @@ LogicalSPDCacheSlice::registerSource(uint8_t logical, BackingSpan backing,
     if (draining)
         return reject(Status::Draining);
     if (!initialized || logical >= LogicalDescriptors ||
-        dataType != Float64DataType || !validBacking(backing)) {
+        wordBytes(dataType) == 0 || !validBacking(backing, dataType)) {
         return reject(Status::Invalid);
     }
     if (active.valid || refillPending || memoryActionActive ||
@@ -526,9 +537,9 @@ LogicalSPDCacheSlice::admit(const Admission &request)
     if (request.sourceLogical >= LogicalDescriptors ||
         request.destinationLogical >= LogicalDescriptors ||
         request.sourceLogical == request.destinationLogical ||
-        request.dataType != Float64DataType ||
+        wordBytes(request.dataType) == 0 ||
         !validOperation(request.operation) ||
-        !validBacking(request.destination)) {
+        !validBacking(request.destination, request.dataType)) {
         return reject(Status::Invalid);
     }
     if (!initialized || active.valid || refillPending || memoryActionActive)
@@ -643,7 +654,7 @@ LogicalSPDCacheSlice::makePageAction(
     action.slot = static_cast<uint8_t>(controllerAction.slot);
     action.baseAddress = record.backing.base +
                          static_cast<uint64_t>(action.page) *
-                             activePageBytes();
+                             activePageBytes(record.dataType);
     action.serial = controllerAction.serial;
     action.controller = controllerAction;
     return action;
