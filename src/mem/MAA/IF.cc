@@ -589,6 +589,14 @@ bool IF::canPushRegister(Register _reg) {
                 if (overlaps(pending_begin, pending_end,
                              scalar_begin, scalar_end))
                     return false;
+                const int range_registers[] = {
+                    instruction.src1RegID, instruction.src2RegID,
+                    instruction.src3RegID};
+                for (const int range_register : range_registers) {
+                    if (overlaps(pending_begin, pending_end,
+                                 range_register, range_register + 1))
+                        return false;
+                }
             }
             if ((instructions[maa_id][i].dst1RegID == register_id) ||
                 (instructions[maa_id][i].dst2RegID == register_id) ||

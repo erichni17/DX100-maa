@@ -81,7 +81,8 @@ runGeneration(std::size_t physicalElements, uint64_t generation, T scalar,
 
     Result<T> result;
     for (std::size_t word = 0; word < result.values.size(); ++word)
-        result.values[word] = static_cast<T>(word - 17);
+        result.values[word] =
+            static_cast<T>(static_cast<int>(word) - 17);
     auto oracle = result.values;
     for (std::size_t logical = 0; logical < LogicalElements; ++logical) {
         if (!predicates[logical])

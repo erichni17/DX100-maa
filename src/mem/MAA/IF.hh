@@ -254,8 +254,9 @@ public:
      *
      * Ordinary INDIR_RMW_VECTOR keeps both SPD sources.  This form has no SPD
      * input or condition tile, forbids dst1 (the legacy old-value result), and
-     * uses dst2 only as a completion token.  backing/index/predicate addresses
-     * are delivered in instruction words 3/4/5 respectively.
+     * uses dst2 only as a completion token. Vector word 3 is its value-array
+     * address; scalar word 3 is its captured register ID. Words 4/5 are the
+     * direct index and optional predicate addresses for both forms.
      */
     bool isSoaJitRmw() const {
         return (opcode == OpcodeType::INDIR_RMW_VECTOR ||
