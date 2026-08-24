@@ -34,10 +34,12 @@ Raw CG reports:
 |---|---|---|---|
 | NAS CG | `dx100-cg-page-product-full-baf142f7-r1` | `/data1/nier/dx100-runs/2026-08-24-cg-page-product-full-baf142f7-r1` | trace-free full checkpoint |
 | NAS IS | `dx100-is-scalar-soa-full-a44aaa60-r5` | `/data1/nier/dx100-runs/2026-08-24-is-scalar-soa-full-a44aaa60-r5` | full O3 ROI |
-| HashJoin PRH | `dx100-hashjoin-prh-full-recovery-20260824-061147` | `/data1/nier/dx100-runs/hashjoin-hybrid-prh-full-d7d29bf5-20260824-061147` | correct terminal output; shifted-pass coverage failed |
-| GAPBS SSSP S22 | `dx100-sssp-old-result-full-e690867f-r1` | `/data1/nier/dx100-runs/2026-08-24-sssp-old-result-full-e690867f-r1` | failed closed on unvirtualized 4,133-element tail |
+| HashJoin PRH | `dx100-hashjoin-prh-full-recovery-20260824-061147` | `/data1/nier/dx100-runs/hashjoin-hybrid-prh-full-d7d29bf5-20260824-061147` | correct raw output; shifted pass is tail-only and pre-hardening evidence remains incomplete |
+| GAPBS SSSP S22, original | `dx100-sssp-old-result-full-e690867f-r1` | `/data1/nier/dx100-runs/2026-08-24-sssp-old-result-full-e690867f-r1` | failed closed on unvirtualized 4,133-element tail |
+| GAPBS SSSP S22, reviewed repair | `dx100-sssp-tail-repair-7b6f9c21-full-r1` | `/data1/nier/worktrees/codex-coordination/sessions/sssp-tail-repair-successor-20260824-155812-7c1e3190/evidence/sssp-tail-repair-7b6f9c21-r1` | active full O3 candidate; small exact gate passed |
 
-CG and IS remain active with infinite runtime; PRH and SSSP have exited.
+CG, IS, and the reviewed SSSP repair remain active with infinite runtime; PRH
+and the original SSSP candidate have exited.
 Existing `dx-runtime` watch records are stale:
 their worker PIDs are dead even where the record still says `watching`.
 Acceptance therefore relies on each runner's internal fail-closed gate plus a
@@ -110,6 +112,31 @@ It has no admissible performance result and remains default-off outside the
 lead branch. Exact restart instructions are recorded in
 `experiments/analysis/hybrid_compact_write_retirement_2026-08-24.md`.
 
+### Rejected strict sequencing and page-aware ordering
+
+The literal all-B-before-A reference cannot run at the current RowTable
+geometry: it exposes 8,192 physical line slots, while the matched logical-16K
+operation needs 9,668 A-line requests and completes through 852 capacity
+drains. Doubling RowTable rows makes 16,384 slots available and makes strict
+admission exact, but current and strict schedules then tie at `46,449,200`
+ticks. The row64 control is faster at `45,316,140` ticks. Capacity therefore
+regresses 2.5004%, strict scheduling adds no benefit, and the active packed
+metadata cost is 105,728 bytes. Both strict and expanded-capacity candidates
+are rejected.
+
+Page-aware A-source ordering was screened offline within all 104 finite
+RowTable epochs while preserving 9,954 request instances and 431 reissues.
+Page-major moves page 0's last contributor only 78 request positions earlier
+while increasing the bank-local activation proxy 26.3%. The two lighter
+policies provide negligible or negative page movement and also increase the
+proxy. No page-aware source policy is selected for gem5 implementation.
+
+Reports:
+
+- `experiments/analysis/hybrid_strict_two_phase_2026-08-24.md`
+- `experiments/analysis/hybrid_strict_rowtable_capacity_2026-08-24.md`
+- `experiments/analysis/hybrid_page_aware_source_schedule_2026-08-24.md`
+
 ## HashJoin partial result
 
 The hardened one-shot classifier now recovers full PRO as a terminal-valid
@@ -124,11 +151,13 @@ result. Relative to frozen native16/native4 endpoints it is 18.5442%/16.4022%
 slower and is rejected for performance. This is end-to-end context, not causal
 virtualization attribution.
 
-PRH recovery also reaches an exact terminal result: 2,000,000 matches and
+PRH recovery also reaches a correct raw terminal result: 2,000,000 matches and
 `46,706,090,681` first-ROI ticks. It routes 240/240 first-pass windows but zero
-shifted-pass windows. The runner therefore rejects its predeclared shifted-pass
-coverage requirement. The timing is measured but is not a promoted complete
-HashJoin mechanism result.
+shifted-pass windows because all 1,024 shifted radix partitions are smaller
+than one logical 16K window and use the existing physical 4K tail path. This
+is expected tail-only coverage, not a routing bug. The pre-hardening root lacks
+the new frozen mechanism-status/hash gate, so its timing remains an observation
+rather than a promotable result.
 
 ## Full SSSP failure
 
@@ -140,14 +169,23 @@ The simulator correctly aborts; no SSSP correctness or performance result is
 claimed. The next SSSP gate must virtualize this tail or route it through a
 legal bounded fallback.
 
+The reviewed successor at worker commit `7b6f9c21` preserves four-page 16K
+hybrid windows, routes batches up to 4K through bounded SPD, and uses exact
+ordered CPU MIN for irregular 4K+1 through 16K-1 batches. Its small exact gate
+passes total = produced = consumed = 69,632 words, 65,536 accelerated plus
+4,096 CPU words, zero measured illegal SPD attempts, exact output, and closed
+old-result responses. One exclusive-lease full S22 candidate service is active;
+no full result is claimed before its persistent wrapper and explicit validator
+both pass.
+
 ## Resume order
 
 1. Validate CG and IS after their services exit; do not read timing before
    their correctness and terminal gates close.
-2. Fix the full-SSSP 4,133-element tail/fallback before rerunning candidate
-   SSSP; native baselines remain reusable.
-3. Decide whether PRH is still useful when its full input never exercises the
-   expected shifted hybrid pass.
+2. Allow the reviewed SSSP repair service to exit, then run its explicit
+   validator before reading timing; native baselines remain reusable.
+3. Treat PRH's shifted phase as tail-only for this input and require hardened
+   mechanism-status evidence before any future promotion.
 4. Resume compact-retirement only from the certified `0d88fb41` fresh-root
    instructions, and reject it unless both kernels are nonregressing with one
    improving by at least the predeclared 0.5% threshold.
