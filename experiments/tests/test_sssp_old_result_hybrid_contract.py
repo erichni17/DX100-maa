@@ -1,0 +1,89 @@
+import pathlib
+import unittest
+
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+
+class SsspOldResultHybridContract(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = (ROOT / "benchmarks/gapbs/src/sssp.cc").read_text()
+        cls.makefile = (ROOT / "benchmarks/gapbs/Makefile").read_text()
+        cls.runner = (
+            ROOT / "experiments/scripts/run_sssp_old_result_hybrid_small.sh"
+        ).read_text()
+
+    def test_opt_in_target_preserves_legacy_default(self):
+        target = "sssp_maa_2G_old_result_hybrid_fp:"
+        self.assertEqual(self.makefile.count(target), 1)
+        candidate_rule = self.makefile[self.makefile.index(target) :]
+        self.assertIn("-DSSSP_OLD_RESULT_HYBRID=1", candidate_rule)
+        legacy_rule = self.makefile[
+            self.makefile.index("%_maa:") : self.makefile.index("%_maa_1K:")
+        ]
+        self.assertNotIn("SSSP_OLD_RESULT_HYBRID", legacy_rule)
+        self.assertIn("maa_indirect_rmw_vector<WeightT>(", self.source)
+        self.assertIn("Operation_t::MIN_OP, -1, tilei", self.source)
+
+    def test_integer_min_equivalence_is_fail_closed(self):
+        self.assertIn("numeric_limits<float>::is_iec559", self.source)
+        self.assertIn("candidate > kDistInf", self.source)
+        self.assertIn("dist[wn.v] < 0 || dist[wn.v] > kDistInf", self.source)
+        self.assertIn("hybrid_active_sources[wn.v]", self.source)
+        self.assertIn(
+            "hybrid_destination_epochs[wn.v] == hybrid_epoch", self.source
+        )
+        self.assertIn("wn.w <= 0", self.source)
+        self.assertIn("routed_windows <= eligible_windows", self.source)
+
+    def test_four_physical_pages_precede_ordered_old_result(self):
+        publish = self.source.index("PublishSsspHybridPage(")
+        old_result = self.source.index(
+            "maa_indirect_rmw_vector_soa_jit_old_result(", publish
+        )
+        completion = self.source.index(
+            "wait_ready(completion_tile);", old_result
+        )
+        frontier = self.source.index(
+            "sssp_hybrid_old_results[tid][lane] > candidate", completion
+        )
+        self.assertLess(publish, old_result)
+        self.assertLess(old_result, completion)
+        self.assertLess(completion, frontier)
+        self.assertIn("logical_page == 3", self.source)
+        self.assertIn("curr_size !=", self.source)
+        self.assertIn("kSsspPhysicalWords", self.source)
+        self.assertIn("index_publish_pages == routed_windows * 4", self.source)
+        self.assertIn("value_publish_pages == routed_windows * 4", self.source)
+
+    def test_coherent_spans_replace_host_spd_reads_on_routed_path(self):
+        helper_start = self.source.index("RunSsspHybridWindow(")
+        helper_end = self.source.index("#endif", helper_start)
+        helper = self.source[helper_start:helper_end]
+        self.assertIn("sssp_hybrid_indices", helper)
+        self.assertIn("sssp_hybrid_values", helper)
+        self.assertIn("sssp_hybrid_predicates", helper)
+        self.assertIn("sssp_hybrid_old_results", helper)
+        self.assertNotIn("get_cacheable_tile_pointer", helper)
+        self.assertIn(
+            "host_spd_reads=0 hidden_result_payload_bytes=0", self.source
+        )
+        self.assertIn("physical_spd_words=", self.source)
+        self.assertIn("row_table_slices=32", self.source)
+
+    def test_candidate_gate_is_exact_and_candidate_only(self):
+        self.assertNotIn("timeout ", self.runner)
+        self.assertIn("native_arms=0", self.runner)
+        self.assertIn("full_graph=false", self.runner)
+        self.assertIn("--maa_physical_tile_elements=4096", self.runner)
+        self.assertIn("--maa_num_tile_elements=16384", self.runner)
+        self.assertIn("--maa_num_initial_row_table_slices=32", self.runner)
+        self.assertIn("expected_routed_windows=4", self.runner)
+        self.assertIn("hash_a=a0531a7ddb9387df", self.runner)
+        self.assertIn("hash_b=39f1ea63bc8817e8", self.runner)
+        self.assertIn("result=PASS", self.runner)
+        self.assertNotIn("sssp_maa_1K", self.runner)
+
+
+if __name__ == "__main__":
+    unittest.main()
