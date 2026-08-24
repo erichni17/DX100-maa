@@ -34,8 +34,8 @@ Raw CG reports:
 |---|---|---|---|
 | NAS CG | `dx100-cg-page-product-full-baf142f7-r1` | `/data1/nier/dx100-runs/2026-08-24-cg-page-product-full-baf142f7-r1` | trace-free full checkpoint |
 | NAS IS | `dx100-is-scalar-soa-full-a44aaa60-r5` | `/data1/nier/dx100-runs/2026-08-24-is-scalar-soa-full-a44aaa60-r5` | full O3 ROI |
-| HashJoin PRO/PRH | recovery pending | `/data1/nier/dx100-runs/hashjoin-hybrid-full-fc5f3ea4-20260824-0425` | PRO terminal; runner rejected valid zero second pass before PRH |
-| GAPBS SSSP S22 | runner/launch pending | pending | candidate-only full gate using selected composition |
+| HashJoin PRH | `dx100-hashjoin-prh-full-recovery-20260824-061147` | `/data1/nier/dx100-runs/hashjoin-hybrid-prh-full-d7d29bf5-20260824-061147` | PRH-only recovery; PRO is not rerun |
+| GAPBS SSSP S22 | `dx100-sssp-old-result-full-s22-aa41bdd7-r1` | `/data1/nier/dx100-runs/2026-08-24-sssp-old-result-full-s22-aa41bdd7-r1` | candidate guest/input checkpoint preparation |
 
 All units have infinite runtime and process-exit watchers under
 `/data1/nier/.dx-runtime-state`. An exit observation is not success; each raw
@@ -76,11 +76,9 @@ slower; this is end-to-end context, not causal virtualization attribution.
 
 ## Resume order
 
-1. Launch and validate candidate-only full SSSP S22 with the selected
-   dense4/cache64/pre-A configuration.
-2. Recover only the missing HashJoin PRH arm under a kernel-specific route
-   contract; do not rerun PRO.
-3. On each full-service exit, validate correctness before comparing first-ROI
+1. On each full-service exit, validate correctness before comparing first-ROI
    `simTicks` to the frozen physical tile sweep.
-4. Update this checkpoint with accepted results or explicit rejections; do not
+2. Combine terminal PRH recovery with the preserved full-PRO evidence before
+   classifying overall HashJoin.
+3. Update this checkpoint with accepted results or explicit rejections; do not
    infer speedups from live, incomplete, or final-post-ROI timing alone.
