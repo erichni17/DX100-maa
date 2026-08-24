@@ -162,6 +162,8 @@ class CGLogicalPageRmwHybridContract(unittest.TestCase):
             "performance_direction_vs_accepted",
             "expected_publish_pages=$((windows * 8))",
             "publisher_pages_per_window=8",
+            'find "$out" -mindepth 1 -print -quit',
+            "refusing nonempty output",
         ):
             self.assertIn(token, runner)
         self.assertNotIn("native16", runner)
