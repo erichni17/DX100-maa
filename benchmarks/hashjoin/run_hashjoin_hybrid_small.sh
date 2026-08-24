@@ -4,6 +4,8 @@
 #
 # HASHJOIN_HYBRID_MODE=small retains the reviewed 65,536-tuple contract.
 # HASHJOIN_HYBRID_MODE=full runs the standard 2,000,000-tuple R/S contract.
+# HASHJOIN_HYBRID_KERNEL=all is the complete PRO/PRH gate; PRO or PRH selects
+# one kernel for a validated recovery without rerunning the other one.
 set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -13,6 +15,7 @@ ramulator=$root/ext/ramulator2/ramulator2/example_gem5_config.yaml
 guest=$root/benchmarks/hashjoin/src/bin/x86/hj_maa_16K_hybrid
 readonly TRACKED_BUILD_ARTIFACT=$root/benchmarks/hashjoin/src/npj2epb.o
 readonly MODE=${HASHJOIN_HYBRID_MODE:-small}
+readonly KERNEL_SELECTOR=${HASHJOIN_HYBRID_KERNEL:-all}
 readonly FULL_GEM5_BINARY=/data1/nier/dx100-binaries/gem5-2d02fa40568d3ed374258d717f15cad3afeca62343fc1ccaa1640215a8586152.opt
 readonly FULL_GEM5_SHA256=2d02fa40568d3ed374258d717f15cad3afeca62343fc1ccaa1640215a8586152
 gem5=${GEM5_BINARY:?set GEM5_BINARY to a SoA/JIT-capable gem5.opt}
@@ -41,6 +44,18 @@ case "$MODE" in
         ;;
     *)
         echo "unsupported HASHJOIN_HYBRID_MODE: $MODE (expected small or full)" >&2
+        exit 2
+        ;;
+esac
+case "$KERNEL_SELECTOR" in
+    all)
+        kernels=(PRO PRH)
+        ;;
+    PRO|PRH)
+        kernels=($KERNEL_SELECTOR)
+        ;;
+    *)
+        echo "unsupported HASHJOIN_HYBRID_KERNEL: $KERNEL_SELECTOR (expected all, PRO, or PRH)" >&2
         exit 2
         ;;
 esac
@@ -165,7 +180,7 @@ field() {
 printf 'kernel\tresult\trouted\tsoa_instructions\tsoa_terminals\tsimTicks\n' \
     >"$out/results.tsv"
 
-for kernel in PRO PRH; do
+for kernel in "${kernels[@]}"; do
     case_root=$out/$kernel
     checkpoint=$case_root/checkpoint
     run=$case_root/run
@@ -252,9 +267,21 @@ for kernel in PRO PRH; do
     second_scatter_4k_actions=$(field "$marker" second_scatter_4k_actions)
     [[ $first_eligible -gt 0 && $first_routed -eq $first_eligible ]]
     [[ $second_routed -eq $second_eligible ]]
-    if [[ $MODE == full ]]; then
-        [[ $second_eligible -gt 0 && $second_routed -gt 0 ]]
-    fi
+    case "$kernel" in
+        PRO)
+            # PRO never executes a shifted radix histogram.  Its shifted
+            # scatter/tail work remains live, but zero shifted SoA/JIT
+            # windows is the required contract rather than a gate failure.
+            [[ $second_eligible -eq 0 && $second_routed -eq 0 ]]
+            ;;
+        PRH)
+            # The full PRH arm must prove that the shifted histogram routed
+            # at least one complete window; otherwise no full terminal claim.
+            if [[ $MODE == full ]]; then
+                [[ $second_eligible -gt 0 && $second_routed -gt 0 ]]
+            fi
+            ;;
+    esac
     [[ $routed -gt 0 && $routed -eq $eligible ]]
     [[ $first_scatter_4k_actions -eq $EXPECTED_FIRST_SCATTER_4K_ACTIONS ]]
     [[ $second_scatter_4k_actions -gt 0 ]]
@@ -324,8 +351,14 @@ fi
     printf 'input=r_size:%d,s_size:%d,r_seed:%d,s_seed:%d,non_unique:0,full_range:0\n' \
         "$R_SIZE" "$S_SIZE" "$R_SEED" "$S_SEED"
     printf 'expected_cardinality=%d\n' "$EXPECTED_RESULT"
+    printf 'kernel_selector=%s\n' "$KERNEL_SELECTOR"
+    printf 'kernels=%s\n' "${kernels[*]}"
     printf 'trace_mode=%s\n' "$TRACE_MODE"
-    printf 'checkpoint_paths=PRO/checkpoint,PRH/checkpoint\n'
+    printf 'checkpoint_paths='
+    for kernel in "${kernels[@]}"; do
+        printf '%s/checkpoint,' "$kernel"
+    done
+    printf '\n'
     printf 'geometry=memory_channels:2,row_table_slices:32,indirect_units:4,logical_elements:16384,physical_elements:4096\n'
     printf 'first_scatter_4k_actions_expected=%d\n' "$EXPECTED_FIRST_SCATTER_4K_ACTIONS"
     printf 'fallback_basis=IND_BoundedGlobalMergeFallbacks\n'
@@ -334,8 +367,8 @@ fi
     printf 'raw_hash_ledger=result_sha256.txt\n'
 } >"$out/manifest.txt"
 
-printf 'terminal=pass\nmode=%s\ntrace_mode=%s\nsource_commit=%s\nsource_fingerprint=%s\n' \
-    "$MODE" "$TRACE_MODE" "$SOURCE_COMMIT" "$SOURCE_FINGERPRINT" \
+printf 'terminal=pass\nmode=%s\nkernel_selector=%s\ntrace_mode=%s\nsource_commit=%s\nsource_fingerprint=%s\n' \
+    "$MODE" "$KERNEL_SELECTOR" "$TRACE_MODE" "$SOURCE_COMMIT" "$SOURCE_FINGERPRINT" \
     >"$out/gate.complete"
 
 find "$out" -type f ! -name result_sha256.txt -print0 \

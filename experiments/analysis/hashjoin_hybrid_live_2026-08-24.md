@@ -53,3 +53,21 @@ histogram's SoA/JIT route is statically checked but not live-routed. Full inputs
 performance, and comparison to frozen native tile-sweep timing remain future
 work.
 
+## Partial full-PRO interpretation (2026-08-24)
+
+The authoritative full root
+`/data1/nier/dx100-runs/hashjoin-hybrid-full-fc5f3ea4-20260824-0425` contains
+terminal, correct PRO evidence only; it is **not** a passed full HashJoin gate.
+The first ROI stats window is 28,586,786,731 ticks, with exact result 2,000,000,
+240/240 first-pass eligible/routed windows, 0/0 shifted eligible/routed windows,
+240 SoA/JIT terminals, and closed A read/write ledgers. The PRO kernel does not
+execute a shifted histogram, so its zero shifted windows are expected. The
+pre-recovery runner incorrectly required a nonzero shifted pass for every full
+kernel and therefore never launched PRH.
+
+Against frozen native timing, this candidate PRO first ROI is 18.5442% slower
+than native16 (24,114,880,298 ticks) and 16.4022% slower than native4
+(24,558,620,711 ticks). This is honest negative end-to-end context only:
+instruction and binary paths differ, so it is not a causal attribution of
+virtualization overhead. The PRH-only full successor must become terminal before
+any overall full HashJoin gate outcome can be claimed.

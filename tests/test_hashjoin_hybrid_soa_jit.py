@@ -258,7 +258,9 @@ def test_build_and_runner_are_candidate_only_and_close_mechanism():
     assert "-DHASHJOIN_HYBRID_SOA_JIT" in candidate_line
     assert "-DHASHJOIN_HYBRID_SOA_JIT" not in legacy_line
     assert "hj_base" not in runner
-    assert "for kernel in PRO PRH; do" in runner
+    assert "KERNEL_SELECTOR=${HASHJOIN_HYBRID_KERNEL:-all}" in runner
+    assert "all, PRO, or PRH" in runner
+    assert 'for kernel in "${kernels[@]}"; do' in runner
     assert 'timeout "$' not in runner
     assert "HASHJOIN_HYBRID_SOA_JIT=" not in runner
     assert "GEM5_BINARY:?set GEM5_BINARY" in runner
@@ -296,7 +298,8 @@ def test_build_and_runner_are_candidate_only_and_close_mechanism():
         "IND_SoaJitAReadResponses",
         "IND_SoaJitAWriteResponses",
         "IND_BoundedGlobalMergeFallbacks",
-        "second_eligible -gt 0",
+        "second_eligible -eq 0 && $second_routed -eq 0",
+        "second_eligible -gt 0 && $second_routed -gt 0",
         "EXPECTED_FIRST_SCATTER_4K_ACTIONS",
         "result_sha256.txt",
         "source_fingerprint",
@@ -338,11 +341,27 @@ def test_full_runner_contract_is_pinned_and_fails_closed():
     assert "source changed while the HashJoin gate was running" in runner
     assert "full mode requires gem5 binary" in runner
     assert "native_rerun=0" in runner and "wall_timeout=none" in runner
-    assert "for kernel in PRO PRH; do" in runner
+    assert "kernels=(PRO PRH)" in runner
+    assert "kernels=($KERNEL_SELECTOR)" in runner
+    assert "kernel_selector=%s" in runner
     assert "EXPECTED_FIRST_SCATTER_4K_ACTIONS=984" in runner
     assert "TRACE_MODE=disabled_full" in runner
     assert "trace_mode=%s" in runner
     assert "fallback_basis=IND_BoundedGlobalMergeFallbacks" in runner
+
+
+def test_full_kernel_contract_is_specific_and_prh_recoverable():
+    runner = RUNNER.read_text(encoding="utf-8")
+    kernel_case = runner.index('case "$kernel" in')
+    pro_start = runner.index("        PRO)", kernel_case)
+    prh_start = runner.index("        PRH)", kernel_case)
+    pro = runner[pro_start:prh_start]
+    prh = runner[prh_start:]
+    assert "PRO never executes a shifted radix histogram" in pro
+    assert "second_eligible -eq 0 && $second_routed -eq 0" in pro
+    assert "if [[ $MODE == full ]]; then" in prh
+    assert "second_eligible -gt 0 && $second_routed -gt 0" in prh
+    assert "HASHJOIN_HYBRID_KERNEL=PRH" not in runner
 
 
 def test_trace_creation_and_trace_assertions_are_small_only():
@@ -408,6 +427,9 @@ class HashJoinHybridSoaJitCandidateGate(unittest.TestCase):
 
     def test_full_runner_contract(self):
         test_full_runner_contract_is_pinned_and_fails_closed()
+
+    def test_full_kernel_contract(self):
+        test_full_kernel_contract_is_specific_and_prh_recoverable()
 
     def test_trace_contract(self):
         test_trace_creation_and_trace_assertions_are_small_only()
