@@ -187,6 +187,11 @@ class MAA(ClockedObject):
         False,
         "Materialize four RowTable-sorted runs and merge four finite heads",
     )
+    virtual_strict_two_phase = Param.Bool(
+        False,
+        "Diagnostic reference: retain one complete 16K Row/Offset admission "
+        "before issuing any A-source read",
+    )
     virtual_index_range_policy = Param.Unsigned(
         0,
         "Range bounds: 0=full grow, 1=A endpoints, 2=explicit oracle, "

@@ -179,6 +179,7 @@ MAA::MAA(const MAAParams &p)
       virtual_descriptor_spool_source_bypass_cache(
           p.virtual_descriptor_spool_source_bypass_cache),
       virtual_bounded_global_merge(p.virtual_bounded_global_merge),
+      virtual_strict_two_phase(p.virtual_strict_two_phase),
       virtual_index_range_policy(p.virtual_index_range_policy),
       virtual_index_range_boundaries(p.virtual_index_range_boundaries),
       virtual_index_filter_words_per_cycle(
@@ -379,6 +380,30 @@ MAA::MAA(const MAAParams &p)
                   virtual_descriptor_spool_read_ahead),
              "Bounded global merge requires descriptor spooling and "
              "disallows paged replay read-ahead\n");
+    if (virtual_strict_two_phase) {
+        panic_if(num_tile_elements != 16384 ||
+                     physical_tile_elements != 4096,
+                 "Strict two-phase reference requires retained-16K logical "
+                 "state and 4K physical SPD, got %u/%u\n",
+                 num_tile_elements, physical_tile_elements);
+        panic_if(!reorder_row_table || reconfigure_row_table,
+                 "Strict two-phase reference requires one fixed reordered "
+                 "RowTable configuration\n");
+        panic_if(num_offset_table_entries < num_tile_elements ||
+                     num_offset_table_epoch_entries < num_tile_elements,
+                 "Strict two-phase reference cannot retain all %u "
+                 "descriptors in Offset state %u/%u\n",
+                 num_tile_elements, num_offset_table_entries,
+                 num_offset_table_epoch_entries);
+        panic_if(virtual_index_partitions != 1 ||
+                     virtual_index_range_passes ||
+                     virtual_index_descriptor_spool ||
+                     virtual_descriptor_spool_read_ahead ||
+                     virtual_bounded_global_merge,
+                 "Strict two-phase reference is one B fetch/admission pass; "
+                 "descriptor replay, range passes, and global merge are "
+                 "forbidden\n");
+    }
     panic_if(virtual_index_range_policy != 2 &&
                  !virtual_index_range_boundaries.empty(),
              "Explicit range boundaries require range policy 2\n");
@@ -7300,6 +7325,58 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtIndexFilterWaitCycles"),
             statistics::units::Cycle::get(),
             "non-overlapped scheduler cycles caused by index filtering"));
+        IND_StrictTwoPhaseOperations.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_StrictTwoPhaseOperations"),
+            statistics::units::Count::get(),
+            "completed default-off strict all-B-before-A references"));
+        IND_StrictTwoPhaseBFetchLines.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_StrictTwoPhaseBFetchLines"),
+            statistics::units::Count::get(),
+            "strict reference B/index cache-line fetches"));
+        IND_StrictTwoPhaseBWords.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_StrictTwoPhaseBWords"),
+            statistics::units::Count::get(),
+            "strict reference B/index words consumed exactly once"));
+        IND_StrictTwoPhaseDescriptors.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_StrictTwoPhaseDescriptors"),
+            statistics::units::Count::get(),
+            "strict reference descriptors retained in Row/Offset state"));
+        IND_StrictTwoPhaseAIssues.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_StrictTwoPhaseAIssues"),
+            statistics::units::Count::get(),
+            "strict reference A-source cache-line issues"));
+        IND_StrictTwoPhaseAResponses.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_StrictTwoPhaseAResponses"),
+            statistics::units::Count::get(),
+            "strict reference A-source cache-line responses"));
+        IND_StrictTwoPhaseBackingIssues.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_StrictTwoPhaseBackingIssues"),
+            statistics::units::Count::get(),
+            "strict reference backing write issues"));
+        IND_StrictTwoPhaseBackingAcks.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_StrictTwoPhaseBackingAcks"),
+            statistics::units::Count::get(),
+            "strict reference backing write acknowledgements"));
+        IND_StrictTwoPhasePagesReady.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_StrictTwoPhasePagesReady"),
+            statistics::units::Count::get(),
+            "strict reference pages exposed to the existing consumer"));
+        IND_StrictTwoPhaseExposedStalls.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_StrictTwoPhaseExposedStalls"),
+            statistics::units::Count::get(),
+            "strict reference exposed feeder, source, and backing stalls"));
+        IND_StrictTwoPhaseFillCycles.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_StrictTwoPhaseFillCycles"),
+            statistics::units::Cycle::get(),
+            "strict reference decode-to-admission-close cycles"));
+        IND_StrictTwoPhaseIssueCycles.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_StrictTwoPhaseIssueCycles"),
+            statistics::units::Cycle::get(),
+            "strict reference first-A-issue to last-A-response cycles"));
+        IND_StrictTwoPhaseRetireCycles.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_StrictTwoPhaseRetireCycles"),
+            statistics::units::Cycle::get(),
+            "strict reference first-backing-issue to last-ACK cycles"));
         IND_SoaJitInstructions.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitInstructions"),
             statistics::units::Count::get(),

@@ -457,6 +457,7 @@ public:
     unsigned int virtual_descriptor_spool_write_credits;
     bool virtual_descriptor_spool_source_bypass_cache;
     bool virtual_bounded_global_merge;
+    bool virtual_strict_two_phase;
     unsigned int virtual_index_range_policy;
     std::vector<Addr> virtual_index_range_boundaries;
     unsigned int virtual_index_filter_words_per_cycle;
@@ -1175,6 +1176,19 @@ public:
         std::vector<statistics::Scalar *> IND_VirtIndexFilterCycles;
         std::vector<statistics::Scalar *> IND_VirtIndexFilterWaitEvents;
         std::vector<statistics::Scalar *> IND_VirtIndexFilterWaitCycles;
+        std::vector<statistics::Scalar *> IND_StrictTwoPhaseOperations;
+        std::vector<statistics::Scalar *> IND_StrictTwoPhaseBFetchLines;
+        std::vector<statistics::Scalar *> IND_StrictTwoPhaseBWords;
+        std::vector<statistics::Scalar *> IND_StrictTwoPhaseDescriptors;
+        std::vector<statistics::Scalar *> IND_StrictTwoPhaseAIssues;
+        std::vector<statistics::Scalar *> IND_StrictTwoPhaseAResponses;
+        std::vector<statistics::Scalar *> IND_StrictTwoPhaseBackingIssues;
+        std::vector<statistics::Scalar *> IND_StrictTwoPhaseBackingAcks;
+        std::vector<statistics::Scalar *> IND_StrictTwoPhasePagesReady;
+        std::vector<statistics::Scalar *> IND_StrictTwoPhaseExposedStalls;
+        std::vector<statistics::Scalar *> IND_StrictTwoPhaseFillCycles;
+        std::vector<statistics::Scalar *> IND_StrictTwoPhaseIssueCycles;
+        std::vector<statistics::Scalar *> IND_StrictTwoPhaseRetireCycles;
         std::vector<statistics::Scalar *> IND_SoaJitInstructions;
         std::vector<statistics::Scalar *> IND_SoaJitSelected;
         std::vector<statistics::Scalar *> IND_SoaJitPredicateRejected;

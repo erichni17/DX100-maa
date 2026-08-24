@@ -610,6 +610,15 @@ def addNoISAOptions(parser):
         ),
     )
     parser.add_argument(
+        "--maa_virtual_strict_two_phase",
+        action="store_true",
+        help=(
+            "Default-off diagnostic reference that fetches one 16K B stream, "
+            "retains every Row/Offset descriptor, and fences A reads until "
+            "global admission closes"
+        ),
+    )
+    parser.add_argument(
         "--maa_virtual_index_range_policy",
         type=int,
         default=0,

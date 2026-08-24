@@ -855,6 +855,119 @@ bool IndirectAccessUnit::isDirectIndexLoad() const {
                 Instruction::OpcodeType::INDIR_LD_INDEX ||
             isSoaJitRmw());
 }
+bool IndirectAccessUnit::strictTwoPhaseOperation() const {
+    return maa->virtual_strict_two_phase && isVirtualLoad() &&
+           isDirectIndexLoad() && !isSoaJitRmw();
+}
+void IndirectAccessUnit::finishStrictTwoPhase() {
+    if (!strictTwoPhaseOperation())
+        return;
+    panic_if(!strict_admission_closed || strict_admission_closed_tick == 0,
+             "I[%d] strict two-phase response preceded admission closure\n",
+             my_indirect_id);
+    panic_if(strict_b_words != static_cast<uint64_t>(my_max) ||
+                 attribution_row_insert_attempts !=
+                     static_cast<uint64_t>(my_max) ||
+                 attribution_row_insert_successes !=
+                     static_cast<uint64_t>(my_max) ||
+                 attribution_offset_pressure_events != 0 ||
+                 attribution_row_pressure_events != 0,
+             "I[%d] strict semantic work mismatch B=%lu descriptors=%lu/%lu "
+             "logical=%d pressure=%lu/%lu\n",
+             my_indirect_id, strict_b_words,
+             attribution_row_insert_successes,
+             attribution_row_insert_attempts, my_max,
+             attribution_offset_pressure_events,
+             attribution_row_pressure_events);
+    panic_if(macro_b_first_issue_tick == 0 ||
+                 macro_b_last_response_tick == 0 ||
+                 macro_b_last_response_tick > strict_admission_closed_tick,
+             "I[%d] strict B feeder did not close before admission\n",
+             my_indirect_id);
+    panic_if(macro_a_first_issue_tick == 0 ||
+                 macro_a_first_issue_tick < macro_row_last_insert_tick ||
+                 macro_a_first_issue_tick < strict_admission_closed_tick,
+             "I[%d] strict A_FIRST_ISSUE=%lu precedes "
+             "ROW_OFFSET_LAST_INSERT=%lu or admission close=%lu\n",
+             my_indirect_id, macro_a_first_issue_tick,
+             macro_row_last_insert_tick, strict_admission_closed_tick);
+    panic_if(macro_a_lines !=
+                     static_cast<uint64_t>(virtual_source_expected) ||
+                 macro_a_lines !=
+                     static_cast<uint64_t>(virtual_source_received) ||
+                 attribution_write_issues != attribution_write_completions ||
+                 macro_backing_semantic_bytes !=
+                     static_cast<uint64_t>(my_max) * my_word_size ||
+                 virtual_pages_ready !=
+                     static_cast<int>(virtual_page_expected_words.size()),
+             "I[%d] strict terminal work mismatch A=%lu/%d/%d "
+             "backing=%lu/%lu semantic_bytes=%lu/%lu pages=%d/%zu\n",
+             my_indirect_id, macro_a_lines, virtual_source_expected,
+             virtual_source_received, attribution_write_issues,
+             attribution_write_completions, macro_backing_semantic_bytes,
+             static_cast<uint64_t>(my_max) * my_word_size,
+             virtual_pages_ready, virtual_page_expected_words.size());
+
+    const Tick fill_ticks = strict_admission_closed_tick -
+        my_decode_start_tick;
+    const Tick issue_ticks = macro_a_last_response_tick -
+        macro_a_first_issue_tick;
+    const Tick retire_ticks = macro_backing_last_ack_tick -
+        macro_backing_first_issue_tick;
+    const uint64_t exposed_stalls = strict_fill_stalls + macro_b_retries +
+        macro_a_retries + macro_backing_credit_stalls +
+        macro_backing_address_retries;
+    (*maa->stats.IND_StrictTwoPhaseOperations[my_indirect_id])++;
+    (*maa->stats.IND_StrictTwoPhaseBFetchLines[my_indirect_id]) +=
+        macro_b_lines;
+    (*maa->stats.IND_StrictTwoPhaseBWords[my_indirect_id]) += strict_b_words;
+    (*maa->stats.IND_StrictTwoPhaseDescriptors[my_indirect_id]) +=
+        attribution_row_insert_successes;
+    (*maa->stats.IND_StrictTwoPhaseAIssues[my_indirect_id]) += macro_a_lines;
+    (*maa->stats.IND_StrictTwoPhaseAResponses[my_indirect_id]) +=
+        virtual_source_received;
+    (*maa->stats.IND_StrictTwoPhaseBackingIssues[my_indirect_id]) +=
+        attribution_write_issues;
+    (*maa->stats.IND_StrictTwoPhaseBackingAcks[my_indirect_id]) +=
+        attribution_write_completions;
+    (*maa->stats.IND_StrictTwoPhasePagesReady[my_indirect_id]) +=
+        virtual_pages_ready;
+    (*maa->stats.IND_StrictTwoPhaseExposedStalls[my_indirect_id]) +=
+        exposed_stalls;
+    (*maa->stats.IND_StrictTwoPhaseFillCycles[my_indirect_id]) +=
+        maa->getTicksToCycles(fill_ticks);
+    (*maa->stats.IND_StrictTwoPhaseIssueCycles[my_indirect_id]) +=
+        maa->getTicksToCycles(issue_ticks);
+    (*maa->stats.IND_StrictTwoPhaseRetireCycles[my_indirect_id]) +=
+        maa->getTicksToCycles(retire_ticks);
+    DPRINTF(MAAMacroEvent,
+            "event=strict_two_phase_summary schema=1 unit=%d "
+            "operation_tick=%lu admission_closed_tick=%lu "
+            "b_first_issue_tick=%lu b_last_issue_tick=%lu "
+            "b_last_response_tick=%lu b_fetch_lines=%lu b_words=%lu "
+            "descriptor_inserts=%lu a_first_issue_tick=%lu "
+            "row_offset_last_insert_tick=%lu a_last_issue_tick=%lu "
+            "a_last_response_tick=%lu a_issues=%lu a_responses=%d "
+            "backing_first_issue_tick=%lu backing_last_issue_tick=%lu "
+            "backing_last_ack_tick=%lu backing_issues=%lu "
+            "backing_acks=%lu pages_ready=%d consumer_event="
+            "hybrid_consumer_macro exposed_stalls=%lu "
+            "fill_sim_ticks=%lu issue_sim_ticks=%lu "
+            "retire_sim_ticks=%lu replay=0 descriptor_backing=none "
+            "semantic_words=%d terminal=1\n",
+            my_indirect_id, my_decode_start_tick,
+            strict_admission_closed_tick, macro_b_first_issue_tick,
+            macro_b_last_issue_tick, macro_b_last_response_tick,
+            macro_b_lines, strict_b_words,
+            attribution_row_insert_successes, macro_a_first_issue_tick,
+            macro_row_last_insert_tick, macro_a_last_issue_tick,
+            macro_a_last_response_tick, macro_a_lines,
+            virtual_source_received, macro_backing_first_issue_tick,
+            macro_backing_last_issue_tick, macro_backing_last_ack_tick,
+            attribution_write_issues, attribution_write_completions,
+            virtual_pages_ready, exposed_stalls, fill_ticks, issue_ticks,
+            retire_ticks, my_max);
+}
 bool IndirectAccessUnit::isSoaJitRmw() const {
     return my_instruction != nullptr && my_instruction->isSoaJitRmw();
 }
@@ -3846,6 +3959,14 @@ void IndirectAccessUnit::fillRowTable(
                 }
                 if (offset_table->occupancy() >=
                     maa->num_offset_table_epoch_entries) {
+                    panic_if(strictTwoPhaseOperation(),
+                             "I[%d] strict two-phase cannot retain all %d "
+                             "descriptors: Offset state filled at itr=%d "
+                             "occupancy=%d capacity=%d epoch=%u\n",
+                             my_indirect_id, my_max, logical_itr,
+                             offset_table->occupancy(),
+                             offset_table->capacity(),
+                             maa->num_offset_table_epoch_entries);
                     panic_if(resident_bucket,
                              "I[%d] resident population exceeded bounded "
                              "Offset state before its planned 4K closure\n",
@@ -3897,6 +4018,12 @@ void IndirectAccessUnit::fillRowTable(
                     first_CL_access);
                 num_rowtable_accesses++;
                 if (!inserted) {
+                    panic_if(strictTwoPhaseOperation(),
+                             "I[%d] strict two-phase physical RowTable "
+                             "cannot retain all %d descriptors: failed at "
+                             "itr=%d slice=%d grow=0x%lx after %lu inserts\n",
+                             my_indirect_id, my_max, logical_itr, my_RT_idx,
+                             grow_addr, attribution_row_insert_successes);
                     panic_if(resident_bucket,
                              "I[%d] resident population exceeded bounded "
                              "RowTable state before its planned 4K closure\n",
@@ -4096,6 +4223,15 @@ void IndirectAccessUnit::fillRowTable(
                      direct_index_descriptor_inserted,
                      direct_index_predicate_rejected,
                      direct_index_partition_rejected);
+            if (strictTwoPhaseOperation()) {
+                panic_if(!direct_index_descriptor_inserted ||
+                             direct_index_predicate_rejected ||
+                             direct_index_partition_rejected,
+                         "I[%d] strict descriptor %d was not admitted "
+                         "exactly once\n",
+                         my_indirect_id, logical_itr);
+                strict_b_words++;
+            }
             if (descriptor_spool_replay_active) {
                 const auto consumed = descriptor_spool.recordConsumption(
                     direct_index_partition,
@@ -5350,6 +5486,12 @@ void IndirectAccessUnit::executeInstruction() {
         macro_backing_address_retries = 0;
         macro_request_reason_cycles.fill(0);
         macro_pipeline_cycles.fill(0);
+        strict_admission_closed = false;
+        strict_admission_closed_tick = 0;
+        strict_b_words = 0;
+        strict_last_b_line_valid = false;
+        strict_last_b_line_addr = 0;
+        strict_fill_stalls = 0;
         attribution_execute_sequence = 1;
         if (debug::MAAReorderTrace)
             reorder_survival.begin(reorder_instruction_sequence++);
@@ -5727,6 +5869,32 @@ void IndirectAccessUnit::executeInstruction() {
                      "I[%d] streamed-index length %d exceeds logical tile "
                      "capacity %d\n",
                      my_indirect_id, my_max, num_tile_elements);
+            if (maa->virtual_strict_two_phase) {
+                const uint64_t row_line_slots =
+                    static_cast<uint64_t>(num_RT_slices[my_RT_config]) *
+                    num_RT_rows_per_slice *
+                    num_RT_slice_columns[my_RT_config];
+                panic_if(!isVirtualLoad() || isSoaJitRmw() ||
+                             my_max != num_tile_elements,
+                         "I[%d] strict two-phase reference requires one "
+                         "complete %d-word direct virtual load, got %d\n",
+                         my_indirect_id, num_tile_elements, my_max);
+                panic_if(row_line_slots < static_cast<uint64_t>(my_max),
+                         "I[%d] strict two-phase physical RowTable exposes "
+                         "only %lu line slots for %d descriptors\n",
+                         my_indirect_id, row_line_slots, my_max);
+                DPRINTF(MAAVirtualTrace,
+                        "event=strict_two_phase_begin schema=1 unit=%d "
+                        "operation_tick=%lu logical=%d physical_spd=%u "
+                        "offset_capacity=%d offset_epoch=%u "
+                        "row_line_slots=%lu b_source=direct_index "
+                        "descriptor_backing=none replay=0\n",
+                        my_indirect_id, my_decode_start_tick, my_max,
+                        maa->physical_tile_elements,
+                        offset_table->capacity(),
+                        maa->num_offset_table_epoch_entries,
+                        row_line_slots);
+            }
             if (isSoaJitRmw()) {
                 panic_if(!my_instruction->hasValidSoaJitRmwOperands(),
                          "I[%d] malformed SoA/JIT RMW reached decode\n",
@@ -6019,6 +6187,8 @@ void IndirectAccessUnit::executeInstruction() {
                  soa_jit_retry_ordinal, soa_jit_epoch_drained);
         bool buildReady = false;
         if (waitForFinish) {
+            if (strictTwoPhaseOperation())
+                strict_fill_stalls++;
             DPRINTF(MAAVirtualTrace,
                     "event=indirect_stall schema=2 unit=%d occurrence=%lu "
                     "operation_tick=%lu sequence=%lu "
@@ -6033,8 +6203,38 @@ void IndirectAccessUnit::executeInstruction() {
             DPRINTF(MAAIndirect, "I[%d] %s: fill finished %s!\n",
                     my_indirect_id, __func__, my_instruction->print());
             my_fill_finished = true;
+            if (strictTwoPhaseOperation()) {
+                panic_if(strict_admission_closed || my_i != my_max ||
+                             strict_b_words !=
+                                 static_cast<uint64_t>(my_max) ||
+                             offset_table->occupancy() != my_max ||
+                             !direct_index_pending_lines.empty() ||
+                             !direct_index_ready_lines.empty() ||
+                             !direct_index_words.empty(),
+                         "I[%d] strict admission closure is incomplete: "
+                         "cursor=%d/%d B=%lu offsets=%d pending=%zu "
+                         "ready=%zu words=%zu\n",
+                         my_indirect_id, my_i, my_max, strict_b_words,
+                         offset_table->occupancy(),
+                         direct_index_pending_lines.size(),
+                         direct_index_ready_lines.size(),
+                         direct_index_words.size());
+                strict_admission_closed = true;
+                strict_admission_closed_tick = curTick();
+                DPRINTF(MAAVirtualTrace,
+                        "event=strict_two_phase_admission_closed schema=1 "
+                        "unit=%d operation_tick=%lu close_tick=%lu "
+                        "logical=%d b_words=%lu descriptors=%lu "
+                        "offset_occupancy=%d a_issues=0\n",
+                        my_indirect_id, my_decode_start_tick,
+                        strict_admission_closed_tick, my_max,
+                        strict_b_words, attribution_row_insert_successes,
+                        offset_table->occupancy());
+            }
             buildReady = true;
         } else if (waitForElement) {
+            if (strictTwoPhaseOperation())
+                strict_fill_stalls++;
             DPRINTF(MAAVirtualTrace,
                     "event=indirect_stall schema=2 unit=%d occurrence=%lu "
                     "operation_tick=%lu sequence=%lu "
@@ -6046,6 +6246,10 @@ void IndirectAccessUnit::executeInstruction() {
                     "I[%d] %s: waiting for fill element %s!\n",
                     my_indirect_id, __func__, my_instruction->print());
         } else if (needDrain) {
+            panic_if(strictTwoPhaseOperation(),
+                     "I[%d] strict two-phase requested an admission drain "
+                     "before global closure at %d/%d\n",
+                     my_indirect_id, my_i, my_max);
             DPRINTF(MAAIndirect, "I[%d] %s: fill needs to drain %s!\n",
                     my_indirect_id, __func__, my_instruction->print());
             DPRINTF(MAAVirtualTrace,
@@ -6095,6 +6299,13 @@ void IndirectAccessUnit::executeInstruction() {
     }
     case Status::Build: {
         assert(my_instruction != nullptr);
+        panic_if(strictTwoPhaseOperation() &&
+                     (!strict_admission_closed ||
+                      strict_admission_closed_tick == 0 ||
+                      my_i != my_max),
+                 "I[%d] strict A build opened before global Row/Offset "
+                 "admission closed\n",
+                 my_indirect_id);
         accountVirtualRequestInterval();
         DPRINTF(MAAIndirect, "I[%d] %s: Building %s requests, fill finished: %s!\n",
                 my_indirect_id, __func__, my_instruction->print(), my_fill_finished ? "true" : "false");
@@ -6876,6 +7087,7 @@ void IndirectAccessUnit::executeInstruction() {
                       .IND_BoundedReplayMaxEpochAdmissions[my_indirect_id]) +=
                     max_epoch_admissions;
             }
+            finishStrictTwoPhase();
         }
         if (isDirectIndexLoad()) {
             (*maa->stats.IND_VirtIndexLineHighWater[my_indirect_id]) +=
@@ -7927,6 +8139,15 @@ bool IndirectAccessUnit::checkAndResetAllRowTablesSent() {
 }
 void IndirectAccessUnit::createReadPacket(Addr addr, int latency) {
     if (isVirtualLoad()) {
+        panic_if(strictTwoPhaseOperation() &&
+                     (state == Status::Fill || !strict_admission_closed ||
+                      strict_admission_closed_tick == 0 ||
+                      macro_row_last_insert_tick == 0 ||
+                      curTick() < macro_row_last_insert_tick),
+                 "I[%d] strict A issue at %lu before Row/Offset closure "
+                 "%lu (state=%s)\n",
+                 my_indirect_id, curTick(), macro_row_last_insert_tick,
+                 status_names[static_cast<int>(state)]);
         if (macro_a_first_issue_tick == 0)
             macro_a_first_issue_tick = curTick();
         macro_a_last_issue_tick = curTick();
@@ -7985,6 +8206,18 @@ void IndirectAccessUnit::createReadPacket(Addr addr, int latency) {
 }
 void IndirectAccessUnit::createDirectIndexReadPacket(Addr addr, int latency) {
     if (isVirtualLoad()) {
+        if (strictTwoPhaseOperation()) {
+            panic_if(strict_admission_closed,
+                     "I[%d] strict B fetch issued after admission closure\n",
+                     my_indirect_id);
+            panic_if(strict_last_b_line_valid &&
+                         addr <= strict_last_b_line_addr,
+                     "I[%d] strict B line 0x%lx repeats or reorders after "
+                     "0x%lx\n",
+                     my_indirect_id, addr, strict_last_b_line_addr);
+            strict_last_b_line_valid = true;
+            strict_last_b_line_addr = addr;
+        }
         if (macro_b_first_issue_tick == 0)
             macro_b_first_issue_tick = curTick();
         macro_b_last_issue_tick = curTick();

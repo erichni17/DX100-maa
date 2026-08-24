@@ -256,6 +256,12 @@ protected:
     uint64_t macro_backing_address_retries = 0;
     std::array<uint64_t, 6> macro_request_reason_cycles{};
     std::array<uint64_t, 4> macro_pipeline_cycles{};
+    bool strict_admission_closed = false;
+    Tick strict_admission_closed_tick = 0;
+    uint64_t strict_b_words = 0;
+    bool strict_last_b_line_valid = false;
+    Addr strict_last_b_line_addr = 0;
+    uint64_t strict_fill_stalls = 0;
     ReorderSurvivalTracker reorder_survival;
     uint64_t reorder_instruction_sequence = 0;
 
@@ -851,6 +857,8 @@ protected:
         ReorderSurvivalTracker::DrainReason reason);
     void closeReorderSurvivalEpoch(bool final);
     void finishReorderSurvival();
+    bool strictTwoPhaseOperation() const;
+    void finishStrictTwoPhase();
     bool checkAndResetAllRowTablesSent();
     int getRowTableIdx(int RT_config, int channel, int rank, int bankgroup, int bank);
     Addr getGrowAddr(int RT_config, int bankgroup, int bank, int row);
