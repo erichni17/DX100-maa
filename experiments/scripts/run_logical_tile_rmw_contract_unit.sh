@@ -15,3 +15,6 @@ for mode in optimized sanitize; do
         "$work/$mode"
     fi
 done
+python3 -c \
+    'from experiments.tests.test_logical_tile_rmw_contract import test_contract_and_dual_mode_unit_runner; test_contract_and_dual_mode_unit_runner()'
+echo "logical_tile_rmw_contract_test: PASS"

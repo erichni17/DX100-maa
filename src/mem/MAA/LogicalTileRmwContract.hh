@@ -9,10 +9,10 @@
 #ifndef __MEM_MAA_LOGICAL_TILE_RMW_CONTRACT_HH__
 #define __MEM_MAA_LOGICAL_TILE_RMW_CONTRACT_HH__
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
-#include <map>
-#include <vector>
+#include <limits>
 
 namespace gem5::maa
 {
@@ -29,7 +29,8 @@ class LogicalTileRmwContract
         PredicateAlreadyDecided, NotSelected, AlreadyIssued, MissingResultPage,
         AmbiguousAlias, StaleGeneration, WrongContext, WrongAlias,
         DuplicateReadEx, ReadExNotIssued, PayloadTooLarge, DuplicateWriteResp,
-        WriteRespBeforeReadEx, WriteRespNotIssued, CompletionNotClosed
+        WriteRespBeforeReadEx, WriteRespNotIssued, SequenceExhausted,
+        CompletionNotClosed
     };
 
     struct Ticket
@@ -41,15 +42,17 @@ class LogicalTileRmwContract
         uint64_t issueSequence = 0;
     };
 
-    // A caller-owned physical result page.  The contract never allocates an
-    // unbounded result buffer and only publishes old values into this page.
+    // Caller-owned bounded result storage. The contract owns no payload.
     struct ResultPage
     {
-        explicit ResultPage(size_t words = 0)
-            : words(words), valid(words, false)
-        {}
-        std::vector<uint64_t> words;
-        std::vector<bool> valid;
+        uint64_t *words = nullptr;
+        uint8_t *valid = nullptr;
+        size_t size = 0;
+
+        bool contains(size_t word) const
+        {
+            return words != nullptr && valid != nullptr && word < size;
+        }
     };
 
     struct Limits
@@ -63,7 +66,9 @@ class LogicalTileRmwContract
                                     ResultMode mode)
         : limits_(limits), generation_(generation), mode_(mode)
     {
-        valid_ = limits.contexts != 0 && limits.maxLinePayloadBytes != 0 &&
+        valid_ = generation != 0 && limits.contexts != 0 &&
+                 limits.maxLinePayloadBytes != 0 &&
+                 limits.maxLinePayloadBytes <= 64 &&
                  limits.maxInsertions != 0 &&
                  limits.maxInsertions <= MaxLogicalInsertions;
     }
@@ -72,10 +77,9 @@ class LogicalTileRmwContract
     {
         if (!valid_ || context >= limits_.contexts)
             return Status::InvalidArgument;
-        if (selectionClosed_ || entries_.size() == limits_.maxInsertions)
+        if (selectionClosed_ || entryCount_ == limits_.maxInsertions)
             return Status::CapacityExceeded;
-        entries_.push_back({context, alias}); // ordinal is insertion order.
-        aliases_[alias].push_back(static_cast<uint32_t>(entries_.size() - 1));
+        entries_[entryCount_++] = {context, alias};
         return Status::Accepted;
     }
 
@@ -88,7 +92,7 @@ class LogicalTileRmwContract
         if (entry->predicateDecided)
             return Status::PredicateAlreadyDecided;
         if (selected && mode_ == ResultMode::PageBackedOldValue &&
-            (!page || pageWord >= page->words.size()))
+            (page == nullptr || !page->contains(pageWord)))
             return Status::MissingResultPage;
         entry->predicateDecided = true;
         entry->selected = selected;
@@ -99,8 +103,8 @@ class LogicalTileRmwContract
 
     Status closeSelection()
     {
-        for (const auto &entry : entries_)
-            if (!entry.predicateDecided)
+        for (uint32_t ordinal = 0; ordinal < entryCount_; ++ordinal)
+            if (!entries_[ordinal].predicateDecided)
                 return Status::CompletionNotClosed;
         selectionClosed_ = true;
         return Status::Accepted;
@@ -109,12 +113,16 @@ class LogicalTileRmwContract
     // Alias-only issue is provided solely to reject duplicate-index ambiguity.
     Status issueByAlias(uint16_t context, uint64_t alias, Ticket *ticket)
     {
-        const auto it = aliases_.find(alias);
-        if (it == aliases_.end())
-            return Status::UnknownOrdinal;
-        if (it->second.size() != 1)
-            return Status::AmbiguousAlias;
-        return issue(context, it->second.front(), ticket);
+        uint32_t match = MaxLogicalInsertions;
+        for (uint32_t ordinal = 0; ordinal < entryCount_; ++ordinal) {
+            if (entries_[ordinal].alias != alias)
+                continue;
+            if (match != MaxLogicalInsertions)
+                return Status::AmbiguousAlias;
+            match = ordinal;
+        }
+        return match == MaxLogicalInsertions ? Status::UnknownOrdinal
+                                              : issue(context, match, ticket);
     }
 
     Status issue(uint16_t context, uint32_t ordinal, Ticket *ticket)
@@ -128,6 +136,8 @@ class LogicalTileRmwContract
             return Status::NotSelected;
         if (entry->issued)
             return Status::AlreadyIssued;
+        if (nextIssueSequence_ == std::numeric_limits<uint64_t>::max())
+            return Status::SequenceExhausted;
         entry->issued = true;
         entry->issueSequence = ++nextIssueSequence_;
         *ticket = {generation_, context, ordinal, entry->alias,
@@ -148,7 +158,7 @@ class LogicalTileRmwContract
         entry->readEx = true;
         if (mode_ == ResultMode::PageBackedOldValue) {
             entry->page->words[entry->pageWord] = oldValue;
-            entry->page->valid[entry->pageWord] = true;
+            entry->page->valid[entry->pageWord] = 1;
         }
         return Status::Accepted;
     }
@@ -170,7 +180,8 @@ class LogicalTileRmwContract
     {
         if (!selectionClosed_)
             return false;
-        for (const auto &entry : entries_) {
+        for (uint32_t ordinal = 0; ordinal < entryCount_; ++ordinal) {
+            const Entry &entry = entries_[ordinal];
             if (!entry.predicateDecided)
                 return false;
             if (entry.selected && (!entry.issued || !entry.readEx ||
@@ -180,7 +191,7 @@ class LogicalTileRmwContract
         return true;
     }
 
-    size_t insertionCount() const { return entries_.size(); }
+    size_t insertionCount() const { return entryCount_; }
     uint64_t generation() const { return generation_; }
 
   private:
@@ -200,7 +211,7 @@ class LogicalTileRmwContract
 
     Entry *find(uint32_t ordinal)
     {
-        return ordinal < entries_.size() ? &entries_[ordinal] : nullptr;
+        return ordinal < entryCount_ ? &entries_[ordinal] : nullptr;
     }
     Entry *validateIssued(const Ticket &ticket)
     {
@@ -215,7 +226,7 @@ class LogicalTileRmwContract
     {
         if (ticket.generation != generation_)
             return Status::StaleGeneration;
-        if (ticket.ordinal >= entries_.size())
+        if (ticket.ordinal >= entryCount_)
             return Status::UnknownOrdinal;
         const Entry &entry = entries_[ticket.ordinal];
         if (ticket.context != entry.context)
@@ -232,8 +243,8 @@ class LogicalTileRmwContract
     bool valid_ = false;
     bool selectionClosed_ = false;
     uint64_t nextIssueSequence_ = 0;
-    std::vector<Entry> entries_;
-    std::map<uint64_t, std::vector<uint32_t>> aliases_;
+    std::array<Entry, MaxLogicalInsertions> entries_{};
+    uint32_t entryCount_ = 0;
 };
 
 } // namespace gem5::maa

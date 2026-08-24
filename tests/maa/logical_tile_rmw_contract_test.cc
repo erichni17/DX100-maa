@@ -1,3 +1,5 @@
+#include <array>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 
@@ -41,7 +43,9 @@ void noResultClosesEveryLedger()
 void oldValueRequiresAndPublishesPage()
 {
     Contract c({1, 32, 2}, 42, Contract::ResultMode::PageBackedOldValue);
-    Contract::ResultPage page(2);
+    std::array<uint64_t, 2> words{};
+    std::array<uint8_t, 2> valid{};
+    Contract::ResultPage page{words.data(), valid.data(), words.size()};
     CHECK(c.insert(0, 22) == Status::Accepted);
     CHECK(c.decidePredicate(0, true) == Status::MissingResultPage);
     CHECK(c.decidePredicate(0, true, &page, 1) == Status::Accepted);
@@ -77,6 +81,12 @@ void boundsAndSelectionAreFailClosed()
 {
     Contract invalid({0, 64, 1}, 1, Contract::ResultMode::NoOldValue);
     CHECK(invalid.insert(0, 1) == Status::InvalidArgument);
+    Contract zeroGeneration({1, 64, 1}, 0,
+                            Contract::ResultMode::NoOldValue);
+    CHECK(zeroGeneration.insert(0, 1) == Status::InvalidArgument);
+    Contract oversizedLine({1, 65, 1}, 1,
+                           Contract::ResultMode::NoOldValue);
+    CHECK(oversizedLine.insert(0, 1) == Status::InvalidArgument);
     Contract c({1, 64, Contract::MaxLogicalInsertions}, 1,
                Contract::ResultMode::NoOldValue);
     for (uint32_t i = 0; i < Contract::MaxLogicalInsertions; ++i)

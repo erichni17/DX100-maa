@@ -14,5 +14,8 @@ def test_contract_and_dual_mode_unit_runner():
     assert "StaleGeneration" in header
     assert "DuplicateReadEx" in header and "DuplicateWriteResp" in header
     assert "bool complete() const" in header
+    assert "std::array<Entry, MaxLogicalInsertions>" in header
+    assert "std::vector" not in header
+    assert "std::map" not in header
     assert "-fsanitize=address,undefined" in runner
     assert "optimized sanitize" in runner
