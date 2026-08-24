@@ -139,6 +139,8 @@ def test_default_off_compact_write_retirement_transfers_exact_ownership():
     assert "Credits = 8" in header
     assert "PersistentStateBits" in header
     assert "MaxTransientPacketPayloadBytes" in header
+    assert "bool active = false" not in header
+    assert "return activeGeneration != 0" in header
 
     issue = indirect[
         indirect.index(

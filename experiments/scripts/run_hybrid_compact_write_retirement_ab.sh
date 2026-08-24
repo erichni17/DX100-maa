@@ -4,8 +4,9 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-source_gem5=$(realpath "${1:?usage: $0 GEM5 OUT}")
-out=${2:?usage: $0 GEM5 OUT}
+source_gem5=$(realpath "${1:?usage: $0 GEM5 CERTIFICATE OUT}")
+certificate=$(realpath "${2:?usage: $0 GEM5 CERTIFICATE OUT}")
+out=${3:?usage: $0 GEM5 CERTIFICATE OUT}
 config=$root/configs/deprecated/example/se.py
 ramulator=$root/ext/ramulator2/ramulator2/example_gem5_config.yaml
 frozen_ramulator=/data1/nier/dx100-runs/2026-08-12-hybrid-line-handoff-8a5c7712/input/libramulator.so
@@ -23,6 +24,23 @@ sssp_graph_source=$sssp_root/graph/sssp_old_result_hybrid_small.wsg
     echo "missing executable input" >&2
     exit 2
 }
+[[ -f $certificate/certificate.txt &&
+   -f $certificate/certificate.sha256 &&
+   -f $certificate/changed-sources.sha256 ]] || {
+    echo "missing build certificate" >&2
+    exit 2
+}
+(cd "$certificate" && sha256sum -c certificate.sha256)
+
+certificate_field() {
+    local field=$1
+    awk -F= -v field="$field" '$1 == field {
+        sub(/^[^=]*=/, "")
+        print
+        found++
+    } END { if (found != 1) exit 2 }' "$certificate/certificate.txt"
+}
+
 [[ -z $(git -C "$root" status --porcelain --untracked-files=all) ]] || {
     echo "source worktree is not entirely clean" >&2
     exit 2
@@ -31,6 +49,34 @@ source_commit=$(git -C "$root" rev-parse HEAD)
 source_tree=$(git -C "$root" rev-parse 'HEAD^{tree}')
 source_archive_sha=$(git -C "$root" archive --format=tar HEAD | \
     sha256sum | awk '{print $1}')
+[[ $(certificate_field source_commit) == "$source_commit" ]]
+[[ $(certificate_field source_tree) == "$source_tree" ]]
+[[ $(certificate_field source_archive_sha256) == "$source_archive_sha" ]]
+[[ $(certificate_field gem5_sha256) == \
+    $(sha256sum "$source_gem5" | awk '{print $1}') ]]
+[[ $(certificate_field gem5_mtime_epoch) == \
+    $(stat -c %Y "$source_gem5") ]]
+[[ $(certificate_field ramulator_sha256) == "$expected_ramulator_sha" ]]
+[[ $(certificate_field ramulator_spdlog_directory_sha256) == \
+    f2cef6ed58f83957b8b71aa11a0bf2e307c666b8bfd6a5ebb098cc40c030a3d8 ]]
+[[ $(certificate_field ramulator_yaml_cpp_directory_sha256) == \
+    2b978d137ff52e3b8595f751afd97479e0062bcc9ad60cda57e06905b21d2823 ]]
+[[ $(certificate_field util_m5op_s_sha256) == \
+    fe20d70d689c341ee614121d7aac1431b81d2178943a113ea1aa1d7c5ef50c69 ]]
+
+ledger_check=$(mktemp)
+trap 'rm -f "$ledger_check"' EXIT
+source_base_commit=$(certificate_field source_base_commit)
+git -C "$root" diff --name-only --diff-filter=ACMR -z \
+    "$source_base_commit" HEAD | sort -z |
+    while IFS= read -r -d '' path; do
+        sha256sum "$root/$path" | sed "s#  $root/#  #"
+    done >"$ledger_check"
+cmp "$ledger_check" "$certificate/changed-sources.sha256"
+[[ $(sha256sum "$ledger_check" | awk '{print $1}') == \
+    $(certificate_field changed_sources_sha256) ]]
+certificate_bundle_sha=$(sha256sum "$certificate/certificate.sha256" |
+    awk '{print $1}')
 [[ $(sha256sum "$frozen_ramulator" | awk '{print $1}') == \
     $expected_ramulator_sha ]]
 [[ $(sha256sum "$sssp_guest_source" | awk '{print $1}') == \
@@ -41,6 +87,7 @@ source_archive_sha=$(git -C "$root" archive --format=tar HEAD | \
     9137ca242beb2b5a451ca592021047dfdf6da5f35efc53f34844c7d87de9f299 ]]
 
 mkdir -p "$out/inputs"
+cp -a "$certificate" "$out/inputs/build-certificate"
 cp -- "$source_gem5" "$out/inputs/gem5.opt"
 cp -- "$sssp_guest_source" "$out/inputs/sssp"
 cp -- "$sssp_graph_source" "$out/inputs/sssp.wsg"
@@ -358,6 +405,15 @@ hashjoin_checkpoint_after=$(checkpoint_identity "$hashjoin_root/PRO/checkpoint")
     printf 'source_commit=%s\nsource_tree=%s\n' \
         "$source_commit" "$source_tree"
     printf 'source_archive_sha256=%s\n' "$source_archive_sha"
+    printf 'build_certificate_source=%s\n' "$certificate"
+    printf 'build_certificate_bundle_sha256=%s\n' \
+        "$certificate_bundle_sha"
+    printf 'build_log_sha256=%s\n' \
+        "$(certificate_field build_log_sha256)"
+    printf 'maa_objects_sha256=%s\n' \
+        "$(certificate_field maa_objects_sha256)"
+    printf 'gem5_build_mtime_epoch=%s\n' \
+        "$(certificate_field gem5_mtime_epoch)"
     printf 'offline_dependency_source=%s\n' \
         '/data1/nier/worktrees/DX100-virtualization-line-handoff-20260812'
     printf 'ramulator_argparse_gitlink=997da9255618311d1fcb0135ce86022729d1f1cb\n'

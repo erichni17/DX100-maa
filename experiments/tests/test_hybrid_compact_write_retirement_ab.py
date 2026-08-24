@@ -10,6 +10,8 @@ def read(path: str) -> str:
 
 def test_runner_is_exact_candidate_only_context8_ab():
     runner = read(RUNNER)
+    assert "usage: $0 GEM5 CERTIFICATE OUT" in runner
+    assert "certificate_field" in runner
     assert "native_reruns=0" in runner
     assert "full_run_roots_touched=0" in runner
     assert "--maa_soa_jit_active_contexts=8" in runner

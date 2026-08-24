@@ -69,12 +69,11 @@ class SoaJitWriteRetirement
 
     Result begin(uint64_t generation)
     {
-        if (active)
+        if (activeRun())
             return Result::Busy;
         if (generation == 0)
             return Result::InvalidGeneration;
         clearRun();
-        active = true;
         activeGeneration = generation;
         return Result::Accepted;
     }
@@ -84,7 +83,7 @@ class SoaJitWriteRetirement
     {
         if (identity != nullptr)
             *identity = Identity{};
-        if (!active)
+        if (!activeRun())
             return Result::Inactive;
         if (generation != activeGeneration)
             return Result::InvalidGeneration;
@@ -135,11 +134,11 @@ class SoaJitWriteRetirement
 
     Result finish()
     {
-        if (!active)
+        if (!activeRun())
             return Result::Inactive;
         if (!complete())
             return Result::NotComplete;
-        active = false;
+        activeGeneration = 0;
         return Result::Accepted;
     }
 
@@ -152,10 +151,10 @@ class SoaJitWriteRetirement
     }
 
     bool empty() const { return occupied() == 0; }
-    bool activeRun() const { return active; }
+    bool activeRun() const { return activeGeneration != 0; }
     bool complete() const
     {
-        return active && empty() && reservations == issues &&
+        return activeRun() && empty() && reservations == issues &&
                issues == responses && assertInvariants();
     }
 
@@ -206,8 +205,9 @@ class SoaJitWriteRetirement
                reservations - issues == reserved() &&
                issues - responses == awaitingResponses() &&
                highWater <= Credits &&
-               (active || (empty() && reservations == 0 && issues == 0 &&
-                            responses == 0));
+               (activeRun() ||
+                (empty() && reservations == 0 && issues == 0 &&
+                 responses == 0));
     }
 
   private:
@@ -227,7 +227,7 @@ class SoaJitWriteRetirement
 
     Result validate(const Identity &identity, State expected) const
     {
-        if (!active)
+        if (!activeRun())
             return Result::Inactive;
         if (identity.generation != activeGeneration)
             return Result::WrongGeneration;
@@ -246,7 +246,6 @@ class SoaJitWriteRetirement
     void clearRun()
     {
         slots = {};
-        active = false;
         activeGeneration = 0;
         nextIssueSequence = 0;
         reservations = 0;
@@ -262,7 +261,6 @@ class SoaJitWriteRetirement
     uint64_t issues = 0;
     uint64_t responses = 0;
     size_t highWater = 0;
-    bool active = false;
 };
 
 static_assert(SoaJitWriteRetirement::Credits == 8);
