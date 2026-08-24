@@ -11,6 +11,7 @@
 #include <iostream>
 #include <limits>
 #include <queue>
+#include <unordered_map>
 #include <vector>
 
 #include "MAA.hpp"
@@ -117,6 +118,15 @@ static uint64_t sssp_hybrid_old_result_words[NUM_CORES] = {};
 static uint64_t sssp_hybrid_legacy_words[NUM_CORES] = {};
 static uint32_t sssp_hybrid_publish_generations[NUM_CORES] = {};
 
+static int
+SsspHybridChunkFrontierWords(int frontier_words) {
+    return frontier_words > NUM_CORES * 16384 ? 16384
+           : frontier_words > NUM_CORES * 8192 ? 8192
+           : frontier_words > NUM_CORES * 4096 ? 4096
+           : frontier_words > NUM_CORES * 2048 ? 2048
+                                                 : 1024;
+}
+
 static void
 PublishSsspHybridPage(int tid, size_t logical_page, int index_tile,
                       int value_tile, int index_completion_tile,
@@ -152,7 +162,8 @@ PublishSsspHybridPage(int tid, size_t logical_page, int index_tile,
 
 static void
 RunSsspHybridWindow(int tid, WeightT *dist, int num_nodes, WeightT delta,
-                    vector<vector<NodeID>> &local_bins, int min_reg,
+                    vector<vector<NodeID>> &local_bins,
+                    unordered_map<NodeID, WeightT> &page_finals, int min_reg,
                     int max_reg, int stride_reg, int completion_tile) {
     atomic_thread_fence(memory_order_seq_cst);
     for (size_t lane = 0; lane < kSsspLogicalWords; ++lane) {
@@ -180,19 +191,35 @@ RunSsspHybridWindow(int tid, WeightT *dist, int num_nodes, WeightT delta,
     wait_ready(completion_tile);
     atomic_thread_fence(memory_order_seq_cst);
 
-    // Global destination uniqueness reduces the legacy post-RMW test
-    //   candidate == final && old > final
-    // exactly to old > candidate.  Scan in original logical offset order so
-    // local-bin insertion and frontier order match the four legacy pages.
-    for (size_t lane = 0; lane < kSsspLogicalWords; ++lane) {
-        const WeightT candidate = sssp_hybrid_values[tid][lane];
-        if (sssp_hybrid_old_results[tid][lane] > candidate) {
+    // Reconstruct the legacy post-RMW reload separately for each physical
+    // page.  The last alias for a destination exposes that page's final value
+    // as min(old, candidate); a reverse pass propagates it to earlier aliases.
+    // The forward pass then applies the original candidate == final &&
+    // old > final test in offset order, preserving duplicate frontier winners.
+    for (size_t page = 0; page < 4; ++page) {
+        const size_t begin = page * kSsspPhysicalWords;
+        const size_t end = begin + kSsspPhysicalWords;
+        page_finals.clear();
+        for (size_t lane = end; lane-- > begin;) {
             const NodeID destination =
                 static_cast<NodeID>(sssp_hybrid_indices[tid][lane]);
-            const size_t dest_bin = candidate / delta;
-            if (dest_bin >= local_bins.size())
-                local_bins.resize(dest_bin + 1);
-            local_bins[dest_bin].push_back(destination);
+            page_finals.emplace(
+                destination,
+                min(sssp_hybrid_old_results[tid][lane],
+                    sssp_hybrid_values[tid][lane]));
+        }
+        for (size_t lane = begin; lane < end; ++lane) {
+            const NodeID destination =
+                static_cast<NodeID>(sssp_hybrid_indices[tid][lane]);
+            const WeightT candidate = sssp_hybrid_values[tid][lane];
+            const WeightT final_distance = page_finals.at(destination);
+            if (candidate == final_distance &&
+                sssp_hybrid_old_results[tid][lane] > final_distance) {
+                const size_t dest_bin = final_distance / delta;
+                if (dest_bin >= local_bins.size())
+                    local_bins.resize(dest_bin + 1);
+                local_bins[dest_bin].push_back(destination);
+            }
         }
     }
     sssp_hybrid_routed_windows[tid]++;
@@ -294,6 +321,7 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
 #ifdef SSSP_OLD_RESULT_HYBRID
     pvector<uint8_t> hybrid_active_sources(num_nodes, 0);
     pvector<uint32_t> hybrid_destination_epochs(num_nodes, 0);
+    pvector<uint32_t> hybrid_destination_owners(num_nodes, 0);
     uint32_t hybrid_epoch = 0;
     bool hybrid_iteration_safe = false;
     for (int core = 0; core < NUM_CORES; ++core) {
@@ -364,6 +392,10 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
 #endif
         }
         vector<vector<NodeID>> local_bins(0);
+#ifdef SSSP_OLD_RESULT_HYBRID
+        unordered_map<NodeID, WeightT> hybrid_page_finals;
+        hybrid_page_finals.reserve(kSsspPhysicalWords);
+#endif
         size_t iter = 0;
         int *tilev_ptr = get_cacheable_tile_pointer<int>(tilev);
         int *tile1_ptr = get_cacheable_tile_pointer<int>(tile1);
@@ -379,8 +411,8 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                 // A logical window may replace four legacy physical RMWs only
                 // if page aggregation cannot change any operand or winner.
                 // Prove that once for the whole iteration: every active edge
-                // has bounded nonnegative integer operands, destinations are
-                // globally unique, and no destination names an active source.
+                // has bounded nonnegative integer operands, destinations do
+                // not cross chunk owners, and none names an active source.
                 hybrid_iteration_safe = true;
                 fill(hybrid_active_sources.begin(),
                      hybrid_active_sources.end(), 0);
@@ -398,6 +430,8 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                     lower_bound = static_cast<int64_t>(delta) *
                         static_cast<int64_t>(curr_bin_index);
                 }
+                const int chunk_frontier_words =
+                    SsspHybridChunkFrontierWords(curr_frontier_tail);
                 for (size_t pos = 0; pos < curr_frontier_tail; ++pos) {
                     const NodeID u = frontier[pos];
                     if (u < 0 || u >= num_nodes || dist[u] < 0 ||
@@ -409,6 +443,8 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                         hybrid_active_sources[u] = 1;
                 }
                 for (size_t pos = 0; pos < curr_frontier_tail; ++pos) {
+                    const uint32_t chunk_owner =
+                        static_cast<uint32_t>(pos / chunk_frontier_words);
                     const NodeID u = frontier[pos];
                     if (u < 0 || u >= num_nodes ||
                         !hybrid_active_sources[u])
@@ -421,11 +457,15 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                         if (wn.v < 0 || wn.v >= num_nodes || wn.w <= 0 ||
                             candidate < 0 || candidate > kDistInf ||
                             dist[wn.v] < 0 || dist[wn.v] > kDistInf ||
-                            hybrid_active_sources[wn.v] ||
-                            hybrid_destination_epochs[wn.v] == hybrid_epoch) {
+                            hybrid_active_sources[wn.v]) {
                             hybrid_iteration_safe = false;
+                        } else if (
+                            hybrid_destination_epochs[wn.v] == hybrid_epoch) {
+                            if (hybrid_destination_owners[wn.v] != chunk_owner)
+                                hybrid_iteration_safe = false;
                         } else {
                             hybrid_destination_epochs[wn.v] = hybrid_epoch;
+                            hybrid_destination_owners[wn.v] = chunk_owner;
                         }
                     }
                 }
@@ -499,6 +539,10 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                                                              : 512;
 #else
                 assert(false);
+#endif
+#ifdef SSSP_OLD_RESULT_HYBRID
+                if (tile_size != SsspHybridChunkFrontierWords(cft))
+                    abort();
 #endif
                 maa_const<int>(delta * static_cast<WeightT>(curr_bin_index), reg2);
 #pragma omp master
@@ -579,7 +623,8 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                                 if (logical_page == 3) {
                                     RunSsspHybridWindow(
                                         tid, dist.data(), num_nodes, delta,
-                                        local_bins, reg0, reg1, regOne, tilei);
+                                        local_bins, hybrid_page_finals, reg0,
+                                        reg1, regOne, tilei);
                                 }
                             }
 #endif
@@ -708,6 +753,7 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
               << " row_table_slices=32"
               << " predicate_span=coherent_aligned"
               << " old_result_span=coherent_aligned"
+              << " duplicate_order=legacy_physical_pages"
               << " host_spd_reads=0 hidden_result_payload_bytes=0"
               << " counts_close=" << (counts_close ? 1 : 0) << std::endl;
     if (!counts_close)
