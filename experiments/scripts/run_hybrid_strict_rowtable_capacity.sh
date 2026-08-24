@@ -287,7 +287,7 @@ if int(strict["write_issues"]) != int(strict["write_completions"]):
     raise SystemExit("strict result write ledger did not close")
 consumer_summaries = [
     line for line in trace.splitlines()
-    if "event=hybrid_consumer_macro " in line
+    if re.search(r"(?:^| )event=hybrid_consumer_macro ", line)
 ]
 if len(consumer_summaries) != 1:
     raise SystemExit(

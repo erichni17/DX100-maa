@@ -85,7 +85,7 @@ class HybridStrictRowTableCapacityContract(unittest.TestCase):
             '"b_words", "16384"',
             '"descriptor_inserts", "16384"',
             '"consumer_event", "hybrid_consumer_macro"',
-            '"event=hybrid_consumer_macro "',
+            'r"(?:^| )event=hybrid_consumer_macro "',
             "strict A issue/response ledger did not close",
             "strict backing issue/ACK ledger did not close",
             '"row_table_full_events"',
