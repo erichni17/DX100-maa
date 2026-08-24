@@ -88,8 +88,19 @@ only completed A writes into an eight-credit compact `WriteResp` retirement
 tracker. Its gate must preserve exact terminal response ownership and reject
 the mechanism if the extra overlap again harms old-result coalescing.
 
+The first implementation, worker commit `f35f9111`, is not integrated. Its
+compact SSSP arm deterministically panics because the terminal checker is
+called twice but mutates the tracker to finished on the first call. The review
+also rejects region-attributing credits by credit number and identifies
+incomplete installed-capacity/source-binary accounting. A successor must fix
+all four issues and use a fresh evidence root; the failed `r2` root is not
+performance evidence.
+
 Report:
 `experiments/analysis/hybrid_general_hotpath_worker_2026-08-24.md`.
+
+Review:
+`experiments/analysis/hybrid_compact_write_retirement_review_2026-08-24.md`.
 
 ## HashJoin partial result
 
