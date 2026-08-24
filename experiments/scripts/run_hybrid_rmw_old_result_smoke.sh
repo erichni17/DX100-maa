@@ -55,15 +55,16 @@ restore_cmd=(
 )
 
 {
-    printf 'schema=dx100.soa_jit.old_result.v1\n'
+    printf 'schema=dx100.soa_jit.old_result.epoch_pressure.v2\n'
     printf 'source_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
     printf 'gem5_sha256='; sha256sum "$gem5" | awk '{print $1}'
     printf 'guest_sha256='; sha256sum "$guest" | awk '{print $1}'
+    printf 'candidate_only=1\nnative_arms=0\nwall_timeout=none\n'
     printf 'logical_elements=16384\nphysical_tile_elements=4096\n'
     printf 'memory_channels=2\nnum_indirect_units_per_maa=4\n'
-    printf 'row_table_slices=32\n'
+    printf 'row_table_slices=32\nrow_targets=128\n'
+    printf 'row_stride_bytes=131072\nall_true_predicate_span=16384\n'
     printf 'old_result_line_credits=8\nold_result_payload_bytes=512\n'
-    printf 'native_arms=0\nwall_timeout=none\n'
 } >"$out/manifest.txt"
 
 OMP_PROC_BIND=false OMP_NUM_THREADS=4 "${checkpoint_cmd[@]}" \
@@ -78,8 +79,8 @@ restore="$out/run/restore.log"
 stats="$out/run/stats.txt"
 trace="$out/run/old_result_trace.log"
 config_ini="$out/run/config.ini"
-expected='HYBRID_RMW_OLD_RESULT_RESULT generations=2 logical=16384 errors=0'
-[[ $(grep -Fxc "$expected" "$restore" || true) -eq 1 ]]
+expected_result_hash=16970917775049394563
+[[ $(grep -Fxc "HYBRID_RMW_OLD_RESULT_RESULT generations=2 logical=16384 result_hash=$expected_result_hash errors=0" "$restore" || true) -eq 1 ]]
 [[ $(grep -Ec '^HYBRID_RMW_OLD_RESULT_GENERATION generation=[12] errors=0$' \
           "$restore" || true) -eq 2 ]]
 [[ $(grep -Ec '^Exiting @ tick [0-9]+ because m5_exit instruction encountered$' \
@@ -106,6 +107,9 @@ stat_sum() {
 instructions=$(stat_sum IND_SoaJitInstructions)
 selected=$(stat_sum IND_SoaJitSelected)
 rejected=$(stat_sum IND_SoaJitPredicateRejected)
+predicate_hits=$(stat_sum IND_SoaJitPredicateLineHits)
+predicate_uses=$(stat_sum IND_SoaJitPredicateUses)
+epoch_drains=$(stat_sum IND_SoaJitEpochDrains)
 captures=$(stat_sum IND_SoaJitOldResultCaptures)
 issues=$(stat_sum IND_SoaJitOldResultWriteIssues)
 responses=$(stat_sum IND_SoaJitOldResultWriteResponses)
@@ -117,8 +121,9 @@ a_write_responses=$(stat_sum IND_SoaJitAWriteResponses)
 terminals=$(stat_sum IND_SoaJitTerminalCompletions)
 
 [[ $instructions -eq 2 && $terminals -eq 2 ]]
-[[ $selected -gt 0 && $rejected -gt 0 && \
-   $((selected + rejected)) -eq 32768 ]]
+[[ $selected -eq 32768 && $rejected -eq 0 ]]
+[[ $predicate_hits -eq 32768 && $predicate_uses -eq 32768 ]]
+[[ $epoch_drains -gt 0 ]]
 [[ $captures -eq $selected && $issues -gt 0 && $issues -eq $responses ]]
 [[ $credit_hwm -gt 0 && $credit_hwm -le 16 ]]
 [[ $a_reads -gt 0 && $a_reads -eq $a_read_responses && \
@@ -132,10 +137,15 @@ terminals=$(stat_sum IND_SoaJitTerminalCompletions)
 
 sim_ticks=$(awk '$1 == "simTicks" { print $2; exit }' "$stats")
 [[ $sim_ticks =~ ^[1-9][0-9]*$ ]]
+result_hash=$(sed -n 's/^HYBRID_RMW_OLD_RESULT_RESULT generations=2 logical=16384 result_hash=\([0-9][0-9]*\) errors=0$/\1/p' "$restore")
+[[ $result_hash == "$expected_result_hash" ]]
 {
     printf 'terminal=true\ncorrect=true\n'
     printf 'simTicks=%s\ninstructions=%s\nselected=%s\nrejected=%s\n' \
         "$sim_ticks" "$instructions" "$selected" "$rejected"
+    printf 'predicate_hits=%s\npredicate_uses=%s\nepoch_drains=%s\n' \
+        "$predicate_hits" "$predicate_uses" "$epoch_drains"
+    printf 'result_hash=%s\n' "$result_hash"
     printf 'old_result_captures=%s\nold_result_write_issues=%s\n' \
         "$captures" "$issues"
     printf 'old_result_write_responses=%s\ncredit_hwm_sum=%s\n' \

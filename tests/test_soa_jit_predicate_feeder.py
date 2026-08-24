@@ -83,6 +83,31 @@ def test_feeder_is_bounded_ordered_and_one_packet_per_slot():
     assert "soa_jit_predicate_uses++" in consume
 
 
+def test_latched_pressure_retry_bypasses_only_the_exact_predicate_identity():
+    source = read("src/mem/MAA/IndirectAccess.cc")
+    ready = between(
+        source,
+        "bool IndirectAccessUnit::checkElementReady()",
+        "bool IndirectAccessUnit::checkReadyForFinish()",
+    )
+    assert "bool soa_jit_latched_retry = false" in ready
+    assert "isSoaJitRmw() && soa_jit_retry_valid" in ready
+    for identity in (
+        "my_i != soa_jit_retry_ordinal",
+        "operand_itr != soa_jit_retry_ordinal",
+        "operand_itr != my_i",
+        "!soa_jit_retry_condition",
+    ):
+        assert identity in ready
+    # Ordinary attempts retain the feeder call; only the exact latched retry
+    # skips it, so hit/use accounting remains one per logical predicate.
+    assert (
+        "soa_jit_latched_retry ||\n           ensureSoaPredicate(operand_itr)"
+        in ready
+    )
+    assert ready.count("ensureSoaPredicate(operand_itr)") == 1
+
+
 def test_response_generation_duplicate_and_unknown_routes_fail_closed():
     source = read("src/mem/MAA/IndirectAccess.cc")
     header = read("src/mem/MAA/IndirectAccess.hh")

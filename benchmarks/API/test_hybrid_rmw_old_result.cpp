@@ -17,16 +17,20 @@ namespace
 {
 
 constexpr int Logical = 16 * 1024;
-constexpr int TargetWords = 64;
+constexpr int TargetRows = 128;
+constexpr int RowStrideWords = 32768;
+constexpr int TargetSpanWords =
+    (TargetRows - 1) * RowStrideWords + 1;
 constexpr uint32_t RejectedSentinelBits = 0x7fc0a55aU;
+constexpr uint64_t ExpectedResultHash = 16970917775049394563ULL;
 
 alignas(64) std::array<uint32_t, Logical> indices;
 alignas(64) std::array<uint32_t, Logical> predicates;
 alignas(64) std::array<float, Logical> values;
 alignas(64) std::array<float, Logical> oldActual;
 alignas(64) std::array<float, Logical> oldExpected;
-alignas(64) std::array<float, TargetWords> targetActual;
-alignas(64) std::array<float, TargetWords> targetExpected;
+alignas(64) std::array<float, TargetSpanWords> targetActual;
+alignas(64) std::array<float, TargetSpanWords> targetExpected;
 
 uint32_t
 bits(float value)
@@ -48,17 +52,21 @@ rejectedSentinel()
 void
 initialize()
 {
-    for (int word = 0; word < TargetWords; ++word)
+    targetActual.fill(0.0F);
+    targetExpected.fill(0.0F);
+    for (int target = 0; target < TargetRows; ++target) {
+        const int word = target * RowStrideWords;
         targetActual[word] = targetExpected[word] =
-            static_cast<float>(word - 11);
+            static_cast<float>(target - TargetRows / 2);
+    }
     for (int logical = 0; logical < Logical; ++logical) {
-        // Repeated targets are intentional: each old result must reflect the
-        // preceding ordered alias, not merely the line's initial value.
-        indices[logical] =
-            ((logical / 3) * 13 + (logical % 17 == 0 ? 5 : 0)) %
-            TargetWords;
-        predicates[logical] = logical % 5 != 0 && logical % 31 != 0;
-        values[logical] = static_cast<float>((logical % 7) + 1) * 0.25F;
+        // 128 addresses in one bank/slice advance by 131072 bytes each,
+        // exceeding the 64 row entries in the original 2-channel/32-slice
+        // table. Repeated passes over each target make old-result order
+        // observable across the forced drain and the second generation.
+        indices[logical] = (logical % TargetRows) * RowStrideWords;
+        predicates[logical] = 1;
+        values[logical] = 1.0F;
     }
 }
 
@@ -88,11 +96,27 @@ checkGeneration()
             ++errors;
         }
     }
-    for (int word = 0; word < TargetWords; ++word) {
+    for (int target = 0; target < TargetRows; ++target) {
+        const int word = target * RowStrideWords;
         if (bits(targetActual[word]) != bits(targetExpected[word]))
             ++errors;
     }
     return errors;
+}
+
+uint64_t
+resultHash()
+{
+    uint64_t hash = 1469598103934665603ULL;
+    const auto fold = [&hash](uint32_t word) {
+        hash ^= word;
+        hash *= 1099511628211ULL;
+    };
+    for (int logical = 0; logical < Logical; ++logical)
+        fold(bits(oldActual[logical]));
+    for (int target = 0; target < TargetRows; ++target)
+        fold(bits(targetActual[target * RowStrideWords]));
+    return hash;
 }
 
 } // anonymous namespace
@@ -105,7 +129,9 @@ main()
     initialize();
     std::cout << "HYBRID_RMW_OLD_RESULT_LAYOUT logical=" << Logical
               << " physical_runtime=4096 result_backing_bytes="
-              << sizeof(oldActual) << std::endl;
+              << sizeof(oldActual) << " target_rows=" << TargetRows
+              << " row_stride_bytes=" << RowStrideWords * sizeof(float)
+              << std::endl;
     m5_checkpoint(0, 0);
 
     alloc_MAA();
@@ -140,8 +166,12 @@ main()
     m5_dump_stats(0, 0);
     m5_work_end(0, 0);
 
+    const uint64_t hash = resultHash();
+    if (hash != ExpectedResultHash)
+        ++errors;
     std::cout << "HYBRID_RMW_OLD_RESULT_RESULT generations=2 logical="
-              << Logical << " errors=" << errors << std::endl;
+              << Logical << " result_hash=" << hash
+              << " errors=" << errors << std::endl;
     m5_exit(0);
     return errors == 0 ? 0 : 1;
 }

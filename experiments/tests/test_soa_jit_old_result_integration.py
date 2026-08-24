@@ -57,6 +57,28 @@ class SoaJitOldResultIntegration(unittest.TestCase):
             "bits(oldActual[logical]) != RejectedSentinelBits", guest
         )
 
+    def test_candidate_smoke_forces_row_pressure_with_exact_predicates(self):
+        guest = (
+            ROOT / "benchmarks/API/test_hybrid_rmw_old_result.cpp"
+        ).read_text()
+        self.assertIn("constexpr int TargetRows = 128", guest)
+        self.assertIn("constexpr int RowStrideWords = 32768", guest)
+        self.assertIn(
+            "indices[logical] = (logical % TargetRows) * RowStrideWords", guest
+        )
+        self.assertIn("predicates[logical] = 1", guest)
+        self.assertIn("result_hash=", guest)
+        self.assertIn("ExpectedResultHash = 16970917775049394563ULL", guest)
+        self.assertIn("candidate_only=1", self.runner)
+        self.assertIn("row_stride_bytes=131072", self.runner)
+        self.assertIn("$selected -eq 32768 && $rejected -eq 0", self.runner)
+        self.assertIn(
+            "$predicate_hits -eq 32768 && $predicate_uses -eq 32768",
+            self.runner,
+        )
+        self.assertIn("$epoch_drains -gt 0", self.runner)
+        self.assertIn("expected_result_hash=16970917775049394563", self.runner)
+
     def test_terminal_requires_exact_result_closure(self):
         self.assertIn(
             "soa_jit_old_result_write_issues !=\n"
