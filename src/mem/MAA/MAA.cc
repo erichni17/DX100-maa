@@ -4596,6 +4596,18 @@ MAA::dispatchLogicalPageAction(
         spd->setTileIdle(instruction.dst1SpdID, instruction.WordSize());
         spd->setTileNotReady(instruction.dst1SpdID, instruction.WordSize());
     }
+    if (instruction.src1SpdID != -1) {
+        spd->setTileNotReady(instruction.src1SpdID,
+                             instruction.getWordSize(
+                                 instruction.src1SpdID));
+    }
+    if (instruction.src2SpdID != -1) {
+        // A self-vector has two architectural source references and the
+        // native completion returns two credits, so debit both references.
+        spd->setTileNotReady(instruction.src2SpdID,
+                             instruction.getWordSize(
+                                 instruction.src2SpdID));
+    }
     DPRINTF(MAAVirtualTrace,
             "event=logical_page_native_dispatch schema=1 sequence=%lu "
             "maa=%u page=%u action=%u transaction=%lu opcode=%u src1=%d "

@@ -159,6 +159,15 @@ class LogicalTilePageSchedulerLiveContract(unittest.TestCase):
             dispatch_body.index("rf->setData"),
         )
 
+    def test_native_source_credits_are_balanced(self):
+        dispatch = self.maa.index("MAA::dispatchLogicalPageAction(")
+        finish = self.maa.index("MAA::finishLogicalPageAction(", dispatch)
+        body = self.maa[dispatch:finish]
+        self.assertIn("instruction.src1SpdID != -1", body)
+        self.assertIn("instruction.src2SpdID != -1", body)
+        self.assertGreaterEqual(body.count("spd->setTileNotReady"), 3)
+        self.assertIn("self-vector", body)
+
     def test_drain_rejects_persistent_descriptor_generations(self):
         drain = self.maa.index("MAA::drain()")
         resume = self.maa.index("MAA::drainResume()", drain)
