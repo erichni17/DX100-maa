@@ -140,10 +140,18 @@ class SsspOldResultHybridFullContract(unittest.TestCase):
         self.assertIn("a_read_issues == a_write_issues", self.runner)
 
     def test_preserves_and_reports_tails_and_fallbacks(self):
-        self.assertIn("tails_and_fallbacks=preserved", self.runner)
+        self.assertIn(
+            "tails_and_fallbacks=exact_bounded_spd_or_ordered_cpu",
+            self.runner,
+        )
         self.assertIn("routed > 0 && routed <= eligible", self.runner)
         self.assertEqual(self.runner.count("routed == eligible"), 1)
         self.assertIn("legacy_words", self.runner)
+        self.assertIn("bounded_spd_words", self.runner)
+        self.assertIn("exact_cpu_fallback_words", self.runner)
+        self.assertIn("exact_cpu_4133_batches", self.runner)
+        self.assertIn("max_host_spd_element < 4096", self.runner)
+        self.assertIn("out_of_range_spd_ids == 0", self.runner)
         self.assertIn(
             "eligible_subset_routed_fallbacks_preserved", self.runner
         )

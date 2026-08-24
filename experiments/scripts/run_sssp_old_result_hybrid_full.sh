@@ -10,6 +10,9 @@ frozen_ramulator_sha256=76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78ed
 config="$root/configs/deprecated/example/se.py"
 ramulator_config="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
 source_file="$root/benchmarks/gapbs/src/sssp.cc"
+route_header="$root/benchmarks/gapbs/src/sssp_tail_route.hh"
+prebuilt_guest=${SSSP_PREBUILT_GUEST:-}
+prebuilt_guest_sha256=${SSSP_PREBUILT_GUEST_SHA256:-}
 frozen_sweep="$root/experiments/analysis/physical_tile_sweep_baseline_20260822.json"
 frozen_sweep_sha256=d8cd2afe18de4f7983b1d9d59a0ea04e102a51bc7146a9d85c3c9a19cc73d069
 
@@ -171,20 +174,38 @@ validate_evidence() (
     [[ $(terminal_value "$terminal" counts_close) == 1 ]]
 
     local eligible routed index_pages value_pages old_words legacy_words
+    local discarded_pages bounded_batches bounded_words cpu_batches cpu_words
+    local cpu_4133_batches
+    local max_host_spd_element out_of_range_spd_ids
     eligible=$(terminal_value "$terminal" eligible_windows)
     routed=$(terminal_value "$terminal" routed_windows)
     index_pages=$(terminal_value "$terminal" index_publish_pages)
     value_pages=$(terminal_value "$terminal" value_publish_pages)
     old_words=$(terminal_value "$terminal" old_result_words)
     legacy_words=$(terminal_value "$terminal" legacy_words)
+    discarded_pages=$(terminal_value "$terminal" discarded_publish_pages)
+    bounded_batches=$(terminal_value "$terminal" bounded_spd_batches)
+    bounded_words=$(terminal_value "$terminal" bounded_spd_words)
+    cpu_batches=$(terminal_value "$terminal" exact_cpu_fallback_batches)
+    cpu_words=$(terminal_value "$terminal" exact_cpu_fallback_words)
+    cpu_4133_batches=$(terminal_value "$terminal" exact_cpu_4133_batches)
+    max_host_spd_element=$(terminal_value "$terminal" max_host_spd_element)
+    out_of_range_spd_ids=$(terminal_value "$terminal" out_of_range_spd_ids)
     for value in "$eligible" "$routed" "$index_pages" "$value_pages" \
-        "$old_words" "$legacy_words"; do
+        "$old_words" "$legacy_words" "$discarded_pages" "$bounded_batches" \
+        "$bounded_words" "$cpu_batches" "$cpu_words" \
+        "$cpu_4133_batches" "$out_of_range_spd_ids"; do
         [[ $value =~ ^[0-9]+$ ]]
     done
+    [[ $max_host_spd_element =~ ^-?[0-9]+$ ]]
     (( routed > 0 && routed <= eligible ))
-    (( index_pages == routed * 4 ))
-    (( value_pages == routed * 4 ))
+    (( index_pages == routed * 4 + discarded_pages ))
+    (( value_pages == routed * 4 + discarded_pages ))
     (( old_words == routed * 16384 ))
+    (( legacy_words == bounded_words + cpu_words ))
+    (( cpu_batches > 0 && cpu_words >= 4133 && cpu_4133_batches > 0 ))
+    (( max_host_spd_element < 4096 ))
+    (( out_of_range_spd_ids == 0 ))
 
     local instructions terminals selected rejected predicate_issues
     local predicate_responses index_words value_issues value_responses
@@ -270,6 +291,20 @@ write_result() {
         printf 'routing_status=%s\n' "$routing_status"
         printf 'legacy_words=%s\n' \
             "$(terminal_value "$terminal" legacy_words)"
+        printf 'discarded_publish_pages=%s\n' \
+            "$(terminal_value "$terminal" discarded_publish_pages)"
+        printf 'bounded_spd_batches=%s\nbounded_spd_words=%s\n' \
+            "$(terminal_value "$terminal" bounded_spd_batches)" \
+            "$(terminal_value "$terminal" bounded_spd_words)"
+        printf 'exact_cpu_fallback_batches=%s\n' \
+            "$(terminal_value "$terminal" exact_cpu_fallback_batches)"
+        printf 'exact_cpu_fallback_words=%s\n' \
+            "$(terminal_value "$terminal" exact_cpu_fallback_words)"
+        printf 'exact_cpu_4133_batches=%s\n' \
+            "$(terminal_value "$terminal" exact_cpu_4133_batches)"
+        printf 'max_host_spd_element=%s\nout_of_range_spd_ids=%s\n' \
+            "$(terminal_value "$terminal" max_host_spd_element)" \
+            "$(terminal_value "$terminal" out_of_range_spd_ids)"
         printf 'soa_jit_instructions=%s\n' \
             "$(stat_sum "$stats" IND_SoaJitInstructions)"
         printf 'soa_jit_terminals=%s\n' \
@@ -355,17 +390,27 @@ chmod 0444 "$graph"
 require_hash "$graph" "$external_graph_sha256"
 
 guest="$out/bin/sssp_maa_2G_old_result_hybrid_fp"
-cxx=${CXX:-g++}
-"$cxx" -I"$root/benchmarks/gapbs/src" -I"$root/benchmarks/API" \
-    -I"$root/include" -I"$root/util/m5/src" -std=c++11 -O3 -Wall \
-    -Wextra -Werror -Wno-ignored-qualifiers -Wno-unused-parameter -fopenmp \
-    -DGEM5 -DMAA -DNUM_CORES=4 -DNUM_TILES_PER_CORE=8 \
-    -DTILE_SIZE=16384 -DMAA_CONSUMER_TILE_SIZE=4096 \
-    -DMAA_MEM_SIZE=0x80000000 -DSSSP_FP_ENABLE=1 \
-    -DSSSP_OLD_RESULT_HYBRID=1 \
-    "$root/util/m5/src/abi/x86/m5op.S" "$source_file" -o "$guest"
+if [[ -n $prebuilt_guest || -n $prebuilt_guest_sha256 ]]; then
+    [[ -n $prebuilt_guest && -n $prebuilt_guest_sha256 ]]
+    require_hash "$prebuilt_guest" "$prebuilt_guest_sha256"
+    cp --reflink=auto --preserve=mode,timestamps "$prebuilt_guest" "$guest"
+    candidate_guest_origin=prebuilt_frozen
+else
+    cxx=${CXX:-g++}
+    "$cxx" -I"$root/benchmarks/gapbs/src" -I"$root/benchmarks/API" \
+        -I"$root/include" -I"$root/util/m5/src" -std=c++11 -O3 -Wall \
+        -Wextra -Werror -Wno-ignored-qualifiers -Wno-unused-parameter \
+        -fopenmp -DGEM5 -DMAA -DNUM_CORES=4 -DNUM_TILES_PER_CORE=8 \
+        -DTILE_SIZE=16384 -DMAA_CONSUMER_TILE_SIZE=4096 \
+        -DMAA_MEM_SIZE=0x80000000 -DSSSP_FP_ENABLE=1 \
+        -DSSSP_OLD_RESULT_HYBRID=1 \
+        "$root/util/m5/src/abi/x86/m5op.S" "$source_file" -o "$guest"
+    candidate_guest_origin=built_by_full_runner
+fi
 chmod 0555 "$guest"
 candidate_guest_sha256=$(hash_value "$guest")
+[[ -z $prebuilt_guest_sha256 || \
+    $candidate_guest_sha256 == "$prebuilt_guest_sha256" ]]
 source_commit=$(git -C "$root" rev-parse HEAD)
 options="-f $graph -n 1 -v"
 
@@ -397,6 +442,7 @@ native_stats_sha256=$(hash_value "$native_out/stats.txt")
         "$frozen_ramulator" "$frozen_ramulator_sha256"
     printf 'candidate_guest_path=%s\ncandidate_guest_sha256=%s\n' \
         "$guest" "$candidate_guest_sha256"
+    printf 'candidate_guest_origin=%s\n' "$candidate_guest_origin"
     printf 'candidate_input_path=%s\ncandidate_input_sha256=%s\n' \
         "$graph" "$external_graph_sha256"
     printf 'candidate_options=-f INPUT -n 1 -v\n'
@@ -406,12 +452,13 @@ native_stats_sha256=$(hash_value "$native_out/stats.txt")
     printf 'old_result_pressure_policy=densest\nold_result_partial_credits=4\n'
     printf 'value_cache_enable=true\nactive_value_owners=64\n'
     printf 'pre_a_value_lookahead=true\nactive_contexts=8\n'
-    printf 'tails_and_fallbacks=preserved\n'
+    printf 'tails_and_fallbacks=exact_bounded_spd_or_ordered_cpu\n'
     printf 'native_arms=0\nfull_graph=true\ntrace=false\nwall_timeout=none\n'
 } >"$out/candidate.manifest"
 
 sha256sum "$gem5" "$frozen_ramulator" "$guest" "$graph" "$source_file" \
-    "$config" "$ramulator_config" "$0" >"$out/provenance/artifacts.before.sha256"
+    "$route_header" "$config" "$ramulator_config" "$0" \
+    >"$out/provenance/artifacts.before.sha256"
 
 checkpoint_command=(
     "$gem5" --listener-mode=off --outdir="$out/checkpoint" "$config"
@@ -492,7 +539,8 @@ hash_tree "$out/checkpoint" \
 hash_value "$out/provenance/checkpoint.after.files.sha256" \
     >"$out/provenance/checkpoint.after.identity.sha256"
 sha256sum "$gem5" "$frozen_ramulator" "$guest" "$graph" "$source_file" \
-    "$config" "$ramulator_config" "$0" >"$out/provenance/artifacts.after.sha256"
+    "$route_header" "$config" "$ramulator_config" "$0" \
+    >"$out/provenance/artifacts.after.sha256"
 cmp -s "$out/provenance/artifacts.before.sha256" \
     "$out/provenance/artifacts.after.sha256"
 

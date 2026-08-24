@@ -40,11 +40,13 @@ struct RouteCounters
     std::uint64_t bounded_spd_words;
     std::uint64_t exact_cpu_batches;
     std::uint64_t exact_cpu_words;
+    std::uint64_t exact_cpu_4133_batches;
     std::int64_t max_host_spd_element;
 
     RouteCounters()
         : logical_windows(0), bounded_spd_batches(0), bounded_spd_words(0),
           exact_cpu_batches(0), exact_cpu_words(0),
+          exact_cpu_4133_batches(0),
           max_host_spd_element(-1)
     {
     }
@@ -80,6 +82,8 @@ struct RouteCounters
             return;
         ++exact_cpu_batches;
         exact_cpu_words += words;
+        if (words == 4133)
+            ++exact_cpu_4133_batches;
     }
 
     bool legal() const

@@ -917,6 +917,7 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
     uint64_t bounded_spd_words = 0;
     uint64_t exact_cpu_batches = 0;
     uint64_t exact_cpu_words = 0;
+    uint64_t exact_cpu_4133_batches = 0;
     int64_t max_host_spd_element = -1;
     bool routes_legal = true;
     for (int core = 0; core < NUM_CORES; ++core) {
@@ -938,6 +939,8 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
             sssp_hybrid_route_counters[core].exact_cpu_batches;
         exact_cpu_words +=
             sssp_hybrid_route_counters[core].exact_cpu_words;
+        exact_cpu_4133_batches +=
+            sssp_hybrid_route_counters[core].exact_cpu_4133_batches;
         max_host_spd_element = max(
             max_host_spd_element,
             sssp_hybrid_route_counters[core].max_host_spd_element);
@@ -962,6 +965,7 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
               << " bounded_spd_words=" << bounded_spd_words
               << " exact_cpu_fallback_batches=" << exact_cpu_batches
               << " exact_cpu_fallback_words=" << exact_cpu_words
+              << " exact_cpu_4133_batches=" << exact_cpu_4133_batches
               << " max_host_spd_element=" << max_host_spd_element
               << " out_of_range_spd_ids=0"
               << " logical_reorder_words=" << kSsspLogicalWords

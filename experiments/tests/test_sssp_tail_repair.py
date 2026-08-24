@@ -46,6 +46,7 @@ class SsspTailRepairTest(unittest.TestCase):
                 assert(counters.bounded_spd_words == 8191);
                 assert(counters.exact_cpu_batches == 2);
                 assert(counters.exact_cpu_words == 8230);
+                assert(counters.exact_cpu_4133_batches == 1);
                 assert(counters.max_host_spd_element == 4095);
                 assert(counters.legal());
                 std::cout << "selected_batches=3 fallback_batches=2 "
