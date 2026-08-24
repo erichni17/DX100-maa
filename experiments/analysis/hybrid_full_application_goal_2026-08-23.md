@@ -56,8 +56,8 @@ Owner64 plus pre-A is the selected point: 3.089% lower latency than the matrix
 baseline. The separate exact context32/context64 gate reduces the selected
 control from 6,816,306,794 to 6,634,051,589 ticks, making the chained optimized
 point 5.679% lower than masked owner32/pre-A-off. Context64 adds 17,408 bytes of
-modeled state and still needs a banked timing implementation before a 3.2-GHz
-physical claim.
+modeled state per indirect unit, or 69,632 bytes across four units, and still
+needs a banked timing implementation before a 3.2-GHz physical claim.
 
 ### CG context capacity
 
