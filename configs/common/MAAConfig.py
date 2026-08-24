@@ -200,6 +200,16 @@ def _get_maa_opts(options):
             options, "maa_soa_jit_active_contexts"
         )
 
+    if hasattr(options, "maa_soa_jit_old_result_partial_credits"):
+        opts["soa_jit_old_result_partial_credits"] = getattr(
+            options, "maa_soa_jit_old_result_partial_credits"
+        )
+
+    if hasattr(options, "maa_soa_jit_old_result_pressure_policy"):
+        opts["soa_jit_old_result_pressure_policy"] = getattr(
+            options, "maa_soa_jit_old_result_pressure_policy"
+        )
+
     if hasattr(options, "maa_soa_jit_value_lookahead"):
         opts["soa_jit_value_lookahead"] = getattr(
             options, "maa_soa_jit_value_lookahead"

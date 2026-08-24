@@ -4939,12 +4939,27 @@ IndirectAccessUnit::serviceSoaJitOldResultWrites(
     bool progressed = false;
     SoaJitOldResultBuffer::Request write;
     auto issue = [&]() {
-        if (mode == SoaJitOldResultWriteMode::Pressure)
-            return soa_jit_old_result_buffer.issueForPressure(&write);
+        if (mode == SoaJitOldResultWriteMode::Pressure) {
+            const auto policy = maa->soa_jit_old_result_dense_pressure
+                ? SoaJitOldResultBuffer::PressurePolicy::Densest
+                : SoaJitOldResultBuffer::PressurePolicy::OriginalOldest;
+            return soa_jit_old_result_buffer.issueForPressure(
+                &write, maa->soa_jit_old_result_partial_credits, policy);
+        }
         return soa_jit_old_result_buffer.issue(
             &write, mode == SoaJitOldResultWriteMode::Drain);
     };
     while (issue() == SoaJitOldResultBuffer::Result::Accepted) {
+        const bool pressure_partial =
+            mode == SoaJitOldResultWriteMode::Pressure &&
+            write.identity.validWords !=
+                std::numeric_limits<uint16_t>::max();
+        if (pressure_partial) {
+            soa_jit_old_result_pressure_issues++;
+            soa_jit_old_result_partial_high_water = std::max<uint64_t>(
+                soa_jit_old_result_partial_high_water,
+                soa_jit_old_result_buffer.partialAwaitingResponses());
+        }
         const Addr vaddr = write.identity.lineAddress;
         panic_if(write.payload == nullptr || write.identity.validWords == 0 ||
                      vaddr < my_result_addr || vaddr >= my_result_max_addr ||
@@ -4981,11 +4996,17 @@ IndirectAccessUnit::serviceSoaJitOldResultWrites(
         DPRINTF(MAAVirtualTrace,
                 "event=soa_jit_old_result_issue schema=1 unit=%d "
                 "operation_tick=%lu generation=%lu sequence=%lu "
-                "credit=%u vaddr=0x%lx paddr=0x%lx mask=0x%x\n",
+                "credit=%u vaddr=0x%lx paddr=0x%lx mask=0x%x "
+                "pressure_partial=%d partial_limit=%u "
+                "pressure_policy=%s partial_outstanding=%lu\n",
                 my_indirect_id, my_decode_start_tick,
                 write.identity.generation, write.identity.issueSequence,
                 write.identity.credit, vaddr, paddr,
-                write.identity.validWords);
+                write.identity.validWords, pressure_partial,
+                maa->soa_jit_old_result_partial_credits,
+                maa->soa_jit_old_result_dense_pressure
+                    ? "densest" : "original_oldest",
+                soa_jit_old_result_buffer.partialAwaitingResponses());
         progressed = true;
     }
     return progressed;
@@ -5226,6 +5247,10 @@ void IndirectAccessUnit::checkSoaJitTerminal()
                          soa_jit_old_result_captures != soa_jit_selected ||
                          soa_jit_old_result_write_issues !=
                              soa_jit_old_result_write_responses ||
+                         soa_jit_old_result_pressure_issues >
+                             soa_jit_old_result_write_issues ||
+                         soa_jit_old_result_partial_high_water >
+                             maa->soa_jit_old_result_partial_credits ||
                          soa_jit_old_result_buffer.captured() !=
                              soa_jit_selected ||
                          soa_jit_old_result_buffer.rejected() !=
@@ -5239,6 +5264,8 @@ void IndirectAccessUnit::checkSoaJitTerminal()
                          soa_jit_old_result_captures != 0 ||
                          soa_jit_old_result_write_issues != 0 ||
                          soa_jit_old_result_write_responses != 0 ||
+                         soa_jit_old_result_pressure_issues != 0 ||
+                         soa_jit_old_result_partial_high_water != 0 ||
                          soa_jit_old_result_stalls != 0)) ||
                  soa_jit_predicate_line_issues !=
                      soa_jit_predicate_line_responses ||
@@ -5659,6 +5686,8 @@ void IndirectAccessUnit::executeInstruction() {
         soa_jit_old_result_captures = 0;
         soa_jit_old_result_write_issues = 0;
         soa_jit_old_result_write_responses = 0;
+        soa_jit_old_result_pressure_issues = 0;
+        soa_jit_old_result_partial_high_water = 0;
         soa_jit_old_result_stalls = 0;
         soa_jit_old_result_selection_closed = false;
         soa_jit_old_result_finished = false;
@@ -6961,6 +6990,21 @@ void IndirectAccessUnit::executeInstruction() {
                   .IND_SoaJitOldResultWriteResponses[my_indirect_id]) +=
                 soa_jit_old_result_write_responses;
             (*maa->stats
+                  .IND_SoaJitOldResultPressureIssues[my_indirect_id]) +=
+                soa_jit_old_result_pressure_issues;
+            (*maa->stats
+                  .IND_SoaJitOldResultPartialCreditLimit[my_indirect_id]) +=
+                isSoaJitOldResultRmw()
+                    ? maa->soa_jit_old_result_partial_credits : 0;
+            (*maa->stats
+                  .IND_SoaJitOldResultPartialCreditHighWater
+                      [my_indirect_id]) +=
+                soa_jit_old_result_partial_high_water;
+            (*maa->stats
+                  .IND_SoaJitOldResultDensePolicy[my_indirect_id]) +=
+                isSoaJitOldResultRmw() &&
+                    maa->soa_jit_old_result_dense_pressure;
+            (*maa->stats
                   .IND_SoaJitOldResultCreditHighWater[my_indirect_id]) +=
                 soa_jit_old_result_buffer.creditHighWater();
             (*maa->stats.IND_SoaJitOldResultStalls[my_indirect_id]) +=
@@ -6987,15 +7031,29 @@ void IndirectAccessUnit::executeInstruction() {
                     "event=soa_jit_old_result_complete schema=1 unit=%d "
                     "operation_tick=%lu enabled=%d generation=%lu "
                     "captures=%lu rejected=%lu write_issues=%lu "
-                    "write_responses=%lu credit_high_water=%lu stalls=%lu "
-                    "state_bytes=%lu terminal=1\n",
+                    "write_responses=%lu pressure_issues=%lu "
+                    "credit_high_water=%lu partial_credit_high_water=%lu "
+                    "partial_limit=%u pressure_policy=%s control_bits=%lu "
+                    "popcount_scan_slots=%u stalls=%lu state_bytes=%lu "
+                    "terminal=1\n",
                     my_indirect_id, my_decode_start_tick,
                     isSoaJitOldResultRmw(), soa_jit_generation,
                     soa_jit_old_result_captures,
                     soa_jit_predicate_rejected,
                     soa_jit_old_result_write_issues,
                     soa_jit_old_result_write_responses,
+                    soa_jit_old_result_pressure_issues,
                     soa_jit_old_result_buffer.creditHighWater(),
+                    soa_jit_old_result_partial_high_water,
+                    maa->soa_jit_old_result_partial_credits,
+                    maa->soa_jit_old_result_dense_pressure
+                        ? "densest" : "original_oldest",
+                    static_cast<unsigned long>(
+                        SoaJitOldResultBuffer::PressureControlBits),
+                    maa->soa_jit_old_result_dense_pressure
+                        ? static_cast<unsigned>(
+                              SoaJitOldResultBuffer::DenseScanSlots)
+                        : 0,
                     soa_jit_old_result_stalls,
                     static_cast<unsigned long>(
                         sizeof(soa_jit_old_result_buffer)));

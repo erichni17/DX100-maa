@@ -481,6 +481,22 @@ def addNoISAOptions(parser):
         ),
     )
     parser.add_argument(
+        "--maa_soa_jit_old_result_partial_credits",
+        type=int,
+        default=8,
+        choices=(1, 2, 4, 8),
+        help=(
+            "Concurrent partial old-result pressure writes over the fixed "
+            "eight retained cache lines"
+        ),
+    )
+    parser.add_argument(
+        "--maa_soa_jit_old_result_pressure_policy",
+        choices=("original_oldest", "densest"),
+        default="original_oldest",
+        help="Partial old-result pressure-line selection policy",
+    )
+    parser.add_argument(
         "--maa_soa_jit_value_lookahead",
         type=int,
         default=1,

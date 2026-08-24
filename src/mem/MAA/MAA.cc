@@ -184,6 +184,10 @@ MAA::MAA(const MAAParams &p)
       virtual_index_filter_words_per_cycle(
           p.virtual_index_filter_words_per_cycle),
       soa_jit_active_contexts(p.soa_jit_active_contexts),
+      soa_jit_old_result_partial_credits(
+          p.soa_jit_old_result_partial_credits),
+      soa_jit_old_result_dense_pressure(
+          p.soa_jit_old_result_pressure_policy == "densest"),
       soa_jit_value_lookahead(p.soa_jit_value_lookahead),
       soa_jit_value_cache_enable(p.soa_jit_value_cache_enable),
       soa_jit_pre_a_value_lookahead(p.soa_jit_pre_a_value_lookahead),
@@ -249,6 +253,18 @@ MAA::MAA(const MAAParams &p)
                  soa_jit_predicate_active_credits != 16,
              "SoA/JIT predicate credits must be one of 1/4/8/16, got %u\n",
              soa_jit_predicate_active_credits);
+    panic_if(soa_jit_old_result_partial_credits != 1 &&
+                 soa_jit_old_result_partial_credits != 2 &&
+                 soa_jit_old_result_partial_credits != 4 &&
+                 soa_jit_old_result_partial_credits != 8,
+             "SoA/JIT old-result partial credits must be one of 1/2/4/8, "
+             "got %u\n",
+             soa_jit_old_result_partial_credits);
+    panic_if(p.soa_jit_old_result_pressure_policy != "original_oldest" &&
+                 p.soa_jit_old_result_pressure_policy != "densest",
+             "SoA/JIT old-result pressure policy must be original_oldest or "
+             "densest, got '%s'\n",
+             p.soa_jit_old_result_pressure_policy.c_str());
     panic_if(page_materialization_wakeup_batches >
                  HybridConsumerPipeline::MaxEarlyWakeupBatches,
              "Page materialization wakeup batches %u exceed maximum %u\n",
@@ -7497,6 +7513,30 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitOldResultWriteResponses"),
             statistics::units::Count::get(),
             "exact old-result WriteResp completions"));
+        IND_SoaJitOldResultPressureIssues.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitOldResultPressureIssues"),
+            statistics::units::Count::get(),
+            "partial old-result WriteReqs issued by capacity pressure"));
+        IND_SoaJitOldResultPartialCreditLimit.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_SoaJitOldResultPartialCreditLimit"),
+                statistics::units::Count::get(),
+                "sum of selected partial-write credits for completed "
+                "old-result instructions"));
+        IND_SoaJitOldResultPartialCreditHighWater.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_SoaJitOldResultPartialCreditHighWater"),
+                statistics::units::Count::get(),
+                "sum of per-instruction partial writes concurrently "
+                "awaiting response"));
+        IND_SoaJitOldResultDensePolicy.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitOldResultDensePolicy"),
+            statistics::units::Count::get(),
+            "completed old-result instructions using dense pressure scan"));
         IND_SoaJitOldResultCreditHighWater.push_back(new statistics::Scalar(
             this,
             MAKE_INDIRECT_STAT_NAME("IND_SoaJitOldResultCreditHighWater"),
