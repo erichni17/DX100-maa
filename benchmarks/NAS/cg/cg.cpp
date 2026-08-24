@@ -128,6 +128,7 @@ enum class CgRmwTreatment
     Legacy4K,
     ResidualSoaJit,
     LogicalPageSoaJit,
+    PhysicalPageProductSoaJit,
 };
 
 struct CgTreatmentSelector
@@ -154,10 +155,13 @@ static uint64_t cg_soa_value_words[NUM_CORES] = {};
 static uint64_t cg_legacy_residual_words[NUM_CORES] = {};
 #ifdef CG_LOGICAL_PAGE_RMW
 static uint64_t cg_logical_page_windows[NUM_CORES] = {};
+static uint64_t cg_physical_page_product_windows[NUM_CORES] = {};
 static uint64_t cg_logical_alu_vectors[NUM_CORES] = {};
+static uint64_t cg_physical_alu_vectors[NUM_CORES] = {};
 static uint64_t cg_logical_product_words[NUM_CORES] = {};
 static uint64_t cg_index_publish_pages[NUM_CORES] = {};
 static uint64_t cg_value_publish_pages[NUM_CORES] = {};
+static uint64_t cg_product_publish_pages[NUM_CORES] = {};
 static uint64_t cg_q_spmv_eligible_windows[NUM_CORES] = {};
 static uint64_t cg_q_spmv_routed_windows[NUM_CORES] = {};
 static uint64_t cg_residual_spmv_eligible_windows[NUM_CORES] = {};
@@ -173,6 +177,9 @@ constexpr size_t cg_external_coherent_backing_bytes =
     + sizeof(cg_soa_products)
 #endif
     ;
+constexpr size_t cg_physical_page_product_external_coherent_backing_bytes =
+    cg_virtual_gather_coherent_backing_bytes + sizeof(cg_soa_indices) +
+    sizeof(cg_soa_products);
 constexpr size_t cg_physical_spd_payload_bytes =
     NUM_CORES * NUM_TILES_PER_CORE * MAA_CONSUMER_TILE_SIZE *
     sizeof(uint32_t);
@@ -195,6 +202,8 @@ cg_rmw_treatment_name(CgRmwTreatment treatment)
         return "residual_soa_jit";
       case CgRmwTreatment::LogicalPageSoaJit:
         return "logical_page_soa_jit";
+      case CgRmwTreatment::PhysicalPageProductSoaJit:
+        return "physical_page_product_soa_jit";
     }
     std::abort();
 }
@@ -229,12 +238,15 @@ read_cg_treatment_selector(const std::string &path)
         rmw = CgRmwTreatment::ResidualSoaJit;
     else if (treatment == "logical_page_soa_jit")
         rmw = CgRmwTreatment::LogicalPageSoaJit;
+    else if (treatment == "physical_page_product_soa_jit")
+        rmw = CgRmwTreatment::PhysicalPageProductSoaJit;
     else
         throw std::runtime_error(
             "CG RMW treatment must be legacy_4k, residual_soa_jit, or "
-            "logical_page_soa_jit");
+            "logical_page_soa_jit, or physical_page_product_soa_jit");
 #ifndef CG_LOGICAL_PAGE_RMW
-    if (rmw == CgRmwTreatment::LogicalPageSoaJit)
+    if (rmw == CgRmwTreatment::LogicalPageSoaJit ||
+        rmw == CgRmwTreatment::PhysicalPageProductSoaJit)
         throw std::runtime_error(
             "logical_page_soa_jit requires the opt-in CG logical-page build");
 #endif
@@ -246,6 +258,20 @@ static_assert(NUM_TILES_PER_CORE >= 10,
               "CG logical-page RMW requires 32 guest lanes plus 8 reserved "
               "logical-scheduler lanes");
 static float *virtual_gather_backing_for_thread(int tid);
+
+static bool
+cg_uses_physical_page_product_soa_jit()
+{
+    return cg_rmw_treatment == CgRmwTreatment::PhysicalPageProductSoaJit;
+}
+
+static size_t
+cg_active_external_coherent_backing_bytes()
+{
+    return cg_uses_physical_page_product_soa_jit()
+               ? cg_physical_page_product_external_coherent_backing_bytes
+               : cg_external_coherent_backing_bytes;
+}
 
 static void
 cg_publish_index_value_page(int tid, int page_offset, int index_tile,
@@ -312,6 +338,68 @@ cg_logical_multiply_rmw(int tid, float *destination, int min_reg,
     wait_ready(completion_tile);
     cg_soa_full_windows[tid]++;
     cg_logical_page_windows[tid]++;
+}
+
+static void
+cg_publish_index_product_page(int tid, int page_offset, int index_tile,
+                              int product_tile, int index_completion_tile,
+                              int product_completion_tile,
+                              int logical_page_reg, int logical_offset_reg,
+                              int generation_reg)
+{
+    const uint32_t logical_page =
+        static_cast<uint32_t>(page_offset / MAA_CONSUMER_TILE_SIZE);
+    if (logical_page >= 4 ||
+        page_offset != static_cast<int>(logical_page) *
+                           MAA_CONSUMER_TILE_SIZE)
+        std::abort();
+
+    maa_const<uint32_t>(logical_page, logical_page_reg);
+    maa_const<uint32_t>(static_cast<uint32_t>(page_offset),
+                        logical_offset_reg);
+    const uint32_t index_generation = ++cg_publish_generations[tid];
+    if (index_generation == 0)
+        std::abort();
+    maa_const<uint32_t>(index_generation, generation_reg);
+    maa_publish_spd_page_logical16_response_bearing<uint32_t>(
+        cg_soa_indices[tid], logical_page, index_tile,
+        index_completion_tile, logical_page_reg, logical_offset_reg,
+        generation_reg);
+    wait_ready(index_completion_tile);
+    cg_index_publish_pages[tid]++;
+
+    const uint32_t product_generation = ++cg_publish_generations[tid];
+    if (product_generation == 0)
+        std::abort();
+    maa_const<uint32_t>(product_generation, generation_reg);
+    maa_publish_spd_page_logical16_response_bearing<float>(
+        cg_soa_products[tid], logical_page, product_tile,
+        product_completion_tile, logical_page_reg, logical_offset_reg,
+        generation_reg);
+    wait_ready(product_completion_tile);
+    cg_product_publish_pages[tid]++;
+    cg_soa_index_words[tid] += MAA_CONSUMER_TILE_SIZE;
+    cg_logical_product_words[tid] += MAA_CONSUMER_TILE_SIZE;
+}
+
+static void
+cg_physical_page_product_rmw(int tid, float *destination, int min_reg,
+                             int max_reg, int stride_reg,
+                             int completion_tile)
+{
+    // Every physical 4K product page is already response-published.  The
+    // full logical SoA/JIT ADD therefore consumes only coherent row-index and
+    // final-product spans; no a-values backing or logical ALU product store
+    // exists in this treatment.
+    maa_const<int>(0, min_reg);
+    maa_const<int>(TILE_SIZE, max_reg);
+    maa_const<int>(1, stride_reg);
+    maa_indirect_rmw_vector_soa_jit<float>(
+        destination, cg_soa_indices[tid], cg_soa_products[tid], nullptr,
+        min_reg, max_reg, stride_reg, completion_tile, Operation_t::ADD_OP);
+    wait_ready(completion_tile);
+    cg_soa_full_windows[tid]++;
+    cg_physical_page_product_windows[tid]++;
 }
 #endif
 #endif
@@ -822,17 +910,21 @@ int main(int argc, char **argv) {
     std::cout << "CG_LOGICAL16_RMW_SELECTION treatment="
               << cg_rmw_treatment_name(cg_rmw_treatment)
               << " slice="
-              << (cg_rmw_treatment == CgRmwTreatment::LogicalPageSoaJit
+              << ((cg_rmw_treatment == CgRmwTreatment::LogicalPageSoaJit ||
+                   cg_uses_physical_page_product_soa_jit())
                       ? "all_spmv_full_windows"
                       : "residual_spmv")
               << " producer="
-              << (cg_rmw_treatment == CgRmwTreatment::LogicalPageSoaJit
-                      ? "response_bearing_spd_pages"
-                      : "cpu_after_spd_completion")
+              << (cg_uses_physical_page_product_soa_jit()
+                      ? "physical_page_mul_response_publish"
+                      : (cg_rmw_treatment ==
+                                 CgRmwTreatment::LogicalPageSoaJit
+                             ? "response_bearing_spd_pages"
+                             : "cpu_after_spd_completion"))
               << " logical=" << TILE_SIZE
               << " physical=" << MAA_CONSUMER_TILE_SIZE
               << " external_coherent_backing_bytes="
-              << cg_external_coherent_backing_bytes
+              << cg_active_external_coherent_backing_bytes()
               << " physical_spd_payload_bytes="
               << cg_physical_spd_payload_bytes
               << " logical_scheduler_reserved_lanes="
@@ -840,7 +932,8 @@ int main(int argc, char **argv) {
               << " logical_scheduler_reserved_lane_payload_bytes="
               << cg_logical_scheduler_reserved_lane_payload_bytes
               << " host_payload_access="
-              << (cg_rmw_treatment == CgRmwTreatment::LogicalPageSoaJit
+              << ((cg_rmw_treatment == CgRmwTreatment::LogicalPageSoaJit ||
+                   cg_uses_physical_page_product_soa_jit())
                       ? 0
                       : 1)
               << " performance_promotable=0" << std::endl;
@@ -958,10 +1051,13 @@ int main(int argc, char **argv) {
             uint64_t value_words = 0;
             uint64_t legacy_words = 0;
             uint64_t logical_windows = 0;
+            uint64_t physical_page_product_windows = 0;
             uint64_t logical_alus = 0;
+            uint64_t physical_alus = 0;
             uint64_t product_words = 0;
             uint64_t index_pages = 0;
             uint64_t value_pages = 0;
+            uint64_t product_pages = 0;
             uint64_t q_spmv_eligible_windows = 0;
             uint64_t q_spmv_routed_windows = 0;
             uint64_t residual_spmv_eligible_windows = 0;
@@ -973,10 +1069,14 @@ int main(int argc, char **argv) {
                 legacy_words += cg_legacy_residual_words[core];
 #ifdef CG_LOGICAL_PAGE_RMW
                 logical_windows += cg_logical_page_windows[core];
+                physical_page_product_windows +=
+                    cg_physical_page_product_windows[core];
                 logical_alus += cg_logical_alu_vectors[core];
+                physical_alus += cg_physical_alu_vectors[core];
                 product_words += cg_logical_product_words[core];
                 index_pages += cg_index_publish_pages[core];
                 value_pages += cg_value_publish_pages[core];
+                product_pages += cg_product_publish_pages[core];
                 q_spmv_eligible_windows +=
                     cg_q_spmv_eligible_windows[core];
                 q_spmv_routed_windows += cg_q_spmv_routed_windows[core];
@@ -997,13 +1097,30 @@ int main(int argc, char **argv) {
                        CgRmwTreatment::ResidualSoaJit) {
                 treatment_used = full_windows > 0 && staged_counts_close &&
                                  logical_windows == 0;
-            } else {
+            } else if (cg_rmw_treatment ==
+                       CgRmwTreatment::LogicalPageSoaJit) {
                 treatment_used = full_windows > 0 &&
                     logical_windows == full_windows &&
                     logical_alus == full_windows && staged_counts_close &&
                     product_words == full_windows * TILE_SIZE &&
                     index_pages == full_windows * 4 &&
                     value_pages == full_windows * 4 &&
+                    product_pages == 0 &&
+                    q_spmv_eligible_windows > 0 &&
+                    q_spmv_eligible_windows == q_spmv_routed_windows &&
+                    residual_spmv_eligible_windows > 0 &&
+                    residual_spmv_eligible_windows ==
+                        residual_spmv_routed_windows;
+            } else {
+                treatment_used = full_windows > 0 &&
+                    physical_page_product_windows == full_windows &&
+                    logical_windows == 0 && logical_alus == 0 &&
+                    physical_alus == full_windows * 4 &&
+                    index_words == full_windows * TILE_SIZE &&
+                    value_words == 0 &&
+                    product_words == full_windows * TILE_SIZE &&
+                    index_pages == full_windows * 4 &&
+                    value_pages == 0 && product_pages == full_windows * 4 &&
                     q_spmv_eligible_windows > 0 &&
                     q_spmv_eligible_windows == q_spmv_routed_windows &&
                     residual_spmv_eligible_windows > 0 &&
@@ -1013,8 +1130,9 @@ int main(int argc, char **argv) {
             std::cout << "CG_LOGICAL16_RMW_TERMINAL treatment="
                       << cg_rmw_treatment_name(cg_rmw_treatment)
                       << " slice="
-                      << (cg_rmw_treatment ==
-                                  CgRmwTreatment::LogicalPageSoaJit
+                      << ((cg_rmw_treatment ==
+                                   CgRmwTreatment::LogicalPageSoaJit ||
+                           cg_uses_physical_page_product_soa_jit())
                               ? "all_spmv_full_windows"
                               : "residual_spmv")
                       << " full_windows=" << full_windows
@@ -1023,8 +1141,12 @@ int main(int argc, char **argv) {
                       << " product_words=" << product_words
                       << " index_publish_pages=" << index_pages
                       << " value_publish_pages=" << value_pages
+                      << " product_publish_pages=" << product_pages
                       << " logical_alu_vectors=" << logical_alus
+                      << " physical_alu_vectors=" << physical_alus
                       << " logical_page_windows=" << logical_windows
+                      << " physical_page_product_windows="
+                      << physical_page_product_windows
                       << " q_spmv_eligible_windows="
                       << q_spmv_eligible_windows
                       << " q_spmv_routed_windows=" << q_spmv_routed_windows
@@ -1034,7 +1156,7 @@ int main(int argc, char **argv) {
                       << residual_spmv_routed_windows
                       << " legacy_words=" << legacy_words
                       << " external_coherent_backing_bytes="
-                      << cg_external_coherent_backing_bytes
+                      << cg_active_external_coherent_backing_bytes()
                       << " physical_spd_payload_bytes="
                       << cg_physical_spd_payload_bytes
                       << " logical_scheduler_reserved_lanes="
@@ -1042,13 +1164,16 @@ int main(int argc, char **argv) {
                       << " logical_scheduler_reserved_lane_payload_bytes="
                       << cg_logical_scheduler_reserved_lane_payload_bytes
                       << " producer="
-                      << (cg_rmw_treatment ==
-                                  CgRmwTreatment::LogicalPageSoaJit
-                              ? "response_bearing_spd_pages"
-                              : "cpu_after_spd_completion")
+                      << (cg_uses_physical_page_product_soa_jit()
+                              ? "physical_page_mul_response_publish"
+                              : (cg_rmw_treatment ==
+                                         CgRmwTreatment::LogicalPageSoaJit
+                                     ? "response_bearing_spd_pages"
+                                     : "cpu_after_spd_completion"))
                       << " host_payload_access="
-                      << (cg_rmw_treatment ==
-                                  CgRmwTreatment::LogicalPageSoaJit
+                      << ((cg_rmw_treatment ==
+                                   CgRmwTreatment::LogicalPageSoaJit ||
+                           cg_uses_physical_page_product_soa_jit())
                               ? 0
                               : 1)
                       << " performance_promotable=0 result="
@@ -1142,11 +1267,19 @@ static void conj_grad_maa(int colidx[],
         for (int core = 0; core < NUM_CORES; ++core) {
             add_mem_region(cg_soa_indices[core],
                            cg_soa_indices[core] + TILE_SIZE);
+#ifdef CG_LOGICAL_PAGE_RMW
+            if (cg_uses_physical_page_product_soa_jit()) {
+                add_mem_region(cg_soa_products[core],
+                               cg_soa_products[core] + TILE_SIZE);
+            } else {
+                add_mem_region(cg_soa_values[core],
+                               cg_soa_values[core] + TILE_SIZE);
+                add_mem_region(cg_soa_products[core],
+                               cg_soa_products[core] + TILE_SIZE);
+            }
+#else
             add_mem_region(cg_soa_values[core],
                            cg_soa_values[core] + TILE_SIZE);
-#ifdef CG_LOGICAL_PAGE_RMW
-            add_mem_region(cg_soa_products[core],
-                           cg_soa_products[core] + TILE_SIZE);
 #endif
         }
 #endif
@@ -1411,8 +1544,8 @@ static void conj_grad_maa(int colidx[],
 #elif defined(MAA_GENERAL_VIRTUAL_CONSUMER)
 #ifdef CG_LOGICAL_PAGE_RMW
                 const bool logical_page_full_window =
-                    cg_rmw_treatment ==
-                        CgRmwTreatment::LogicalPageSoaJit &&
+                    (cg_rmw_treatment == CgRmwTreatment::LogicalPageSoaJit ||
+                     cg_uses_physical_page_product_soa_jit()) &&
                     gather_size == TILE_SIZE;
                 if (logical_page_full_window)
                     cg_q_spmv_eligible_windows[tid]++;
@@ -1441,6 +1574,27 @@ static void conj_grad_maa(int colidx[],
                     const int page_base = k_base + page_offset;
 #ifdef CG_LOGICAL_PAGE_RMW
                     if (logical_page_full_window) {
+                        if (cg_uses_physical_page_product_soa_jit()) {
+                            // The virtual gather backing is complete before
+                            // this page-local physical MUL is issued.
+                            maa_const<int>(0, r2);
+                            maa_const<int>(page_size, r3);
+                            maa_stream_load<float>(
+                                virtual_gather_backing_for_thread(tid) +
+                                    page_offset,
+                                r2, r3, r1, t4);
+                            maa_stream_load<float>(&a[page_base], r2, r3, r1,
+                                                   t5);
+                            maa_alu_vector<float>(t4, t5, t7,
+                                                  Operation_t::MUL_OP);
+                            wait_ready(t0);
+                            wait_ready(t7);
+                            cg_publish_index_product_page(
+                                tid, page_offset, t0, t7, t1, t4, r4, r5,
+                                r2);
+                            cg_physical_alu_vectors[tid]++;
+                            continue;
+                        }
                         maa_const<int>(0, r2);
                         maa_const<int>(page_size, r3);
                         maa_stream_load<float>(&a[page_base], r2, r3, r1, t5);
@@ -1482,7 +1636,12 @@ static void conj_grad_maa(int colidx[],
 #ifdef CG_LOGICAL_PAGE_RMW
                 if (logical_page_full_window) {
                     cg_q_spmv_routed_windows[tid]++;
-                    cg_logical_multiply_rmw(tid, curr_q, r2, r3, r1, t7);
+                    if (cg_uses_physical_page_product_soa_jit())
+                        cg_physical_page_product_rmw(tid, curr_q, r2, r3,
+                                                     r1, t7);
+                    else
+                        cg_logical_multiply_rmw(tid, curr_q, r2, r3, r1,
+                                                t7);
                 }
 #endif
 #else
@@ -1783,7 +1942,8 @@ static void conj_grad_maa(int colidx[],
 #endif
 #ifdef CG_LOGICAL_PAGE_RMW
             const bool logical_page_full_window =
-                cg_rmw_treatment == CgRmwTreatment::LogicalPageSoaJit &&
+                (cg_rmw_treatment == CgRmwTreatment::LogicalPageSoaJit ||
+                 cg_uses_physical_page_product_soa_jit()) &&
                 gather_size == TILE_SIZE;
             if (logical_page_full_window)
                 cg_residual_spmv_eligible_windows[tid]++;
@@ -1812,6 +1972,26 @@ static void conj_grad_maa(int colidx[],
                 const int page_base = k_base + page_offset;
 #ifdef CG_LOGICAL_PAGE_RMW
                 if (logical_page_full_window) {
+                    if (cg_uses_physical_page_product_soa_jit()) {
+                        // As above, consume the closed virtual backing in a
+                        // physical page ALU and publish only final products.
+                        maa_const<int>(0, r2);
+                        maa_const<int>(page_size, r3);
+                        maa_stream_load<float>(
+                            virtual_gather_backing_for_thread(tid) +
+                                page_offset,
+                            r2, r3, r1, t4);
+                        maa_stream_load<float>(&a[page_base], r2, r3, r1,
+                                               t5);
+                        maa_alu_vector<float>(t4, t5, t7,
+                                              Operation_t::MUL_OP);
+                        wait_ready(t0);
+                        wait_ready(t7);
+                        cg_publish_index_product_page(
+                            tid, page_offset, t0, t7, t1, t4, r4, r5, r2);
+                        cg_physical_alu_vectors[tid]++;
+                        continue;
+                    }
                     maa_const<int>(0, r2);
                     maa_const<int>(page_size, r3);
                     maa_stream_load<float>(&a[page_base], r2, r3, r1, t5);
@@ -1889,7 +2069,11 @@ static void conj_grad_maa(int colidx[],
 #ifdef CG_LOGICAL_PAGE_RMW
             if (logical_page_full_window) {
                 cg_residual_spmv_routed_windows[tid]++;
-                cg_logical_multiply_rmw(tid, curr_r, r2, r3, r1, t7);
+                if (cg_uses_physical_page_product_soa_jit())
+                    cg_physical_page_product_rmw(tid, curr_r, r2, r3, r1,
+                                                 t7);
+                else
+                    cg_logical_multiply_rmw(tid, curr_r, r2, r3, r1, t7);
             }
 #endif
 #ifdef CG_LOGICAL16_RMW

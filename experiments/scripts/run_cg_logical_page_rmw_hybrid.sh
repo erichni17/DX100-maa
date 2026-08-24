@@ -21,11 +21,13 @@ case $size in
     cg_na=1024
     default_reference=/data1/nier/dx100-runs/2026-08-14-cg-logical16-rmw-smoke-906c4e1c-r3/runs/legacy/restore.log
     default_reference_sha=36f2d6f6db48672084c7e298e9edb72dc0e5ac93e9f519b7b9f571952ad7590a
+    default_accepted_root=/data1/nier/dx100-runs/2026-08-24-cg-logical-page-small-cfc73c1d-r3
+    default_accepted_result_sha=a6bb8b9f012048d587c2631815cfed09eac07ddaae79f89e7a10435a4adc8259
+    default_accepted_ticks=6566455483
     ;;
   full)
-    cg_na=150000
-    default_reference=/data1/nier/dx100-runs/2026-08-11-cg-bounded-789cc703-full-v8/bounded4_cached/run.log
-    default_reference_sha=0fe931685c37695bc51c74288c67f1494a0c91a723f8e831efa0ac2a7515441c
+    echo "physical-page-product gate currently supports only the frozen small CG case" >&2
+    exit 2
     ;;
   *)
     echo "size must be small or full" >&2
@@ -34,12 +36,26 @@ case $size in
 esac
 reference=${CG_REFERENCE_LOG:-$default_reference}
 reference_sha=${CG_REFERENCE_SHA256:-$default_reference_sha}
+accepted_root=${CG_ACCEPTED_ROOT:-$default_accepted_root}
+accepted_result_sha=${CG_ACCEPTED_RESULT_SHA256:-$default_accepted_result_sha}
+accepted_ticks_expected=${CG_ACCEPTED_SIMTICKS:-$default_accepted_ticks}
+accepted_result="$accepted_root/result.txt"
 
 [[ -x $gem5 ]] || { echo "missing gem5 binary: $gem5" >&2; exit 2; }
 [[ -f $reference ]] || { echo "missing frozen CG reference: $reference" >&2; exit 2; }
+[[ -f $accepted_result ]] || { echo "missing accepted CG evidence: $accepted_result" >&2; exit 2; }
 [[ ! -e $out ]] || { echo "refusing existing output: $out" >&2; exit 2; }
 [[ $(sha256sum "$reference" | awk '{print $1}') == "$reference_sha" ]] || {
     echo "frozen CG reference hash mismatch" >&2
+    exit 1
+}
+[[ $(sha256sum "$accepted_result" | awk '{print $1}') == "$accepted_result_sha" ]] || {
+    echo "accepted CG evidence hash mismatch" >&2
+    exit 1
+}
+accepted_ticks=$(awk -F= '$1 == "simTicks" { print $2; exit }' "$accepted_result")
+[[ $accepted_ticks == "$accepted_ticks_expected" ]] || {
+    echo "accepted CG simTicks mismatch" >&2
     exit 1
 }
 git -C "$root" status --short --branch > /tmp/cg-logical-page-status-before.$$
@@ -51,8 +67,8 @@ git -C "$root" status --short --branch > /tmp/cg-logical-page-status-before.$$
 
 mkdir -p "$out/input" "$out/bin" "$out/checkpoint" "$out/run"
 mv /tmp/cg-logical-page-status-before.$$ "$out/input/source_status.before"
-selector="$out/input/logical_page_soa_jit.selector"
-printf '%s\n' 'token_stream_ld logical_page_soa_jit' > "$selector"
+selector="$out/input/physical_page_product_soa_jit.selector"
+printf '%s\n' 'token_stream_ld physical_page_product_soa_jit' > "$selector"
 chmod 0444 "$selector"
 
 guest="$out/bin/cg_logical_page_rmw"
@@ -106,11 +122,13 @@ reference_line=$(grep -E \
     exit 1
 }
 {
-    printf 'schema=dx100.cg.logical_page_rmw.v1\n'
+    printf 'schema=dx100.cg.physical_page_product_soa_jit.v1\n'
     printf 'size=%s\ncg_na=%s\n' "$size" "$cg_na"
     printf 'source_commit=%s\n' "$source_commit"
     printf 'reference_path=%s\nreference_sha256=%s\n' \
         "$reference" "$reference_sha"
+    printf 'accepted_root=%s\naccepted_result_sha256=%s\naccepted_simTicks=%s\n' \
+        "$accepted_root" "$accepted_result_sha" "$accepted_ticks"
     printf 'reference_fingerprint=%s\n' "$reference_line"
     printf 'arm=hybrid_only\ncomparison_arms=0\n'
     printf 'native_reruns=0\nwall_timeout=none\n'
@@ -118,7 +136,7 @@ reference_line=$(grep -E \
     printf 'num_initial_row_table_slices=32\n'
     printf 'memory_channels=2\n'
     printf 'guest_lanes=32\nlogical_scheduler_reserved_lanes=8\n'
-    printf 'external_coherent_backing_bytes=1048576\n'
+    printf 'external_coherent_backing_bytes=786432\n'
     printf 'physical_spd_payload_bytes=655360\n'
     printf 'logical_scheduler_reserved_lane_payload_bytes=131072\n'
     printf 'hidden_logical_payload_bytes=0\nhost_payload_access=0\n'
@@ -128,7 +146,8 @@ reference_line=$(grep -E \
     printf 'restore_command='; printf '%q ' "${restore_cmd[@]}"; printf '\n'
 } > "$out/manifest.txt"
 sha256sum "$gem5" "$guest" "$selector" "$source_file" "$config" \
-    "$ramulator" "$0" "$reference" > "$out/input/artifact_sha256.before"
+    "$ramulator" "$0" "$reference" "$accepted_result" \
+    > "$out/input/artifact_sha256.before"
 
 # No timeout wrapper is permitted for either phase. The full arm is allowed to
 # run to its architectural terminal or an explicit simulator failure.
@@ -223,8 +242,8 @@ for bound in x_sum:1e-8 x_norm_sq:1e-8 z_sum:1e-8 \
     }
     fingerprint_relative_deltas+="${fingerprint_relative_deltas:+,}$scalar=$delta"
 done
-[[ $(grep -Ec '^CG_LOGICAL16_RMW_SELECTION treatment=logical_page_soa_jit .*host_payload_access=0 performance_promotable=0$' "$restore" || true) -eq 1 ]]
-[[ $(grep -Ec '^CG_LOGICAL16_RMW_TERMINAL treatment=logical_page_soa_jit .*host_payload_access=0 performance_promotable=0 result=PASS$' "$restore" || true) -eq 1 ]]
+[[ $(grep -Ec '^CG_LOGICAL16_RMW_SELECTION treatment=physical_page_product_soa_jit .*producer=physical_page_mul_response_publish .*host_payload_access=0 performance_promotable=0$' "$restore" || true) -eq 1 ]]
+[[ $(grep -Ec '^CG_LOGICAL16_RMW_TERMINAL treatment=physical_page_product_soa_jit .*producer=physical_page_mul_response_publish .*host_payload_access=0 performance_promotable=0 result=PASS$' "$restore" || true) -eq 1 ]]
 [[ $(grep -Fxc 'ROI End!!!' "$restore" || true) -eq 1 ]]
 [[ $(grep -Ec '^Exiting @ tick [0-9]+ because m5_exit instruction encountered$' "$restore" || true) -eq 1 ]]
 [[ $(grep -Eic 'panic|fatal|assert|abort|segmentation fault|error:' "$restore" || true) -eq 0 ]]
@@ -248,8 +267,11 @@ value_words=$(field staged_value_words)
 product_words=$(field product_words)
 index_pages=$(field index_publish_pages)
 value_pages=$(field value_publish_pages)
+product_pages=$(field product_publish_pages)
 logical_alus=$(field logical_alu_vectors)
+physical_alus=$(field physical_alu_vectors)
 logical_windows=$(field logical_page_windows)
+physical_page_product_windows=$(field physical_page_product_windows)
 q_eligible=$(field q_spmv_eligible_windows)
 q_routed=$(field q_spmv_routed_windows)
 residual_eligible=$(field residual_spmv_eligible_windows)
@@ -259,15 +281,18 @@ physical_spd_payload=$(field physical_spd_payload_bytes)
 reserved_lanes=$(field logical_scheduler_reserved_lanes)
 reserved_lane_payload=$(field logical_scheduler_reserved_lane_payload_bytes)
 [[ $windows =~ ^[1-9][0-9]*$ ]]
-[[ $logical_windows -eq $windows && $logical_alus -eq $windows ]]
+[[ $logical_windows -eq 0 && $logical_alus -eq 0 ]]
+[[ $physical_page_product_windows -eq $windows ]]
+[[ $physical_alus -eq $((windows * 4)) ]]
 [[ $q_eligible =~ ^[1-9][0-9]*$ && $q_routed -eq $q_eligible ]]
 [[ $residual_eligible =~ ^[1-9][0-9]*$ && \
    $residual_routed -eq $residual_eligible ]]
 [[ $windows -eq $((q_routed + residual_routed)) ]]
 [[ $index_words -eq $((windows * 16384)) ]]
-[[ $value_words -eq $index_words && $product_words -eq $index_words ]]
-[[ $index_pages -eq $((windows * 4)) && $value_pages -eq $index_pages ]]
-[[ $external_backing -eq 1048576 ]]
+[[ $value_words -eq 0 && $product_words -eq $index_words ]]
+[[ $index_pages -eq $((windows * 4)) && $value_pages -eq 0 && \
+   $product_pages -eq $index_pages ]]
+[[ $external_backing -eq 786432 ]]
 [[ $physical_spd_payload -eq 655360 ]]
 [[ $reserved_lanes -eq 8 && $reserved_lane_payload -eq 131072 ]]
 
@@ -293,7 +318,7 @@ publish_issues=$(stat_sum STR_PublishIssues)
 publish_accepts=$(stat_sum STR_PublishAccepts)
 publish_responses=$(stat_sum STR_PublishWriteResponses)
 publish_terminals=$(stat_sum STR_PublishTerminals)
-expected_publish_pages=$((windows * 12))
+expected_publish_pages=$((windows * 8))
 expected_publish_lines=$((expected_publish_pages * 256))
 
 [[ $soa_instructions -eq $windows && $soa_terminals -eq $windows ]]
@@ -311,19 +336,30 @@ logical_completes=$(grep -Fc 'event=logical_page_native_complete ' "$trace" || t
 logical_retires=$(grep -Fc 'event=logical_page_retire ' "$trace" || true)
 soa_trace_terminals=$(grep -Ec 'event=soa_jit_complete .* logical=16384 .* terminal=1$' "$trace" || true)
 fallback_events=$(grep -Ec 'event=[^ ]*fallback' "$trace" || true)
-[[ $logical_admits -eq $windows && $logical_retires -eq $windows ]]
-[[ $logical_begins -eq $((windows * 4)) ]]
-[[ $logical_dispatches -eq $((windows * 16)) ]]
-[[ $logical_completes -eq $logical_dispatches ]]
+[[ $logical_admits -eq 0 && $logical_retires -eq 0 ]]
+[[ $logical_begins -eq 0 && $logical_dispatches -eq 0 && \
+   $logical_completes -eq 0 ]]
 [[ $soa_trace_terminals -eq $windows && $fallback_events -eq 0 ]]
 
 sim_ticks=$(awk '$1 == "simTicks" { print $2; exit }' "$stats")
 [[ $sim_ticks =~ ^[1-9][0-9]*$ ]]
-sha256sum "$selector" "$reference" > "$out/input/immutable.after"
+performance_direction=$(awk -v accepted="$accepted_ticks" -v candidate="$sim_ticks" '
+    BEGIN {
+        if (candidate < accepted) print "FASTER";
+        else if (candidate > accepted) print "SLOWER";
+        else print "TIED";
+    }
+')
+speedup=$(awk -v accepted="$accepted_ticks" -v candidate="$sim_ticks" \
+    'BEGIN { printf "%.9f", accepted / candidate }')
+sha256sum "$selector" "$reference" "$accepted_result" \
+    > "$out/input/immutable.after"
 [[ $(awk 'NR == 1 {print $1}' "$out/input/immutable.after") == \
-   $(awk '$2 ~ /logical_page_soa_jit.selector$/ {print $1}' \
+   $(awk '$2 ~ /physical_page_product_soa_jit.selector$/ {print $1}' \
        "$out/input/artifact_sha256.before") ]]
 [[ $(awk 'NR == 2 {print $1}' "$out/input/immutable.after") == "$reference_sha" ]]
+[[ $(awk 'NR == 3 {print $1}' "$out/input/immutable.after") == \
+   "$accepted_result_sha" ]]
 
 git -C "$root" status --short --branch > "$out/input/source_status.after"
 cmp -s "$out/input/source_status.before" "$out/input/source_status.after"
@@ -336,6 +372,9 @@ cmp -s "$out/input/source_status.before" "$out/input/source_status.after"
     printf 'checkpoint_sha256=%s\nreference_sha256=%s\n' \
         "$checkpoint_sha" "$reference_sha"
     printf 'simTicks=%s\nlogical_windows=%s\n' "$sim_ticks" "$windows"
+    printf 'accepted_simTicks=%s\nperformance_direction_vs_accepted=%s\n' \
+        "$accepted_ticks" "$performance_direction"
+    printf 'speedup_vs_accepted=%s\n' "$speedup"
     printf 'q_spmv_eligible_routed=%s/%s\n' "$q_eligible" "$q_routed"
     printf 'residual_spmv_eligible_routed=%s/%s\n' \
         "$residual_eligible" "$residual_routed"
@@ -343,8 +382,11 @@ cmp -s "$out/input/source_status.before" "$out/input/source_status.after"
     printf 'physical_spd_payload_bytes=%s\n' "$physical_spd_payload"
     printf 'logical_scheduler_reserved_lane_payload_bytes=%s\n' \
         "$reserved_lane_payload"
-    printf 'logical_page_actions=%s/%s\n' "$logical_dispatches" "$logical_completes"
-    printf 'logical_page_instructions=%s/%s\n' "$logical_admits" "$logical_retires"
+    printf 'physical_page_product_windows=%s\nphysical_alu_vectors=%s\n' \
+        "$physical_page_product_windows" "$physical_alus"
+    printf 'logical_alu_vectors=%s\nlogical_page_actions=%s/%s\n' \
+        "$logical_alus" "$logical_dispatches" "$logical_completes"
+    printf 'publisher_pages_per_window=8\n'
     printf 'publisher_write_responses=%s/%s\n' "$publish_responses" "$publish_issues"
     printf 'soa_jit_terminals=%s/%s\n' "$soa_terminals" "$soa_instructions"
     printf 'IND_SoaJitFallbacks=0\nIND_SoaJitOpenContexts=0\n'

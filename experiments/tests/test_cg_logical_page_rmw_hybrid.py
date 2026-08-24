@@ -22,6 +22,8 @@ class CGLogicalPageRmwHybridContract(unittest.TestCase):
             self.assertIn(token, MAKEFILE)
         self.assertIn("static CgRmwTreatment cg_rmw_treatment =", SOURCE)
         self.assertIn("CgRmwTreatment::Legacy4K;", SOURCE)
+        self.assertIn("PhysicalPageProductSoaJit", SOURCE)
+        self.assertIn("physical_page_product_soa_jit", SOURCE)
 
     def test_gate_uses_full_dx100_row_table_geometry(self):
         runner = RUNNER_PATH.read_text()
@@ -70,6 +72,32 @@ class CGLogicalPageRmwHybridContract(unittest.TestCase):
         self.assertIn("cg_soa_products[tid], nullptr", helper)
         self.assertIn("Operation_t::ADD_OP", helper)
 
+    def test_physical_page_product_treatment_publishes_no_a_values(self):
+        helper = SOURCE[
+            SOURCE.index("cg_publish_index_product_page") : SOURCE.index(
+                "#endif\n#endif\n\n#ifdef CG_FP_ENABLE"
+            )
+        ]
+        self.assertIn(
+            "maa_publish_spd_page_logical16_response_bearing<uint32_t>",
+            helper,
+        )
+        self.assertIn(
+            "maa_publish_spd_page_logical16_response_bearing<float>", helper
+        )
+        self.assertIn("cg_soa_products[tid]", helper)
+        self.assertNotIn("cg_soa_values[tid]", helper)
+        self.assertIn("maa_indirect_rmw_vector_soa_jit<float>", helper)
+        self.assertNotIn("maa_alu_vector_logical<float>", helper)
+
+    def test_both_spmv_sites_multiply_and_publish_each_physical_page(self):
+        self.assertEqual(SOURCE.count("cg_physical_page_product_rmw(tid,"), 2)
+        self.assertEqual(SOURCE.count("cg_publish_index_product_page(\n"), 2)
+        self.assertGreaterEqual(
+            SOURCE.count("maa_alu_vector<float>(t4, t5, t7,"), 2
+        )
+        self.assertIn("wait_ready(t6);", SOURCE)
+
     def test_both_sparse_matrix_vector_loops_use_the_full_window_chain(self):
         self.assertEqual(SOURCE.count("cg_logical_multiply_rmw(tid,"), 2)
         self.assertEqual(SOURCE.count("cg_publish_index_value_page(\n"), 2)
@@ -102,7 +130,7 @@ class CGLogicalPageRmwHybridContract(unittest.TestCase):
         )
         runner = RUNNER_PATH.read_text()
         for token in (
-            "external_coherent_backing_bytes=1048576",
+            "external_coherent_backing_bytes=786432",
             "physical_spd_payload_bytes=655360",
             "logical_scheduler_reserved_lanes=8",
             "logical_scheduler_reserved_lane_payload_bytes=131072",
@@ -114,7 +142,7 @@ class CGLogicalPageRmwHybridContract(unittest.TestCase):
         for token in (
             "CG_REFERENCE_LOG",
             "CG_FINGERPRINT",
-            "logical_page_soa_jit",
+            "physical_page_product_soa_jit",
             "--maa_logical_tile_page_scheduler",
             "logical_page_native_dispatch",
             "logical_page_native_complete",
@@ -129,6 +157,11 @@ class CGLogicalPageRmwHybridContract(unittest.TestCase):
             "residual_spmv_routed_windows",
             "source_status.after",
             "reference_sha256",
+            "CG_ACCEPTED_ROOT",
+            "accepted_simTicks",
+            "performance_direction_vs_accepted",
+            "expected_publish_pages=$((windows * 8))",
+            "publisher_pages_per_window=8",
         ):
             self.assertIn(token, runner)
         self.assertNotIn("native16", runner)
@@ -137,6 +170,8 @@ class CGLogicalPageRmwHybridContract(unittest.TestCase):
         self.assertNotRegex(runner, r"(?m)^\s*timeout(?:\s|$)")
         self.assertIn("$q_routed -eq $q_eligible", runner)
         self.assertIn("$residual_routed -eq $residual_eligible", runner)
+        self.assertIn("$logical_alus -eq 0", runner)
+        self.assertIn("$physical_alus -eq $((windows * 4))", runner)
 
     def test_runner_uses_index_stable_numerical_fingerprint_criterion(self):
         runner = RUNNER_PATH.read_text()
