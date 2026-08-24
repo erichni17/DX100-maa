@@ -1621,6 +1621,9 @@ join_init_run(relation_t *relR, relation_t *relS, JoinFunction jf, int nthreads)
            static_cast<unsigned long>(second_scatter_4k_actions),
            static_cast<unsigned long>(first_eligible + second_eligible),
            static_cast<unsigned long>(first_routed + second_routed));
+    printf("HASHJOIN_HYBRID_RESULT result=%ld\n",
+           static_cast<long>(result));
+    fflush(stdout);
 #endif
 
 #ifdef GEM5
