@@ -80,6 +80,7 @@ Instruction::Instruction() : baseAddr(0xFFFFFFFFFFFFFFFF),
                              memoryPermitReserved(false),
                              memoryPermitGranted(false),
                              controllerManaged(false),
+                             logicalPageManaged(false),
                              controllerAction(
                                  TransparentSPDController::Action::None),
                              controllerTransactionID(0),

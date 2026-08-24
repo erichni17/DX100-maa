@@ -19,7 +19,9 @@ namespace maa
 class LogicalSPDCacheABI
 {
   public:
-    static constexpr uint8_t LogicalDescriptorCount = 2;
+    // Descriptor seven is reserved inside the production page scheduler as
+    // the write-only dense-store sink.  Guest encodings may name 0..6.
+    static constexpr uint8_t LogicalDescriptorCount = 7;
     static constexpr uint8_t NoOperand = 0xff;
     static constexpr uint8_t LegacyPhysicalHighByte = 0x00;
     // Vector IDs are biased so logical (0,0,0) cannot collide with the

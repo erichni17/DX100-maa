@@ -234,7 +234,7 @@ testLogicalStreamValidationMatrix()
     CHECK(ABI::validateLogicalStreamLoad(shape, ABI::StreamLoadOpcode) ==
           Result::UnsupportedDataType);
     shape = valid_load;
-    shape.dst1LogicalID = 2;
+    shape.dst1LogicalID = ABI::LogicalDescriptorCount;
     CHECK(ABI::validateLogicalStreamLoad(shape, ABI::StreamLoadOpcode) ==
           Result::InvalidLogicalID);
     shape = valid_load;
@@ -300,7 +300,7 @@ testLogicalVectorValidationMatrix()
     CHECK(ABI::validateLogicalALUVector(shape, ABI::ALUVectorOpcode) ==
           ABI::VectorValidation::UnsupportedOperation);
     shape = valid;
-    shape.src2LogicalID = 2;
+    shape.src2LogicalID = ABI::LogicalDescriptorCount;
     CHECK(ABI::validateLogicalALUVector(shape, ABI::ALUVectorOpcode) ==
           ABI::VectorValidation::InvalidLogicalID);
     shape = valid;
@@ -372,7 +372,7 @@ testLogicalScalarValidationMatrix()
     CHECK(validate(shape) ==
           ABI::ScalarValidation::UnsupportedOperation);
     shape = valid;
-    shape.src1LogicalID = 2;
+    shape.src1LogicalID = ABI::LogicalDescriptorCount;
     CHECK(validate(shape) ==
           ABI::ScalarValidation::InvalidLogicalID);
     shape = valid;
