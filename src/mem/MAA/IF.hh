@@ -187,6 +187,9 @@ public:
     // Software-visible logical descriptor IDs.  Generation and controller
     // lifecycle fields remain inert until the logical controller is wired.
     int16_t src1LogicalID, src2LogicalID, dst1LogicalID;
+    // Logical streams use this physical tile ID only as a completion fence;
+    // it is never a logical data operand.
+    int16_t logicalCompletionSpdID;
     uint64_t src1LogicalGeneration, src2LogicalGeneration,
         dst1LogicalGeneration;
     // {STREAM_LD, INDIR_LD, INDIR_ST, INDIR_RMW, RANGE_LOOP, CONDITION}
@@ -233,6 +236,17 @@ public:
     bool isLogicalALUVector() const {
         return opcode == OpcodeType::ALU_VECTOR && src1LogicalID != -1 &&
                src2LogicalID != -1 && dst1LogicalID != -1;
+    }
+    bool isLogicalStreamLoad() const {
+        return opcode == OpcodeType::STREAM_LD && src1LogicalID == -1 &&
+               src2LogicalID == -1 && dst1LogicalID != -1;
+    }
+    bool isLogicalStreamStore() const {
+        return opcode == OpcodeType::STREAM_ST && src1LogicalID != -1 &&
+               src2LogicalID == -1 && dst1LogicalID == -1;
+    }
+    bool isLogicalStream() const {
+        return isLogicalStreamLoad() || isLogicalStreamStore();
     }
     /**
      * Guarded no-old-result SoA/JIT form of ordinary vector RMW.

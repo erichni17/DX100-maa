@@ -27,6 +27,8 @@ class LogicalSPDCacheABI
     static constexpr uint8_t LogicalVectorIDBias = 1;
     static constexpr uint8_t ALUScalarOpcode = 8;
     static constexpr uint8_t ALUVectorOpcode = 9;
+    static constexpr uint8_t StreamLoadOpcode = 0;
+    static constexpr uint8_t StreamStoreOpcode = 1;
     static constexpr uint8_t DataTypeCount = 6;
     static constexpr uint8_t ScalarOperationCount = 16;
     static constexpr uint32_t LogicalElements = 16384;
@@ -37,6 +39,8 @@ class LogicalSPDCacheABI
         Physical,
         LogicalALUScalar,
         LogicalALUVector,
+        LogicalStreamLoad,
+        LogicalStreamStore,
         Unsupported,
     };
 
@@ -110,6 +114,50 @@ class LogicalSPDCacheABI
         UnregisteredDestinationRange,
         DestinationOutsideRange,
         IncompleteDestinationSpan,
+    };
+
+    enum class StreamValidation : uint8_t
+    {
+        Valid,
+        WrongOpcode,
+        UnsupportedDataType,
+        InvalidLogicalID,
+        MixedPhysicalOperands,
+        MissingCompletionIdentity,
+        RegisterOperandPresent,
+        Conditional,
+        MissingBacking,
+        NullBacking,
+    };
+
+    struct StreamOperandShape
+    {
+        uint8_t datatype;
+        int16_t src1LogicalID;
+        int16_t src2LogicalID;
+        int16_t dst1LogicalID;
+        int16_t src1SpdID;
+        int16_t src2SpdID;
+        int16_t dst1SpdID;
+        int16_t dst2SpdID;
+        int16_t completionSpdID;
+        int16_t src1RegID;
+        int16_t src2RegID;
+        int16_t src3RegID;
+        int16_t dst1RegID;
+        int16_t dst2RegID;
+        int16_t condSpdID;
+        uint64_t backingAddr;
+
+        StreamOperandShape()
+            : datatype(0), src1LogicalID(-1), src2LogicalID(-1),
+              dst1LogicalID(-1), src1SpdID(-1), src2SpdID(-1),
+              dst1SpdID(-1), dst2SpdID(-1), completionSpdID(-1),
+              src1RegID(-1), src2RegID(-1), src3RegID(-1),
+              dst1RegID(-1), dst2RegID(-1), condSpdID(-1),
+              backingAddr(NoAddress)
+        {
+        }
     };
 
     struct ScalarOperandShape
@@ -221,6 +269,16 @@ class LogicalSPDCacheABI
                           static_cast<int16_t>(src1), -1,
                           static_cast<int16_t>(dst1));
         }
+        if (src1 == NoOperand && src2 == NoOperand &&
+            dst1 < LogicalDescriptorCount) {
+            return Header(HeaderKind::LogicalStreamLoad, -1, -1,
+                          static_cast<int16_t>(dst1));
+        }
+        if (src1 < LogicalDescriptorCount && src2 == NoOperand &&
+            dst1 == NoOperand) {
+            return Header(HeaderKind::LogicalStreamStore,
+                          static_cast<int16_t>(src1), -1, -1);
+        }
         if (src1 >= LogicalVectorIDBias &&
             src1 < LogicalVectorIDBias + LogicalDescriptorCount &&
             src2 >= LogicalVectorIDBias &&
@@ -265,6 +323,92 @@ class LogicalSPDCacheABI
                (static_cast<uint64_t>(optype) << 16) |
                (static_cast<uint64_t>(NoOperand) << 8) |
                static_cast<uint64_t>(NoOperand);
+    }
+
+    static constexpr uint64_t
+    encodeLogicalStreamLoadHeader(uint8_t logicalDst1, uint8_t datatype,
+                                  uint8_t completionSpdID)
+    {
+        return (static_cast<uint64_t>(NoOperand) << 56) |
+               (static_cast<uint64_t>(NoOperand) << 48) |
+               (static_cast<uint64_t>(logicalDst1) << 40) |
+               (static_cast<uint64_t>(StreamLoadOpcode) << 32) |
+               (static_cast<uint64_t>(datatype) << 24) |
+               (static_cast<uint64_t>(NoOperand) << 16) |
+               (static_cast<uint64_t>(completionSpdID) << 8) |
+               static_cast<uint64_t>(NoOperand);
+    }
+
+    static constexpr uint64_t
+    encodeLogicalStreamStoreHeader(uint8_t logicalSrc1, uint8_t datatype,
+                                   uint8_t completionSpdID)
+    {
+        return (static_cast<uint64_t>(logicalSrc1) << 56) |
+               (static_cast<uint64_t>(NoOperand) << 48) |
+               (static_cast<uint64_t>(NoOperand) << 40) |
+               (static_cast<uint64_t>(StreamStoreOpcode) << 32) |
+               (static_cast<uint64_t>(datatype) << 24) |
+               (static_cast<uint64_t>(NoOperand) << 16) |
+               (static_cast<uint64_t>(completionSpdID) << 8) |
+               static_cast<uint64_t>(NoOperand);
+    }
+
+    static StreamValidation
+    validateLogicalStreamLoad(const StreamOperandShape &shape,
+                              uint8_t opcode)
+    {
+        if (opcode != StreamLoadOpcode)
+            return StreamValidation::WrongOpcode;
+        if (shape.datatype >= DataTypeCount)
+            return StreamValidation::UnsupportedDataType;
+        if (!validLogicalID(shape.dst1LogicalID) ||
+            shape.src1LogicalID != -1 || shape.src2LogicalID != -1)
+            return StreamValidation::InvalidLogicalID;
+        if (shape.src1SpdID != -1 || shape.src2SpdID != -1 ||
+            shape.dst1SpdID != -1 || shape.dst2SpdID != -1)
+            return StreamValidation::MixedPhysicalOperands;
+        if (shape.completionSpdID == -1)
+            return StreamValidation::MissingCompletionIdentity;
+        if (shape.src1RegID != -1 || shape.src2RegID != -1 ||
+            shape.src3RegID != -1 || shape.dst1RegID != -1 ||
+            shape.dst2RegID != -1)
+            return StreamValidation::RegisterOperandPresent;
+        if (shape.condSpdID != -1)
+            return StreamValidation::Conditional;
+        if (shape.backingAddr == NoAddress)
+            return StreamValidation::MissingBacking;
+        if (shape.backingAddr == 0)
+            return StreamValidation::NullBacking;
+        return StreamValidation::Valid;
+    }
+
+    static StreamValidation
+    validateLogicalStreamStore(const StreamOperandShape &shape,
+                               uint8_t opcode)
+    {
+        if (opcode != StreamStoreOpcode)
+            return StreamValidation::WrongOpcode;
+        if (shape.datatype >= DataTypeCount)
+            return StreamValidation::UnsupportedDataType;
+        if (!validLogicalID(shape.src1LogicalID) ||
+            shape.src2LogicalID != -1 || shape.dst1LogicalID != -1)
+            return StreamValidation::InvalidLogicalID;
+        if (shape.src1SpdID != -1 || shape.src2SpdID != -1 ||
+            shape.dst1SpdID != -1 || shape.dst2SpdID != -1)
+            return StreamValidation::MixedPhysicalOperands;
+        if (shape.completionSpdID == -1)
+            return StreamValidation::MissingCompletionIdentity;
+        if (shape.src1RegID != -1 || shape.src2RegID != -1 ||
+            shape.src3RegID != -1 || shape.dst1RegID != -1 ||
+            shape.dst2RegID != -1)
+            return StreamValidation::RegisterOperandPresent;
+        if (shape.condSpdID != -1)
+            return StreamValidation::Conditional;
+        if (shape.backingAddr == NoAddress)
+            return StreamValidation::MissingBacking;
+        if (shape.backingAddr == 0)
+            return StreamValidation::NullBacking;
+        return StreamValidation::Valid;
     }
 
     static ScalarValidation

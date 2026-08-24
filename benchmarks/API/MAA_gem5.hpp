@@ -398,6 +398,26 @@ inline void maa_stream_load(T1 *data, int min_reg, int max_reg, int stride_reg, 
     *INSTR_baseaddr = (uint64_t)data;                                                                           // baseaddr
     __asm__ __volatile__("mfence;");
 }
+
+/**
+ * Decode-only logical form of ordinary STREAM_LD.  The registered backing
+ * range supplies a complete aligned 16K-element source span; dst_logical is
+ * data identity and completion_tile is solely the completion fence.
+ */
+template <class T1>
+inline void maa_stream_load_logical(T1 *backing, int dst_logical,
+                                    int completion_tile) {
+    assert(dst_logical >= 0 && dst_logical < LOGICAL_DESCRIPTOR_COUNT);
+    assert(completion_tile >= 0 && completion_tile < NUM_TILES);
+    const DataType data_type = get_data_type<T1>();
+    *INSTR_opcode_datatype_optype_tdst1_tdst2 =
+        gem5::maa::LogicalSPDCacheABI::encodeLogicalStreamLoadHeader(
+            static_cast<uint8_t>(dst_logical), static_cast<uint8_t>(data_type),
+            static_cast<uint8_t>(completion_tile));
+    *INSTR_tsrc1_tsrc2_rdst1_rdst2_rsrc1_rsrc2_rsrc3_csrc = UINT64_MAX;
+    *INSTR_baseaddr = reinterpret_cast<uint64_t>(backing);
+    __asm__ __volatile__("mfence;");
+}
 /**
  * Materialize one dense page of a live virtual-gather backing allocation into
  * an ordinary SPD tile.  This is an ordinary STREAM_LD with the otherwise
@@ -494,6 +514,26 @@ inline void maa_stream_store(T1 *data, int min_reg, int max_reg,
                                                             ((uint64_t)stride_reg << 8) |                       // rsrc3
                                                             (uint64_t)(cond_tile == -1 ? NA_UINT8 : cond_tile); // cond
     *INSTR_baseaddr = (uint64_t)data;                                                                           // baseaddr
+    __asm__ __volatile__("mfence;");
+}
+
+/**
+ * Decode-only logical form of ordinary STREAM_ST.  The logical source is
+ * distinct from completion_tile, and backing names the registered aligned
+ * 16K-element destination span.
+ */
+template <class T1>
+inline void maa_stream_store_logical(T1 *backing, int src_logical,
+                                     int completion_tile) {
+    assert(src_logical >= 0 && src_logical < LOGICAL_DESCRIPTOR_COUNT);
+    assert(completion_tile >= 0 && completion_tile < NUM_TILES);
+    const DataType data_type = get_data_type<T1>();
+    *INSTR_opcode_datatype_optype_tdst1_tdst2 =
+        gem5::maa::LogicalSPDCacheABI::encodeLogicalStreamStoreHeader(
+            static_cast<uint8_t>(src_logical), static_cast<uint8_t>(data_type),
+            static_cast<uint8_t>(completion_tile));
+    *INSTR_tsrc1_tsrc2_rdst1_rdst2_rsrc1_rsrc2_rsrc3_csrc = UINT64_MAX;
+    *INSTR_baseaddr = reinterpret_cast<uint64_t>(backing);
     __asm__ __volatile__("mfence;");
 }
 

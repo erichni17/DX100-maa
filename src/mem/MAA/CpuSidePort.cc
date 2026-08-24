@@ -267,6 +267,31 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                         logical_header.src2LogicalID;
                     current_instruction->dst1LogicalID =
                         logical_header.dst1LogicalID;
+                } else if (
+                    logical_header.kind ==
+                        maa::LogicalSPDCacheABI::HeaderKind::
+                            LogicalStreamLoad ||
+                    logical_header.kind ==
+                        maa::LogicalSPDCacheABI::HeaderKind::
+                            LogicalStreamStore) {
+                    const bool is_load = logical_header.kind ==
+                        maa::LogicalSPDCacheABI::HeaderKind::LogicalStreamLoad;
+                    panic_if(
+                        current_instruction->opcode !=
+                            (is_load ? Instruction::OpcodeType::STREAM_LD :
+                                       Instruction::OpcodeType::STREAM_ST),
+                        "Logical stream high-byte operands do not match "
+                        "STREAM_LD/STREAM_ST opcode %d\n",
+                        static_cast<int>(current_instruction->opcode));
+                    current_instruction->src1LogicalID =
+                        logical_header.src1LogicalID;
+                    current_instruction->src2LogicalID =
+                        logical_header.src2LogicalID;
+                    current_instruction->dst1LogicalID =
+                        logical_header.dst1LogicalID;
+                    current_instruction->logicalCompletionSpdID =
+                        current_instruction->dst1SpdID;
+                    current_instruction->dst1SpdID = -1;
                 }
                 if (current_instruction->opcode ==
                         Instruction::OpcodeType::STREAM_LD ||
@@ -326,10 +351,6 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
             }
             case 2: {
                 panic_if(instruction_id == -1, "Received new instruction[2] before insturction[0]!\n");
-                current_instruction->baseAddr = data;
-                current_instruction->state = Instruction::Status::Idle;
-                current_instruction->CID = pkt->req->contextId();
-                current_instruction->PC = pkt->req->getPC();
                 if (current_instruction->isLogicalALUScalar() ||
                     current_instruction->isLogicalALUVector()) {
                     panic_if(
@@ -338,6 +359,83 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                         "sentinel, got 0x%016lx\n", data);
                     break;
                 }
+                if (current_instruction->isLogicalStream()) {
+                    maa::LogicalSPDCacheABI::StreamOperandShape shape;
+                    shape.datatype = static_cast<uint8_t>(
+                        current_instruction->datatype);
+                    shape.src1LogicalID = current_instruction->src1LogicalID;
+                    shape.src2LogicalID = current_instruction->src2LogicalID;
+                    shape.dst1LogicalID = current_instruction->dst1LogicalID;
+                    shape.src1SpdID = current_instruction->src1SpdID;
+                    shape.src2SpdID = current_instruction->src2SpdID;
+                    shape.dst1SpdID = current_instruction->dst1SpdID;
+                    shape.dst2SpdID = current_instruction->dst2SpdID;
+                    shape.completionSpdID =
+                        current_instruction->logicalCompletionSpdID;
+                    shape.src1RegID = current_instruction->src1RegID;
+                    shape.src2RegID = current_instruction->src2RegID;
+                    shape.src3RegID = current_instruction->src3RegID;
+                    shape.dst1RegID = current_instruction->dst1RegID;
+                    shape.dst2RegID = current_instruction->dst2RegID;
+                    shape.condSpdID = current_instruction->condSpdID;
+                    shape.backingAddr = data;
+                    const auto validation = current_instruction->
+                        isLogicalStreamLoad() ?
+                        maa::LogicalSPDCacheABI::validateLogicalStreamLoad(
+                            shape, static_cast<uint8_t>(
+                                current_instruction->opcode)) :
+                        maa::LogicalSPDCacheABI::validateLogicalStreamStore(
+                            shape, static_cast<uint8_t>(
+                                current_instruction->opcode));
+                    panic_if(validation != maa::LogicalSPDCacheABI::
+                                               StreamValidation::Valid,
+                             "Rejected logical STREAM ABI shape (%d) before "
+                             "controller state mutation\n",
+                             static_cast<int>(validation));
+                    panic_if(shape.completionSpdID < 0 ||
+                                 shape.completionSpdID >=
+                                     static_cast<int>(num_tiles),
+                             "Rejected logical STREAM completion identity "
+                             "before controller state mutation\n");
+                    const int range = getAddrRegion(data);
+                    panic_if(range < 0,
+                             "Logical STREAM backing address 0x%lx is not "
+                             "in a registered memory region\n", data);
+                    const auto span_validation =
+                        maa::LogicalSPDCacheABI::validateBackingSpan(
+                            data, shape.datatype, addrRegions[range].first,
+                            addrRegions[range].second);
+                    panic_if(span_validation !=
+                                 maa::LogicalSPDCacheABI::
+                                     DestinationValidation::Valid,
+                             "Rejected logical STREAM backing span before "
+                             "controller state mutation\n");
+                    if (current_instruction->isLogicalStreamLoad()) {
+                        current_instruction->logicalSourceBackingAddr = data;
+                        current_instruction->logicalSourceAddrRangeID = range;
+                        current_instruction->logicalSourceMinAddr =
+                            addrRegions[range].first;
+                        current_instruction->logicalSourceMaxAddr =
+                            addrRegions[range].second;
+                    } else {
+                        current_instruction->logicalDestinationBackingAddr =
+                            data;
+                        current_instruction->logicalDestinationAddrRangeID =
+                            range;
+                        current_instruction->logicalDestinationMinAddr =
+                            addrRegions[range].first;
+                        current_instruction->logicalDestinationMaxAddr =
+                            addrRegions[range].second;
+                    }
+                    panic_if(true,
+                             "Logical STREAM ABI decoded and validated, but "
+                             "live execution is unsupported until the "
+                             "logical controller is integrated\n");
+                }
+                current_instruction->baseAddr = data;
+                current_instruction->state = Instruction::Status::Idle;
+                current_instruction->CID = pkt->req->contextId();
+                current_instruction->PC = pkt->req->getPC();
                 if (current_instruction->isSoaJitRmw()) {
                     panic_if(
                         !current_instruction->hasValidSoaJitRmwOperands(),

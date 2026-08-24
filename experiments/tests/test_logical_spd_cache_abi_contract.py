@@ -57,6 +57,9 @@ class LogicalSpdCacheAbiContractTest(unittest.TestCase):
             "controllerSrcSlot, controllerDstSlot",
             "isLogicalALUScalar() const",
             "isLogicalALUVector() const",
+            "logicalCompletionSpdID",
+            "isLogicalStreamLoad() const",
+            "isLogicalStreamStore() const",
         ):
             self.assertIn(field, self.if_header)
         for initializer in (
@@ -66,6 +69,7 @@ class LogicalSpdCacheAbiContractTest(unittest.TestCase):
             "src1LogicalGeneration(0)",
             "src2LogicalGeneration(0)",
             "dst1LogicalGeneration(0)",
+            "logicalCompletionSpdID(-1)",
         ):
             self.assertIn(initializer, self.if_source)
 
@@ -204,6 +208,63 @@ class LogicalSpdCacheAbiContractTest(unittest.TestCase):
             "my_instruction_recvs[instruction_id] = true",
             self.cpu_port[validation:unsupported],
         )
+
+    def test_logical_stream_forms_reuse_stream_opcodes_and_fail_closed(self):
+        for evidence in (
+            "StreamLoadOpcode = 0",
+            "StreamStoreOpcode = 1",
+            "LogicalStreamLoad",
+            "LogicalStreamStore",
+            "encodeLogicalStreamLoadHeader",
+            "encodeLogicalStreamStoreHeader",
+            "StreamOperandShape",
+            "StreamValidation",
+            "validateLogicalStreamLoad",
+            "validateLogicalStreamStore",
+            "MixedPhysicalOperands",
+            "MissingCompletionIdentity",
+            "validateBackingSpan",
+            "LogicalElements = 16384",
+        ):
+            self.assertIn(evidence, self.abi)
+        stream = self.cpu_port.index(
+            "if (current_instruction->isLogicalStream())"
+        )
+        validation = self.cpu_port.index("validateLogicalStreamLoad", stream)
+        span = self.cpu_port.index("validateBackingSpan", validation)
+        unsupported = self.cpu_port.index(
+            "Logical STREAM ABI decoded and validated", span
+        )
+        self.assertLess(stream, validation)
+        self.assertLess(validation, span)
+        self.assertLess(span, unsupported)
+        self.assertNotIn(
+            "my_instruction_recvs[instruction_id] = true",
+            self.cpu_port[validation:unsupported],
+        )
+        for evidence in (
+            "logicalCompletionSpdID =",
+            "current_instruction->dst1SpdID = -1",
+            "logicalSourceBackingAddr = data",
+            "logicalDestinationBackingAddr = data",
+        ):
+            self.assertIn(evidence, self.cpu_port)
+
+    def test_api_emits_logical_stream_data_and_completion_separately(self):
+        load = self.api[
+            self.api.index("inline void maa_stream_load_logical") :
+        ]
+        store = self.api[
+            self.api.index("inline void maa_stream_store_logical") :
+        ]
+        for helper, encoder in (
+            (load, "encodeLogicalStreamLoadHeader"),
+            (store, "encodeLogicalStreamStoreHeader"),
+        ):
+            self.assertIn(encoder, helper)
+            self.assertIn("completion_tile", helper)
+            self.assertIn("UINT64_MAX", helper)
+            self.assertIn("*INSTR_baseaddr", helper)
 
     def test_api_emits_ordinary_vector_opcode_with_three_backing_words(
         self,

@@ -64,6 +64,26 @@ validVectorShape()
     return shape;
 }
 
+ABI::StreamOperandShape
+validLogicalLoadShape()
+{
+    ABI::StreamOperandShape shape;
+    shape.dst1LogicalID = 1;
+    shape.completionSpdID = 3;
+    shape.backingAddr = 0x10000;
+    return shape;
+}
+
+ABI::StreamOperandShape
+validLogicalStoreShape()
+{
+    ABI::StreamOperandShape shape;
+    shape.src1LogicalID = 0;
+    shape.completionSpdID = 3;
+    shape.backingAddr = 0x10000;
+    return shape;
+}
+
 void
 testHeaderDecodeMatrix()
 {
@@ -105,6 +125,19 @@ testHeaderDecodeMatrix()
             }
         }
     }
+    for (uint8_t logical = 0; logical < ABI::LogicalDescriptorCount;
+         ++logical) {
+        const auto load = ABI::decodeWord0(
+            ABI::encodeLogicalStreamLoadHeader(logical, 2, 7));
+        CHECK(load.kind == ABI::HeaderKind::LogicalStreamLoad);
+        CHECK(load.src1LogicalID == -1);
+        CHECK(load.dst1LogicalID == logical);
+        const auto store = ABI::decodeWord0(
+            ABI::encodeLogicalStreamStoreHeader(logical, 2, 7));
+        CHECK(store.kind == ABI::HeaderKind::LogicalStreamStore);
+        CHECK(store.src1LogicalID == logical);
+        CHECK(store.dst1LogicalID == -1);
+    }
 
     // Every high-byte shape outside legacy physical or the tagged logical
     // subset is rejected.  This includes the plan's incompatible all-ff
@@ -115,11 +148,20 @@ testHeaderDecodeMatrix()
                                     (static_cast<uint64_t>(ABI::NoOperand)
                                      << 48) |
                                     (static_cast<uint64_t>(dst) << 40);
-            const bool supported = src < ABI::LogicalDescriptorCount &&
-                                   dst < ABI::LogicalDescriptorCount;
-            CHECK(ABI::decodeWord0(tagged).kind ==
-                  (supported ? ABI::HeaderKind::LogicalALUScalar
-                             : ABI::HeaderKind::Unsupported));
+            const auto kind = ABI::decodeWord0(tagged).kind;
+            if (src == ABI::NoOperand &&
+                dst < ABI::LogicalDescriptorCount) {
+                CHECK(kind == ABI::HeaderKind::LogicalStreamLoad);
+            } else if (src < ABI::LogicalDescriptorCount &&
+                       dst == ABI::NoOperand) {
+                CHECK(kind == ABI::HeaderKind::LogicalStreamStore);
+            } else {
+                const bool supported = src < ABI::LogicalDescriptorCount &&
+                                       dst < ABI::LogicalDescriptorCount;
+                CHECK(kind ==
+                      (supported ? ABI::HeaderKind::LogicalALUScalar
+                                 : ABI::HeaderKind::Unsupported));
+            }
         }
     }
     for (uint16_t src = 0; src < 256; ++src) {
@@ -130,7 +172,11 @@ testHeaderDecodeMatrix()
                     dst == ABI::LegacyPhysicalHighByte) {
                     continue;
                 }
-                if ((mid == ABI::NoOperand &&
+                if ((src == ABI::NoOperand && mid == ABI::NoOperand &&
+                     dst < ABI::LogicalDescriptorCount) ||
+                    (src < ABI::LogicalDescriptorCount &&
+                     mid == ABI::NoOperand && dst == ABI::NoOperand) ||
+                    (mid == ABI::NoOperand &&
                      src < ABI::LogicalDescriptorCount &&
                      dst < ABI::LogicalDescriptorCount) ||
                     (src >= ABI::LogicalVectorIDBias &&
@@ -152,6 +198,77 @@ testHeaderDecodeMatrix()
             }
         }
     }
+}
+
+void
+testLogicalStreamValidationMatrix()
+{
+    using Result = ABI::StreamValidation;
+    const auto valid_load = validLogicalLoadShape();
+    const auto valid_store = validLogicalStoreShape();
+    CHECK(ABI::validateLogicalStreamLoad(valid_load, ABI::StreamLoadOpcode) ==
+          Result::Valid);
+    CHECK(ABI::validateLogicalStreamStore(valid_store,
+                                          ABI::StreamStoreOpcode) ==
+          Result::Valid);
+    for (uint8_t datatype = 0; datatype < ABI::DataTypeCount; ++datatype) {
+        for (uint8_t id = 0; id < ABI::LogicalDescriptorCount; ++id) {
+            auto load = valid_load;
+            load.datatype = datatype;
+            load.dst1LogicalID = id;
+            CHECK(ABI::validateLogicalStreamLoad(load,
+                                                  ABI::StreamLoadOpcode) ==
+                  Result::Valid);
+            auto store = valid_store;
+            store.datatype = datatype;
+            store.src1LogicalID = id;
+            CHECK(ABI::validateLogicalStreamStore(store,
+                                                   ABI::StreamStoreOpcode) ==
+                  Result::Valid);
+        }
+    }
+    auto shape = valid_load;
+    CHECK(ABI::validateLogicalStreamLoad(shape, ABI::StreamStoreOpcode) ==
+          Result::WrongOpcode);
+    shape.datatype = ABI::DataTypeCount;
+    CHECK(ABI::validateLogicalStreamLoad(shape, ABI::StreamLoadOpcode) ==
+          Result::UnsupportedDataType);
+    shape = valid_load;
+    shape.dst1LogicalID = 2;
+    CHECK(ABI::validateLogicalStreamLoad(shape, ABI::StreamLoadOpcode) ==
+          Result::InvalidLogicalID);
+    shape = valid_load;
+    shape.src1SpdID = 0;
+    CHECK(ABI::validateLogicalStreamLoad(shape, ABI::StreamLoadOpcode) ==
+          Result::MixedPhysicalOperands);
+    shape = valid_load;
+    shape.completionSpdID = -1;
+    CHECK(ABI::validateLogicalStreamLoad(shape, ABI::StreamLoadOpcode) ==
+          Result::MissingCompletionIdentity);
+    shape = valid_load;
+    shape.src1RegID = 0;
+    CHECK(ABI::validateLogicalStreamLoad(shape, ABI::StreamLoadOpcode) ==
+          Result::RegisterOperandPresent);
+    shape = valid_load;
+    shape.condSpdID = 0;
+    CHECK(ABI::validateLogicalStreamLoad(shape, ABI::StreamLoadOpcode) ==
+          Result::Conditional);
+    shape = valid_load;
+    shape.backingAddr = ABI::NoAddress;
+    CHECK(ABI::validateLogicalStreamLoad(shape, ABI::StreamLoadOpcode) ==
+          Result::MissingBacking);
+    shape = valid_load;
+    shape.backingAddr = 0;
+    CHECK(ABI::validateLogicalStreamLoad(shape, ABI::StreamLoadOpcode) ==
+          Result::NullBacking);
+    shape = valid_store;
+    shape.dst1SpdID = 0;
+    CHECK(ABI::validateLogicalStreamStore(shape, ABI::StreamStoreOpcode) ==
+          Result::MixedPhysicalOperands);
+    shape = valid_store;
+    shape.completionSpdID = -1;
+    CHECK(ABI::validateLogicalStreamStore(shape, ABI::StreamStoreOpcode) ==
+          Result::MissingCompletionIdentity);
 }
 
 void
@@ -441,6 +558,17 @@ testGuestAPIWritesTheSharedWireImage()
     CHECK(word3 == reinterpret_cast<uint64_t>(destination));
     CHECK(word4 == reinterpret_cast<uint64_t>(source));
     CHECK(word5 == reinterpret_cast<uint64_t>(source));
+
+    maa_stream_load_logical<uint32_t>(source, 1, 7);
+    CHECK(word0 == ABI::encodeLogicalStreamLoadHeader(
+                       1, static_cast<uint8_t>(DataType::UINT32_TYPE), 7));
+    CHECK(word1 == UINT64_MAX);
+    CHECK(word2 == reinterpret_cast<uint64_t>(source));
+    maa_stream_store_logical<uint32_t>(destination, 0, 6);
+    CHECK(word0 == ABI::encodeLogicalStreamStoreHeader(
+                       0, static_cast<uint8_t>(DataType::UINT32_TYPE), 6));
+    CHECK(word1 == UINT64_MAX);
+    CHECK(word2 == reinterpret_cast<uint64_t>(destination));
 }
 
 } // anonymous namespace
@@ -451,6 +579,7 @@ main()
     testHeaderDecodeMatrix();
     testLogicalScalarValidationMatrix();
     testLogicalVectorValidationMatrix();
+    testLogicalStreamValidationMatrix();
     testDestinationBackingValidation();
     testGuestAPIWritesTheSharedWireImage();
     std::cout << "logical_spd_cache_abi_test: PASS" << std::endl;
