@@ -23,6 +23,12 @@ class CGLogicalPageRmwHybridContract(unittest.TestCase):
         self.assertIn("static CgRmwTreatment cg_rmw_treatment =", SOURCE)
         self.assertIn("CgRmwTreatment::Legacy4K;", SOURCE)
 
+    def test_gate_uses_full_dx100_row_table_geometry(self):
+        runner = RUNNER_PATH.read_text()
+        self.assertIn("--maa_num_initial_row_table_slices=32", runner)
+        self.assertIn("num_initial_row_table_slices=32", runner)
+        self.assertNotIn("--maa_num_initial_row_table_slices=16", runner)
+
     def test_intermediates_are_coherent_aligned_backings(self):
         self.assertIn("constexpr size_t cg_logical_backing_bytes", SOURCE)
         self.assertGreaterEqual(
@@ -67,6 +73,39 @@ class CGLogicalPageRmwHybridContract(unittest.TestCase):
         self.assertIn("all_spmv_full_windows", SOURCE)
         self.assertIn("host_payload_access=", SOURCE)
 
+    def test_each_spmv_site_counts_eligibility_and_routing_independently(self):
+        for site in ("q_spmv", "residual_spmv"):
+            self.assertEqual(
+                SOURCE.count(f"cg_{site}_eligible_windows[tid]++"), 1
+            )
+            self.assertEqual(
+                SOURCE.count(f"cg_{site}_routed_windows[tid]++"), 1
+            )
+            self.assertIn(f"{site}_eligible_windows=", SOURCE)
+            self.assertIn(f"{site}_routed_windows=", SOURCE)
+        self.assertIn("q_spmv_eligible_windows > 0", SOURCE)
+        self.assertIn(
+            "q_spmv_eligible_windows == q_spmv_routed_windows", SOURCE
+        )
+        self.assertIn("residual_spmv_eligible_windows > 0", SOURCE)
+        self.assertIn("residual_spmv_eligible_windows ==", SOURCE)
+
+    def test_storage_accounting_includes_external_and_physical_payloads(self):
+        self.assertIn("cg_virtual_gather_coherent_backing_bytes", SOURCE)
+        self.assertIn("cg_external_coherent_backing_bytes", SOURCE)
+        self.assertIn("cg_physical_spd_payload_bytes", SOURCE)
+        self.assertIn(
+            "cg_logical_scheduler_reserved_lane_payload_bytes", SOURCE
+        )
+        runner = RUNNER_PATH.read_text()
+        for token in (
+            "external_coherent_backing_bytes=1048576",
+            "physical_spd_payload_bytes=655360",
+            "logical_scheduler_reserved_lanes=8",
+            "logical_scheduler_reserved_lane_payload_bytes=131072",
+        ):
+            self.assertIn(token, runner)
+
     def test_runner_requires_exact_mechanism_and_provenance_closure(self):
         runner = RUNNER_PATH.read_text()
         for token in (
@@ -81,6 +120,10 @@ class CGLogicalPageRmwHybridContract(unittest.TestCase):
             "IND_SoaJitTerminalCompletions",
             "IND_SoaJitFallbacks",
             "IND_SoaJitOpenContexts",
+            "q_spmv_eligible_windows",
+            "q_spmv_routed_windows",
+            "residual_spmv_eligible_windows",
+            "residual_spmv_routed_windows",
             "source_status.after",
             "reference_sha256",
         ):
@@ -89,6 +132,26 @@ class CGLogicalPageRmwHybridContract(unittest.TestCase):
         self.assertNotIn("native4", runner)
         self.assertNotIn("timeout_command", runner)
         self.assertNotRegex(runner, r"(?m)^\s*timeout(?:\s|$)")
+        self.assertIn("$q_routed -eq $q_eligible", runner)
+        self.assertIn("$residual_routed -eq $residual_eligible", runner)
+
+    def test_runner_uses_index_stable_numerical_fingerprint_criterion(self):
+        runner = RUNNER_PATH.read_text()
+        for token in (
+            "exact_quantized_hashes:x_q5,x_q6,z_q5,z_q6",
+            "nonfinite_x=0,nonfinite_z=0,result=PASS",
+            "x_sum:1e-8",
+            "x_norm_sq:1e-8",
+            "z_sum:1e-8",
+            "z_norm_sq:1e-8",
+            "rnorm:1e-3",
+            "zeta:1e-10",
+            "reference_fingerprint=",
+            "candidate_fingerprint=",
+            "fingerprint_relative_deltas=",
+        ):
+            self.assertIn(token, runner)
+        self.assertNotIn('grep -Fxc "$reference_line"', runner)
 
 
 if __name__ == "__main__":

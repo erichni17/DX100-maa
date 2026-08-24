@@ -158,14 +158,32 @@ static uint64_t cg_logical_alu_vectors[NUM_CORES] = {};
 static uint64_t cg_logical_product_words[NUM_CORES] = {};
 static uint64_t cg_index_publish_pages[NUM_CORES] = {};
 static uint64_t cg_value_publish_pages[NUM_CORES] = {};
+static uint64_t cg_q_spmv_eligible_windows[NUM_CORES] = {};
+static uint64_t cg_q_spmv_routed_windows[NUM_CORES] = {};
+static uint64_t cg_residual_spmv_eligible_windows[NUM_CORES] = {};
+static uint64_t cg_residual_spmv_routed_windows[NUM_CORES] = {};
 static uint32_t cg_publish_generations[NUM_CORES] = {};
 #endif
-constexpr size_t cg_external_staging_bytes =
-    sizeof(cg_soa_indices) + sizeof(cg_soa_values)
+constexpr size_t cg_virtual_gather_coherent_backing_bytes =
+    NUM_CORES * TILE_SIZE * sizeof(float);
+constexpr size_t cg_external_coherent_backing_bytes =
+    cg_virtual_gather_coherent_backing_bytes + sizeof(cg_soa_indices) +
+    sizeof(cg_soa_values)
 #ifdef CG_LOGICAL_PAGE_RMW
     + sizeof(cg_soa_products)
 #endif
     ;
+constexpr size_t cg_physical_spd_payload_bytes =
+    NUM_CORES * NUM_TILES_PER_CORE * MAA_CONSUMER_TILE_SIZE *
+    sizeof(uint32_t);
+#ifdef CG_LOGICAL_PAGE_RMW
+constexpr size_t cg_logical_scheduler_reserved_lanes = 8;
+#else
+constexpr size_t cg_logical_scheduler_reserved_lanes = 0;
+#endif
+constexpr size_t cg_logical_scheduler_reserved_lane_payload_bytes =
+    cg_logical_scheduler_reserved_lanes * MAA_CONSUMER_TILE_SIZE *
+    sizeof(uint32_t);
 
 static const char *
 cg_rmw_treatment_name(CgRmwTreatment treatment)
@@ -813,8 +831,14 @@ int main(int argc, char **argv) {
                       : "cpu_after_spd_completion")
               << " logical=" << TILE_SIZE
               << " physical=" << MAA_CONSUMER_TILE_SIZE
-              << " external_staging_bytes="
-              << cg_external_staging_bytes
+              << " external_coherent_backing_bytes="
+              << cg_external_coherent_backing_bytes
+              << " physical_spd_payload_bytes="
+              << cg_physical_spd_payload_bytes
+              << " logical_scheduler_reserved_lanes="
+              << cg_logical_scheduler_reserved_lanes
+              << " logical_scheduler_reserved_lane_payload_bytes="
+              << cg_logical_scheduler_reserved_lane_payload_bytes
               << " host_payload_access="
               << (cg_rmw_treatment == CgRmwTreatment::LogicalPageSoaJit
                       ? 0
@@ -938,6 +962,10 @@ int main(int argc, char **argv) {
             uint64_t product_words = 0;
             uint64_t index_pages = 0;
             uint64_t value_pages = 0;
+            uint64_t q_spmv_eligible_windows = 0;
+            uint64_t q_spmv_routed_windows = 0;
+            uint64_t residual_spmv_eligible_windows = 0;
+            uint64_t residual_spmv_routed_windows = 0;
             for (int core = 0; core < NUM_CORES; ++core) {
                 full_windows += cg_soa_full_windows[core];
                 index_words += cg_soa_index_words[core];
@@ -949,6 +977,13 @@ int main(int argc, char **argv) {
                 product_words += cg_logical_product_words[core];
                 index_pages += cg_index_publish_pages[core];
                 value_pages += cg_value_publish_pages[core];
+                q_spmv_eligible_windows +=
+                    cg_q_spmv_eligible_windows[core];
+                q_spmv_routed_windows += cg_q_spmv_routed_windows[core];
+                residual_spmv_eligible_windows +=
+                    cg_residual_spmv_eligible_windows[core];
+                residual_spmv_routed_windows +=
+                    cg_residual_spmv_routed_windows[core];
 #endif
             }
             const bool staged_counts_close =
@@ -968,7 +1003,12 @@ int main(int argc, char **argv) {
                     logical_alus == full_windows && staged_counts_close &&
                     product_words == full_windows * TILE_SIZE &&
                     index_pages == full_windows * 4 &&
-                    value_pages == full_windows * 4;
+                    value_pages == full_windows * 4 &&
+                    q_spmv_eligible_windows > 0 &&
+                    q_spmv_eligible_windows == q_spmv_routed_windows &&
+                    residual_spmv_eligible_windows > 0 &&
+                    residual_spmv_eligible_windows ==
+                        residual_spmv_routed_windows;
             }
             std::cout << "CG_LOGICAL16_RMW_TERMINAL treatment="
                       << cg_rmw_treatment_name(cg_rmw_treatment)
@@ -985,7 +1025,22 @@ int main(int argc, char **argv) {
                       << " value_publish_pages=" << value_pages
                       << " logical_alu_vectors=" << logical_alus
                       << " logical_page_windows=" << logical_windows
+                      << " q_spmv_eligible_windows="
+                      << q_spmv_eligible_windows
+                      << " q_spmv_routed_windows=" << q_spmv_routed_windows
+                      << " residual_spmv_eligible_windows="
+                      << residual_spmv_eligible_windows
+                      << " residual_spmv_routed_windows="
+                      << residual_spmv_routed_windows
                       << " legacy_words=" << legacy_words
+                      << " external_coherent_backing_bytes="
+                      << cg_external_coherent_backing_bytes
+                      << " physical_spd_payload_bytes="
+                      << cg_physical_spd_payload_bytes
+                      << " logical_scheduler_reserved_lanes="
+                      << cg_logical_scheduler_reserved_lanes
+                      << " logical_scheduler_reserved_lane_payload_bytes="
+                      << cg_logical_scheduler_reserved_lane_payload_bytes
                       << " producer="
                       << (cg_rmw_treatment ==
                                   CgRmwTreatment::LogicalPageSoaJit
@@ -1359,6 +1414,8 @@ static void conj_grad_maa(int colidx[],
                     cg_rmw_treatment ==
                         CgRmwTreatment::LogicalPageSoaJit &&
                     gather_size == TILE_SIZE;
+                if (logical_page_full_window)
+                    cg_q_spmv_eligible_windows[tid]++;
 #else
                 const bool logical_page_full_window = false;
 #endif
@@ -1423,8 +1480,10 @@ static void conj_grad_maa(int colidx[],
                 if (gather_size == TILE_SIZE && !logical_page_full_window)
                     maa_virtual_consumer_end(virtual_consumer_mode, t6);
 #ifdef CG_LOGICAL_PAGE_RMW
-                if (logical_page_full_window)
+                if (logical_page_full_window) {
+                    cg_q_spmv_routed_windows[tid]++;
                     cg_logical_multiply_rmw(tid, curr_q, r2, r3, r1, t7);
+                }
 #endif
 #else
                 maa_const(k_base, r2);
@@ -1726,6 +1785,8 @@ static void conj_grad_maa(int colidx[],
             const bool logical_page_full_window =
                 cg_rmw_treatment == CgRmwTreatment::LogicalPageSoaJit &&
                 gather_size == TILE_SIZE;
+            if (logical_page_full_window)
+                cg_residual_spmv_eligible_windows[tid]++;
 #else
             const bool logical_page_full_window = false;
 #endif
@@ -1826,8 +1887,10 @@ static void conj_grad_maa(int colidx[],
             if (gather_size == TILE_SIZE && !logical_page_full_window)
                 maa_virtual_consumer_end(virtual_consumer_mode, t6);
 #ifdef CG_LOGICAL_PAGE_RMW
-            if (logical_page_full_window)
+            if (logical_page_full_window) {
+                cg_residual_spmv_routed_windows[tid]++;
                 cg_logical_multiply_rmw(tid, curr_r, r2, r3, r1, t7);
+            }
 #endif
 #ifdef CG_LOGICAL16_RMW
             if (soa_residual_full_window) {
