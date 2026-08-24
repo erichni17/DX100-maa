@@ -220,6 +220,10 @@ public:
     bool memoryPermitReserved;
     bool memoryPermitGranted;
     bool controllerManaged;
+    // A production LogicalTilePageScheduler micro-op.  It uses the existing
+    // controller subspan fields but has a distinct completion authority from
+    // TransparentSPDController.
+    bool logicalPageManaged;
     TransparentSPDController::Action controllerAction;
     uint64_t controllerTransactionID;
     int16_t controllerSrcSlot, controllerDstSlot;

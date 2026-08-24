@@ -309,11 +309,11 @@ inline void maa_alu_vector(int src1_tile, int src2_tile, int dst_tile, Operation
     __asm__ __volatile__("mfence;");
 }
 /**
- * Encode the decoder-only logical form of ordinary ALU_VECTOR.  Logical
+ * Encode the controller-owned logical form of ordinary ALU_VECTOR.  Logical
  * descriptor IDs occupy word zero's high bytes; word three names the
  * destination backing and words four/five name the two source backings.
- * This form is deliberately fail-closed until a controller execution path is
- * integrated.
+ * The instruction write completes only after all four native page actions and
+ * every destination WriteResp close.
  */
 template <class T1>
 inline void maa_alu_vector_logical(int src1_logical, int src2_logical,
@@ -400,7 +400,7 @@ inline void maa_stream_load(T1 *data, int min_reg, int max_reg, int stride_reg, 
 }
 
 /**
- * Decode-only logical form of ordinary STREAM_LD.  The registered backing
+ * Controller-owned logical form of ordinary STREAM_LD.  The registered backing
  * range supplies a complete aligned 16K-element source span; dst_logical is
  * data identity and completion_tile is solely the completion fence.
  */
@@ -518,9 +518,10 @@ inline void maa_stream_store(T1 *data, int min_reg, int max_reg,
 }
 
 /**
- * Decode-only logical form of ordinary STREAM_ST.  The logical source is
+ * Controller-owned logical form of ordinary STREAM_ST.  The logical source is
  * distinct from completion_tile, and backing names the registered aligned
- * 16K-element destination span.
+ * 16K-element destination span.  Completion waits for all four pages and all
+ * exact response-bearing 64-byte writes.
  */
 template <class T1>
 inline void maa_stream_store_logical(T1 *backing, int src_logical,
