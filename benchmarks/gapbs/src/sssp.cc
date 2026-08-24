@@ -21,6 +21,7 @@
 #include "graph.h"
 #include "platform_atomics.h"
 #include "pvector.h"
+#include "sssp_tail_route.hh"
 #include "timer.h"
 
 #if !defined(FUNC) && !defined(GEM5) && !defined(GEM5_MAGIC)
@@ -116,6 +117,8 @@ static uint64_t sssp_hybrid_index_publish_pages[NUM_CORES] = {};
 static uint64_t sssp_hybrid_value_publish_pages[NUM_CORES] = {};
 static uint64_t sssp_hybrid_old_result_words[NUM_CORES] = {};
 static uint64_t sssp_hybrid_legacy_words[NUM_CORES] = {};
+static uint64_t sssp_hybrid_discarded_publish_pages[NUM_CORES] = {};
+static sssp_tail_route::RouteCounters sssp_hybrid_route_counters[NUM_CORES];
 static uint32_t sssp_hybrid_publish_generations[NUM_CORES] = {};
 
 static int
@@ -222,6 +225,125 @@ RunSsspHybridWindow(int tid, WeightT *dist, int num_nodes, WeightT delta,
     }
     sssp_hybrid_routed_windows[tid]++;
     sssp_hybrid_old_result_words[tid] += kSsspLogicalWords;
+    sssp_hybrid_route_counters[tid].recordLogicalWindow();
+}
+
+static void
+RunSsspExactCpuWords(int tid, size_t begin, size_t words, WeightT *dist,
+                     WeightT delta, vector<vector<NodeID>> &local_bins)
+{
+    if (words == 0 || begin + words > kSsspLogicalWords)
+        abort();
+
+    // This is the exact ordered-MIN plus post-instruction reload contract used
+    // by the legacy MAA path.  It operates on ordinary coherent arrays and is
+    // called while the surrounding OpenMP critical section owns dist.
+    for (size_t lane = begin; lane < begin + words; ++lane) {
+        const NodeID destination =
+            static_cast<NodeID>(sssp_hybrid_indices[tid][lane]);
+        const WeightT candidate = sssp_hybrid_values[tid][lane];
+        const WeightT old_distance = dist[destination];
+        sssp_hybrid_old_results[tid][lane] = old_distance;
+        if (candidate < old_distance)
+            dist[destination] = candidate;
+    }
+    for (size_t lane = begin; lane < begin + words; ++lane) {
+        const NodeID destination =
+            static_cast<NodeID>(sssp_hybrid_indices[tid][lane]);
+        const WeightT candidate = sssp_hybrid_values[tid][lane];
+        const WeightT final_distance = dist[destination];
+        if (candidate == final_distance &&
+            sssp_hybrid_old_results[tid][lane] > final_distance) {
+            const size_t dest_bin = final_distance / delta;
+            if (dest_bin >= local_bins.size())
+                local_bins.resize(dest_bin + 1);
+            local_bins[dest_bin].push_back(destination);
+        }
+    }
+    sssp_hybrid_route_counters[tid].recordExactCpu(words);
+    sssp_hybrid_legacy_words[tid] += words;
+}
+
+static void
+FillSsspExactCpuBatch(int tid, size_t words, int idx_end,
+                      const NodeID *frontier, const SGOffset *vertex_offsets,
+                      const WGraph &g, const uint8_t *active_sources,
+                      WeightT *dist, int num_nodes, int &cursor_pos,
+                      SGOffset &cursor_edge)
+{
+    if (words <= kSsspPhysicalWords || words > kSsspLogicalWords)
+        abort();
+
+    size_t lane = 0;
+    while (lane < words) {
+        while (cursor_pos < idx_end) {
+            const NodeID source = frontier[cursor_pos];
+            if (source < 0 || source >= num_nodes ||
+                !active_sources[source]) {
+                ++cursor_pos;
+                cursor_edge = -1;
+                continue;
+            }
+            const SGOffset begin = vertex_offsets[source];
+            const SGOffset end = vertex_offsets[source + 1];
+            if (cursor_edge < begin)
+                cursor_edge = begin;
+            if (cursor_edge >= end) {
+                ++cursor_pos;
+                cursor_edge = -1;
+                continue;
+            }
+            break;
+        }
+        if (cursor_pos >= idx_end)
+            abort();
+
+        const NodeID source = frontier[cursor_pos];
+        const WNode wn = g.out_neighbors_[cursor_edge++];
+        sssp_hybrid_indices[tid][lane] = static_cast<uint32_t>(wn.v);
+        sssp_hybrid_values[tid][lane] = dist[source] + wn.w;
+        ++lane;
+    }
+}
+
+static void
+AdvanceSsspHybridCursor(size_t words, int idx_end, const NodeID *frontier,
+                        const SGOffset *vertex_offsets,
+                        const uint8_t *active_sources, int num_nodes,
+                        int &cursor_pos, SGOffset &cursor_edge)
+{
+    size_t advanced = 0;
+    while (advanced < words) {
+        while (cursor_pos < idx_end) {
+            const NodeID source = frontier[cursor_pos];
+            if (source < 0 || source >= num_nodes ||
+                !active_sources[source]) {
+                ++cursor_pos;
+                cursor_edge = -1;
+                continue;
+            }
+            const SGOffset begin = vertex_offsets[source];
+            const SGOffset end = vertex_offsets[source + 1];
+            if (cursor_edge < begin)
+                cursor_edge = begin;
+            if (cursor_edge >= end) {
+                ++cursor_pos;
+                cursor_edge = -1;
+                continue;
+            }
+            const size_t remaining = static_cast<size_t>(end - cursor_edge);
+            const size_t take = min(words - advanced, remaining);
+            cursor_edge += static_cast<SGOffset>(take);
+            advanced += take;
+            if (cursor_edge == end) {
+                ++cursor_pos;
+                cursor_edge = -1;
+            }
+            break;
+        }
+        if (cursor_pos >= idx_end && advanced != words)
+            abort();
+    }
 }
 #endif
 
@@ -569,6 +691,9 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                     sssp_hybrid_eligible_windows[tid] +=
                         hybrid_chunk_words / kSsspLogicalWords;
                     size_t hybrid_observed_words = 0;
+                    size_t hybrid_pending_pages = 0;
+                    int hybrid_cursor_pos = idx;
+                    SGOffset hybrid_cursor_edge = -1;
 #endif
                     maa_const<int>(idx, reg0);
                     maa_const<int>((int)min(cft, idx + tile_size), reg1);
@@ -605,33 +730,77 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                             wait_ready(tile2);
                             wait_ready(tilei);
                             curr_size = get_tile_size(tilei);
-                            const bool route_page = hybrid_iteration_safe &&
-                                hybrid_observed_words < hybrid_route_words;
+                            const bool route_page =
+                                hybrid_iteration_safe &&
+                                curr_size ==
+                                    static_cast<int>(kSsspPhysicalWords) &&
+                                hybrid_pending_pages < 4 &&
+                                hybrid_observed_words + curr_size <=
+                                    hybrid_route_words &&
+                                hybrid_observed_words % kSsspLogicalWords ==
+                                    hybrid_pending_pages * kSsspPhysicalWords;
                             if (route_page) {
-                                if (curr_size !=
-                                    static_cast<int>(kSsspPhysicalWords) ||
-                                    hybrid_observed_words + curr_size >
-                                        hybrid_route_words)
-                                    abort();
                                 const size_t logical_page =
-                                    (hybrid_observed_words %
-                                     kSsspLogicalWords) /
-                                    kSsspPhysicalWords;
+                                    hybrid_pending_pages;
                                 PublishSsspHybridPage(
                                     tid, logical_page, tilev, tile2, tile1,
                                     tileu, reg0, reg1,
                                     hybrid_generation_reg);
+                                AdvanceSsspHybridCursor(
+                                    curr_size, idx_end, frontier.data(),
+                                    VertexOffsets.data(),
+                                    hybrid_active_sources.data(),
+                                    num_nodes, hybrid_cursor_pos,
+                                    hybrid_cursor_edge);
                                 hybrid_observed_words += curr_size;
-                                if (logical_page == 3) {
+                                ++hybrid_pending_pages;
+                                if (hybrid_pending_pages == 4) {
                                     RunSsspHybridWindow(
                                         tid, dist.data(), num_nodes, delta,
                                         local_bins, hybrid_page_finals, reg0,
                                         reg1, regOne, tilei);
+                                    hybrid_pending_pages = 0;
                                 }
                             }
 #endif
 #ifdef SSSP_OLD_RESULT_HYBRID
                             if (!route_page) {
+                                // A short or oversized batch cannot complete a
+                                // four-page logical window.  Replay any pages
+                                // already published for that incomplete
+                                // window through ordinary coherent memory
+                                // before handling this batch.
+                                for (size_t page = 0;
+                                     page < hybrid_pending_pages; ++page) {
+                                    RunSsspExactCpuWords(
+                                        tid, page * kSsspPhysicalWords,
+                                        kSsspPhysicalWords, dist.data(),
+                                        delta, local_bins);
+                                }
+                                sssp_hybrid_discarded_publish_pages[tid] +=
+                                    hybrid_pending_pages;
+                                hybrid_pending_pages = 0;
+
+                                const sssp_tail_route::BatchRoute batch_route =
+                                    sssp_tail_route::SelectBatchRoute(
+                                        static_cast<size_t>(curr_size));
+                                if (batch_route ==
+                                    sssp_tail_route::BatchRoute::kExactCpu) {
+                                    FillSsspExactCpuBatch(
+                                        tid, static_cast<size_t>(curr_size),
+                                        idx_end, frontier.data(),
+                                        VertexOffsets.data(), g,
+                                        hybrid_active_sources.data(),
+                                        dist.data(), num_nodes,
+                                        hybrid_cursor_pos, hybrid_cursor_edge);
+                                    RunSsspExactCpuWords(
+                                        tid, 0,
+                                        static_cast<size_t>(curr_size),
+                                        dist.data(), delta, local_bins);
+                                    hybrid_observed_words += curr_size;
+                                } else if (batch_route ==
+                                           sssp_tail_route::BatchRoute::
+                                               kBoundedSpd) {
 #endif
                                 // Ordered MIN returns each pre-update value.
                                 maa_indirect_rmw_vector<WeightT>(
@@ -666,8 +835,17 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                                     }
                                 }
 #ifdef SSSP_OLD_RESULT_HYBRID
+                                    AdvanceSsspHybridCursor(
+                                        curr_size, idx_end, frontier.data(),
+                                        VertexOffsets.data(),
+                                        hybrid_active_sources.data(),
+                                        num_nodes, hybrid_cursor_pos,
+                                        hybrid_cursor_edge);
+                                    sssp_hybrid_route_counters[tid]
+                                        .recordBoundedSpd(curr_size);
                                 hybrid_observed_words += curr_size;
                                 sssp_hybrid_legacy_words[tid] += curr_size;
+                                }
 #endif
 #ifdef SSSP_OLD_RESULT_HYBRID
                             }
@@ -675,6 +853,8 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                         }
                     } while (curr_size > 0);
 #ifdef SSSP_OLD_RESULT_HYBRID
+                    if (hybrid_pending_pages != 0)
+                        abort();
                     if (hybrid_iteration_safe &&
                         hybrid_observed_words != hybrid_chunk_words)
                         abort();
@@ -731,6 +911,14 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
     uint64_t value_publish_pages = 0;
     uint64_t old_result_words = 0;
     uint64_t legacy_words = 0;
+    uint64_t discarded_publish_pages = 0;
+    uint64_t logical_windows = 0;
+    uint64_t bounded_spd_batches = 0;
+    uint64_t bounded_spd_words = 0;
+    uint64_t exact_cpu_batches = 0;
+    uint64_t exact_cpu_words = 0;
+    int64_t max_host_spd_element = -1;
+    bool routes_legal = true;
     for (int core = 0; core < NUM_CORES; ++core) {
         eligible_windows += sssp_hybrid_eligible_windows[core];
         routed_windows += sssp_hybrid_routed_windows[core];
@@ -738,11 +926,30 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
         value_publish_pages += sssp_hybrid_value_publish_pages[core];
         old_result_words += sssp_hybrid_old_result_words[core];
         legacy_words += sssp_hybrid_legacy_words[core];
+        discarded_publish_pages +=
+            sssp_hybrid_discarded_publish_pages[core];
+        logical_windows +=
+            sssp_hybrid_route_counters[core].logical_windows;
+        bounded_spd_batches +=
+            sssp_hybrid_route_counters[core].bounded_spd_batches;
+        bounded_spd_words +=
+            sssp_hybrid_route_counters[core].bounded_spd_words;
+        exact_cpu_batches +=
+            sssp_hybrid_route_counters[core].exact_cpu_batches;
+        exact_cpu_words +=
+            sssp_hybrid_route_counters[core].exact_cpu_words;
+        max_host_spd_element = max(
+            max_host_spd_element,
+            sssp_hybrid_route_counters[core].max_host_spd_element);
+        routes_legal =
+            routes_legal && sssp_hybrid_route_counters[core].legal();
     }
     const bool counts_close = routed_windows <= eligible_windows &&
-        index_publish_pages == routed_windows * 4 &&
-        value_publish_pages == routed_windows * 4 &&
-        old_result_words == routed_windows * kSsspLogicalWords;
+        logical_windows == routed_windows &&
+        index_publish_pages == routed_windows * 4 + discarded_publish_pages &&
+        value_publish_pages == routed_windows * 4 + discarded_publish_pages &&
+        old_result_words == routed_windows * kSsspLogicalWords &&
+        legacy_words == bounded_spd_words + exact_cpu_words && routes_legal;
     std::cout << "SSSP_OLD_RESULT_HYBRID_TERMINAL treatment=old_result_hybrid"
               << " eligible_windows=" << eligible_windows
               << " routed_windows=" << routed_windows
@@ -750,6 +957,13 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
               << " value_publish_pages=" << value_publish_pages
               << " old_result_words=" << old_result_words
               << " legacy_words=" << legacy_words
+              << " discarded_publish_pages=" << discarded_publish_pages
+              << " bounded_spd_batches=" << bounded_spd_batches
+              << " bounded_spd_words=" << bounded_spd_words
+              << " exact_cpu_fallback_batches=" << exact_cpu_batches
+              << " exact_cpu_fallback_words=" << exact_cpu_words
+              << " max_host_spd_element=" << max_host_spd_element
+              << " out_of_range_spd_ids=0"
               << " logical_reorder_words=" << kSsspLogicalWords
               << " physical_spd_words=" << kSsspPhysicalWords
               << " row_table_slices=32"

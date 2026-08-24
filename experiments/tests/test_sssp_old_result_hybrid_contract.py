@@ -42,9 +42,9 @@ class SsspOldResultHybridContract(unittest.TestCase):
 
     def test_four_physical_pages_precede_ordered_old_result(self):
         chunk = self.source[
-            self.source.index("SsspHybridChunkFrontierWords(") : self.source.index(
-                "PublishSsspHybridPage("
-            )
+            self.source.index(
+                "SsspHybridChunkFrontierWords("
+            ) : self.source.index("PublishSsspHybridPage(")
         ]
         self.assertIn("NUM_CORES * 4096", chunk)
         self.assertNotIn("NUM_CORES * 8192", chunk)
@@ -62,8 +62,14 @@ class SsspOldResultHybridContract(unittest.TestCase):
         self.assertLess(publish, old_result)
         self.assertLess(old_result, completion)
         self.assertLess(completion, frontier)
-        self.assertIn("logical_page == 3", self.source)
-        self.assertIn("curr_size !=", self.source)
+        self.assertIn("hybrid_pending_pages == 4", self.source)
+        self.assertIn("hybrid_pending_pages = 0", self.source)
+        self.assertIn(
+            "curr_size ==\n                                    "
+            "static_cast<int>(kSsspPhysicalWords)",
+            self.source,
+        )
+        self.assertIn("BatchRoute::kExactCpu", self.source)
         self.assertIn("kSsspPhysicalWords", self.source)
         self.assertIn("index_publish_pages == routed_windows * 4", self.source)
         self.assertIn("value_publish_pages == routed_windows * 4", self.source)
