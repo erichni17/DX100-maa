@@ -34,7 +34,8 @@ Raw CG reports:
 |---|---|---|---|
 | NAS CG | `dx100-cg-page-product-full-baf142f7-r1` | `/data1/nier/dx100-runs/2026-08-24-cg-page-product-full-baf142f7-r1` | trace-free full checkpoint |
 | NAS IS | `dx100-is-scalar-soa-full-a44aaa60-r5` | `/data1/nier/dx100-runs/2026-08-24-is-scalar-soa-full-a44aaa60-r5` | full O3 ROI |
-| HashJoin PRO/PRH | `hashjoin-hybrid-full-fc5f3ea4-20260824-0425` | `/data1/nier/dx100-runs/hashjoin-hybrid-full-fc5f3ea4-20260824-0425` | trace-free PRO checkpoint, then PRH |
+| HashJoin PRO/PRH | recovery pending | `/data1/nier/dx100-runs/hashjoin-hybrid-full-fc5f3ea4-20260824-0425` | PRO terminal; runner rejected valid zero second pass before PRH |
+| GAPBS SSSP S22 | runner/launch pending | pending | candidate-only full gate using selected composition |
 
 All units have infinite runtime and process-exit watchers under
 `/data1/nier/.dx-runtime-state`. An exit observation is not success; each raw
@@ -50,16 +51,36 @@ stats, balanced response ledgers, and hashes.
   checkpoint, writes fell from 11,399 to 10,165 (10.83%) and packing rose from
   2.225 to 2.496 useful words/write, but first-ROI latency regressed from
   `687,827,203` to `733,637,257 simTicks` (6.66%). SSSP was not launched.
-- The next active probe parameterizes partial-pressure concurrency at
-  1/2/4/8 over the same fixed eight slots. Default 8 preserves the accepted
-  behavior; all arms will restore the same frozen sparse checkpoint. A policy
-  is selectable only if it improves packing without regressing latency.
+- The matched pressure sweep selected dense/four: `686,432,788 simTicks` and
+  9,491 writes versus the exact oldest/eight reproduction at `687,827,203`
+  ticks and 11,399 writes. This is 0.202728% lower latency and 16.7383% fewer
+  writes with unchanged 512-byte payload and 1,128-byte buffer.
+- Dense/four alone reduced small-SSSP writes 33.4061% but was 0.046838% slower.
+  Composing the existing value cache, 64 active owners, and pre-A produced a
+  replicated exact endpoint at `9,976,182,331 simTicks`, 0.262468% below the
+  accepted small candidate, with 52.0055% fewer result writes. No new payload
+  is provisioned; contexts remain eight.
+
+Report:
+`experiments/analysis/soa_jit_old_result_write_coalescing_2026-08-24.md`.
+
+## HashJoin partial result
+
+Full PRO is terminal and correct at `28,586,786,731` first-ROI ticks with
+2,000,000 matches, 240/240 first-pass windows, zero shifted-pass windows,
+240/240 SoA terminals, and closed A ledgers. The runner incorrectly required a
+nonzero shifted pass for every full kernel and exited before PRH, leaving no
+top-level gate. PRO is therefore partial evidence, not a complete HashJoin
+result. Relative to frozen native16/native4 endpoints it is 18.5442%/16.4022%
+slower; this is end-to-end context, not causal virtualization attribution.
 
 ## Resume order
 
-1. Finish the bounded old-result partial-concurrency implementation and
-   matched sparse sweep; launch SSSP only from a non-regressing policy.
-2. On each full-service exit, validate correctness before comparing first-ROI
+1. Launch and validate candidate-only full SSSP S22 with the selected
+   dense4/cache64/pre-A configuration.
+2. Recover only the missing HashJoin PRH arm under a kernel-specific route
+   contract; do not rerun PRO.
+3. On each full-service exit, validate correctness before comparing first-ROI
    `simTicks` to the frozen physical tile sweep.
-3. Update this checkpoint with accepted results or explicit rejections; do not
+4. Update this checkpoint with accepted results or explicit rejections; do not
    infer speedups from live, incomplete, or final-post-ROI timing alone.
