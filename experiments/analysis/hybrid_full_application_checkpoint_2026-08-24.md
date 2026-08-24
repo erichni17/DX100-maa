@@ -37,12 +37,13 @@ Raw CG reports:
 | HashJoin PRH | `dx100-hashjoin-prh-full-recovery-20260824-061147` | `/data1/nier/dx100-runs/hashjoin-hybrid-prh-full-d7d29bf5-20260824-061147` | PRH-only recovery; PRO is not rerun |
 | GAPBS SSSP S22 | `dx100-sssp-old-result-full-e690867f-r1` | `/data1/nier/dx100-runs/2026-08-24-sssp-old-result-full-e690867f-r1` | reviewed candidate O3 ROI |
 
-All units have infinite runtime. CG, IS, and HashJoin have process-exit
-watchers under `/data1/nier/.dx-runtime-state`. The external SSSP watcher was
-not installed because its service launch was denied; the runner itself still
-fails closed and writes `gate.complete` only after its exact output,
-configuration, checkpoint identity, two stats windows, and issue/response
-ledgers validate. An exit observation is not success.
+All units have infinite runtime. Existing `dx-runtime` watch records are stale:
+their worker PIDs are dead even where the record still says `watching`.
+Acceptance therefore relies on each runner's internal fail-closed gate plus a
+one-shot artifact audit after exit. In particular, SSSP writes `gate.complete`
+only after its exact output, configuration, checkpoint identity, two stats
+windows, and issue/response ledgers validate. An exit observation is not
+success.
 
 ## Active optimization probes
 
