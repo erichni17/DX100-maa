@@ -1224,6 +1224,11 @@ public:
         std::vector<statistics::Scalar *> IND_SoaJitAliasesApplied;
         std::vector<statistics::Scalar *> IND_SoaJitAWriteIssues;
         std::vector<statistics::Scalar *> IND_SoaJitAWriteResponses;
+        std::vector<statistics::Scalar *> IND_SoaJitOldResultCaptures;
+        std::vector<statistics::Scalar *> IND_SoaJitOldResultWriteIssues;
+        std::vector<statistics::Scalar *> IND_SoaJitOldResultWriteResponses;
+        std::vector<statistics::Scalar *> IND_SoaJitOldResultCreditHighWater;
+        std::vector<statistics::Scalar *> IND_SoaJitOldResultStalls;
         std::vector<statistics::Scalar *> IND_SoaJitContextHighWater;
         std::vector<statistics::Scalar *> IND_SoaJitContextStalls;
         std::vector<statistics::Scalar *> IND_SoaJitTerminalCompletions;

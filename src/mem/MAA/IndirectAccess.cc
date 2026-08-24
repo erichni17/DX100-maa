@@ -725,6 +725,10 @@ void IndirectAccessUnit::check_reset() {
     panic_if(!soaJitContextsEmpty(),
              "I[%d] SoA/JIT A-line scoreboard is not empty at reset\n",
              my_indirect_id);
+    panic_if(soa_jit_old_result_buffer.activeRun() ||
+                 !soa_jit_old_result_buffer.empty(),
+             "I[%d] SoA/JIT old-result publisher is not empty at reset\n",
+             my_indirect_id);
     panic_if(descriptor_spool_bucket_active ||
                  descriptor_spool_bucket_scan_complete ||
                  descriptor_spool_replay_active ||
@@ -861,6 +865,10 @@ bool IndirectAccessUnit::isSoaJitScalarRmw() const {
 bool IndirectAccessUnit::isSoaJitMaskedIndexRmw() const {
     return my_instruction != nullptr &&
            my_instruction->isSoaJitMaskedIndexRmw();
+}
+bool IndirectAccessUnit::isSoaJitOldResultRmw() const {
+    return my_instruction != nullptr &&
+           my_instruction->hasSoaJitOldResult();
 }
 bool IndirectAccessUnit::usesBoundedDirectIndexPasses() const {
     return isDirectIndexLoad() && !isSoaJitRmw() &&
@@ -4173,6 +4181,8 @@ IndirectAccessUnit::hasLiveSoaJitState() const
            (my_instruction != nullptr && my_instruction->isSoaJitRmw()) ||
            !soaPredicateLinesEmpty() ||
            !soaJitContextsEmpty() ||
+           soa_jit_old_result_buffer.activeRun() ||
+           !soa_jit_old_result_buffer.empty() ||
            !soa_jit_value_coalescer.prefetchComplete();
 }
 
@@ -4366,6 +4376,15 @@ bool IndirectAccessUnit::serviceSoaJitBuild()
         return true;
     }
     soa_jit_all_rows_claimed = true;
+    if (isSoaJitOldResultRmw() &&
+        !soa_jit_old_result_selection_closed) {
+        const auto result = soa_jit_old_result_buffer.closeSelection(
+            soa_jit_selected, soa_jit_predicate_rejected);
+        panic_if(result != SoaJitOldResultBuffer::Result::Accepted,
+                 "I[%d] old-result selection closure failed: %u\n",
+                 my_indirect_id, static_cast<unsigned>(result));
+        soa_jit_old_result_selection_closed = true;
+    }
     return false;
 }
 bool
@@ -4651,7 +4670,13 @@ IndirectAccessUnit::serviceSoaJitLookahead()
                     curTick(), context.generation, context.aPaddr,
                     context_index, context_count))
                 continue;
-            applySoaJitValue(context, slot->aWord, slot->value.data());
+            if (!applySoaJitValue(
+                    context, static_cast<uint16_t>(context_index),
+                    slot->aWord, static_cast<uint32_t>(slot->logicalItr),
+                    slot->value.data())) {
+                progressed = true;
+                continue;
+            }
             const int expected_offset = context.nextOffset;
             const OffsetTableEntry consumed =
                 offset_table->consume_entry(context.nextOffset);
@@ -4697,11 +4722,31 @@ IndirectAccessUnit::serviceSoaJitLookahead()
     }
     return progressed;
 }
-void IndirectAccessUnit::applySoaJitValue(
-    SoaJitContext &context, uint16_t a_word, const uint8_t *value)
+bool IndirectAccessUnit::applySoaJitValue(
+    SoaJitContext &context, uint16_t context_index, uint16_t a_word,
+    uint32_t logical_itr, const uint8_t *value)
 {
     uint8_t *destination =
         context.aLine.data() + a_word * my_word_size;
+    if (isSoaJitOldResultRmw()) {
+        const auto capture = soa_jit_old_result_buffer.capture(
+            soa_jit_generation, context_index, logical_itr, destination,
+            my_word_size);
+        if (capture == SoaJitOldResultBuffer::Result::Full ||
+            capture ==
+                SoaJitOldResultBuffer::Result::LineAwaitingResponse) {
+            soa_jit_old_result_stalls++;
+            serviceSoaJitOldResultWrites(true);
+            return false;
+        }
+        panic_if(capture != SoaJitOldResultBuffer::Result::Accepted,
+                 "I[%d] rejected old-result capture generation=%lu "
+                 "context=%u logical=%u result=%u\n",
+                 my_indirect_id, soa_jit_generation, context_index,
+                 logical_itr, static_cast<unsigned>(capture));
+        soa_jit_old_result_captures++;
+        serviceSoaJitOldResultWrites(false);
+    }
     if (isSoaJitScalarRmw()) {
         panic_if(value == nullptr ||
                      std::memcmp(value, soa_jit_scalar_broadcast.data(),
@@ -4710,7 +4755,7 @@ void IndirectAccessUnit::applySoaJitValue(
                          SoaJitScalarBroadcast::Status::Accepted,
                  "I[%d] captured scalar apply rejected\n",
                  my_indirect_id);
-        return;
+        return true;
     }
 #define APPLY_SOA_JIT(TYPE) \
     do { \
@@ -4739,6 +4784,82 @@ void IndirectAccessUnit::applySoaJitValue(
       default: panic("I[%d] invalid SoA/JIT datatype\n", my_indirect_id);
     }
 #undef APPLY_SOA_JIT
+    return true;
+}
+
+bool
+IndirectAccessUnit::serviceSoaJitOldResultWrites(bool force_partial)
+{
+    if (!isSoaJitOldResultRmw())
+        return false;
+    bool progressed = false;
+    SoaJitOldResultBuffer::Request write;
+    while (soa_jit_old_result_buffer.issue(&write, force_partial) ==
+           SoaJitOldResultBuffer::Result::Accepted) {
+        const Addr vaddr = write.identity.lineAddress;
+        panic_if(write.payload == nullptr || write.identity.validWords == 0 ||
+                     vaddr < my_result_addr || vaddr >= my_result_max_addr ||
+                     my_result_max_addr - vaddr < block_size,
+                 "I[%d] invalid retained old-result line 0x%lx mask=0x%x\n",
+                 my_indirect_id, vaddr, write.identity.validWords);
+        const Addr paddr = translatePacket(
+            vaddr, BaseMMU::Write, block_size);
+        RequestPtr req = std::make_shared<Request>(
+            paddr, block_size, flags, maa->requestorId);
+        req->setRegion(my_result_addr_range_id);
+        std::vector<bool> byte_enable(block_size, false);
+        for (size_t word = 0;
+             word < SoaJitOldResultBuffer::WordsPerLine; ++word) {
+            if ((write.identity.validWords & (1U << word)) == 0)
+                continue;
+            std::fill(byte_enable.begin() + word * sizeof(float),
+                      byte_enable.begin() + (word + 1) * sizeof(float),
+                      true);
+        }
+        req->setByteEnable(byte_enable);
+        PacketPtr pkt = new Packet(req, MemCmd::WriteReq);
+        pkt->headerDelay = pkt->payloadDelay = 0;
+        pkt->dataStatic(const_cast<uint8_t *>(write.payload));
+        auto *sender = new SoaJitOldResultSenderState;
+        sender->identity = write.identity;
+        sender->physicalAddress = paddr;
+        pkt->pushSenderState(sender);
+        soa_jit_old_result_write_issues++;
+        // Keep bypass_deferred_queue at its default false: an exact-address
+        // conflict must retain MAA's existing FIFO before this credit retires.
+        maa->sendPacket(FuncUnitType::INDIRECT, my_indirect_id, pkt,
+                        maa->getClockEdge(Cycles(0)), true, true);
+        DPRINTF(MAAVirtualTrace,
+                "event=soa_jit_old_result_issue schema=1 unit=%d "
+                "operation_tick=%lu generation=%lu sequence=%lu "
+                "credit=%u vaddr=0x%lx paddr=0x%lx mask=0x%x\n",
+                my_indirect_id, my_decode_start_tick,
+                write.identity.generation, write.identity.issueSequence,
+                write.identity.credit, vaddr, paddr,
+                write.identity.validWords);
+        progressed = true;
+    }
+    return progressed;
+}
+
+bool
+IndirectAccessUnit::completeSoaJitOldResultWrite(
+    const SoaJitOldResultBuffer::Identity &identity)
+{
+    if (!isSoaJitOldResultRmw())
+        return false;
+    const auto result = soa_jit_old_result_buffer.acknowledge(identity);
+    if (result != SoaJitOldResultBuffer::Result::Accepted)
+        return false;
+    soa_jit_old_result_write_responses++;
+    DPRINTF(MAAVirtualTrace,
+            "event=soa_jit_old_result_response schema=1 unit=%d "
+            "operation_tick=%lu generation=%lu sequence=%lu credit=%u "
+            "vaddr=0x%lx mask=0x%x\n",
+            my_indirect_id, my_decode_start_tick, identity.generation,
+            identity.issueSequence, identity.credit, identity.lineAddress,
+            identity.validWords);
+    return true;
 }
 void IndirectAccessUnit::issueSoaJitWrite(SoaJitContext &context)
 {
@@ -4941,6 +5062,28 @@ void IndirectAccessUnit::checkSoaJitTerminal()
                  soa_jit_a_read_issues != soa_jit_a_read_responses ||
                  soa_jit_a_read_issues != soa_jit_a_write_issues ||
                  soa_jit_a_write_issues != soa_jit_a_write_responses ||
+                 (isSoaJitOldResultRmw()
+                      ? (!soa_jit_old_result_selection_closed ||
+                         !soa_jit_old_result_finished ||
+                         soa_jit_old_result_buffer.activeRun() ||
+                         !soa_jit_old_result_buffer.empty() ||
+                         soa_jit_old_result_captures != soa_jit_selected ||
+                         soa_jit_old_result_write_issues !=
+                             soa_jit_old_result_write_responses ||
+                         soa_jit_old_result_buffer.captured() !=
+                             soa_jit_selected ||
+                         soa_jit_old_result_buffer.rejected() !=
+                             soa_jit_predicate_rejected ||
+                         soa_jit_old_result_buffer.issues() !=
+                             soa_jit_old_result_write_issues ||
+                         soa_jit_old_result_buffer.responses() !=
+                             soa_jit_old_result_write_responses)
+                      : (soa_jit_old_result_selection_closed ||
+                         soa_jit_old_result_finished ||
+                         soa_jit_old_result_captures != 0 ||
+                         soa_jit_old_result_write_issues != 0 ||
+                         soa_jit_old_result_write_responses != 0 ||
+                         soa_jit_old_result_stalls != 0)) ||
                  soa_jit_predicate_line_issues !=
                      soa_jit_predicate_line_responses ||
                  soa_jit_predicate_feeder_high_water >
@@ -5038,6 +5181,7 @@ void IndirectAccessUnit::executeInstruction() {
         my_backing_addr = my_instruction->backingAddr;
         my_index_addr = my_instruction->indexAddr;
         my_predicate_addr = my_instruction->predicateAddr;
+        my_result_addr = my_instruction->resultAddr;
         my_idx_tile = my_instruction->src1SpdID;
         my_src_tile = my_instruction->src2SpdID;
         my_src_reg = my_instruction->src1RegID;
@@ -5345,6 +5489,16 @@ void IndirectAccessUnit::executeInstruction() {
         soa_jit_apply_lane_high_water = 0;
         soa_jit_a_write_issues = 0;
         soa_jit_a_write_responses = 0;
+        soa_jit_old_result_captures = 0;
+        soa_jit_old_result_write_issues = 0;
+        soa_jit_old_result_write_responses = 0;
+        soa_jit_old_result_stalls = 0;
+        soa_jit_old_result_selection_closed = false;
+        soa_jit_old_result_finished = false;
+        panic_if(soa_jit_old_result_buffer.activeRun() ||
+                     !soa_jit_old_result_buffer.empty(),
+                 "I[%d] retained old-result state at decode\n",
+                 my_indirect_id);
         soa_jit_context_stalls = 0;
         soa_jit_context_high_water = 0;
         panic_if(soa_jit_operation_active,
@@ -5527,6 +5681,9 @@ void IndirectAccessUnit::executeInstruction() {
         my_predicate_max_addr = my_instruction->predicateMaxAddr;
         my_predicate_addr_range_id =
             my_instruction->predicateAddrRangeID;
+        my_result_min_addr = my_instruction->resultMinAddr;
+        my_result_max_addr = my_instruction->resultMaxAddr;
+        my_result_addr_range_id = my_instruction->resultAddrRangeID;
         if (isVirtualLoad()) {
             panic_if(my_backing_addr_range_id < 0,
                      "I[%d] virtual backing has no registered region\n",
@@ -5610,6 +5767,21 @@ void IndirectAccessUnit::executeInstruction() {
                      "I[%d] SoA/JIT generation exhausted\n",
                      my_indirect_id);
             soa_jit_generation = soa_jit_next_generation++;
+            if (isSoaJitOldResultRmw()) {
+                panic_if(my_word_size != sizeof(float) ||
+                             my_instruction->datatype !=
+                                 Instruction::DataType::FLOAT32_TYPE ||
+                             my_result_addr_range_id < 0 ||
+                             my_result_addr < my_result_min_addr ||
+                             my_result_addr >= my_result_max_addr,
+                         "I[%d] invalid FP32 old-result backing geometry\n",
+                         my_indirect_id);
+                const auto begin = soa_jit_old_result_buffer.begin(
+                    soa_jit_generation, my_result_addr, my_max);
+                panic_if(begin != SoaJitOldResultBuffer::Result::Accepted,
+                         "I[%d] old-result generation begin failed: %u\n",
+                         my_indirect_id, static_cast<unsigned>(begin));
+            }
         }
 
         // Setting the state of the instruction and stream unit
@@ -6039,7 +6211,8 @@ void IndirectAccessUnit::executeInstruction() {
                     maa->getTicksToCycles(curTick() - my_build_start_tick);
                 my_build_start_tick = 0;
             }
-            const bool progressed = serviceSoaJitLookahead();
+            bool progressed = serviceSoaJitOldResultWrites(false);
+            progressed = serviceSoaJitLookahead() || progressed;
             const size_t active_contexts = soaJitActiveContextCount();
             if (!soa_jit_all_rows_claimed &&
                 active_contexts <
@@ -6086,6 +6259,26 @@ void IndirectAccessUnit::executeInstruction() {
                     if (soa_jit_value_coalescer.prefetchComplete())
                         scheduleExecuteInstructionEvent(1);
                     break;
+                }
+                if (isSoaJitOldResultRmw()) {
+                    progressed = serviceSoaJitOldResultWrites(true) ||
+                        progressed;
+                    if (!soa_jit_old_result_buffer.complete()) {
+                        if (progressed)
+                            scheduleExecuteInstructionEvent(1);
+                        break;
+                    }
+                    if (!soa_jit_old_result_finished) {
+                        const auto finish =
+                            soa_jit_old_result_buffer.finish();
+                        panic_if(
+                            finish !=
+                                SoaJitOldResultBuffer::Result::Accepted,
+                            "I[%d] old-result terminal finish failed: %u\n",
+                            my_indirect_id,
+                            static_cast<unsigned>(finish));
+                        soa_jit_old_result_finished = true;
+                    }
                 }
                 checkSoaJitTerminal();
                 state = Status::Response;
@@ -6522,11 +6715,39 @@ void IndirectAccessUnit::executeInstruction() {
                 soa_jit_a_write_issues;
             (*maa->stats.IND_SoaJitAWriteResponses[my_indirect_id]) +=
                 soa_jit_a_write_responses;
+            (*maa->stats.IND_SoaJitOldResultCaptures[my_indirect_id]) +=
+                soa_jit_old_result_captures;
+            (*maa->stats.IND_SoaJitOldResultWriteIssues[my_indirect_id]) +=
+                soa_jit_old_result_write_issues;
+            (*maa->stats
+                  .IND_SoaJitOldResultWriteResponses[my_indirect_id]) +=
+                soa_jit_old_result_write_responses;
+            (*maa->stats
+                  .IND_SoaJitOldResultCreditHighWater[my_indirect_id]) +=
+                soa_jit_old_result_buffer.creditHighWater();
+            (*maa->stats.IND_SoaJitOldResultStalls[my_indirect_id]) +=
+                soa_jit_old_result_stalls;
             (*maa->stats.IND_SoaJitContextHighWater[my_indirect_id]) +=
                 soa_jit_context_high_water;
             (*maa->stats.IND_SoaJitContextStalls[my_indirect_id]) +=
                 soa_jit_context_stalls;
             (*maa->stats.IND_SoaJitTerminalCompletions[my_indirect_id])++;
+            DPRINTF(MAAVirtualTrace,
+                    "event=soa_jit_old_result_complete schema=1 unit=%d "
+                    "operation_tick=%lu enabled=%d generation=%lu "
+                    "captures=%lu rejected=%lu write_issues=%lu "
+                    "write_responses=%lu credit_high_water=%lu stalls=%lu "
+                    "state_bytes=%lu terminal=1\n",
+                    my_indirect_id, my_decode_start_tick,
+                    isSoaJitOldResultRmw(), soa_jit_generation,
+                    soa_jit_old_result_captures,
+                    soa_jit_predicate_rejected,
+                    soa_jit_old_result_write_issues,
+                    soa_jit_old_result_write_responses,
+                    soa_jit_old_result_buffer.creditHighWater(),
+                    soa_jit_old_result_stalls,
+                    static_cast<unsigned long>(
+                        sizeof(soa_jit_old_result_buffer)));
             const auto &result_read_hwm =
                 soa_jit_result_pipeline.aReadHighWater();
             const auto &result_write_hwm =
@@ -9433,6 +9654,31 @@ void IndirectAccessUnit::retirementWriteComplete(
     Addr addr, const uint8_t *writeRespPayload, unsigned payloadBytes,
     PacketPtr responsePacket) {
     if (isSoaJitRmw()) {
+        auto *old_peek = dynamic_cast<SoaJitOldResultSenderState *>(
+            responsePacket == nullptr ? nullptr :
+                                        responsePacket->senderState);
+        if (old_peek != nullptr) {
+            panic_if(!isSoaJitOldResultRmw() ||
+                         old_peek->physicalAddress != addr,
+                     "I[%d] old-result WriteResp lost exact ownership at "
+                     "0x%lx\n",
+                     my_indirect_id, addr);
+            auto *sender = dynamic_cast<SoaJitOldResultSenderState *>(
+                responsePacket->popSenderState());
+            panic_if(sender != old_peek,
+                     "I[%d] old-result sender-state stack diverged\n",
+                     my_indirect_id);
+            const auto identity = sender->identity;
+            delete sender;
+            panic_if(!completeSoaJitOldResultWrite(identity),
+                     "I[%d] rejected old-result WriteResp generation=%lu "
+                     "sequence=%lu credit=%u vaddr=0x%lx\n",
+                     my_indirect_id, identity.generation,
+                     identity.issueSequence, identity.credit,
+                     identity.lineAddress);
+            scheduleNextExecution(true);
+            return;
+        }
         auto *peek = dynamic_cast<SoaJitWriteSenderState *>(
             responsePacket == nullptr ? nullptr :
                                         responsePacket->senderState);

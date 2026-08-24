@@ -243,7 +243,12 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                 current_instruction->dst2SpdID =
                     (data & NA_UINT8) == NA_UINT8 ? -1 : (data & NA_UINT8);
                 data = data >> 8;
-                current_instruction->dst1SpdID = (data & NA_UINT8) == NA_UINT8 ? -1 : (data & NA_UINT8);
+                const uint8_t raw_dst1 = data & NA_UINT8;
+                current_instruction->soaJitOldResult =
+                    raw_dst1 == SoaJitSafety::OldResultModeTag;
+                current_instruction->dst1SpdID =
+                    (raw_dst1 == NA_UINT8 ||
+                     current_instruction->soaJitOldResult) ? -1 : raw_dst1;
                 data = data >> 8;
                 current_instruction->optype = (data & NA_UINT8) == NA_UINT8 ? Instruction::OPType::MAX : static_cast<Instruction::OPType>(data & NA_UINT8);
                 data = data >> 8;
@@ -252,6 +257,11 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                 data = data >> 8;
                 current_instruction->opcode = (data & NA_UINT8) == NA_UINT8 ? Instruction::OpcodeType::MAX : static_cast<Instruction::OpcodeType>(data & NA_UINT8);
                 assert(current_instruction->opcode != Instruction::OpcodeType::MAX);
+                panic_if(current_instruction->soaJitOldResult &&
+                             current_instruction->opcode !=
+                                 Instruction::OpcodeType::INDIR_RMW_VECTOR,
+                         "Old-result mode tag is only valid for guarded "
+                         "INDIR_RMW_VECTOR\n");
                 if (logical_header.kind ==
                     maa::LogicalSPDCacheABI::HeaderKind::LogicalALUScalar) {
                     panic_if(
@@ -463,8 +473,9 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                 if (current_instruction->isSoaJitRmw()) {
                     panic_if(
                         !current_instruction->hasValidSoaJitRmwShape(),
-                        "Rejected SoA/JIT RMW ABI shape: dst1(old value) "
-                        "must be absent, dst2(completion) and all three "
+                        "Rejected SoA/JIT RMW ABI shape: dst1 must be the "
+                        "no-result sentinel or old-result mode tag, "
+                        "dst2(completion) and all three "
                         "range registers must be present, and register "
                         "destinations must be absent\n");
                     panic_if(
@@ -850,6 +861,8 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                 panic_if(!current_instruction->isSoaJitRmw(),
                          "Instruction word five is only valid for the "
                          "guarded SoA/JIT RMW shape\n");
+                panic_if(current_instruction->soaJitPredicateWordReceived,
+                         "Received duplicate SoA/JIT predicate word\n");
                 panic_if(!current_instruction->hasValidSoaJitRmwOperands(),
                          "Rejected malformed SoA/JIT RMW before word-five "
                          "dispatch\n");
@@ -863,6 +876,7 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                     data == SoaJitSafety::MaskedIndexModeTag;
                 current_instruction->predicateAddr =
                     current_instruction->soaJitMaskedIndex ? 0 : data;
+                current_instruction->soaJitPredicateWordReceived = true;
                 const int soa_word_size = current_instruction->WordSize();
                 const bool operands_aligned =
                     current_instruction->isSoaJitScalarRmw()
@@ -893,6 +907,8 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                     current_instruction->predicateMaxAddr = addrRegions[
                         current_instruction->predicateAddrRangeID].second;
                 }
+                if (current_instruction->hasSoaJitOldResult())
+                    break;
                 my_instruction_recvs[instruction_id] = true;
                 DPRINTF(MAAController,
                         "%s: %s received with values=0x%lx indices=0x%lx "
@@ -902,6 +918,68 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                         current_instruction->indexAddr,
                         current_instruction->predicateAddr,
                         current_instruction->soaJitMaskedIndex);
+                respond_immediately = false;
+                scheduleDispatchInstructionEvent();
+                break;
+            }
+            case 6: {
+                panic_if(instruction_id == -1,
+                         "Received old-result backing before instruction "
+                         "header!\n");
+                panic_if(!current_instruction->hasSoaJitOldResult() ||
+                             !current_instruction->
+                                  hasValidSoaJitRmwOperands(),
+                         "Instruction word six is only valid for the "
+                         "guarded vector old-result SoA/JIT shape\n");
+                panic_if(!current_instruction->soaJitPredicateWordReceived ||
+                             current_instruction->soaJitResultWordReceived ||
+                             current_instruction->addrRangeID < 0 ||
+                             current_instruction->backingAddrRangeID < 0 ||
+                             current_instruction->indexAddrRangeID < 0,
+                         "Old-result word requires one complete, ordered "
+                         "A/value/index/predicate staging sequence\n");
+                panic_if(current_instruction->datatype !=
+                             Instruction::DataType::FLOAT32_TYPE,
+                         "SoA/JIT old-result mode currently supports FP32 "
+                         "only\n");
+                panic_if(!SoaJitSafety::oldResultAligned(data),
+                         "SoA/JIT old-result backing 0x%lx must be a "
+                         "non-null aligned cache-line span\n", data);
+                current_instruction->resultAddr = data;
+                current_instruction->resultAddrRangeID = getAddrRegion(data);
+                panic_if(current_instruction->resultAddrRangeID < 0,
+                         "Old-result address 0x%lx is not in a registered "
+                         "memory region\n", data);
+                current_instruction->resultMinAddr = addrRegions[
+                    current_instruction->resultAddrRangeID].first;
+                current_instruction->resultMaxAddr = addrRegions[
+                    current_instruction->resultAddrRangeID].second;
+                constexpr Addr result_bytes =
+                    16 * 1024 * sizeof(float);
+                panic_if(data < current_instruction->resultMinAddr ||
+                             data >= current_instruction->resultMaxAddr ||
+                             current_instruction->resultMaxAddr - data <
+                                 result_bytes,
+                         "SoA/JIT old-result full logical-16K span exceeds "
+                         "its registered region\n");
+                panic_if(
+                    current_instruction->resultAddrRangeID ==
+                            current_instruction->addrRangeID ||
+                        current_instruction->resultAddrRangeID ==
+                            current_instruction->backingAddrRangeID ||
+                        current_instruction->resultAddrRangeID ==
+                            current_instruction->indexAddrRangeID ||
+                        (current_instruction->predicateAddr != 0 &&
+                         current_instruction->resultAddrRangeID ==
+                             current_instruction->predicateAddrRangeID),
+                    "Old-result backing must not alias an input or target "
+                    "memory region\n");
+                current_instruction->soaJitResultWordReceived = true;
+                my_instruction_recvs[instruction_id] = true;
+                DPRINTF(MAAController,
+                        "%s: %s received with old-result backing=0x%lx!\n",
+                        __func__, current_instruction->print(),
+                        current_instruction->resultAddr);
                 respond_immediately = false;
                 scheduleDispatchInstructionEvent();
                 break;

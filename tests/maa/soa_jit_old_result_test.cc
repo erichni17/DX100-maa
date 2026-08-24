@@ -141,6 +141,14 @@ main()
     CHECK(allFalse.complete());
     CHECK(allFalse.issues() == 0);
 
+    SoaJitOldResultBuffer empty;
+    CHECK(empty.begin(4, 0x3000, 0) ==
+          SoaJitOldResultBuffer::Result::Accepted);
+    CHECK(empty.closeSelection(0, 0) ==
+          SoaJitOldResultBuffer::Result::Accepted);
+    CHECK(empty.complete());
+    CHECK(empty.finish() == SoaJitOldResultBuffer::Result::Accepted);
+
     std::cout << "SOA_JIT_OLD_RESULT_TEST_PASS\n";
     return 0;
 }

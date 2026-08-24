@@ -22,6 +22,7 @@
 #include "mem/MAA/BoundedQuantileRanges.hh"
 #include "mem/MAA/BoundedRangePass.hh"
 #include "mem/MAA/ReorderSurvivalTracker.hh"
+#include "mem/MAA/SoaJitOldResultBuffer.hh"
 #include "mem/MAA/SoaJitOverlapState.hh"
 #include "mem/MAA/SoaJitResultPipeline.hh"
 #include "mem/MAA/SoaJitScalarBroadcast.hh"
@@ -339,8 +340,9 @@ protected:
     Addr my_backing_min_addr, my_backing_max_addr;
     Addr my_index_addr, my_index_min_addr, my_index_max_addr;
     Addr my_predicate_addr, my_predicate_min_addr, my_predicate_max_addr;
+    Addr my_result_addr, my_result_min_addr, my_result_max_addr;
     int8_t my_addr_range_id, my_backing_addr_range_id, my_index_addr_range_id;
-    int8_t my_predicate_addr_range_id;
+    int8_t my_predicate_addr_range_id, my_result_addr_range_id;
     int my_index_min, my_index_stride;
     struct DirectIndexWord
     {
@@ -563,9 +565,15 @@ protected:
     std::array<SoaJitContext, SoaJitContexts> soa_jit_contexts{};
     SoaJitResultPipeline soa_jit_result_pipeline;
     SoaJitScalarBroadcast soa_jit_scalar_broadcast;
+    SoaJitOldResultBuffer soa_jit_old_result_buffer;
     struct SoaJitWriteSenderState : public Packet::SenderState
     {
         SoaJitScalarBroadcast::WriteIdentity identity{};
+    };
+    struct SoaJitOldResultSenderState : public Packet::SenderState
+    {
+        SoaJitOldResultBuffer::Identity identity{};
+        Addr physicalAddress = 0;
     };
     struct SoaJitValuePrefetchCursor
     {
@@ -630,6 +638,12 @@ protected:
     uint64_t soa_jit_apply_lane_high_water = 0;
     uint64_t soa_jit_a_write_issues = 0;
     uint64_t soa_jit_a_write_responses = 0;
+    uint64_t soa_jit_old_result_captures = 0;
+    uint64_t soa_jit_old_result_write_issues = 0;
+    uint64_t soa_jit_old_result_write_responses = 0;
+    uint64_t soa_jit_old_result_stalls = 0;
+    bool soa_jit_old_result_selection_closed = false;
+    bool soa_jit_old_result_finished = false;
     uint64_t soa_jit_context_stalls = 0;
     uint64_t soa_jit_context_high_water = 0;
     int my_dst_tile, my_src_tile, my_src_reg, my_cond_tile, my_max;
@@ -677,6 +691,7 @@ protected:
     bool isSoaJitRmw() const;
     bool isSoaJitScalarRmw() const;
     bool isSoaJitMaskedIndexRmw() const;
+    bool isSoaJitOldResultRmw() const;
     bool usesBoundedDirectIndexPasses() const;
     bool usesBoundedSourceResponses() const;
     void fillDirectIndexWindow();
@@ -723,8 +738,12 @@ protected:
                               int offset);
     bool issueSoaJitScalar(size_t context_index, size_t slot_index,
                            int offset);
-    void applySoaJitValue(SoaJitContext &context, uint16_t a_word,
+    bool applySoaJitValue(SoaJitContext &context, uint16_t context_index,
+                          uint16_t a_word, uint32_t logical_itr,
                           const uint8_t *value);
+    bool serviceSoaJitOldResultWrites(bool force_partial);
+    bool completeSoaJitOldResultWrite(
+        const SoaJitOldResultBuffer::Identity &identity);
     void issueSoaJitWrite(SoaJitContext &context);
     bool completeSoaJitWrite(
         const SoaJitScalarBroadcast::WriteIdentity &identity);

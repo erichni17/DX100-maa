@@ -16,7 +16,11 @@ Instruction::Instruction() : baseAddr(0xFFFFFFFFFFFFFFFF),
                              backingAddr(0xFFFFFFFFFFFFFFFF),
                              indexAddr(0xFFFFFFFFFFFFFFFF),
                              predicateAddr(0),
+                             resultAddr(0xFFFFFFFFFFFFFFFF),
                              soaJitMaskedIndex(false),
+                             soaJitOldResult(false),
+                             soaJitPredicateWordReceived(false),
+                             soaJitResultWordReceived(false),
                              soaJitScalarRegID(-1),
                              logicalSourceBackingAddr(0xFFFFFFFFFFFFFFFF),
                              logicalSource2BackingAddr(0xFFFFFFFFFFFFFFFF),
@@ -29,6 +33,8 @@ Instruction::Instruction() : baseAddr(0xFFFFFFFFFFFFFFFF),
                              indexMaxAddr(0xFFFFFFFFFFFFFFFF),
                              predicateMinAddr(0xFFFFFFFFFFFFFFFF),
                              predicateMaxAddr(0xFFFFFFFFFFFFFFFF),
+                             resultMinAddr(0xFFFFFFFFFFFFFFFF),
+                             resultMaxAddr(0xFFFFFFFFFFFFFFFF),
                              logicalSourceMinAddr(0xFFFFFFFFFFFFFFFF),
                              logicalSourceMaxAddr(0xFFFFFFFFFFFFFFFF),
                              logicalSource2MinAddr(0xFFFFFFFFFFFFFFFF),
@@ -39,6 +45,7 @@ Instruction::Instruction() : baseAddr(0xFFFFFFFFFFFFFFFF),
                              backingAddrRangeID(-1),
                              indexAddrRangeID(-1),
                              predicateAddrRangeID(-1),
+                             resultAddrRangeID(-1),
                              logicalSourceAddrRangeID(-1),
                              logicalSource2AddrRangeID(-1),
                              logicalDestinationAddrRangeID(-1),
@@ -238,6 +245,8 @@ Instruction::getMemoryAccesses(
         append(indexAddrRangeID, AccessType::READ);
         if (predicateAddr != 0)
             append(predicateAddrRangeID, AccessType::READ);
+        if (hasSoaJitOldResult())
+            append(resultAddrRangeID, AccessType::WRITE);
     } else {
         append(addrRangeID, accessType);
     }

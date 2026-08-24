@@ -129,7 +129,7 @@ public:
         int8_t regionID = -1;
         AccessType type = AccessType::COMPUTE;
     };
-    static constexpr size_t MaxMemoryAccesses = 4;
+    static constexpr size_t MaxMemoryAccesses = 5;
     std::string datatype_names[6] = {
         "UINT32",
         "INT32",
@@ -163,18 +163,23 @@ public:
         "SRV",
         "FNS",
         "MAX"};
-    Addr baseAddr, backingAddr, indexAddr, predicateAddr;
+    Addr baseAddr, backingAddr, indexAddr, predicateAddr, resultAddr;
     bool soaJitMaskedIndex;
+    bool soaJitOldResult;
+    bool soaJitPredicateWordReceived;
+    bool soaJitResultWordReceived;
     int16_t soaJitScalarRegID;
     Addr logicalSourceBackingAddr;
     Addr logicalSource2BackingAddr, logicalDestinationBackingAddr;
     Addr minAddr, maxAddr, backingMinAddr, backingMaxAddr;
     Addr indexMinAddr, indexMaxAddr, predicateMinAddr, predicateMaxAddr;
+    Addr resultMinAddr, resultMaxAddr;
     Addr logicalSourceMinAddr, logicalSourceMaxAddr;
     Addr logicalSource2MinAddr, logicalSource2MaxAddr;
     Addr logicalDestinationMinAddr, logicalDestinationMaxAddr;
     int8_t addrRangeID, backingAddrRangeID, indexAddrRangeID;
     int8_t predicateAddrRangeID;
+    int8_t resultAddrRangeID;
     int8_t logicalSourceAddrRangeID;
     int8_t logicalSource2AddrRangeID, logicalDestinationAddrRangeID;
     int16_t src1RegID, src2RegID, src3RegID, dst1RegID, dst2RegID;
@@ -275,6 +280,9 @@ public:
     }
     bool isSoaJitMaskedIndexRmw() const {
         return isSoaJitVectorRmw() && soaJitMaskedIndex;
+    }
+    bool hasSoaJitOldResult() const {
+        return isSoaJitVectorRmw() && soaJitOldResult;
     }
     bool hasValidSoaJitRmwOperands() const {
         return isSoaJitRmw() && dst1SpdID == -1 && dst2SpdID != -1 &&

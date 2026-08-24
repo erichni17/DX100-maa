@@ -17,9 +17,18 @@ class SoaJitSafety
         std::numeric_limits<uint32_t>::max();
     static constexpr uint64_t MaskedIndexModeTag =
         std::numeric_limits<uint64_t>::max();
+    // tdst1=0xfe is outside the configured physical tile IDs and distinct
+    // from the legacy/no-result 0xff sentinel.
+    static constexpr uint8_t OldResultModeTag = 0xfe;
     static constexpr std::size_t MaskedIndexCompareBits = 32;
     static constexpr std::size_t MaskedIndexModeStateBits = 1;
     static constexpr std::size_t MaskedIndexAdditionalBufferBytes = 0;
+
+    static constexpr bool
+    oldResultAligned(uint64_t result_addr)
+    {
+        return result_addr != 0 && result_addr % LocalLineBytes == 0;
+    }
 
     static constexpr bool
     typedOperandsAligned(uint64_t a_addr, uint64_t value_addr,

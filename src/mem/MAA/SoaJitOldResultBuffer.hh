@@ -81,7 +81,7 @@ class SoaJitOldResultBuffer
                 (std::numeric_limits<uint64_t>::max() - resultBase) /
                     WordBytes)
             return Result::InvalidBase;
-        if (logicalWords == 0 || logicalWords > MaxLogicalWords)
+        if (logicalWords > MaxLogicalWords)
             return Result::InvalidLogicalWords;
         clearRun();
         active = true;
@@ -269,6 +269,8 @@ class SoaJitOldResultBuffer
     size_t responses() const { return acknowledgedLines; }
     size_t creditHighWater() const { return highWater; }
     uint64_t generation() const { return activeGeneration; }
+    bool activeRun() const { return active; }
+    bool selectionIsClosed() const { return selectionClosed; }
 
   private:
     enum class State : uint8_t { Free, Filling, AwaitingResponse };

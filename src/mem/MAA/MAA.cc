@@ -7485,6 +7485,27 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitAWriteResponses"),
             statistics::units::Count::get(),
             "exact A WriteResp completions"));
+        IND_SoaJitOldResultCaptures.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitOldResultCaptures"),
+            statistics::units::Count::get(),
+            "selected aliases with an exact pre-update value captured"));
+        IND_SoaJitOldResultWriteIssues.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitOldResultWriteIssues"),
+            statistics::units::Count::get(),
+            "response-bearing old-result cache-line WriteReq issues"));
+        IND_SoaJitOldResultWriteResponses.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitOldResultWriteResponses"),
+            statistics::units::Count::get(),
+            "exact old-result WriteResp completions"));
+        IND_SoaJitOldResultCreditHighWater.push_back(new statistics::Scalar(
+            this,
+            MAKE_INDIRECT_STAT_NAME("IND_SoaJitOldResultCreditHighWater"),
+            statistics::units::Count::get(),
+            "sum of per-instruction occupied old-result credit high water"));
+        IND_SoaJitOldResultStalls.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitOldResultStalls"),
+            statistics::units::Count::get(),
+            "ordered aliases stalled by bounded old-result credits"));
         IND_SoaJitContextHighWater.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitContextHighWater"),
             statistics::units::Count::get(),
