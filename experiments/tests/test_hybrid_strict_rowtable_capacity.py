@@ -70,6 +70,7 @@ class HybridStrictRowTableCapacityContract(unittest.TestCase):
             '"scheduling_current_to_strict_at_row128"',
             "capacity_speedup = ticks64 / ticks_current",
             "scheduling_speedup = ticks_current / ticks_strict",
+            "REJECT_CAPACITY_REGRESSION",
             "REJECT_STRICT_REGRESSION",
         ):
             self.assertIn(token, self.runner)
@@ -82,7 +83,8 @@ class HybridStrictRowTableCapacityContract(unittest.TestCase):
             '"ROW_OFFSET_LAST_INSERT"',
             '"b_words", "16384"',
             '"descriptor_inserts", "16384"',
-            '"consumer_event", "1"',
+            '"consumer_event", "hybrid_consumer_macro"',
+            '"event=hybrid_consumer_macro "',
             "strict A issue/response ledger did not close",
             "strict backing issue/ACK ledger did not close",
             '"row_table_full_events"',

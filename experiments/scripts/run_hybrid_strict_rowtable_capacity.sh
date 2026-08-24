@@ -269,7 +269,7 @@ for field, expected in (
     ("b_words", "16384"),
     ("descriptor_inserts", "16384"),
     ("pages_ready", "4"),
-    ("consumer_event", "1"),
+    ("consumer_event", "hybrid_consumer_macro"),
 ):
     if fields.get(field) != expected:
         raise SystemExit(
@@ -283,6 +283,15 @@ if int(fields["backing_issues"]) != int(fields["backing_acks"]):
     raise SystemExit("strict backing issue/ACK ledger did not close")
 if int(strict["write_issues"]) != int(strict["write_completions"]):
     raise SystemExit("strict result write ledger did not close")
+consumer_summaries = [
+    line for line in trace.splitlines()
+    if "event=hybrid_consumer_macro " in line
+]
+if len(consumer_summaries) != 1:
+    raise SystemExit(
+        f"expected one closed hybrid consumer summary, "
+        f"found {len(consumer_summaries)}"
+    )
 
 ticks64 = int(row64["simTicks"])
 ticks_current = int(current["simTicks"])
@@ -371,6 +380,11 @@ with (root / "rowtable_cost.tsv").open("w", newline="") as stream:
 
 verdict = "PASS_MICRO"
 reasons = []
+if ticks_current > ticks64:
+    verdict = "REJECT_CAPACITY_REGRESSION"
+    reasons.append(
+        f"current_row128={ticks_current}>current_row64={ticks64}"
+    )
 if ticks_strict > ticks_current:
     verdict = "REJECT_STRICT_REGRESSION"
     reasons.append(
