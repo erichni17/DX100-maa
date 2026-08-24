@@ -68,10 +68,11 @@ The evidence base is `/data1/nier/worktrees/codex-coordination/sessions/sssp-tai
   result write issues matched by 49,699 responses.  `simTicks=10595863174` is
   recorded only as small-gate provenance, not a full-application claim.
 
-## Active full S22 gate
+## Full S22 gate (terminal rejection)
 
 - Gate root: `$EVIDENCE_BASE/sssp-tail-repair-7b6f9c21-r1`.
-- Unit: `dx100-sssp-tail-repair-7b6f9c21-full-r1.service`.
+- Unit: `dx100-sssp-tail-repair-7b6f9c21-full-r1.service`, terminal failed
+  with `ExecMainStatus=1`; the restore process aborted with status 134.
 - Launch accepted at `2026-08-24T16:39:48-04:00`; the exclusive lease, intent,
   and acceptance ledgers each identify this unit and `launch_count=1`.
 - Candidate-only, full S22, no native arm, no shell/systemd wall timeout, and
@@ -82,8 +83,7 @@ The evidence base is `/data1/nier/worktrees/codex-coordination/sessions/sssp-tai
 - Exact graph SHA-256 required by preparation and final validation:
   `23eb25e34343334976554071a8184f7b03358fe1892ba44cd2f5a38369f4eebc`.
 
-The service must be allowed to finish without a foreground watcher.  After it
-becomes inactive, run:
+The post-exit validator returns nonzero, as required for this failed root:
 
 ```text
 experiments/scripts/run_sssp_tail_repair_gate.sh --validate \
@@ -91,12 +91,29 @@ experiments/scripts/run_sssp_tail_repair_gate.sh --validate \
   dx100-sssp-tail-repair-7b6f9c21-full-r1
 ```
 
-Promotion requires all of the following from that command: inactive successful
-matching unit; atomic terminal `systemd.result`; wrapper and validation exits
-zero; exact S22 fingerprint; at least one 4,133-word CPU fallback; exact total,
-produced, consumed, accelerated, bounded, and CPU closure; zero measured illegal
-host-SPD attempts; closed predicate/value/A/old-result response ledgers; and
-unchanged frozen guest, graph, source artifacts, and checkpoint identities.
+At tick `239,082,572,292`, the O3 CPU issued a cacheable SPD line request whose
+first element was 4,096, immediately beyond the physical range 0--4,095. The
+printed `Starting DeltaStepMAA: 4132 elements` is the frontier size, not the
+range-tile size: RangeFuser is already allocated with the 4,096-element
+physical capacity. The accepted small runner has no L1 stride prefetcher; the
+full runner enables one. A full-page host scan therefore allows a speculative
+next-line request to cross the physical aperture, and `CpuSidePort` currently
+passes that request to `SPD::getDataPtr()` as though it were an architectural
+demand. This exact small/full configuration difference explains why the small
+gate did not expose the failure.
+
+No fingerprint, terminal coverage record, final stats window, or performance
+result was produced. The frozen graph, guest, checkpoint, and binary remain
+useful failure provenance only.
+
+Worker commit `2040dfd9` is not a repair and must not be integrated. It uses
+aggregate frontier-edge count as a preflight and sends every chunk above 4K to
+CPU, including valid four-page logical 16K windows; larger chunks can exceed
+the fallback arrays. The required successor must instead distinguish a
+non-binding speculative line outside physical SPD from a real demand. Only the
+former may receive a harmless dropped response; architectural out-of-range
+reads and writes must still fail closed. A targeted stride-prefetch reproduction
+must pass before any fresh small/full gate.
 
 ## Inadmissible roots
 
@@ -106,7 +123,8 @@ root associated with `94cafc7c` through frozen `f1624ddd`, the completed old
 `dx100-sssp-tail-repair-f1624ddd-r1.service`, the never-launched prepared
 `sssp-tail-repair-e11a155d-r1`, and the two cooperatively stopped foreground
 small roots `sssp-tail-repair-e11a155d-small-r1` and
-`sssp-tail-repair-7b6f9c21-small-r1`.  The active full root is pending and is
-also inadmissible for promotion until explicit terminal validation passes.
+`sssp-tail-repair-7b6f9c21-small-r1`. The now-terminal full root is also
+inadmissible because both its wrapper and explicit validator fail. The accepted
+small `r2` gate remains narrow correctness evidence only.
 
 Lead, CG, and IS sources/services were not modified or stopped.

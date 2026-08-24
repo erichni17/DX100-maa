@@ -71,6 +71,17 @@ explicit post-exit `--validate` with the matching inactive successful unit, or
 a safely re-armed PID/start-bound watch by the run owner; this review did
 neither and did not modify active evidence.
 
+### Post-exit resolution
+
+The later reviewed successor `7b6f9c21` also failed its full S22 gate. At tick
+`239,082,572,292`, an L1 stride prefetch requested the cache line beginning at
+physical SPD element 4,096. The small gate omitted the L1 stride prefetcher and
+therefore did not cover this CPU-aperture behavior. RangeFuser itself was
+already capped at 4,096; the adjacent 4,132 log value was frontier cardinality,
+not an oversized range result. The full source is rejected pending a
+speculative-prefetch boundary fix that preserves fail-closed architectural
+demands. No full correctness or performance claim survived this review.
+
 ### 4. Medium: the launcher is fail-closed serially, but not concurrency-safe exactly once
 
 `launch_gate` checks for absent ledgers/output, then creates a conventional
