@@ -1,23 +1,51 @@
 #!/usr/bin/env bash
 # Candidate-only HashJoin SoA/JIT correctness gate. It never runs a native
 # reference or a legacy guest and intentionally has no wall-clock timeout.
+#
+# HASHJOIN_HYBRID_MODE=small retains the reviewed 65,536-tuple contract.
+# HASHJOIN_HYBRID_MODE=full runs the standard 2,000,000-tuple R/S contract.
 set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 root=$(cd "$script_dir/../.." && pwd)
-gem5=${GEM5_BINARY:?set GEM5_BINARY to a SoA/JIT-capable gem5.opt}
 config=$root/configs/deprecated/example/se.py
 ramulator=$root/ext/ramulator2/ramulator2/example_gem5_config.yaml
 guest=$root/benchmarks/hashjoin/src/bin/x86/hj_maa_16K_hybrid
-out=${HASHJOIN_HYBRID_OUT:-/data1/nier/dx100-runs/hashjoin-hybrid-small-$(date +%Y%m%d-%H%M%S)}
+readonly MODE=${HASHJOIN_HYBRID_MODE:-small}
+readonly FULL_GEM5_BINARY=/data1/nier/dx100-binaries/gem5-2d02fa40568d3ed374258d717f15cad3afeca62343fc1ccaa1640215a8586152.opt
+readonly FULL_GEM5_SHA256=2d02fa40568d3ed374258d717f15cad3afeca62343fc1ccaa1640215a8586152
+gem5=${GEM5_BINARY:?set GEM5_BINARY to a SoA/JIT-capable gem5.opt}
 
-# Frozen input contract. PK/FK construction makes the exact cardinality S_SIZE.
-readonly R_SIZE=65536
-readonly S_SIZE=65536
+# Frozen PK/FK contracts: exact cardinality is always S_SIZE.
+case "$MODE" in
+    small)
+        readonly R_SIZE=65536
+        readonly S_SIZE=65536
+        readonly EXPECTED_FIRST_SCATTER_4K_ACTIONS=32
+        ;;
+    full)
+        readonly R_SIZE=2000000
+        readonly S_SIZE=2000000
+        # Two relations, four 500,000-tuple chunks, each split into 4K actions.
+        readonly EXPECTED_FIRST_SCATTER_4K_ACTIONS=984
+        ;;
+    *)
+        echo "unsupported HASHJOIN_HYBRID_MODE: $MODE (expected small or full)" >&2
+        exit 2
+        ;;
+esac
 readonly R_SEED=12345
 readonly S_SEED=54321
-readonly EXPECTED_RESULT=65536
+readonly EXPECTED_RESULT=$S_SIZE
 readonly OMP_THREADS=4
+out=${HASHJOIN_HYBRID_OUT:-/data1/nier/dx100-runs/hashjoin-hybrid-${MODE}-$(date +%Y%m%d-%H%M%S)}
+
+source_fingerprint() {
+    sha256sum "$root/benchmarks/hashjoin/src/parallel_radix_join.cpp" \
+        "$root/benchmarks/hashjoin/compile_x86.sh" \
+        "$root/benchmarks/hashjoin/run_hashjoin_hybrid_small.sh" \
+        | sha256sum | awk '{print $1}'
+}
 
 [[ ! -e "$out" ]] || {
     echo "output already exists: $out" >&2
@@ -27,6 +55,22 @@ readonly OMP_THREADS=4
     echo "missing gem5 binary: $gem5" >&2
     exit 2
 }
+if [[ $MODE == full ]]; then
+    [[ $gem5 == "$FULL_GEM5_BINARY" ]] || {
+        echo "full mode requires gem5 binary: $FULL_GEM5_BINARY" >&2
+        exit 2
+    }
+    [[ $(sha256sum "$gem5" | awk '{print $1}') == "$FULL_GEM5_SHA256" ]] || {
+        echo "full mode gem5 hash does not match its pinned binary" >&2
+        exit 2
+    }
+    [[ -z $(git -C "$root" status --porcelain --untracked-files=all) ]] || {
+        echo "full mode requires an immutable clean source worktree" >&2
+        exit 2
+    }
+fi
+readonly SOURCE_COMMIT=$(git -C "$root" rev-parse HEAD)
+readonly SOURCE_FINGERPRINT=$(source_fingerprint)
 
 if [[ ${HASHJOIN_HYBRID_SKIP_BUILD:-0} != 1 ]]; then
     (cd "$root/benchmarks/hashjoin" &&
@@ -153,12 +197,16 @@ for kernel in PRO PRH; do
     second_scatter_4k_actions=$(field "$marker" second_scatter_4k_actions)
     [[ $first_eligible -gt 0 && $first_routed -eq $first_eligible ]]
     [[ $second_routed -eq $second_eligible ]]
+    if [[ $MODE == full ]]; then
+        [[ $second_eligible -gt 0 && $second_routed -gt 0 ]]
+    fi
     [[ $routed -gt 0 && $routed -eq $eligible ]]
-    [[ $first_scatter_4k_actions -eq 32 ]]
+    [[ $first_scatter_4k_actions -eq $EXPECTED_FIRST_SCATTER_4K_ACTIONS ]]
     [[ $second_scatter_4k_actions -gt 0 ]]
 
     stats=$run/stats.txt
     [[ -s "$stats" ]]
+    [[ $(grep -Fc -- '---------- End Simulation Statistics' "$stats" || true) -gt 0 ]]
     instructions=$(stat_sum "$stats" IND_SoaJitInstructions)
     terminals=$(stat_sum "$stats" IND_SoaJitTerminalCompletions)
     selected=$(stat_sum "$stats" IND_SoaJitSelected)
@@ -190,10 +238,27 @@ for kernel in PRO PRH; do
         >>"$out/results.tsv"
 done
 
+[[ $(source_fingerprint) == "$SOURCE_FINGERPRINT" ]] || {
+    echo "source changed while the HashJoin gate was running" >&2
+    exit 1
+}
+if [[ $MODE == full ]]; then
+    [[ $(git -C "$root" rev-parse HEAD) == "$SOURCE_COMMIT" ]]
+    [[ -z $(git -C "$root" status --porcelain --untracked-files=all) ]] || {
+        echo "source worktree changed while full mode was running" >&2
+        exit 1
+    }
+fi
+
+find "$out" -type f ! -name manifest.txt ! -name result_sha256.txt -print0 \
+    | sort -z | xargs -0 sha256sum >"$out/result_sha256.txt"
+[[ -s "$out/result_sha256.txt" ]]
+
 {
-    printf 'schema=dx100.hashjoin_hybrid_small.v1\n'
+    printf 'schema=dx100.hashjoin_hybrid_%s.v1\n' "$MODE"
     printf 'candidate_only=1\nnative_rerun=0\nwall_timeout=none\n'
-    printf 'source_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
+    printf 'source_commit=%s\n' "$SOURCE_COMMIT"
+    printf 'source_fingerprint=%s\n' "$SOURCE_FINGERPRINT"
     printf 'source_status=%s\n' "$(git -C "$root" status --short | wc -l)"
     printf 'guest_sha256='; sha256sum "$guest" | awk '{print $1}'
     printf 'gem5_sha256='; sha256sum "$gem5" | awk '{print $1}'
@@ -202,7 +267,9 @@ done
     printf 'expected_cardinality=%d\n' "$EXPECTED_RESULT"
     printf 'checkpoint_paths=PRO/checkpoint,PRH/checkpoint\n'
     printf 'geometry=memory_channels:2,row_table_slices:32,indirect_units:4,logical_elements:16384,physical_elements:4096\n'
+    printf 'first_scatter_4k_actions_expected=%d\n' "$EXPECTED_FIRST_SCATTER_4K_ACTIONS"
+    printf 'raw_hash_ledger=result_sha256.txt\n'
 } >"$out/manifest.txt"
 
 cat "$out/results.tsv"
-echo "HASHJOIN_HYBRID_SMALL_PASS out=$out"
+echo "HASHJOIN_HYBRID_${MODE^^}_PASS out=$out"

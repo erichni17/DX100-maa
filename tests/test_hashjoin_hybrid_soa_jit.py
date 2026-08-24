@@ -266,8 +266,10 @@ def test_build_and_runner_are_candidate_only_and_close_mechanism():
     assert "--max-checkpoints=1" in runner
     assert "--cpu-type=X86O3CPU -r 1" in runner
     assert '--checkpoint-dir="$checkpoint"' in runner
+    assert "MODE=${HASHJOIN_HYBRID_MODE:-small}" in runner
     assert "R_SIZE=65536" in runner and "S_SIZE=65536" in runner
-    assert "EXPECTED_RESULT=65536" in runner
+    assert "R_SIZE=2000000" in runner and "S_SIZE=2000000" in runner
+    assert "EXPECTED_RESULT=$S_SIZE" in runner
     assert "HASHJOIN_HYBRID_RESULT result=$EXPECTED_RESULT" in runner
     assert 'printf("HASHJOIN_HYBRID_RESULT result=%ld\\n"' in source
     assert "fflush(stdout);" in source
@@ -282,7 +284,8 @@ def test_build_and_runner_are_candidate_only_and_close_mechanism():
     for closure in (
         "enabled",
         "routed -gt 0",
-        "first_scatter_4k_actions -eq 32",
+        "EXPECTED_FIRST_SCATTER_4K_ACTIONS=32",
+        "first_scatter_4k_actions -eq $EXPECTED_FIRST_SCATTER_4K_ACTIONS",
         "second_scatter_4k_actions -gt 0",
         "max_region_id",
         "IND_SoaJitInstructions",
@@ -291,8 +294,30 @@ def test_build_and_runner_are_candidate_only_and_close_mechanism():
         "IND_SoaJitAReadResponses",
         "IND_SoaJitAWriteResponses",
         "event=soa_jit_complete",
+        "second_eligible -gt 0",
+        "EXPECTED_FIRST_SCATTER_4K_ACTIONS",
+        "result_sha256.txt",
+        "source_fingerprint",
     ):
         assert closure in runner
+
+
+def test_full_runner_contract_is_pinned_and_fails_closed():
+    runner = RUNNER.read_text(encoding="utf-8")
+    assert (
+        "FULL_GEM5_BINARY=/data1/nier/dx100-binaries/gem5-2d02fa40568d3ed374258d717f15cad3afeca62343fc1ccaa1640215a8586152.opt"
+        in runner
+    )
+    assert (
+        "FULL_GEM5_SHA256=2d02fa40568d3ed374258d717f15cad3afeca62343fc1ccaa1640215a8586152"
+        in runner
+    )
+    assert "full mode requires an immutable clean source worktree" in runner
+    assert "source changed while the HashJoin gate was running" in runner
+    assert "full mode requires gem5 binary" in runner
+    assert "native_rerun=0" in runner and "wall_timeout=none" in runner
+    assert "for kernel in PRO PRH; do" in runner
+    assert "EXPECTED_FIRST_SCATTER_4K_ACTIONS=984" in runner
 
 
 def test_pro_and_prh_probe_and_collision_functions_remain_legacy():
@@ -327,6 +352,9 @@ class HashJoinHybridSoaJitCandidateGate(unittest.TestCase):
 
     def test_runner_contract(self):
         test_build_and_runner_are_candidate_only_and_close_mechanism()
+
+    def test_full_runner_contract(self):
+        test_full_runner_contract_is_pinned_and_fails_closed()
 
     def test_probe_contract(self):
         test_pro_and_prh_probe_and_collision_functions_remain_legacy()
