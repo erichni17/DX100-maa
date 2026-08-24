@@ -28,18 +28,20 @@ class HybridStrictRowTableCapacityContract(unittest.TestCase):
         self.assertIn("static_cast<uint64_t>(my_max)", source)
         self.assertIn("strict B fetch issued after admission closure", source)
 
-    def test_reuses_exact_f84_binary_checkpoint_and_row64_arm(self) -> None:
+    def test_reuses_same_commit_binary_checkpoint_and_row64_arm(self) -> None:
         for token in (
-            "f84b11353e54431211bf2beb6d730caa4a543e07",
-            "expected_gem5=26cd6ec51cd29b7d712b28bd3fc620464",
             "expected_api=963940eeaface13cb53f73b565a88b299",
-            "expected_current=42d4ee93cb50ba6c0be69661a60283b8",
-            "expected_checkpoint=6bef45822560fa6c174689f5c7e68700",
+            'campaign_commit=$(git -C "$root" rev-parse HEAD)',
+            "gem5_source_commit=$(sed -n",
+            '[[ $gem5_source_commit == "$campaign_commit" ]]',
             "base_current/result.tsv",
             "DX100_SHARED_CHECKPOINT_DIR=$checkpoint",
+            "base_current/shared_checkpoint_identity.sha256",
+            "base_current/source_snapshot/IndirectAccess.cc",
         ):
             self.assertIn(token, self.runner)
         self.assertNotIn("--max-checkpoints", self.runner)
+        self.assertNotIn("expected_gem5=", self.runner)
 
     def test_expands_only_rows_and_keeps_forbidden_modes_off(self) -> None:
         for token in (

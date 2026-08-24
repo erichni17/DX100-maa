@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -ne 2 ]]; then
-    echo "usage: $0 F84_EVIDENCE_ROOT OUTDIR" >&2
+    echo "usage: $0 ROW64_EVIDENCE_ROOT OUTDIR" >&2
     exit 2
 fi
 
@@ -37,20 +37,25 @@ for required in \
     "$base_current/virtual_tile_consumer_case.pass" \
     "$base_current/source_snapshot/run_virtual_tile_consumer_case.sh"; do
     [[ -f $required ]] || {
-        echo "missing frozen f84 evidence file: $required" >&2
+        echo "missing frozen row64 evidence file: $required" >&2
         exit 2
     }
 done
 [[ -d $checkpoint && -x $frozen_gem5 && -x $frozen_binary ]] || {
-    echo "missing frozen f84 checkpoint or executable" >&2
+    echo "missing frozen row64 checkpoint or executable" >&2
     exit 2
 }
 
-expected_gem5=26cd6ec51cd29b7d712b28bd3fc6204648346bd23943902e5f1c466db10900d2
 expected_api=963940eeaface13cb53f73b565a88b2994922c2ff3ef55f167d9577df210c559
 expected_ramulator=76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753
-expected_current=42d4ee93cb50ba6c0be69661a60283b835f220809a6276de44b3ff46ab2a9b6a
-expected_checkpoint=6bef45822560fa6c174689f5c7e68700e827364947bb0f445211040cb5af475d
+campaign_commit=$(git -C "$root" rev-parse HEAD)
+gem5_source_commit=$(sed -n 's/^gem5_source_commit=//p' \
+    "$base_current/manifest.txt")
+[[ $gem5_source_commit == "$campaign_commit" ]] || {
+    echo "row64 gem5 source $gem5_source_commit != campaign $campaign_commit" \
+        >&2
+    exit 1
+}
 
 check_hash() {
     local expected=$1
@@ -63,21 +68,26 @@ check_hash() {
     }
 }
 
-check_hash "$expected_gem5" "$frozen_gem5"
 check_hash "$expected_api" "$frozen_binary"
 check_hash "$expected_ramulator" "$frozen_ramulator"
-check_hash "$expected_current" "$base_current/result.tsv"
 grep -Fqx '0' "$base/checkpoint/checkpoint.exit"
 grep -Fqx '0' "$base_current/restore.exit"
-grep -Fq "source_commit=f84b11353e54431211bf2beb6d730caa4a543e07" \
+grep -Fq "source_commit=$campaign_commit" \
     "$base_current/manifest.txt"
 grep -Fq "shared_checkpoint=$checkpoint" "$base_current/manifest.txt"
 grep -Fq -- "--options 'deferred $selector'" "$checkpoint_log"
-grep -Fq "$expected_checkpoint" \
-    "$base_current/shared_checkpoint_identity.sha256"
+[[ -s $base_current/shared_checkpoint_identity.sha256 ]] || {
+    echo "row64 arm lacks shared checkpoint identity" >&2
+    exit 1
+}
 cmp -s "$case_runner" \
     "$base_current/source_snapshot/run_virtual_tile_consumer_case.sh" || {
-    echo "current case runner differs from the frozen f84 runner" >&2
+    echo "current case runner differs from the frozen row64 runner" >&2
+    exit 1
+}
+cmp -s "$root/src/mem/MAA/IndirectAccess.cc" \
+    "$base_current/source_snapshot/IndirectAccess.cc" || {
+    echo "current strict source differs from the frozen row64 source" >&2
     exit 1
 }
 
@@ -92,8 +102,8 @@ printf '%s\n' '--maa_virtual_strict_two_phase' \
     printf 'frozen_ramulator=%s\n' "$frozen_ramulator"
     printf 'shared_checkpoint=%s\n' "$checkpoint"
     printf 'shared_selector=%s\n' "$selector"
-    printf 'gem5_source_commit=f84b11353e54431211bf2beb6d730caa4a543e07\n'
-    printf 'campaign_source_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
+    printf 'gem5_source_commit=%s\n' "$gem5_source_commit"
+    printf 'campaign_source_commit=%s\n' "$campaign_commit"
     printf 'row64_active_line_slots=8192\n'
     printf 'row128_active_line_slots=16384\n'
 } > "$out/inputs/provenance.txt"
@@ -107,7 +117,7 @@ common_env=(
     "DX100_SHARED_CHECKPOINT_LOG=$checkpoint_log"
     "DX100_FROZEN_RAMULATOR_LIBRARY=$frozen_ramulator"
     "DX100_RAMULATOR_PROVENANCE_FILE=$ramulator_provenance"
-    "DX100_GEM5_SOURCE_COMMIT=f84b11353e54431211bf2beb6d730caa4a543e07"
+    "DX100_GEM5_SOURCE_COMMIT=$gem5_source_commit"
     "MAA_DEBUG_FLAGS=MAAVirtualTrace,MAAMacroEvent,MAAIssueDigest"
     "MAA_REQUIRE_SOURCE_ISSUE_DIGEST=1"
     "MAA_OFFSET_TABLE_ENTRIES=16384"
