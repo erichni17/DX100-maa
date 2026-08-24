@@ -104,6 +104,9 @@ class IsScalarSoaHybridContractTests(unittest.TestCase):
             "physical_tile_sweep_baseline_20260822.json",
             "frozen_native_sha256=",
             "num_initial_row_table_slices=32",
+            "--mem-channels=2",
+            "memory_channels=2",
+            "system\\.mem_ctrls[01]",
         ):
             self.assertIn(token, self.runner)
 

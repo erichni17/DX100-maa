@@ -73,6 +73,9 @@ class SoaJitOldResultIntegration(unittest.TestCase):
         self.assertIn("num_indirect_units_per_maa=4", self.runner)
         self.assertIn("row_table_slices=32", self.runner)
         self.assertIn("--maa_num_initial_row_table_slices=32", self.runner)
+        self.assertIn("--mem-channels=2", self.runner)
+        self.assertIn("memory_channels=2", self.runner)
+        self.assertIn("system\\.mem_ctrls[01]", self.runner)
         self.assertIn("grep -Fxc 'num_indirect_units_per_maa=4'", self.runner)
         self.assertIn(
             "grep -Fxc 'num_initial_row_table_slices=32'", self.runner

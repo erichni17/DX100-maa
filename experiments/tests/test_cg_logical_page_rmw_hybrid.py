@@ -28,6 +28,9 @@ class CGLogicalPageRmwHybridContract(unittest.TestCase):
         self.assertIn("--maa_num_initial_row_table_slices=32", runner)
         self.assertIn("num_initial_row_table_slices=32", runner)
         self.assertNotIn("--maa_num_initial_row_table_slices=16", runner)
+        self.assertIn("--mem-channels=2", runner)
+        self.assertIn("memory_channels=2", runner)
+        self.assertIn("system\\.mem_ctrls[01]", runner)
 
     def test_intermediates_are_coherent_aligned_backings(self):
         self.assertIn("constexpr size_t cg_logical_backing_bytes", SOURCE)

@@ -84,7 +84,7 @@ restore_cmd=(
     --l2_write_buffers=16 --l3cache --l3_size=8MB --l3_assoc=16
     --l3_mshrs=256 --l3_write_buffers=128 --l3_ports=4
     --cacheline_size=64 --mem-type Ramulator2
-    --ramulator-config "$ramulator" --mem-channels=1
+    --ramulator-config "$ramulator" --mem-channels=2
     --maa --maa_num_maas=1 --maa_num_indirect_units_per_maa=4
     --maa_num_tiles_per_core=10 --maa_num_tile_elements=16384
     --maa_physical_tile_elements=4096 --maa_logical_tile_page_scheduler
@@ -116,6 +116,7 @@ reference_line=$(grep -E \
     printf 'native_reruns=0\nwall_timeout=none\n'
     printf 'logical_elements=16384\nphysical_tile_elements=4096\n'
     printf 'num_initial_row_table_slices=32\n'
+    printf 'memory_channels=2\n'
     printf 'guest_lanes=32\nlogical_scheduler_reserved_lanes=8\n'
     printf 'external_coherent_backing_bytes=1048576\n'
     printf 'physical_spd_payload_bytes=655360\n'
@@ -180,6 +181,7 @@ for line in "$reference_line" "$candidate_line"; do
     [[ $(fingerprint_field "$line" nonfinite_x) == 0 ]]
     [[ $(fingerprint_field "$line" nonfinite_z) == 0 ]]
 done
+[[ $(grep -Ec '^\[system\.mem_ctrls[01]\]$' "$out/run/config.ini" || true) -eq 2 ]]
 for key in x_q5 x_q6 z_q5 z_q6; do
     [[ -n $(fingerprint_field "$reference_line" "$key") ]]
     [[ $(fingerprint_field "$candidate_line" "$key") == \

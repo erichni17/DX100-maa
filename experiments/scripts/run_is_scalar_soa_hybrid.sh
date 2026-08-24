@@ -80,6 +80,7 @@ source_commit=$(git -C "$root" rev-parse HEAD)
         printf 'input=compiled_exact_micro_vectors\n'
     fi
     printf 'logical_elements=16384\nphysical_tile_elements=4096\n'
+    printf 'memory_channels=2\n'
     printf 'row_table_slices=32\n'
     printf 'native_runs=0\nwall_timeout=none\n'
 } > "$out/manifest.txt"
@@ -122,7 +123,7 @@ common=(
     --l2_write_buffers=16 --l3cache --l3_size=8MB --l3_assoc=16
     --l3_mshrs=256 --l3_write_buffers=128 --l3_ports=4
     --cacheline_size=64 --mem-type Ramulator2
-    --ramulator-config "$ramulator" --mem-channels=1
+    --ramulator-config "$ramulator" --mem-channels=2
     --maa --maa_num_maas=1 --maa_num_indirect_units_per_maa=4
     --maa_num_tile_elements=16384 --maa_physical_tile_elements=4096
     --maa_num_offset_table_entries=16384
@@ -224,6 +225,7 @@ for resolved in num_tile_elements=16384 physical_tile_elements=4096 \
     soa_jit_value_prefetch_credits=0; do
     grep -Fqx "$resolved" "$out/run/config.ini"
 done
+[[ $(grep -Ec '^\[system\.mem_ctrls[01]\]$' "$out/run/config.ini" || true) -eq 2 ]]
 
 sim_ticks=$(awk '$1 == "simTicks" { print $2; exit }' "$stats")
 [[ $sim_ticks =~ ^[1-9][0-9]*$ ]]
