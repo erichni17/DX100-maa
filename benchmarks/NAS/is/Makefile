@@ -3,11 +3,13 @@ MAA_HOME = $(GEM5_HOME)/benchmarks/API/
 CXX_FLAGS += -std=c++11 -O3 -Wall -g3 -fopenmp
 GEM5_INCLUDE = -I$(GEM5_HOME)/include/ -I$(GEM5_HOME)/util/m5/src/
 MAA_INCLUDE = -I$(MAA_HOME)
+IS_INPUT_INCLUDE ?=
 GEM5_LIB = -L$(GEM5_HOME)/util/m5/build/x86/out
 
 SUITE = is
 ROI_VERIFY_FLAGS = -DDO_VERIFY -DCLASS=\'B\' -DVERIFY_BEFORE_GEM5_EXIT
 VERIFY_BINARIES = $(SUITE)_maa_16K_roi_verify
+VERIFY_BINARIES += $(SUITE)_maa_16K_scalar_soa_roi_verify
 
 # Targets for baseline binaries
 BASELINE_BINARIES = $(SUITE)_base
@@ -82,6 +84,11 @@ GEM5: m5op.o all
 # Keep verification outside the measured ROI but before the terminating m5_exit.
 %_maa_16K_roi_verify: $(SUITE).cpp m5op.o
 	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DMAA -DNUM_CORES=4 -DTILE_SIZE=16384 $(ROI_VERIFY_FLAGS) $(GEM5_LIB) m5op.o $< -o $@
+
+# Opt-in application binary.  Runtime remains legacy unless the guest receives
+# the explicit `MAA scalar_soa_jit` selector.
+%_maa_16K_scalar_soa_roi_verify: $(SUITE).cpp m5op.o
+	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(IS_INPUT_INCLUDE) $(CXX_FLAGS) -DMAA -DIS_SCALAR_SOA_JIT -DNUM_CORES=4 -DTILE_SIZE=16384 $(ROI_VERIFY_FLAGS) $(GEM5_LIB) m5op.o $< -o $@
 
 %_maa_32K: $(SUITE).cpp m5op.o
 	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DMAA -DNUM_CORES=4 -DTILE_SIZE=32768 $(GEM5_LIB) m5op.o $< -o $@
