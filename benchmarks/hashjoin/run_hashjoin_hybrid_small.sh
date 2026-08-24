@@ -250,10 +250,6 @@ if [[ $MODE == full ]]; then
     }
 fi
 
-find "$out" -type f ! -name manifest.txt ! -name result_sha256.txt -print0 \
-    | sort -z | xargs -0 sha256sum >"$out/result_sha256.txt"
-[[ -s "$out/result_sha256.txt" ]]
-
 {
     printf 'schema=dx100.hashjoin_hybrid_%s.v1\n' "$MODE"
     printf 'candidate_only=1\nnative_rerun=0\nwall_timeout=none\n'
@@ -268,8 +264,16 @@ find "$out" -type f ! -name manifest.txt ! -name result_sha256.txt -print0 \
     printf 'checkpoint_paths=PRO/checkpoint,PRH/checkpoint\n'
     printf 'geometry=memory_channels:2,row_table_slices:32,indirect_units:4,logical_elements:16384,physical_elements:4096\n'
     printf 'first_scatter_4k_actions_expected=%d\n' "$EXPECTED_FIRST_SCATTER_4K_ACTIONS"
+    printf 'terminal_marker=gate.complete\n'
     printf 'raw_hash_ledger=result_sha256.txt\n'
 } >"$out/manifest.txt"
+
+printf 'terminal=pass\nmode=%s\nsource_commit=%s\nsource_fingerprint=%s\n' \
+    "$MODE" "$SOURCE_COMMIT" "$SOURCE_FINGERPRINT" >"$out/gate.complete"
+
+find "$out" -type f ! -name result_sha256.txt -print0 \
+    | sort -z | xargs -0 sha256sum >"$out/result_sha256.txt"
+[[ -s "$out/result_sha256.txt" ]]
 
 cat "$out/results.tsv"
 echo "HASHJOIN_HYBRID_${MODE^^}_PASS out=$out"
