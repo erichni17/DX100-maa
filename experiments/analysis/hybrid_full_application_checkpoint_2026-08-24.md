@@ -37,7 +37,7 @@ Raw CG reports:
 | HashJoin PRH | `dx100-hashjoin-prh-full-recovery-20260824-061147` | `/data1/nier/dx100-runs/hashjoin-hybrid-prh-full-d7d29bf5-20260824-061147` | correct raw output; shifted pass is tail-only and pre-hardening evidence remains incomplete |
 | HashJoin PRH, hardened | `dx100-hashjoin-prh-hardened-20260824-r1` | `/data1/nier/dx100-runs/2026-08-24-hashjoin-prh-hardened-r1` | active candidate-only full gate with frozen mechanism-status and hash contracts |
 | GAPBS SSSP S22, original | `dx100-sssp-old-result-full-e690867f-r1` | `/data1/nier/dx100-runs/2026-08-24-sssp-old-result-full-e690867f-r1` | failed closed on unvirtualized 4,133-element tail |
-| GAPBS SSSP S22, reviewed repair | `dx100-sssp-tail-repair-7b6f9c21-full-r1` | `/data1/nier/worktrees/codex-coordination/sessions/sssp-tail-repair-successor-20260824-155812-7c1e3190/evidence/sssp-tail-repair-7b6f9c21-r1` | rejected: exact-CPU fallback fell through to illegal SPD element 4,096 at a 4,132-word batch |
+| GAPBS SSSP S22, reviewed repair | `dx100-sssp-tail-repair-7b6f9c21-full-r1` | `/data1/nier/worktrees/codex-coordination/sessions/sssp-tail-repair-successor-20260824-155812-7c1e3190/evidence/sssp-tail-repair-7b6f9c21-r1` | rejected: L1 stride prefetch crossed the 4K physical SPD aperture at element 4,096 |
 
 CG, IS, and the hardened PRH recovery remain active with infinite runtime.
 Both SSSP full candidates and the pre-hardening PRH recovery have exited.
@@ -176,20 +176,30 @@ ordered CPU MIN for irregular 4K+1 through 16K-1 batches. Its small exact gate
 passes total = produced = consumed = 69,632 words, 65,536 accelerated plus
 4,096 CPU words, zero measured illegal SPD attempts, exact output, and closed
 old-result responses. The full S22 gate nevertheless rejected the source at
-tick `239,082,572,292`: a 4,132-word exact-CPU batch was handled in software
-but then fell through into the legacy host-SPD block, which dereferenced
-element 4,096. The wrapper and explicit validator both fail, so the small gate
-was insufficient and no SSSP full result is claimed. A source-level control-flow
-repair must execute the production dispatch helper for both 4,132 and 4,133,
-pass a fresh small exact gate, and use a new exclusive full evidence root.
+tick `239,082,572,292` on SPD element 4,096. The printed 4,132 is the frontier
+size, not a generated range-tile size: RangeFuser is already capped at 4,096
+physical words. The full command enables an L1 stride prefetcher, while the
+small gate does not; after a full physical-page host scan, the speculative next
+cache line begins at element 4,096 and the CPU-side aperture currently treats
+it as an architectural demand. This explains both the exact boundary and the
+small/full discrepancy. The wrapper and explicit validator both fail, so no
+SSSP full result is claimed.
+
+Worker commit `2040dfd9` is rejected. It preflights the aggregate frontier
+chunk and diverts every chunk above 4K to CPU, including valid 16K logical
+windows; larger chunks can also exceed its fixed 16K fallback arrays. The
+repair belongs at the CPU-side SPD aperture: a non-binding speculative request
+outside the physical payload may be dropped/responded without touching SPD,
+but a real demand outside 0--4,095 must remain fail-closed. That policy needs a
+stride-prefetch reproduction before a fresh small and full SSSP gate.
 
 ## Resume order
 
 1. Validate CG and IS after their services exit; do not read timing before
    their correctness and terminal gates close.
-2. Repair the SSSP exact-CPU fallthrough, require an executable production-path
-   regression and fresh small exact gate, then relaunch candidate-only full S22;
-   native baselines remain reusable.
+2. Repair the SSSP speculative-prefetch boundary without weakening demand
+   bounds, require a stride-prefetch reproduction and fresh small exact gate,
+   then relaunch candidate-only full S22; native baselines remain reusable.
 3. Allow the hardened PRH candidate gate to exit and classify its frozen
    mechanism-status and hash evidence. Its shifted phase is tail-only for this
    input and must never be misreported as routed coverage.
