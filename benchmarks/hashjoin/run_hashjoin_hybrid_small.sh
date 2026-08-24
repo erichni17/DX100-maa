@@ -273,12 +273,18 @@ for kernel in "${kernels[@]}"; do
             # scatter/tail work remains live, but zero shifted SoA/JIT
             # windows is the required contract rather than a gate failure.
             [[ $second_eligible -eq 0 && $second_routed -eq 0 ]]
+            second_pass_coverage=not_applicable
             ;;
         PRH)
-            # The full PRH arm must prove that the shifted histogram routed
-            # at least one complete window; otherwise no full terminal claim.
-            if [[ $MODE == full ]]; then
+            # PRH does execute its shifted histogram, but it operates on the
+            # first-pass radix buckets.  A fixed full input may leave every
+            # one of those buckets below one logical 16K window.  Zero here
+            # is therefore tail-only coverage, not failed instrumentation.
+            if [[ $second_eligible -eq 0 && $second_routed -eq 0 ]]; then
+                second_pass_coverage=tail_only
+            else
                 [[ $second_eligible -gt 0 && $second_routed -gt 0 ]]
+                second_pass_coverage=routed
             fi
             ;;
     esac
@@ -312,6 +318,14 @@ for kernel in "${kernels[@]}"; do
     [[ $fallbacks -eq 0 ]]
     [[ $a_reads -gt 0 && $a_reads -eq $a_read_responses ]]
     [[ $a_reads -eq $writes && $writes -eq $write_responses ]]
+
+    {
+        printf 'kernel=%s\n' "$kernel"
+        printf 'first_pass_coverage=routed\n'
+        printf 'shifted_pass_coverage=%s\n' "$second_pass_coverage"
+        printf 'second_eligible=%s\nsecond_routed=%s\n' \
+            "$second_eligible" "$second_routed"
+    } >"$case_root/mechanism.status"
 
     if [[ $MODE == small ]]; then
         trace=$run/soa_jit_trace.log

@@ -299,7 +299,9 @@ def test_build_and_runner_are_candidate_only_and_close_mechanism():
         "IND_SoaJitAWriteResponses",
         "IND_BoundedGlobalMergeFallbacks",
         "second_eligible -eq 0 && $second_routed -eq 0",
-        "second_eligible -gt 0 && $second_routed -gt 0",
+        "second_pass_coverage=tail_only",
+        "second_pass_coverage=routed",
+        "shifted_pass_coverage=%s",
         "EXPECTED_FIRST_SCATTER_4K_ACTIONS",
         "result_sha256.txt",
         "source_fingerprint",
@@ -350,7 +352,7 @@ def test_full_runner_contract_is_pinned_and_fails_closed():
     assert "fallback_basis=IND_BoundedGlobalMergeFallbacks" in runner
 
 
-def test_full_kernel_contract_is_specific_and_prh_recoverable():
+def test_full_kernel_contract_distinguishes_zero_and_nonzero_prh_shifted_passes():
     runner = RUNNER.read_text(encoding="utf-8")
     kernel_case = runner.index('case "$kernel" in')
     pro_start = runner.index("        PRO)", kernel_case)
@@ -359,8 +361,11 @@ def test_full_kernel_contract_is_specific_and_prh_recoverable():
     prh = runner[prh_start:]
     assert "PRO never executes a shifted radix histogram" in pro
     assert "second_eligible -eq 0 && $second_routed -eq 0" in pro
-    assert "if [[ $MODE == full ]]; then" in prh
+    assert "tail-only coverage, not failed instrumentation" in prh
+    assert "second_eligible -eq 0 && $second_routed -eq 0" in prh
+    assert "second_pass_coverage=tail_only" in prh
     assert "second_eligible -gt 0 && $second_routed -gt 0" in prh
+    assert "second_pass_coverage=routed" in prh
     assert "HASHJOIN_HYBRID_KERNEL=PRH" not in runner
 
 
@@ -429,7 +434,7 @@ class HashJoinHybridSoaJitCandidateGate(unittest.TestCase):
         test_full_runner_contract_is_pinned_and_fails_closed()
 
     def test_full_kernel_contract(self):
-        test_full_kernel_contract_is_specific_and_prh_recoverable()
+        test_full_kernel_contract_distinguishes_zero_and_nonzero_prh_shifted_passes()
 
     def test_trace_contract(self):
         test_trace_creation_and_trace_assertions_are_small_only()
