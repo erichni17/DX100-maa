@@ -11,6 +11,10 @@ Raw root:
 
 `/data1/nier/dx100-runs/2026-08-24-logical-page-live-fbbf8b30-r4`
 
+Exact replica:
+
+`/data1/nier/dx100-runs/2026-08-24-logical-page-live-5925f064-r5`
+
 - checkpoint/restore exits: `0/0`;
 - first-ROI `simTicks`: `1,415,099,918`;
 - nine logical architectural operations across two descriptor generations;
@@ -21,6 +25,10 @@ Raw root:
 - exact hashes for stream load, scalar multiply, distinct-source vector add,
   self-source vector add, dense store, descriptor reuse, and generation-two
   output; `errors=0`.
+
+Both replicas report `1,415,099,918 simTicks` and have byte-identical logical
+page traces (SHA-256
+`e6059d25239ae77f9917c0250feb8fcc12df29ebf4432faf1f1a15646f531fd6`).
 
 The instruction stream uses ordinary logical forms of `STREAM_LD`,
 `ALU_SCALAR`, `ALU_VECTOR`, and `STREAM_ST`. Every source page is filled into
