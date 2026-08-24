@@ -187,6 +187,63 @@ runPressurePacking()
     CHECK(buffer.finish() == SoaJitOldResultBuffer::Result::Accepted);
 }
 
+static void
+runPressureDensitySelection()
+{
+    constexpr uint64_t Base = 0x6000;
+    constexpr uint32_t LogicalWords =
+        9 * SoaJitOldResultBuffer::WordsPerLine;
+    SoaJitOldResultBuffer buffer;
+    CHECK(buffer.begin(7, Base, LogicalWords) ==
+          SoaJitOldResultBuffer::Result::Accepted);
+    uint32_t selected = 0;
+    for (uint32_t line = 0; line < SoaJitOldResultBuffer::Credits; ++line) {
+        const float old = static_cast<float>(line);
+        CHECK(buffer.capture(
+                  7, line, line * SoaJitOldResultBuffer::WordsPerLine,
+                  reinterpret_cast<const uint8_t *>(&old), sizeof(old)) ==
+              SoaJitOldResultBuffer::Result::Accepted);
+        ++selected;
+    }
+    for (uint32_t word = 1; word < 8; ++word) {
+        const float old = static_cast<float>(100 + word);
+        CHECK(buffer.capture(
+                  7, 1, SoaJitOldResultBuffer::WordsPerLine + word,
+                  reinterpret_cast<const uint8_t *>(&old), sizeof(old)) ==
+              SoaJitOldResultBuffer::Result::Accepted);
+        ++selected;
+    }
+    const float ninth = 9.0F;
+    CHECK(buffer.capture(
+              7, 9, 8 * SoaJitOldResultBuffer::WordsPerLine,
+              reinterpret_cast<const uint8_t *>(&ninth), sizeof(ninth)) ==
+          SoaJitOldResultBuffer::Result::Full);
+
+    SoaJitOldResultBuffer::Request pressure;
+    CHECK(buffer.issueForPressure(&pressure) ==
+          SoaJitOldResultBuffer::Result::Accepted);
+    CHECK(pressure.identity.lineAddress ==
+          Base + SoaJitOldResultBuffer::LineBytes);
+    CHECK(pressure.identity.validWords == 0xff);
+    CHECK(buffer.acknowledge(pressure.identity) ==
+          SoaJitOldResultBuffer::Result::Accepted);
+    CHECK(buffer.capture(
+              7, 9, 8 * SoaJitOldResultBuffer::WordsPerLine,
+              reinterpret_cast<const uint8_t *>(&ninth), sizeof(ninth)) ==
+          SoaJitOldResultBuffer::Result::Accepted);
+    ++selected;
+    CHECK(buffer.closeSelection(selected, LogicalWords - selected) ==
+          SoaJitOldResultBuffer::Result::Accepted);
+    SoaJitOldResultBuffer::Request request;
+    while (buffer.issue(&request, true) ==
+           SoaJitOldResultBuffer::Result::Accepted) {
+        CHECK(buffer.acknowledge(request.identity) ==
+              SoaJitOldResultBuffer::Result::Accepted);
+    }
+    CHECK(buffer.complete());
+    CHECK(buffer.finish() == SoaJitOldResultBuffer::Result::Accepted);
+}
+
 int
 main()
 {
@@ -240,6 +297,7 @@ main()
     CHECK(delayed.selectionIsClosed());
 
     runPressurePacking();
+    runPressureDensitySelection();
 
     std::cout << "SOA_JIT_OLD_RESULT_TEST_PASS\n";
     return 0;

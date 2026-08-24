@@ -187,21 +187,7 @@ class SoaJitOldResultBuffer
         }
         if (chosen == nullptr)
             return Result::NoReadyLine;
-        if (nextIssueSequence == std::numeric_limits<uint64_t>::max())
-            return Result::InvalidGeneration;
-
-        const size_t credit = static_cast<size_t>(chosen - slots.data());
-        chosen->state = State::AwaitingResponse;
-        chosen->issueSequence = ++nextIssueSequence;
-        ++issuedLines;
-        if (request != nullptr) {
-            request->identity = {activeGeneration, chosen->issueSequence,
-                                 chosen->lineAddress, chosen->validWords,
-                                 static_cast<uint8_t>(credit)};
-            request->payload = chosen->payload.data();
-            request->contexts = chosen->contexts.data();
-        }
-        return Result::Accepted;
+        return issueSlot(chosen, request);
     }
 
     /**
@@ -210,8 +196,9 @@ class SoaJitOldResultBuffer
      * Once a pressure eviction owns a credit, retain every other filling line
      * until some exact WriteResp frees capacity.  This keeps a single miss
      * from turning the fixed eight-line buffer into an eight-line partial
-     * drain.  Full-line publication and terminal draining continue to use
-     * issue() directly.
+     * drain.  The bounded scan chooses the currently densest line and uses age
+     * only as a deterministic tie-break.  Full-line publication and terminal
+     * draining continue to use issue() directly.
      */
     Result issueForPressure(Request *request)
     {
@@ -221,7 +208,21 @@ class SoaJitOldResultBuffer
             return Result::Inactive;
         if (awaitingResponses() != 0)
             return Result::NoReadyLine;
-        return issue(request, true);
+        Slot *chosen = nullptr;
+        size_t chosenWords = 0;
+        for (auto &candidate : slots) {
+            if (candidate.state != State::Filling)
+                continue;
+            const size_t words = validWordCount(candidate.validWords);
+            if (chosen == nullptr || words > chosenWords ||
+                (words == chosenWords && candidate.age < chosen->age)) {
+                chosen = &candidate;
+                chosenWords = words;
+            }
+        }
+        if (chosen == nullptr)
+            return Result::NoReadyLine;
+        return issueSlot(chosen, request);
     }
 
     Result acknowledge(const Identity &identity)
@@ -304,6 +305,34 @@ class SoaJitOldResultBuffer
         uint16_t validWords = 0;
         State state = State::Free;
     };
+
+    static size_t validWordCount(uint16_t validWords)
+    {
+        size_t count = 0;
+        while (validWords != 0) {
+            count += validWords & 1U;
+            validWords >>= 1;
+        }
+        return count;
+    }
+
+    Result issueSlot(Slot *chosen, Request *request)
+    {
+        if (nextIssueSequence == std::numeric_limits<uint64_t>::max())
+            return Result::InvalidGeneration;
+        const size_t credit = static_cast<size_t>(chosen - slots.data());
+        chosen->state = State::AwaitingResponse;
+        chosen->issueSequence = ++nextIssueSequence;
+        ++issuedLines;
+        if (request != nullptr) {
+            request->identity = {activeGeneration, chosen->issueSequence,
+                                 chosen->lineAddress, chosen->validWords,
+                                 static_cast<uint8_t>(credit)};
+            request->payload = chosen->payload.data();
+            request->contexts = chosen->contexts.data();
+        }
+        return Result::Accepted;
+    }
 
     void clearRun()
     {
