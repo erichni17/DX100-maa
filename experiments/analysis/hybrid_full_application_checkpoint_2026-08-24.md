@@ -35,7 +35,7 @@ Raw CG reports:
 | NAS CG | `dx100-cg-page-product-full-baf142f7-r1` | `/data1/nier/dx100-runs/2026-08-24-cg-page-product-full-baf142f7-r1` | trace-free full checkpoint |
 | NAS IS | `dx100-is-scalar-soa-full-a44aaa60-r5` | `/data1/nier/dx100-runs/2026-08-24-is-scalar-soa-full-a44aaa60-r5` | full O3 ROI |
 | HashJoin PRH | `dx100-hashjoin-prh-full-recovery-20260824-061147` | `/data1/nier/dx100-runs/hashjoin-hybrid-prh-full-d7d29bf5-20260824-061147` | PRH-only recovery; PRO is not rerun |
-| GAPBS SSSP S22 | `dx100-sssp-old-result-full-s22-2840d930-r2` | `/data1/nier/dx100-runs/2026-08-24-sssp-old-result-full-s22-2840d930-r2` | reviewed candidate checkpoint preparation |
+| GAPBS SSSP S22 | `dx100-sssp-old-result-full-e690867f-r1` | `/data1/nier/dx100-runs/2026-08-24-sssp-old-result-full-e690867f-r1` | reviewed candidate O3 ROI |
 
 All units have infinite runtime. CG, IS, and HashJoin have process-exit
 watchers under `/data1/nier/.dx-runtime-state`. The external SSSP watcher was
