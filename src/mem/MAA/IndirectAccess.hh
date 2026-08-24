@@ -24,6 +24,7 @@
 #include "mem/MAA/ReorderSurvivalTracker.hh"
 #include "mem/MAA/SoaJitOverlapState.hh"
 #include "mem/MAA/SoaJitResultPipeline.hh"
+#include "mem/MAA/SoaJitScalarBroadcast.hh"
 #include "mem/MAA/Tables.hh"
 #include "mem/MAA/VirtualCombinePayloadStore.hh"
 #include "mem/MAA/VirtualCombinerPageOrder.hh"
@@ -313,7 +314,8 @@ public:
     void cacheReadPacketSent(Addr addr);
     void retirementWriteComplete(Addr addr,
                                  const uint8_t *writeRespPayload = nullptr,
-                                 unsigned payloadBytes = 0);
+                                 unsigned payloadBytes = 0,
+                                 PacketPtr responsePacket = nullptr);
     bool hasPendingDirectIndexLine(Addr addr) const {
         return direct_index_pending_lines.find(addr) !=
                direct_index_pending_lines.end();
@@ -560,6 +562,11 @@ protected:
         SoaJitValueCoalescer::MaxContexts;
     std::array<SoaJitContext, SoaJitContexts> soa_jit_contexts{};
     SoaJitResultPipeline soa_jit_result_pipeline;
+    SoaJitScalarBroadcast soa_jit_scalar_broadcast;
+    struct SoaJitWriteSenderState : public Packet::SenderState
+    {
+        SoaJitScalarBroadcast::WriteIdentity identity{};
+    };
     struct SoaJitValuePrefetchCursor
     {
         Addr lastBlockVaddr = 0;
@@ -668,6 +675,7 @@ protected:
     bool isVirtualLoad() const;
     bool isDirectIndexLoad() const;
     bool isSoaJitRmw() const;
+    bool isSoaJitScalarRmw() const;
     bool isSoaJitMaskedIndexRmw() const;
     bool usesBoundedDirectIndexPasses() const;
     bool usesBoundedSourceResponses() const;
@@ -713,10 +721,13 @@ protected:
     bool serviceSoaJitLookahead();
     bool issueSoaJitValueRead(size_t context_index, size_t slot_index,
                               int offset);
+    bool issueSoaJitScalar(size_t context_index, size_t slot_index,
+                           int offset);
     void applySoaJitValue(SoaJitContext &context, uint16_t a_word,
                           const uint8_t *value);
     void issueSoaJitWrite(SoaJitContext &context);
-    bool completeSoaJitWrite(Addr addr);
+    bool completeSoaJitWrite(
+        const SoaJitScalarBroadcast::WriteIdentity &identity);
     void validateSoaJitAddressSpans();
     bool soaJitContextsEmpty() const;
     void observeSoaJitResultPipeline();

@@ -36,6 +36,18 @@ class SoaJitSafety
     }
 
     static constexpr bool
+    scalarOperandsAligned(uint64_t a_addr, uint64_t index_addr,
+                          uint64_t predicate_addr, std::size_t word_bytes)
+    {
+        return (word_bytes == sizeof(uint32_t) ||
+                word_bytes == sizeof(uint64_t)) &&
+               a_addr % word_bytes == 0 &&
+               index_addr % alignof(uint32_t) == 0 &&
+               (predicate_addr == 0 ||
+                predicate_addr % alignof(uint32_t) == 0);
+    }
+
+    static constexpr bool
     maskedIndexMarkerOutsideLegalRange(uint64_t a_addr, uint64_t a_min,
                                        uint64_t a_max,
                                        std::size_t word_bytes)

@@ -229,7 +229,8 @@ Invalidator::getSoaJitAddrRegionPermit(Instruction *instruction)
              "SoA/JIT instruction has invalid MAA id %d\n",
              instruction->maa_id);
     panic_if(instruction->addrRangeID < 0 ||
-                 instruction->backingAddrRangeID < 0 ||
+                 (instruction->isSoaJitVectorRmw() &&
+                  instruction->backingAddrRangeID < 0) ||
                  instruction->indexAddrRangeID < 0 ||
                  (instruction->predicateAddr != 0 &&
                   instruction->predicateAddrRangeID < 0),

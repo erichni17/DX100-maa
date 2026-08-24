@@ -165,6 +165,7 @@ public:
         "MAX"};
     Addr baseAddr, backingAddr, indexAddr, predicateAddr;
     bool soaJitMaskedIndex;
+    int16_t soaJitScalarRegID;
     Addr logicalSourceBackingAddr;
     Addr logicalSource2BackingAddr, logicalDestinationBackingAddr;
     Addr minAddr, maxAddr, backingMinAddr, backingMaxAddr;
@@ -249,7 +250,7 @@ public:
         return isLogicalStreamLoad() || isLogicalStreamStore();
     }
     /**
-     * Guarded no-old-result SoA/JIT form of ordinary vector RMW.
+     * Guarded no-old-result SoA/JIT form of ordinary vector or scalar RMW.
      *
      * Ordinary INDIR_RMW_VECTOR keeps both SPD sources.  This form has no SPD
      * input or condition tile, forbids dst1 (the legacy old-value result), and
@@ -257,13 +258,28 @@ public:
      * are delivered in instruction words 3/4/5 respectively.
      */
     bool isSoaJitRmw() const {
-        return opcode == OpcodeType::INDIR_RMW_VECTOR &&
+        return (opcode == OpcodeType::INDIR_RMW_VECTOR ||
+                opcode == OpcodeType::INDIR_RMW_SCALAR) &&
                src1SpdID == -1 && src2SpdID == -1 && condSpdID == -1;
     }
+    bool isSoaJitScalarRmw() const {
+        return isSoaJitRmw() &&
+               opcode == OpcodeType::INDIR_RMW_SCALAR;
+    }
+    bool isSoaJitVectorRmw() const {
+        return isSoaJitRmw() && opcode == OpcodeType::INDIR_RMW_VECTOR;
+    }
     bool isSoaJitMaskedIndexRmw() const {
-        return isSoaJitRmw() && soaJitMaskedIndex;
+        return isSoaJitVectorRmw() && soaJitMaskedIndex;
     }
     bool hasValidSoaJitRmwOperands() const {
+        return isSoaJitRmw() && dst1SpdID == -1 && dst2SpdID != -1 &&
+               src1RegID != -1 && src2RegID != -1 && src3RegID != -1 &&
+               dst1RegID == -1 && dst2RegID == -1 &&
+               (isSoaJitScalarRmw() ? soaJitScalarRegID != -1
+                                    : soaJitScalarRegID == -1);
+    }
+    bool hasValidSoaJitRmwShape() const {
         return isSoaJitRmw() && dst1SpdID == -1 && dst2SpdID != -1 &&
                src1RegID != -1 && src2RegID != -1 && src3RegID != -1 &&
                dst1RegID == -1 && dst2RegID == -1;

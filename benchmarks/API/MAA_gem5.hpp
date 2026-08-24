@@ -889,6 +889,58 @@ inline void maa_indirect_rmw_vector_soa_jit_masked_indices(
     *INSTR_predicateaddr = MAA_SOA_JIT_MASKED_INDEX_MODE_TAG;
     __asm__ __volatile__("mfence;" ::: "memory");
 }
+
+/**
+ * Guarded logical-16K scalar-broadcast RMW with no old-value result.
+ *
+ * The registered direct-memory index and optional predicate spans are walked
+ * by the existing bounded SoA/JIT Row/Offset path.  The scalar register is
+ * captured once; no logical value array is materialized or fetched.  Word 3
+ * carries the scalar register number only for this guarded ordinary
+ * INDIR_RMW_SCALAR shape.  Legacy tile-index scalar RMW is unchanged.
+ */
+template <class T1>
+inline void maa_indirect_rmw_scalar_soa_jit(
+    T1 *data, const uint32_t *indices, const uint32_t *predicates,
+    int scalar_reg, int min_reg, int max_reg, int stride_reg,
+    int completion_tile, Operation_t o_type, int old_value_tile = -1) {
+    assert(data != nullptr);
+    assert(indices != nullptr);
+    constexpr int scalar_register_words =
+        (sizeof(T1) + sizeof(uint32_t) - 1) / sizeof(uint32_t);
+    assert(scalar_reg >= 0 && scalar_register_words <= NUM_SCALAR_REGS &&
+           scalar_reg <= NUM_SCALAR_REGS - scalar_register_words);
+    assert(min_reg >= 0 && min_reg < NUM_SCALAR_REGS);
+    assert(max_reg >= 0 && max_reg < NUM_SCALAR_REGS);
+    assert(stride_reg >= 0 && stride_reg < NUM_SCALAR_REGS);
+    assert(min_reg != max_reg && min_reg != stride_reg &&
+           max_reg != stride_reg);
+    assert(min_reg < scalar_reg ||
+           min_reg >= scalar_reg + scalar_register_words);
+    assert(max_reg < scalar_reg ||
+           max_reg >= scalar_reg + scalar_register_words);
+    assert(stride_reg < scalar_reg ||
+           stride_reg >= scalar_reg + scalar_register_words);
+    assert(completion_tile >= 0 && completion_tile < NUM_TILES);
+    assert(old_value_tile == -1 &&
+           "SoA/JIT scalar RMW does not support an old-value destination");
+    DataType data_type = get_data_type<T1>();
+    *INSTR_opcode_datatype_optype_tdst1_tdst2 =
+        ((uint64_t)OpcodeType::INDIR_RMW_SCALAR << 32) |
+        ((uint64_t)data_type << 24) | ((uint64_t)o_type << 16) |
+        ((uint64_t)NA_UINT8 << 8) | (uint64_t)completion_tile;
+    *INSTR_tsrc1_tsrc2_rdst1_rdst2_rsrc1_rsrc2_rsrc3_csrc =
+        ((uint64_t)NA_UINT8 << 56) | ((uint64_t)NA_UINT8 << 48) |
+        ((uint64_t)NA_UINT8 << 40) | ((uint64_t)NA_UINT8 << 32) |
+        ((uint64_t)min_reg << 24) | ((uint64_t)max_reg << 16) |
+        ((uint64_t)stride_reg << 8) | (uint64_t)NA_UINT8;
+    *INSTR_baseaddr = (uint64_t)data;
+    *INSTR_backingaddr = (uint64_t)scalar_reg;
+    *INSTR_indexaddr = (uint64_t)indices;
+    *INSTR_predicateaddr = (uint64_t)predicates;
+    __asm__ __volatile__("mfence;" ::: "memory");
+}
+
 template <class T1>
 inline void maa_indirect_rmw_scalar(T1 *data, int idx_tile, int src_reg, Operation_t o_type, int cond_tile = -1, int dst_tile = -1) {
     DataType data_type = get_data_type<T1>();
