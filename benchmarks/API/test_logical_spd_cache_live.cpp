@@ -38,7 +38,7 @@ uint64_t
 hashScalar(uint64_t hash, Scalar value)
 {
     uint64_t encoded = 0;
-    std::memcpy(&encoded, &value, sizeof(encoded));
+    std::memcpy(&encoded, &value, sizeof(value));
     for (unsigned byte = 0; byte < sizeof(encoded); ++byte) {
         hash ^= (encoded >> (byte * 8)) & 0xff;
         hash *= 1099511628211ULL;
