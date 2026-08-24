@@ -1556,7 +1556,7 @@ join_init_run(relation_t *relR, relation_t *relS, JoinFunction jf, int nthreads)
     printf("HASHJOIN_HYBRID_SOA_JIT enabled=1 "
            "first_eligible=%lu first_routed=%lu first_tails=%lu "
            "second_eligible=%lu second_routed=%lu second_tails=%lu "
-           "eligible=%lu routed=%lu physical_payload_elements=4096 "
+           "eligible=%lu routed=%lu physical_spd_elements=16384 "
            "logical_reorder_elements=16384 row_table_slices=32 "
            "indirect_units=4 candidate_only=1\n",
            static_cast<unsigned long>(first_eligible),
