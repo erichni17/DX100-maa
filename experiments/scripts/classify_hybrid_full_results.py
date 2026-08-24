@@ -94,7 +94,9 @@ def require_manifest_hashes(
 def require_manifest_executable(
     root: Path, manifest: dict[str, str], reasons: list[str]
 ) -> None:
-    path_value, expected = manifest.get("gem5_path"), manifest.get("gem5_sha256")
+    path_value, expected = manifest.get("gem5_path"), manifest.get(
+        "gem5_sha256"
+    )
     if not path_value or not expected:
         reasons.append("manifest lacks gem5_path/gem5_sha256")
         return
@@ -104,7 +106,8 @@ def require_manifest_executable(
     archived = recovery.get("archived_gem5_path")
     if (
         recovery.get("schema") != "dx100.runtime_executable_recovery.v1"
-        or recovery.get("reason") != "lead_build_path_replaced_after_process_start"
+        or recovery.get("reason")
+        != "lead_build_path_replaced_after_process_start"
         or recovery.get("live_exe_sha256") != expected
         or recovery.get("archived_gem5_sha256") != expected
         or recovery.get("simulation_state_changed") != "false"
@@ -328,10 +331,28 @@ def classify_hashjoin(root: Path, kernel: str) -> dict:
                 second_eligible != 0 or second_routed != 0
             ):
                 reasons.append("PRO unexpectedly routed a shifted pass")
-            if kernel == "PRH" and (
-                second_eligible <= 0 or second_routed <= 0
+            coverage = key_values(arm / "mechanism.status")
+            expected_coverage = (
+                "not_applicable"
+                if kernel == "PRO"
+                else "tail_only"
+                if second_eligible == 0
+                else "routed"
+            )
+            if coverage.get("kernel") != kernel:
+                reasons.append(
+                    "HashJoin mechanism status lacks matching kernel"
+                )
+            if coverage.get("first_pass_coverage") != "routed":
+                reasons.append("HashJoin first-pass coverage is not routed")
+            if coverage.get("shifted_pass_coverage") != expected_coverage:
+                reasons.append(
+                    "HashJoin shifted-pass coverage disagrees with marker"
+                )
+            if coverage.get("second_eligible") != str(second_eligible) or (
+                coverage.get("second_routed") != str(second_routed)
             ):
-                reasons.append("PRH lacks a routed shifted pass")
+                reasons.append("HashJoin mechanism status does not close")
             if (
                 routed <= 0
                 or routed != eligible
@@ -402,9 +423,30 @@ def classify_hashjoin(root: Path, kernel: str) -> dict:
         ]
         if traffic[0] <= 0 or len(set(traffic)) != 1:
             reasons.append("HashJoin A read/write ledgers do not close")
-    return result_for(
+    result = result_for(
         f"hashjoin-{kernel.lower()}", arm, reasons, display_root=root
     )
+    if result["status"] == "terminal-valid":
+        coverage = key_values(arm / "mechanism.status")
+        shifted = coverage["shifted_pass_coverage"]
+        result["exact_terminal_correctness"] = "pass"
+        result["intended_mechanism_coverage"] = {
+            "first_pass": "routed",
+            "shifted_pass": shifted,
+        }
+        # This runner is candidate-only and deliberately has no matched
+        # baseline.  A terminal result can never alone promote performance.
+        result["performance_promotable"] = False
+        result["performance_reason"] = (
+            "candidate-only evidence has no matched performance baseline"
+            if shifted == "routed"
+            else "candidate-only evidence and no routed shifted-pass window"
+        )
+    else:
+        result["exact_terminal_correctness"] = "not-established"
+        result["intended_mechanism_coverage"] = "not-established"
+        result["performance_promotable"] = False
+    return result
 
 
 def classify_sssp(root: Path) -> dict:

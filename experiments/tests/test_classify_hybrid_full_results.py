@@ -238,9 +238,120 @@ class ClassifierFixtureTest(unittest.TestCase):
         (root / "results.tsv").write_text(
             "kernel\tresult\trouted\tsoa_instructions\tsoa_terminals\tsimTicks\n"
         )
+        (root / "PRO/mechanism.status").write_text(
+            "kernel=PRO\nfirst_pass_coverage=routed\n"
+            "shifted_pass_coverage=not_applicable\n"
+            "second_eligible=0\nsecond_routed=0\n"
+        )
         result = CLASSIFIER.classify_hashjoin(root, "PRO")
         self.assertEqual(result["status"], "terminal-valid")
         self.assertEqual(result["first_roi_simTicks"], 789)
+        self.assertEqual(
+            result["intended_mechanism_coverage"]["shifted_pass"],
+            "not_applicable",
+        )
+        self.assertFalse(result["performance_promotable"])
+
+    def test_prh_zero_shifted_windows_are_tail_only_not_incorrect(
+        self,
+    ) -> None:
+        root = pathlib.Path(self.tmp.name)
+        run = root / "PRH/run"
+        run.mkdir(parents=True)
+        (run / "run.log").write_text(
+            "HASHJOIN_HYBRID_SOA_JIT enabled=1 first_eligible=240 "
+            "first_routed=240 second_eligible=0 second_routed=0 eligible=240 "
+            "routed=240 physical_spd_elements=4096 logical_reorder_elements=16384 "
+            "row_table_slices=32 indirect_units=4 candidate_only=1\n"
+            "HASHJOIN_HYBRID_RESULT result=2000000\n"
+            "Exiting @ tick 99 because m5_exit instruction encountered\n"
+        )
+        values = {
+            "IND_SoaJitInstructions": 240,
+            "IND_SoaJitTerminalCompletions": 240,
+            "IND_SoaJitSelected": 240 * 16384,
+            "IND_SoaJitPredicateRejected": 0,
+            "IND_SoaJitValueReadIssues": 0,
+            "IND_SoaJitValueReadResponses": 0,
+            "IND_SoaJitAliasesApplied": 240 * 16384,
+            "IND_BoundedGlobalMergeFallbacks": 0,
+            "IND_SoaJitAReadIssues": 16384,
+            "IND_SoaJitAReadResponses": 16384,
+            "IND_SoaJitAWriteIssues": 16384,
+            "IND_SoaJitAWriteResponses": 16384,
+        }
+        (run / "stats.txt").write_text(
+            CLASSIFIER.STATS_BEGIN
+            + "\nsimTicks 789\n"
+            + "".join(
+                f"unit_{name} {value}\n" for name, value in values.items()
+            )
+            + CLASSIFIER.STATS_END
+            + "\n"
+        )
+        (run / "config.ini").write_text(
+            "num_tile_elements=16384\nphysical_tile_elements=4096\n"
+            "num_offset_table_entries=16384\n"
+            "num_offset_table_epoch_entries=16384\n"
+            "num_initial_row_table_slices=32\n"
+        )
+        (root / "results.tsv").write_text(
+            "kernel\tresult\trouted\tsoa_instructions\tsoa_terminals\tsimTicks\n"
+        )
+        (root / "PRH/mechanism.status").write_text(
+            "kernel=PRH\nfirst_pass_coverage=routed\n"
+            "shifted_pass_coverage=tail_only\n"
+            "second_eligible=0\nsecond_routed=0\n"
+        )
+        result = CLASSIFIER.classify_hashjoin(root, "PRH")
+        self.assertEqual(result["status"], "terminal-valid")
+        self.assertEqual(
+            result["intended_mechanism_coverage"]["shifted_pass"], "tail_only"
+        )
+
+    def test_prh_routed_shifted_windows_remain_a_valid_contract(self) -> None:
+        # The same fixture proves that a nonzero shifted pass is accepted when
+        # its marker and frozen mechanism status agree.
+        self.test_prh_zero_shifted_windows_are_tail_only_not_incorrect()
+        root = pathlib.Path(self.tmp.name)
+        log = (
+            (root / "PRH/run/run.log")
+            .read_text()
+            .replace(
+                "second_eligible=0 second_routed=0 eligible=240 routed=240",
+                "second_eligible=1 second_routed=1 eligible=241 routed=241",
+            )
+        )
+        (root / "PRH/run/run.log").write_text(log)
+        stats = root / "PRH/run/stats.txt"
+        stats.write_text(
+            stats.read_text()
+            .replace(
+                "unit_IND_SoaJitInstructions 240",
+                "unit_IND_SoaJitInstructions 241",
+            )
+            .replace(
+                "unit_IND_SoaJitTerminalCompletions 240",
+                "unit_IND_SoaJitTerminalCompletions 241",
+            )
+            .replace(
+                f"unit_IND_SoaJitSelected {240 * 16384}",
+                f"unit_IND_SoaJitSelected {241 * 16384}",
+            )
+            .replace(
+                f"unit_IND_SoaJitAliasesApplied {240 * 16384}",
+                f"unit_IND_SoaJitAliasesApplied {241 * 16384}",
+            )
+        )
+        (root / "PRH/mechanism.status").write_text(
+            "kernel=PRH\nfirst_pass_coverage=routed\n"
+            "shifted_pass_coverage=routed\nsecond_eligible=1\nsecond_routed=1\n"
+        )
+        result = CLASSIFIER.classify_hashjoin(root, "PRH")
+        self.assertEqual(result["status"], "terminal-valid")
+        self.assertEqual(
+            result["intended_mechanism_coverage"]["shifted_pass"], "routed"
+        )
 
 
 if __name__ == "__main__":
