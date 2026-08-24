@@ -37,6 +37,7 @@ ifndef DUMP
 	MAA_BINARIES += $(SUITE)_maa_16K_bounded $(SUITE)_maa_16K_general_fp
 	MAA_BINARIES += $(SUITE)_maa_16K_general_fp_rmw
 	MAA_BINARIES += $(SUITE)_maa_16K_logical_page_rmw
+	MAA_BINARIES += $(SUITE)_maa_16K_physical_page_product
 endif
 
 .PHONY: all FUNC GEM5 clean
@@ -101,6 +102,9 @@ endef
 
 %_maa_16K_logical_page_rmw: cg.cpp m5op.o
 	$(call build_binary,-DMAA -DMAA_VIRTUAL_GATHER -DMAA_GENERAL_VIRTUAL_CONSUMER -DMAA_CONSUMER_TILE_SIZE=4096 -DCG_LOGICAL16_RMW -DCG_LOGICAL_PAGE_RMW -DCG_FP_ENABLE -DNUM_CORES=4 -DNUM_TILES_PER_CORE=10 -DTILE_SIZE=16384)
+
+%_maa_16K_physical_page_product: cg.cpp m5op.o
+	$(call build_binary,-DMAA -DMAA_VIRTUAL_GATHER -DMAA_GENERAL_VIRTUAL_CONSUMER -DMAA_CONSUMER_TILE_SIZE=4096 -DCG_LOGICAL16_RMW -DCG_LOGICAL_PAGE_RMW -DCG_PHYSICAL_PAGE_PRODUCT_ONLY -DCG_FP_ENABLE -DNUM_CORES=4 -DNUM_TILES_PER_CORE=8 -DTILE_SIZE=16384)
 
 %_maa_32K: cg.cpp m5op.o
 	$(call build_binary,-DMAA -DNUM_CORES=4 -DTILE_SIZE=32768)
