@@ -101,7 +101,9 @@ class IsScalarSoaHybridContractTests(unittest.TestCase):
             "gem5_sha256=",
             "guest_sha256=",
             "input_sha256=",
-            "final/tile_sweep_source.tsv",
+            "physical_tile_sweep_baseline_20260822.json",
+            "frozen_native_sha256=",
+            "num_initial_row_table_slices=32",
         ):
             self.assertIn(token, self.runner)
 

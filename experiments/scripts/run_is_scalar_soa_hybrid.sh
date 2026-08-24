@@ -13,7 +13,7 @@ gem5=$(realpath "$2")
 out=$(realpath -m "$3")
 config="$root/configs/deprecated/example/se.py"
 ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
-frozen_sweep=/data1/nier/dx100-runs/2026-07-20-full-tile-sweep
+frozen_sweep="$root/experiments/analysis/physical_tile_sweep_baseline_20260822.json"
 key_header=${IS_KEY_HEADER:-/data1/nier/worktrees/DX100-full-tile-sweep-20260720/benchmarks/NAS/is/key_array_4C.h}
 
 [[ $action == smoke || $action == full ]] || {
@@ -73,12 +73,14 @@ source_commit=$(git -C "$root" rev-parse HEAD)
     if [[ $action == full ]]; then
         printf 'input_path=%s\ninput_sha256=' "$key_header"
         sha256sum "$key_header" | awk '{print $1}'
-        printf 'frozen_native_source=%s/final/tile_sweep_source.tsv\n' \
+        printf 'frozen_native_source=%s\nfrozen_native_sha256=' \
             "$frozen_sweep"
+        sha256sum "$frozen_sweep" | awk '{print $1}'
     else
         printf 'input=compiled_exact_micro_vectors\n'
     fi
     printf 'logical_elements=16384\nphysical_tile_elements=4096\n'
+    printf 'row_table_slices=32\n'
     printf 'native_runs=0\nwall_timeout=none\n'
 } > "$out/manifest.txt"
 
@@ -125,7 +127,7 @@ common=(
     --maa_num_tile_elements=16384 --maa_physical_tile_elements=4096
     --maa_num_offset_table_entries=16384
     --maa_num_offset_table_epoch_entries=16384
-    --maa_num_initial_row_table_slices=16
+    --maa_num_initial_row_table_slices=32
     --maa_virtual_index_buffer_lines=16
     --maa_soa_jit_predicate_active_credits=16
     --maa_soa_jit_active_contexts=32
@@ -216,6 +218,7 @@ fi
 
 for resolved in num_tile_elements=16384 physical_tile_elements=4096 \
     num_offset_table_entries=16384 num_offset_table_epoch_entries=16384 \
+    num_initial_row_table_slices=32 \
     virtual_index_buffer_lines=16 soa_jit_predicate_active_credits=16 \
     soa_jit_active_contexts=32 soa_jit_active_value_owners=32 \
     soa_jit_value_prefetch_credits=0; do
