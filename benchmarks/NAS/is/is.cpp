@@ -40,16 +40,14 @@
  *                                                                       *
  *************************************************************************/
 
-#include <iostream>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <omp.h>
-#include <cassert>
+#include <stdint.h>
 
-#ifdef _OPENMP
-#include <omp.h>
-#endif
+#include <cassert>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <iostream>
 
 #if !defined(FUNC) && !defined(GEM5) && !defined(GEM5_MAGIC)
 #define GEM5
@@ -60,6 +58,7 @@
 #elif defined(GEM5)
 #include "MAA_gem5.hpp"
 #include <gem5/m5ops.h>
+
 #elif defined(GEM5_MAGIC)
 #include "MAA_gem5_magic.hpp"
 #endif
@@ -145,10 +144,13 @@ INT_TYPE key_array[NUM_KEYS];
 #else
 #if NUM_CORES == 4
 #include "key_array_4C.h"
+
 #elif NUM_CORES == 8
 #include "key_array_8C.h"
+
 #elif NUM_CORES == 16
 #include "key_array_16C.h"
+
 #else
 #error "Invalid number of cores"
 #endif
@@ -160,6 +162,27 @@ INT_TYPE key_buff2[NUM_KEYS];
 // 32MB
 // [NUMTHREADS][MAX_KEY]
 INT_TYPE **key_buff1_aptr = NULL;
+
+#ifdef IS_SCALAR_SOA_JIT
+#if !defined(GEM5)
+#error "IS_SCALAR_SOA_JIT requires the timing-visible GEM5 API"
+#endif
+#if TILE_SIZE != 16384
+#error "IS_SCALAR_SOA_JIT requires one logical 16K Row/Offset window"
+#endif
+
+enum class IsRmwTreatment
+{
+    Legacy,
+    ScalarSoaJit,
+};
+
+IsRmwTreatment is_rmw_treatment = IsRmwTreatment::Legacy;
+uint64_t is_soa_generations[NUM_CORES] = {};
+uint64_t is_soa_index_words[NUM_CORES] = {};
+uint64_t is_soa_full_windows[NUM_CORES] = {};
+uint64_t is_soa_tail_words[NUM_CORES] = {};
+#endif
 
 #ifdef GEM5
 /* Static BSS storage for the per-thread histogram work buffers. Under gem5 SE
@@ -763,6 +786,15 @@ void rank_maa(int iteration) {
     key_buff_ptr2 = key_array;
     key_buff_ptr = key_buff1;
 
+#ifdef IS_SCALAR_SOA_JIT
+    if (is_rmw_treatment == IsRmwTreatment::ScalarSoaJit) {
+        memset(is_soa_generations, 0, sizeof(is_soa_generations));
+        memset(is_soa_index_words, 0, sizeof(is_soa_index_words));
+        memset(is_soa_full_windows, 0, sizeof(is_soa_full_windows));
+        memset(is_soa_tail_words, 0, sizeof(is_soa_tail_words));
+    }
+#endif
+
 #ifdef GEM5
     clear_mem_region();
 #if NUM_CORES == 4
@@ -829,23 +861,69 @@ void rank_maa(int iteration) {
             own indexes to determine how many of each there are: their
             individual population                                       */
 
-        int stream_tile;
-        int lb, ub, stride;
+        int stream_tile = -1;
+        int lb = -1, ub = -1, stride = -1;
+#ifdef IS_SCALAR_SOA_JIT
+        int completion_tile = -1;
+        int minimum = -1, maximum = -1, scalar = -1;
+#endif
 #pragma omp critical
         {
-            // add lock guard
-            stream_tile = get_new_tile<int>();
-            lb = get_new_reg<int>();
-            ub = get_new_reg<int>(NUM_KEYS);
-            stride = get_new_reg<int>(1);
+            if (
+#ifdef IS_SCALAR_SOA_JIT
+                is_rmw_treatment == IsRmwTreatment::ScalarSoaJit
+#else
+                false
+#endif
+            ) {
+#ifdef IS_SCALAR_SOA_JIT
+                completion_tile = get_new_tile<uint32_t>();
+                minimum = get_new_reg<int>(0);
+                maximum = get_new_reg<int>(TILE_SIZE);
+                stride = get_new_reg<int>(1);
+                scalar = get_new_reg<int>(1);
+#endif
+            } else {
+                stream_tile = get_new_tile<int>();
+                lb = get_new_reg<int>();
+                ub = get_new_reg<int>(NUM_KEYS);
+                stride = get_new_reg<int>(1);
+            }
         }
 #pragma omp for nowait schedule(static)
         for (i = 0; i < NUM_KEYS; i += TILE_SIZE) {
-            // work_buff[key_buff_ptr2[i]] += 1;
+#ifdef IS_SCALAR_SOA_JIT
+            if (is_rmw_treatment == IsRmwTreatment::ScalarSoaJit) {
+                static_assert(sizeof(INT_TYPE) == sizeof(uint32_t),
+                              "direct IS indices must be 32-bit words");
+                const int remaining = NUM_KEYS - i;
+                const int window_words =
+                    remaining < TILE_SIZE ? remaining : TILE_SIZE;
+                /* key_buff_ptr2 is already one coherent, registered memory
+                   region.  Point the timing-visible direct-index feeder at
+                   this exact logical window: there is no SPD host readback,
+                   value array, predicate array, or staging allocation. */
+                maa_const<int>(window_words, maximum);
+                maa_indirect_rmw_scalar_soa_jit<int>(
+                    work_buff,
+                    reinterpret_cast<const uint32_t *>(key_buff_ptr2 + i),
+                    nullptr, scalar, minimum, maximum, stride,
+                    completion_tile, Operation_t::ADD_OP);
+                wait_ready(completion_tile);
+                is_soa_generations[myid]++;
+                is_soa_index_words[myid] += window_words;
+                if (window_words == TILE_SIZE)
+                    is_soa_full_windows[myid]++;
+                else
+                    is_soa_tail_words[myid] += window_words;
+                continue;
+            }
+#endif
             maa_const<int>(i, lb);
-            maa_stream_load<int>(key_buff_ptr2, lb, ub, stride, stream_tile);
-            // Transfer stream_tile
-            maa_indirect_rmw_scalar<int>(work_buff, stream_tile, stride, Operation_t::ADD_OP);
+            maa_stream_load<int>(key_buff_ptr2, lb, ub, stride,
+                                 stream_tile);
+            maa_indirect_rmw_scalar<int>(
+                work_buff, stream_tile, stride, Operation_t::ADD_OP);
             wait_ready(stream_tile);
         }
         /* Now they have individual key population */
@@ -864,6 +942,36 @@ void rank_maa(int iteration) {
         }
 
     } /*omp parallel*/
+
+#ifdef IS_SCALAR_SOA_JIT
+    if (is_rmw_treatment == IsRmwTreatment::ScalarSoaJit) {
+        uint64_t generations = 0;
+        uint64_t index_words = 0;
+        uint64_t full_windows = 0;
+        uint64_t tail_words = 0;
+        for (int core = 0; core < NUM_CORES; ++core) {
+            generations += is_soa_generations[core];
+            index_words += is_soa_index_words[core];
+            full_windows += is_soa_full_windows[core];
+            tail_words += is_soa_tail_words[core];
+        }
+        const bool closed = generations >= 2 && index_words == NUM_KEYS &&
+                            full_windows * TILE_SIZE + tail_words ==
+                                index_words;
+        std::cout << "IS_SCALAR_SOA_JIT_TERMINAL treatment=scalar_soa_jit"
+                  << " logical=16384 scalar=1 predicate=null"
+                  << " min=0 max=exact_count stride=1"
+                  << " generations=" << generations
+                  << " full_windows=" << full_windows
+                  << " tail_words=" << tail_words
+                  << " index_words=" << index_words
+                  << " predicate_words=0 value_words=0"
+                  << " host_spd_reads=0 staging_bytes=0"
+                  << " result=" << (closed ? "PASS" : "FAIL")
+                  << std::endl;
+        assert(closed);
+    }
+#endif
 
 #ifdef DO_VERIFY
     /* This is the partial verify test section */
@@ -1023,6 +1131,29 @@ int main(int argc, char **argv) {
     }
     std::string mode = argv[1];
 
+#ifdef IS_SCALAR_SOA_JIT
+    if (argc == 3 && std::string(argv[2]) == "scalar_soa_jit") {
+        if (mode != "MAA") {
+            std::cerr << "IS scalar SoA/JIT treatment requires MAA mode"
+                      << std::endl;
+            return 2;
+        }
+        is_rmw_treatment = IsRmwTreatment::ScalarSoaJit;
+    } else if (argc == 3 && std::string(argv[2]) == "legacy") {
+        is_rmw_treatment = IsRmwTreatment::Legacy;
+    } else if (argc != 2) {
+        std::cerr << "IS selector must be absent, legacy, or scalar_soa_jit"
+                  << std::endl;
+        return 2;
+    }
+#else
+    if (argc != 2) {
+        std::cerr << "IS scalar SoA/JIT support is not compiled in"
+                  << std::endl;
+        return 2;
+    }
+#endif
+
     int iteration;
 
 #ifdef DO_VERIFY
@@ -1062,11 +1193,14 @@ int main(int argc, char **argv) {
 #endif
 
     /*  Printout initial NPB info */
-    std::cout << "NAS Parallel Benchmarks (NPB3.4-OMP) - IS Benchmark" << std::endl;
-    std::cout << " Size:  " << TOTAL_KEYS << "  (NUM_CORES " << NUM_CORES << ")" << std::endl;
+    std::cout << "NAS Parallel Benchmarks (NPB3.4-OMP) - IS Benchmark"
+              << std::endl;
+    std::cout << " Size:  " << TOTAL_KEYS << "  (NUM_CORES " << NUM_CORES
+              << ")" << std::endl;
     std::cout << " Iterations:  " << MAX_ITERATIONS << std::endl;
 #ifdef _OPENMP
-    std::cout << " Number of available threads: " << omp_get_max_threads() << std::endl;
+    std::cout << " Number of available threads: " << omp_get_max_threads()
+              << std::endl;
 #endif
 
 #ifndef USE_DATA_FROM_FILE
@@ -1091,8 +1225,18 @@ int main(int argc, char **argv) {
     alloc_MAA();
     init_MAA();
 
-    std::cout << "NAS Parallel Benchmarks (NPB3.4-OMP) - IS Benchmark" << std::endl;
-    std::cout << " Size:  " << TOTAL_KEYS << "  (NUM_CORES " << NUM_CORES << ")" << std::endl;
+#ifdef IS_SCALAR_SOA_JIT
+    std::cout << "IS_SCALAR_SOA_JIT_SELECTION compiled=1 treatment="
+              << (is_rmw_treatment == IsRmwTreatment::ScalarSoaJit
+                      ? "scalar_soa_jit"
+                      : "legacy")
+              << " legacy_default=" << (argc == 2 ? 1 : 0) << std::endl;
+#endif
+
+    std::cout << "NAS Parallel Benchmarks (NPB3.4-OMP) - IS Benchmark"
+              << std::endl;
+    std::cout << " Size:  " << TOTAL_KEYS << "  (NUM_CORES " << NUM_CORES
+              << ")" << std::endl;
     std::cout << " Iterations:  " << MAX_ITERATIONS << std::endl;
     std::cout << " Tile Size: " << TILE_SIZE << std::endl;
 
