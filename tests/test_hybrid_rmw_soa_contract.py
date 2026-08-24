@@ -8,20 +8,27 @@ def read(path: str) -> str:
     return (ROOT / path).read_text()
 
 
-def test_guarded_word_five_abi_preserves_instruction_file_size():
+def test_guarded_seven_word_abi_preserves_instruction_file_size():
     api = read("benchmarks/API/MAA_gem5.hpp")
     port = read("src/mem/MAA/CpuSidePort.cc")
     assert "#define INSTRUCTION_FILE_SIZE 64" in api
-    assert "INSTRUCTION_FILE_SIZE - 6 * sizeof(uint64_t)" in api
+    assert "INSTRUCTION_FILE_SIZE - 7 * sizeof(uint64_t)" in api
     assert "*INSTR_backingaddr = (uint64_t)values" in api
     assert "*INSTR_indexaddr = (uint64_t)indices" in api
     assert "*INSTR_predicateaddr = (uint64_t)predicates" in api
+    assert "*INSTR_resultaddr = (uint64_t)old_values" in api
     word_five = port[
         port.index("case 5:") : port.index("default:", port.index("case 5:"))
     ]
     assert "isSoaJitRmw" in word_five
     assert "hasValidSoaJitRmwOperands" in word_five
     assert "scheduleDispatchInstructionEvent" in word_five
+    word_six = port[
+        port.index("case 6:") : port.index("default:", port.index("case 6:"))
+    ]
+    assert "hasSoaJitOldResult" in word_six
+    assert "soaJitPredicateWordReceived" in word_six
+    assert "soaJitResultWordReceived" in word_six
 
 
 def test_shape_rejects_old_value_and_uses_completion_only_dst2():
