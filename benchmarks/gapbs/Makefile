@@ -145,6 +145,12 @@ sssp_maa_2K_fp: src/sssp.cc src/*.h m5op.o
 	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DGEM5 -DMAA -DNUM_CORES=4 -DTILE_SIZE=2048 -DMAA_MEM_SIZE=0x80000000 -DSSSP_FP_ENABLE=1 $(GEM5_LIB) m5op.o $< -o $@.tmp
 	mv -f $@.tmp $@
 
+# Candidate-only exact old-result hybrid: 16K Row/Offset reorder over the
+# existing 4K physical payload.  Ordinary sssp_maa* targets remain legacy.
+sssp_maa_2G_old_result_hybrid_fp: src/sssp.cc src/*.h m5op.o
+	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DGEM5 -DMAA -DNUM_CORES=4 -DNUM_TILES_PER_CORE=8 -DTILE_SIZE=16384 -DMAA_CONSUMER_TILE_SIZE=4096 -DMAA_MEM_SIZE=0x80000000 -DSSSP_FP_ENABLE=1 -DSSSP_OLD_RESULT_HYBRID=1 $(GEM5_LIB) m5op.o $< -o $@.tmp
+	mv -f $@.tmp $@
+
 # Scale-22 BC correctness binary: end the ROI before the serial verifier, then
 # exit gem5 only after GAPBS reports the verification result.
 bc_maa_1K_verify: src/bc.cc src/*.h m5op.o
