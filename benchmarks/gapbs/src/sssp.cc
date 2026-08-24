@@ -814,8 +814,14 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
 #ifdef SSSP_OLD_RESULT_HYBRID
                     if (hybrid_pending_pages != 0)
                         abort();
-                    if (hybrid_observed_words != hybrid_chunk_words)
+                    if (hybrid_observed_words != hybrid_chunk_words) {
+                        std::cerr << "SSSP_CHUNK_COVERAGE_MISMATCH iter="
+                                  << iter << " idx=" << idx
+                                  << " expected=" << hybrid_chunk_words
+                                  << " observed=" << hybrid_observed_words
+                                  << std::endl;
                         abort();
+                    }
 #endif
                 }
             }
@@ -834,8 +840,20 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                 if (produced_after - hybrid_iteration_produced_before !=
                         hybrid_iteration_expected_words ||
                     consumed_after - hybrid_iteration_consumed_before !=
-                        hybrid_iteration_expected_words)
+                        hybrid_iteration_expected_words) {
+                    std::cerr << "SSSP_ITERATION_COVERAGE_MISMATCH iter="
+                              << iter
+                              << " expected="
+                              << hybrid_iteration_expected_words
+                              << " produced="
+                              << produced_after -
+                                     hybrid_iteration_produced_before
+                              << " consumed="
+                              << consumed_after -
+                                     hybrid_iteration_consumed_before
+                              << std::endl;
                     abort();
+                }
                 hybrid_total_expected_words +=
                     hybrid_iteration_expected_words;
                 ++hybrid_coverage_iterations;
