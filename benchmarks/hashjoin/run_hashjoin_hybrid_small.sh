@@ -115,7 +115,7 @@ for kernel in PRO PRH; do
         --cacheline_size=64 --mem-type=Ramulator2 \
         --ramulator-config="$ramulator" --mem-channels=2 \
         --maa --maa_num_maas=1 --maa_num_indirect_units_per_maa=4 \
-        --maa_num_tile_elements=16384 --maa_physical_tile_elements=16384 \
+        --maa_num_tile_elements=16384 --maa_physical_tile_elements=4096 \
         --maa_num_offset_table_entries=16384 \
         --maa_num_offset_table_epoch_entries=16384 \
         --maa_num_initial_row_table_slices=32 --maa_ncbus_width=32 \
@@ -149,9 +149,13 @@ for kernel in PRO PRH; do
     second_routed=$(field "$marker" second_routed)
     eligible=$(field "$marker" eligible)
     routed=$(field "$marker" routed)
+    first_scatter_4k_actions=$(field "$marker" first_scatter_4k_actions)
+    second_scatter_4k_actions=$(field "$marker" second_scatter_4k_actions)
     [[ $first_eligible -gt 0 && $first_routed -eq $first_eligible ]]
     [[ $second_routed -eq $second_eligible ]]
     [[ $routed -gt 0 && $routed -eq $eligible ]]
+    [[ $first_scatter_4k_actions -eq 32 ]]
+    [[ $second_scatter_4k_actions -gt 0 ]]
 
     stats=$run/stats.txt
     [[ -s "$stats" ]]
@@ -197,7 +201,7 @@ done
         "$R_SIZE" "$S_SIZE" "$R_SEED" "$S_SEED"
     printf 'expected_cardinality=%d\n' "$EXPECTED_RESULT"
     printf 'checkpoint_paths=PRO/checkpoint,PRH/checkpoint\n'
-    printf 'geometry=memory_channels:2,row_table_slices:32,indirect_units:4,logical_elements:16384,physical_elements:16384\n'
+    printf 'geometry=memory_channels:2,row_table_slices:32,indirect_units:4,logical_elements:16384,physical_elements:4096\n'
 } >"$out/manifest.txt"
 
 cat "$out/results.tsv"
