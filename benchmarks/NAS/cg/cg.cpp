@@ -120,6 +120,9 @@ static_assert(TILE_SIZE % MAA_CONSUMER_TILE_SIZE == 0,
 #if TILE_SIZE != 16384 || MAA_CONSUMER_TILE_SIZE != 4096
 #error "CG logical-16 RMW requires a 16K logical / 4K physical geometry"
 #endif
+#if defined(CG_PHYSICAL_PAGE_PRODUCT_ONLY) && !defined(CG_LOGICAL_PAGE_RMW)
+#error "CG physical-page-product-only requires CG logical-page publication"
+#endif
 static_assert(sizeof(int) == sizeof(uint32_t),
               "CG logical-16 RMW indices require 32-bit int");
 
@@ -184,7 +187,11 @@ constexpr size_t cg_physical_spd_payload_bytes =
     NUM_CORES * NUM_TILES_PER_CORE * MAA_CONSUMER_TILE_SIZE *
     sizeof(uint32_t);
 #ifdef CG_LOGICAL_PAGE_RMW
+#ifdef CG_PHYSICAL_PAGE_PRODUCT_ONLY
+constexpr size_t cg_logical_scheduler_reserved_lanes = 0;
+#else
 constexpr size_t cg_logical_scheduler_reserved_lanes = 8;
+#endif
 #else
 constexpr size_t cg_logical_scheduler_reserved_lanes = 0;
 #endif
@@ -250,13 +257,25 @@ read_cg_treatment_selector(const std::string &path)
         throw std::runtime_error(
             "logical_page_soa_jit requires the opt-in CG logical-page build");
 #endif
+#ifdef CG_PHYSICAL_PAGE_PRODUCT_ONLY
+    if (rmw != CgRmwTreatment::PhysicalPageProductSoaJit)
+        throw std::runtime_error(
+            "physical-page-product-only build requires "
+            "physical_page_product_soa_jit");
+#endif
     return {consumer_mode, rmw};
 }
 
 #ifdef CG_LOGICAL_PAGE_RMW
+#ifdef CG_PHYSICAL_PAGE_PRODUCT_ONLY
+static_assert(NUM_TILES_PER_CORE == 8,
+              "CG physical-page-product-only treatment uses exactly eight "
+              "guest SPD lanes and no logical-scheduler lanes");
+#else
 static_assert(NUM_TILES_PER_CORE >= 10,
               "CG logical-page RMW requires 32 guest lanes plus 8 reserved "
               "logical-scheduler lanes");
+#endif
 static float *virtual_gather_backing_for_thread(int tid);
 
 static bool

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Contract checks for the opt-in full-CG logical-page/RMW vertical slice."""
+"""Contract checks for the physical-page-product CG hybrid gate."""
 
 import unittest
 from pathlib import Path
@@ -11,19 +11,37 @@ RUNNER_PATH = ROOT / "experiments/scripts/run_cg_logical_page_rmw_hybrid.sh"
 
 
 class CGLogicalPageRmwHybridContract(unittest.TestCase):
-    def test_build_is_opt_in_and_reserves_scheduler_lanes(self):
-        self.assertIn("$(SUITE)_maa_16K_logical_page_rmw", MAKEFILE)
+    def test_build_preserves_logical_scheduler_target_and_adds_lane_free_arm(
+        self,
+    ):
+        logical_start = MAKEFILE.index("%_maa_16K_logical_page_rmw:")
+        physical_start = MAKEFILE.index("%_maa_16K_physical_page_product:")
+        logical_target = MAKEFILE[logical_start:physical_start]
+        physical_target = MAKEFILE[
+            physical_start : MAKEFILE.index("%_maa_32K:", physical_start)
+        ]
         for token in (
             "-DCG_LOGICAL_PAGE_RMW",
             "-DNUM_TILES_PER_CORE=10",
             "-DTILE_SIZE=16384",
             "-DMAA_CONSUMER_TILE_SIZE=4096",
         ):
-            self.assertIn(token, MAKEFILE)
+            self.assertIn(token, logical_target)
+        for token in (
+            "-DCG_LOGICAL_PAGE_RMW",
+            "-DCG_PHYSICAL_PAGE_PRODUCT_ONLY",
+            "-DNUM_TILES_PER_CORE=8",
+            "-DTILE_SIZE=16384",
+            "-DMAA_CONSUMER_TILE_SIZE=4096",
+        ):
+            self.assertIn(token, physical_target)
+        self.assertNotIn("-DNUM_TILES_PER_CORE=10", physical_target)
         self.assertIn("static CgRmwTreatment cg_rmw_treatment =", SOURCE)
         self.assertIn("CgRmwTreatment::Legacy4K;", SOURCE)
         self.assertIn("PhysicalPageProductSoaJit", SOURCE)
         self.assertIn("physical_page_product_soa_jit", SOURCE)
+        self.assertIn("physical-page-product-only build requires", SOURCE)
+        self.assertIn("static_assert(NUM_TILES_PER_CORE == 8", SOURCE)
 
     def test_gate_uses_full_dx100_row_table_geometry(self):
         runner = RUNNER_PATH.read_text()
@@ -131,11 +149,56 @@ class CGLogicalPageRmwHybridContract(unittest.TestCase):
         runner = RUNNER_PATH.read_text()
         for token in (
             "external_coherent_backing_bytes=786432",
-            "physical_spd_payload_bytes=655360",
-            "logical_scheduler_reserved_lanes=8",
-            "logical_scheduler_reserved_lane_payload_bytes=131072",
+            "physical_spd_payload_bytes=524288",
+            "logical_tile_page_scheduler=false",
+            "logical_scheduler_reserved_lanes=0",
+            "logical_scheduler_reserved_lane_payload_bytes=0",
+            "removed_reserved_lane_payload_bytes=131072",
         ):
             self.assertIn(token, runner)
+
+    def test_runner_uses_eight_guest_tiles_and_disables_page_scheduler(self):
+        runner = RUNNER_PATH.read_text()
+        for token in (
+            "-DCG_PHYSICAL_PAGE_PRODUCT_ONLY",
+            "-DNUM_TILES_PER_CORE=8",
+            "--maa_num_tiles_per_core=8",
+            "num_tiles_per_core=8",
+            "logical_tile_page_scheduler=false",
+        ):
+            self.assertIn(token, runner)
+        self.assertNotIn("-DNUM_TILES_PER_CORE=10", runner)
+        self.assertNotIn("--maa_num_tiles_per_core=10", runner)
+        self.assertNotIn("--maa_logical_tile_page_scheduler", runner)
+
+    def test_small_mode_keeps_exact_accepted_predecessor_comparison(self):
+        runner = RUNNER_PATH.read_text()
+        small_start = runner.index("  small)")
+        small_case = runner[small_start : runner.index("    ;;", small_start)]
+        for token in (
+            "cg_na=1024",
+            "/data1/nier/dx100-runs/2026-08-24-cg-page-product-fusion-small-08a7b267-r2",
+            "4364635c504c738fcc6026d0dd10351418cd3bc458938082915fda1ee3bd0d32",
+            "default_accepted_ticks=6348682603",
+            "comparison_contract=accepted_predecessor",
+        ):
+            self.assertIn(token, small_case)
+
+    def test_full_mode_is_exact_reference_correctness_only(self):
+        runner = RUNNER_PATH.read_text()
+        full_start = runner.index("  full)")
+        full_case = runner[full_start : runner.index("    ;;", full_start)]
+        for token in (
+            "cg_na=150000",
+            "/data1/nier/dx100-runs/2026-08-11-cg-bounded-789cc703-full-v8/bounded4_cached/run.log",
+            "0fe931685c37695bc51c74288c67f1494a0c91a723f8e831efa0ac2a7515441c",
+            "comparison_contract=correctness_only",
+        ):
+            self.assertIn(token, full_case)
+        self.assertNotIn("accepted", full_case)
+        self.assertIn(
+            "if [[ $comparison_contract == accepted_predecessor ]]", runner
+        )
 
     def test_runner_requires_exact_mechanism_and_provenance_closure(self):
         runner = RUNNER_PATH.read_text()
@@ -143,7 +206,6 @@ class CGLogicalPageRmwHybridContract(unittest.TestCase):
             "CG_REFERENCE_LOG",
             "CG_FINGERPRINT",
             "physical_page_product_soa_jit",
-            "--maa_logical_tile_page_scheduler",
             "logical_page_native_dispatch",
             "logical_page_native_complete",
             "logical_page_retire",
@@ -160,6 +222,7 @@ class CGLogicalPageRmwHybridContract(unittest.TestCase):
             "CG_ACCEPTED_ROOT",
             "accepted_simTicks",
             "performance_direction_vs_accepted",
+            "comparison_contract=correctness_only",
             "expected_publish_pages=$((windows * 8))",
             "publisher_pages_per_window=8",
             'find "$out" -mindepth 1 -print -quit',
