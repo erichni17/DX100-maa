@@ -36,7 +36,7 @@ def test_live_path_observes_exact_context_and_compact_credit_transitions():
         "context->state = SoaJitContextState::AwaitARead"
     ) < source.index("observeSoaJitResultPipeline();")
     assert "context.state = SoaJitContextState::AwaitAWriteResp;" in source
-    assert "soa_jit_write_retirement.awaitingByCredit()" in source
+    assert "soa_jit_write_retirement.awaitingResponses()" in source
     assert "curTick(), reads, writes, compact_writes" in source
     assert (
         "context.state = SoaJitContextState::Active;\n            observeSoaJitResultPipeline();"
@@ -71,7 +71,8 @@ def test_terminal_trace_closes_payload_overlap_and_byte_ledgers():
         "read_write_overlap_ticks",
         "dual_region_overlap_ticks",
         "serialized_write_only_ticks",
-        "compact_write_hwm_r0",
+        "compact_write_hwm_total",
+        "compact_region_attribution=none",
         "compact_write_outstanding_ticks",
         "terminal=1",
     ):

@@ -7504,27 +7504,30 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitAWriteResponses"),
             statistics::units::Count::get(),
             "exact A WriteResp completions"));
-        IND_SoaJitCompactWriteRetirementEnabled.push_back(
+        IND_SoaJitCompactWriteEnabledObservations.push_back(
             new statistics::Scalar(
                 this,
                 MAKE_INDIRECT_STAT_NAME(
-                    "IND_SoaJitCompactWriteRetirementEnabled"),
+                    "IND_SoaJitCompactWriteEnabledObservations"),
                 statistics::units::Count::get(),
-                "completed operations using compact A-write retirement"));
-        IND_SoaJitCompactWriteRetirementCredits.push_back(
+                "completed-operation observations with compact A-write "
+                "retirement enabled"));
+        IND_SoaJitCompactWriteCreditCapacitySum.push_back(
             new statistics::Scalar(
                 this,
                 MAKE_INDIRECT_STAT_NAME(
-                    "IND_SoaJitCompactWriteRetirementCredits"),
+                    "IND_SoaJitCompactWriteCreditCapacitySum"),
                 statistics::units::Count::get(),
-                "sum of provisioned compact A-write credits"));
-        IND_SoaJitCompactWriteRetirementCreditHighWater.push_back(
+                "sum of installed credit-capacity observations, not an "
+                "installed-capacity count"));
+        IND_SoaJitCompactWriteCreditHighWaterSum.push_back(
             new statistics::Scalar(
                 this,
                 MAKE_INDIRECT_STAT_NAME(
-                    "IND_SoaJitCompactWriteRetirementCreditHighWater"),
+                    "IND_SoaJitCompactWriteCreditHighWaterSum"),
                 statistics::units::Count::get(),
-                "sum of concurrent compact A-write credit high water"));
+                "sum of per-operation compact credit high-water "
+                "observations"));
         IND_SoaJitCompactWriteRetirementStalls.push_back(
             new statistics::Scalar(
                 this,
@@ -7533,28 +7536,30 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
                 statistics::units::Count::get(),
                 "completed A-line writes retained because all compact "
                 "credits were occupied"));
-        IND_SoaJitCompactWriteRetirementPersistentBits.push_back(
+        IND_SoaJitCompactWritePersistentBitsSum.push_back(
             new statistics::Scalar(
                 this,
                 MAKE_INDIRECT_STAT_NAME(
-                    "IND_SoaJitCompactWriteRetirementPersistentBits"),
+                    "IND_SoaJitCompactWritePersistentBitsSum"),
                 statistics::units::Count::get(),
-                "sum of modeled persistent compact tracker bits"));
-        IND_SoaJitCompactWriteRetirementPersistentBytes.push_back(
+                "sum of per-operation installed persistent-bit "
+                "observations"));
+        IND_SoaJitCompactWritePersistentBytesSum.push_back(
             new statistics::Scalar(
                 this,
                 MAKE_INDIRECT_STAT_NAME(
-                    "IND_SoaJitCompactWriteRetirementPersistentBytes"),
+                    "IND_SoaJitCompactWritePersistentBytesSum"),
                 statistics::units::Byte::get(),
-                "sum of rounded modeled persistent compact tracker bytes"));
-        IND_SoaJitCompactWriteTransientPayloadHighWaterBytes
+                "sum of per-operation installed persistent-byte "
+                "observations"));
+        IND_SoaJitCompactWriteTransientPayloadHwmBytesSum
             .push_back(new statistics::Scalar(
                 this,
                 MAKE_INDIRECT_STAT_NAME(
-                    "IND_SoaJitCompactWriteTransientPayloadHighWaterBytes"),
+                    "IND_SoaJitCompactWriteTransientPayloadHwmBytesSum"),
                 statistics::units::Byte::get(),
-                "sum of transient copied packet-payload high water, not "
-                "persistent tracker storage"));
+                "sum of per-operation transient copied-payload high-water "
+                "observations, not installed storage"));
         IND_SoaJitOldResultCaptures.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitOldResultCaptures"),
             statistics::units::Count::get(),

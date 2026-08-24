@@ -157,6 +157,7 @@ testFullOneTwentyEightOwnerGenerationClosesExactly()
                   generation, base + 0x40 * index, index).result ==
               SoaJitValueCoalescer::AliasResult::Fill);
     }
+    CHECK(!state.canClearGeneration(generation));
     CHECK(!state.clearGeneration(generation));
     for (int index = 127; index >= 0; --index) {
         const auto data = payload(static_cast<uint8_t>(index));
@@ -165,6 +166,7 @@ testFullOneTwentyEightOwnerGenerationClosesExactly()
                   data.data(), data.size()) ==
               SoaJitValueCoalescer::ResponseResult::CacheFill);
     }
+    CHECK(!state.canClearGeneration(generation));
     CHECK(!state.clearGeneration(generation));
     for (uint16_t index = 0; index < 128; ++index) {
         const auto expected = payload(static_cast<uint8_t>(index));
@@ -173,6 +175,8 @@ testFullOneTwentyEightOwnerGenerationClosesExactly()
               SoaJitValueCoalescer::DeliveryResult::Delivered);
         CHECK(delivery.data == expected);
     }
+    CHECK(state.canClearGeneration(generation));
+    CHECK(state.canClearGeneration(generation));
     CHECK(state.clearGeneration(generation));
     CHECK(state.cacheOccupancy() == 0);
     CHECK(state.fillingCount() == 0);

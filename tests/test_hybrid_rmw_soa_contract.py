@@ -154,8 +154,32 @@ def test_default_off_compact_write_retirement_transfers_exact_ownership():
     assert "scheduleExecuteInstructionEvent(1)" in issue
     assert "sender_state_mapping=credit_tag_indexes_tracker_" in indirect
     assert "duplicated_identity_is_validation_metadata" in indirect
-    assert "persistent_state_bits=" in indirect
+    assert "installed_persistent_tracker_bits=" in indirect
+    assert "validation_counter_bits=0" in indirect
+    assert "response_delivery=reliable_exactly_once_" in indirect
     assert "transient_packet_payload_hwm_bytes=" in indirect
+
+
+def test_two_observational_terminal_checks_precede_one_ownership_finish():
+    source = read("src/mem/MAA/IndirectAccess.cc")
+    terminal = source[
+        source.index(
+            "void IndirectAccessUnit::checkSoaJitTerminal()"
+        ) : source.index("void IndirectAccessUnit::executeInstruction()")
+    ]
+    assert "soa_jit_write_retirement.finish()" not in terminal
+    assert "soa_jit_value_coalescer.clearGeneration" not in terminal
+    assert "soa_jit_value_coalescer.canClearGeneration" in terminal
+    assert source.count("checkSoaJitTerminal();") == 2
+
+    response = source[source.index("case Status::Response:") :]
+    second_check = response.index("checkSoaJitTerminal();")
+    publish = response.index("IND_SoaJitTerminalCompletions", second_check)
+    clear = response.index("soa_jit_value_coalescer.clearGeneration", publish)
+    finish = response.index("soa_jit_write_retirement.finish()", clear)
+    idle = response.index("state = Status::Idle;", finish)
+    assert second_check < publish < clear < finish < idle
+    assert response.count("soa_jit_write_retirement.finish()") == 1
 
 
 def test_pressure_epoch_refills_same_cursor_without_closing_old_result():

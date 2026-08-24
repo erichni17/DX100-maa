@@ -220,14 +220,16 @@ validate_common() {
 validate_compact_accounting() {
     local stats=$1 arm_name=$2 terminals=$3
     local enabled credits hwm stalls bits bytes payload
-    enabled=$(first_stat_sum "$stats" IND_SoaJitCompactWriteRetirementEnabled)
-    credits=$(first_stat_sum "$stats" IND_SoaJitCompactWriteRetirementCredits)
-    hwm=$(first_stat_sum "$stats" IND_SoaJitCompactWriteRetirementCreditHighWater)
+    enabled=$(first_stat_sum "$stats" \
+        IND_SoaJitCompactWriteEnabledObservations)
+    credits=$(first_stat_sum "$stats" \
+        IND_SoaJitCompactWriteCreditCapacitySum)
+    hwm=$(first_stat_sum "$stats" IND_SoaJitCompactWriteCreditHighWaterSum)
     stalls=$(first_stat_sum "$stats" IND_SoaJitCompactWriteRetirementStalls)
-    bits=$(first_stat_sum "$stats" IND_SoaJitCompactWriteRetirementPersistentBits)
-    bytes=$(first_stat_sum "$stats" IND_SoaJitCompactWriteRetirementPersistentBytes)
+    bits=$(first_stat_sum "$stats" IND_SoaJitCompactWritePersistentBitsSum)
+    bytes=$(first_stat_sum "$stats" IND_SoaJitCompactWritePersistentBytesSum)
     payload=$(first_stat_sum "$stats" \
-        IND_SoaJitCompactWriteTransientPayloadHighWaterBytes)
+        IND_SoaJitCompactWriteTransientPayloadHwmBytesSum)
     if [[ $arm_name == baseline ]]; then
         [[ $enabled -eq 0 && $credits -eq 0 && $hwm -eq 0 &&
            $stalls -eq 0 && $bits -eq 0 && $bytes -eq 0 && $payload -eq 0 ]]
@@ -315,7 +317,7 @@ for kernel in sssp hashjoin_pro; do
             "$kernel" "$arm_name" "$(first_simticks "$stats")" \
             "$(first_stat_sum "$stats" IND_SoaJitContextStalls)" \
             "$(first_stat_sum "$stats" IND_SoaJitCompactWriteRetirementStalls)" \
-            "$(first_stat_sum "$stats" IND_SoaJitCompactWriteRetirementCreditHighWater)" \
+            "$(first_stat_sum "$stats" IND_SoaJitCompactWriteCreditHighWaterSum)" \
             "$(first_stat_sum "$stats" IND_SoaJitAReadIssues)" \
             "$(first_stat_sum "$stats" IND_SoaJitAWriteIssues)" \
             "$(first_stat_sum "$stats" IND_SoaJitOldResultWriteIssues)" \
@@ -384,6 +386,9 @@ hashjoin_checkpoint_after=$(checkpoint_identity "$hashjoin_root/PRO/checkpoint")
     printf 'max_transient_response_credit_tag_bits_per_indirect_unit=24\n'
     printf 'max_transient_response_credit_tag_bytes_per_indirect_unit=3\n'
     printf 'max_transient_packet_payload_bytes_per_indirect_unit=512\n'
+    printf 'validation_counter_hardware_bits=0\n'
+    printf 'response_delivery_contract=reliable_exactly_once\n'
+    printf 'credit_reuse_contract=only_after_exact_ack\n'
     printf 'sender_state_mapping=credit_tag_indexes_persistent_tracker\n'
     printf 'sender_state_duplicate_fields=generation_sequence_address_are_tracker_validation_metadata\n'
     printf 'wall_timeout=none\nperformance_metric=first_simTicks\n'

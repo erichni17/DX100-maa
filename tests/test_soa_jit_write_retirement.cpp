@@ -94,7 +94,13 @@ main()
     CHECK(tracker.reservationCount() == Tracker::Credits + 1);
     CHECK(tracker.issueCount() == Tracker::Credits + 1);
     CHECK(tracker.responseCount() == Tracker::Credits + 1);
+    // Request and Response each perform the same observational terminal
+    // check.  Neither check consumes ownership; finish does so exactly once.
+    CHECK(tracker.complete());
+    CHECK(tracker.complete());
+    CHECK(tracker.activeRun());
     CHECK(tracker.finish() == Result::Accepted);
+    CHECK(tracker.finish() == Result::Inactive);
     CHECK(tracker.acknowledge(replacement) == Result::Inactive);
     CHECK(tracker.reset() == Result::Accepted);
     CHECK(tracker.assertInvariants());

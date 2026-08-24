@@ -1228,19 +1228,19 @@ public:
         std::vector<statistics::Scalar *> IND_SoaJitAWriteIssues;
         std::vector<statistics::Scalar *> IND_SoaJitAWriteResponses;
         std::vector<statistics::Scalar *>
-            IND_SoaJitCompactWriteRetirementEnabled;
+            IND_SoaJitCompactWriteEnabledObservations;
         std::vector<statistics::Scalar *>
-            IND_SoaJitCompactWriteRetirementCredits;
+            IND_SoaJitCompactWriteCreditCapacitySum;
         std::vector<statistics::Scalar *>
-            IND_SoaJitCompactWriteRetirementCreditHighWater;
+            IND_SoaJitCompactWriteCreditHighWaterSum;
         std::vector<statistics::Scalar *>
             IND_SoaJitCompactWriteRetirementStalls;
         std::vector<statistics::Scalar *>
-            IND_SoaJitCompactWriteRetirementPersistentBits;
+            IND_SoaJitCompactWritePersistentBitsSum;
         std::vector<statistics::Scalar *>
-            IND_SoaJitCompactWriteRetirementPersistentBytes;
+            IND_SoaJitCompactWritePersistentBytesSum;
         std::vector<statistics::Scalar *>
-            IND_SoaJitCompactWriteTransientPayloadHighWaterBytes;
+            IND_SoaJitCompactWriteTransientPayloadHwmBytesSum;
         std::vector<statistics::Scalar *> IND_SoaJitOldResultCaptures;
         std::vector<statistics::Scalar *> IND_SoaJitOldResultWriteIssues;
         std::vector<statistics::Scalar *> IND_SoaJitOldResultWriteResponses;

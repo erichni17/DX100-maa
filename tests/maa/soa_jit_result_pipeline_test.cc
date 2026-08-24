@@ -62,22 +62,32 @@ main()
 
     Pipeline compact;
     compact.reset(0);
-    CHECK(compact.observe(10, {8, 0}, {0, 0}, {8, 0}));
-    CHECK(compact.observe(30, {4, 0}, {0, 0}, {4, 0}));
-    CHECK(compact.observe(40, {0, 0}, {0, 0}, {0, 0}));
+    CHECK(compact.observe(10, {8, 0}, {0, 0}, 8));
+    CHECK(compact.observe(30, {4, 0}, {0, 0}, 4));
+    CHECK(compact.observe(40, {0, 0}, {0, 0}, 0));
     CHECK(compact.aWriteHighWater() ==
           (std::array<uint8_t, 2>{0, 0}));
-    CHECK(compact.compactWriteHighWater() ==
-          (std::array<uint8_t, 2>{8, 0}));
+    CHECK(compact.compactWriteHighWater() == 8);
     CHECK(compact.activeLineHighWater() ==
           (std::array<uint8_t, 2>{8, 0}));
-    CHECK(compact.resultReadWriteOverlapTicks() == 30);
+    CHECK(compact.resultReadWriteOverlapTicks() == 0);
+    CHECK(compact.dualRegionResultOverlapTicks() == 0);
     CHECK(compact.compactWriteOutstandingTicks() == 30);
     CHECK(compact.assertInvariants(8));
 
+    Pipeline compact_no_region_alias;
+    compact_no_region_alias.reset(0);
+    CHECK(compact_no_region_alias.observe(10, {1, 1}, {0, 0}, 8));
+    CHECK(compact_no_region_alias.observe(20, {0, 0}, {0, 0}, 0));
+    CHECK(compact_no_region_alias.compactWriteHighWater() == 8);
+    CHECK(compact_no_region_alias.resultReadWriteOverlapTicks() == 0);
+    CHECK(compact_no_region_alias.dualRegionResultOverlapTicks() == 0);
+    CHECK(compact_no_region_alias.compactWriteOutstandingTicks() == 10);
+    CHECK(compact_no_region_alias.assertInvariants(64));
+
     Pipeline compact_overflow;
     compact_overflow.reset(0);
-    CHECK(!compact_overflow.observe(1, {0, 0}, {0, 0}, {9, 0}));
+    CHECK(!compact_overflow.observe(1, {0, 0}, {0, 0}, 9));
     CHECK(!compact_overflow.assertInvariants(8));
 
     std::cout << "SoA/JIT result pipeline tests passed\n";

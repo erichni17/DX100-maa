@@ -436,7 +436,7 @@ class SoaJitValueCoalescer
         return DeliveryResult::NotReady;
     }
 
-    bool clearGeneration(uint64_t generation)
+    bool canClearGeneration(uint64_t generation) const
     {
         for (const auto &line : cache) {
             if (line.state != LineState::Free &&
@@ -449,6 +449,13 @@ class SoaJitValueCoalescer
             if (credit.valid && credit.generation == generation)
                 return false;
         }
+        return true;
+    }
+
+    bool clearGeneration(uint64_t generation)
+    {
+        if (!canClearGeneration(generation))
+            return false;
         for (auto &line : cache) {
             if (line.state != LineState::Free &&
                 line.generation == generation)

@@ -17,6 +17,9 @@ namespace gem5
  * owns only an exact response credit while the already-copied 64-byte packet
  * is transient in the MAA/cache hierarchy.  Keeping those observations
  * separate prevents compact credits from masquerading as resident payload.
+ * Credits have no source-context region attribution, so only their total,
+ * high-water mark, and outstanding ticks are observed; they never contribute
+ * to read/write or dual-region overlap claims.
  */
 class SoaJitResultPipeline
 {
@@ -58,10 +61,10 @@ class SoaJitResultPipeline
         lastTick = tick;
         priorReads = {};
         priorWrites = {};
-        priorCompactWrites = {};
+        priorCompactWrites = 0;
         readHighWater = {};
         writeHighWater = {};
-        compactWriteHwm = {};
+        compactWriteHwm = 0;
         activeHighWater = {};
         overlapTicks = 0;
         dualRegionOverlapTicks = 0;
@@ -75,13 +78,13 @@ class SoaJitResultPipeline
                  const std::array<uint8_t, Regions> &reads,
                  const std::array<uint8_t, Regions> &writes)
     {
-        return observe(tick, reads, writes, {});
+        return observe(tick, reads, writes, 0);
     }
 
     bool observe(uint64_t tick,
                  const std::array<uint8_t, Regions> &reads,
                  const std::array<uint8_t, Regions> &writes,
-                 const std::array<uint8_t, Regions> &compactWrites)
+                 uint8_t compactWrites)
     {
         if (!observed || tick < lastTick) {
             valid = false;
@@ -95,19 +98,15 @@ class SoaJitResultPipeline
         const uint64_t delta = tick - lastTick;
         const size_t prior_read_total = total(priorReads);
         const size_t prior_write_total = total(priorWrites);
-        const size_t prior_compact_write_total =
-            total(priorCompactWrites);
-        const size_t prior_any_write_total =
-            prior_write_total + prior_compact_write_total;
-        if (prior_read_total != 0 && prior_any_write_total != 0)
+        if (prior_read_total != 0 && prior_write_total != 0)
             overlapTicks += delta;
-        if (prior_read_total == 0 && prior_any_write_total != 0)
+        if (prior_read_total == 0 && prior_write_total != 0)
             writeOnlyTicks += delta;
-        if (prior_compact_write_total != 0)
+        if (priorCompactWrites != 0)
             compactWriteTicks += delta;
-        if (priorReads[0] + priorWrites[0] + priorCompactWrites[0] != 0 &&
-            priorReads[1] + priorWrites[1] + priorCompactWrites[1] != 0 &&
-            prior_read_total != 0 && prior_any_write_total != 0)
+        if (priorReads[0] + priorWrites[0] != 0 &&
+            priorReads[1] + priorWrites[1] != 0 &&
+            prior_read_total != 0 && prior_write_total != 0)
             dualRegionOverlapTicks += delta;
 
         for (size_t region = 0; region < Regions; ++region) {
@@ -115,11 +114,10 @@ class SoaJitResultPipeline
                 std::max(readHighWater[region], reads[region]);
             writeHighWater[region] =
                 std::max(writeHighWater[region], writes[region]);
-            compactWriteHwm[region] = std::max(
-                compactWriteHwm[region], compactWrites[region]);
             activeHighWater[region] = std::max<uint8_t>(
                 activeHighWater[region], reads[region] + writes[region]);
         }
+        compactWriteHwm = std::max(compactWriteHwm, compactWrites);
         priorReads = reads;
         priorWrites = writes;
         priorCompactWrites = compactWrites;
@@ -136,13 +134,11 @@ class SoaJitResultPipeline
             (active_lines + LinesPerRegion - 1) / LinesPerRegion;
         for (size_t region = active_regions; region < Regions; ++region) {
             if (priorReads[region] != 0 || priorWrites[region] != 0 ||
-                priorCompactWrites[region] != 0 ||
                 readHighWater[region] != 0 || writeHighWater[region] != 0 ||
-                compactWriteHwm[region] != 0 ||
                 activeHighWater[region] != 0)
                 return false;
         }
-        return true;
+        return priorCompactWrites <= 8 && compactWriteHwm <= 8;
     }
 
     uint64_t resultReadWriteOverlapTicks() const { return overlapTicks; }
@@ -163,10 +159,7 @@ class SoaJitResultPipeline
     {
         return writeHighWater;
     }
-    const std::array<uint8_t, Regions> &compactWriteHighWater() const
-    {
-        return compactWriteHwm;
-    }
+    uint8_t compactWriteHighWater() const { return compactWriteHwm; }
     const std::array<uint8_t, Regions> &activeLineHighWater() const
     {
         return activeHighWater;
@@ -181,25 +174,23 @@ class SoaJitResultPipeline
     static bool countsValid(
         const std::array<uint8_t, Regions> &reads,
         const std::array<uint8_t, Regions> &writes,
-        const std::array<uint8_t, Regions> &compactWrites)
+        uint8_t compactWrites)
     {
-        size_t compactTotal = 0;
         for (size_t region = 0; region < Regions; ++region) {
             if (static_cast<size_t>(reads[region]) + writes[region] >
                 LinesPerRegion)
                 return false;
-            compactTotal += compactWrites[region];
         }
-        return compactTotal <= 8;
+        return compactWrites <= 8;
     }
 
     uint64_t lastTick = 0;
     std::array<uint8_t, Regions> priorReads{};
     std::array<uint8_t, Regions> priorWrites{};
-    std::array<uint8_t, Regions> priorCompactWrites{};
+    uint8_t priorCompactWrites = 0;
     std::array<uint8_t, Regions> readHighWater{};
     std::array<uint8_t, Regions> writeHighWater{};
-    std::array<uint8_t, Regions> compactWriteHwm{};
+    uint8_t compactWriteHwm = 0;
     std::array<uint8_t, Regions> activeHighWater{};
     uint64_t overlapTicks = 0;
     uint64_t dualRegionOverlapTicks = 0;

@@ -56,9 +56,9 @@ def test_runner_fail_closes_certificates_ledgers_and_gate():
         "IND_SoaJitAReadResponses",
         "IND_SoaJitAWriteResponses",
         "IND_BoundedGlobalMergeFallbacks",
-        "IND_SoaJitCompactWriteRetirementEnabled",
-        "IND_SoaJitCompactWriteRetirementPersistentBits",
-        "IND_SoaJitCompactWriteTransientPayloadHighWaterBytes",
+        "IND_SoaJitCompactWriteEnabledObservations",
+        "IND_SoaJitCompactWritePersistentBitsSum",
+        "IND_SoaJitCompactWriteTransientPayloadHwmBytesSum",
         "performance_metric=first_simTicks",
         "at_least_one_kernel_regressed",
         "no_kernel_improved_at_least_0_5_pct",
@@ -80,6 +80,9 @@ def test_runner_separates_persistent_hardware_and_transient_payload():
         "max_transient_response_credit_tag_bytes_per_indirect_unit=3" in runner
     )
     assert "max_transient_packet_payload_bytes_per_indirect_unit=512" in runner
+    assert "validation_counter_hardware_bits=0" in runner
+    assert "response_delivery_contract=reliable_exactly_once" in runner
+    assert "credit_reuse_contract=only_after_exact_ack" in runner
     assert (
         "sender_state_mapping=credit_tag_indexes_persistent_tracker" in runner
     )

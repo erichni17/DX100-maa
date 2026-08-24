@@ -14,7 +14,14 @@ namespace gem5
  * reserve() runs before the response-bearing packet is enqueued.  commit()
  * transfers ownership from the full A-line context only after the MAA packet
  * queue owns its copied payload.  A credit cannot be reused until the exact
- * generation/sequence/address identity is acknowledged.
+ * generation/sequence/address identity is acknowledged.  Hardware relies on
+ * reliable exactly-once response delivery: the transient three-bit credit
+ * tag indexes the charged persistent identity and is never reused before its
+ * acknowledgement.
+ *
+ * reservations/issues/responses/highWater are simulator validation counters,
+ * not additional installed hardware.  PersistentStateBits charges only the
+ * functional generation, allocator sequence, and eight identity/state slots.
  */
 class SoaJitWriteRetirement
 {
@@ -130,7 +137,7 @@ class SoaJitWriteRetirement
     {
         if (!active)
             return Result::Inactive;
-        if (!empty() || reservations != issues || issues != responses)
+        if (!complete())
             return Result::NotComplete;
         active = false;
         return Result::Accepted;
@@ -146,6 +153,11 @@ class SoaJitWriteRetirement
 
     bool empty() const { return occupied() == 0; }
     bool activeRun() const { return active; }
+    bool complete() const
+    {
+        return active && empty() && reservations == issues &&
+               issues == responses && assertInvariants();
+    }
 
     size_t occupied() const
     {
