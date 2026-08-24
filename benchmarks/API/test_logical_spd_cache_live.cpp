@@ -28,7 +28,9 @@ using Scalar = float;
 using Scalar = double;
 #endif
 constexpr std::size_t BackingBytes = Elements * sizeof(Scalar);
-#ifndef LOGICAL_SPD_CACHE_FP32
+#ifdef LOGICAL_SPD_CACHE_FP32
+constexpr uint64_t ExpectedHash = 6880529560763119881ULL;
+#else
 constexpr uint64_t ExpectedHash = 7303085050985348899ULL;
 #endif
 
@@ -104,26 +106,13 @@ main()
     }
     std::cout << "LOGICAL_SPD_CACHE_LIVE_RESULT elements=" << Elements
               << " pages=" << Pages
-              << " expected_hash="
-#ifndef LOGICAL_SPD_CACHE_FP32
-              << ExpectedHash
-#else
-              << "type_derived"
-#endif
+              << " expected_hash=" << ExpectedHash
               << " output_hash=" << outputHash
               << " errors=" << errors << std::endl;
     m5_dump_stats(0, 0);
     m5_work_end(0, 0);
-    m5_exit(errors == 0
-#ifndef LOGICAL_SPD_CACHE_FP32
-            && outputHash == ExpectedHash
-#endif
-            ? 0 : 1);
+    m5_exit(errors == 0 && outputHash == ExpectedHash ? 0 : 1);
     std::free(destination);
     std::free(source);
-    return errors == 0
-#ifndef LOGICAL_SPD_CACHE_FP32
-        && outputHash == ExpectedHash
-#endif
-        ? 0 : 1;
+    return errors == 0 && outputHash == ExpectedHash ? 0 : 1;
 }

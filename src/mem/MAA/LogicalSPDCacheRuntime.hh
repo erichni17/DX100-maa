@@ -339,6 +339,14 @@ class LogicalSPDCacheRuntime
         const Slice::Status mutation = controlMutationStatus();
         if (mutation != Slice::Status::Accepted)
             return mutation;
+        const std::size_t backingBytes = Slice::backingBytes(dataType);
+        if (logical >= Slice::LogicalDescriptors || backingBytes == 0 ||
+            backing.bytes != backingBytes ||
+            backing.base % backingBytes != 0 ||
+            backing.base > std::numeric_limits<uint64_t>::max() -
+                               static_cast<uint64_t>(backing.bytes)) {
+            return Slice::Status::Invalid;
+        }
         for (uint8_t existing = 0; existing < Slice::LogicalDescriptors;
              ++existing) {
             const auto &record = slice.descriptor(existing);

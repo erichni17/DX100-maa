@@ -717,6 +717,20 @@ testTypedFP32GeometryAndScalarExecution()
                                 output.data(), input.size(), scalarBits) ==
           Datapath::Result::Accepted);
     CHECK(output[0] == 2.0f && output[1] == -4.0f && output[2] == 7.0f);
+
+    Runtime invalid;
+    CHECK(invalid.initialize(12) == Slice::Status::Accepted);
+    const auto transportBefore = invalid.transportSnapshot();
+    CHECK(invalid.registerSource(
+              0,
+              {Harness::SourceBase,
+               static_cast<uint32_t>(
+                   Slice::backingBytes(Slice::Float32DataType) -
+                   sizeof(float))},
+              Slice::Float32DataType) == Slice::Status::Invalid);
+    CHECK(invalid.transportSnapshot() == transportBefore);
+    CHECK(invalid.requestDrain() == Slice::Status::Accepted);
+    CHECK(invalid.teardown() == Slice::Status::Accepted);
 }
 
 void
