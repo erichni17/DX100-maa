@@ -948,7 +948,7 @@ MAA::responseBearingPublishDestinationBusy(int maa_id, int first_tile,
              "Invalid publisher completion span maa=%d tile=%d words=%d\n",
              maa_id, first_tile, tile_words);
     for (int offset = 0; offset < tile_words; ++offset) {
-        if (responseBearingPublishCompletionOwner[first_tile + offset] != -1)
+        if (logicalCompletionLaneOwned(first_tile + offset))
             return true;
     }
     return false;
@@ -3652,6 +3652,14 @@ MAA::logicalTileReservedLane(int tileID) const
 }
 
 bool
+MAA::logicalCompletionLaneOwned(int tileID) const
+{
+    return tileID >= 0 && tileID < static_cast<int>(
+        responseBearingPublishCompletionOwner.size()) &&
+        responseBearingPublishCompletionOwner[tileID] != -1;
+}
+
+bool
 MAA::instructionTouchesLogicalReservedFrame(
     const Instruction &instruction) const
 {
@@ -3665,13 +3673,49 @@ MAA::instructionTouchesLogicalReservedFrame(
     for (const int tile : tiles) {
         if (tile < 0)
             continue;
-        const int lanes = instruction.WordSize() / sizeof(uint32_t);
+        int lanes = 1;
+        switch (instruction.datatype) {
+          case Instruction::DataType::UINT64_TYPE:
+          case Instruction::DataType::INT64_TYPE:
+          case Instruction::DataType::FLOAT64_TYPE:
+            lanes = 2;
+            break;
+          default:
+            break;
+        }
         for (int lane = 0; lane < lanes; ++lane) {
             if (logicalTileReservedLane(tile + lane))
                 return true;
         }
     }
     return false;
+}
+
+bool
+MAA::logicalPageUsesRegister(
+    int maaID, int firstRegister, int registerWords) const
+{
+    if (!logical_tile_page_scheduler || maaID < 0 ||
+        maaID >= static_cast<int>(num_maas) || firstRegister < 0 ||
+        registerWords <= 0) {
+        return false;
+    }
+    const int candidateEnd = firstRegister + registerWords;
+    const auto &execution = logicalPageExecutions[maaID];
+    if (!execution.active ||
+        !execution.architectural.isLogicalALUScalar()) {
+        return false;
+    }
+    const int leasedFirst = execution.architectural.src1RegID;
+    const auto datatype = execution.architectural.datatype;
+    const int leasedWords =
+        datatype == Instruction::DataType::UINT64_TYPE ||
+                datatype == Instruction::DataType::INT64_TYPE ||
+                datatype == Instruction::DataType::FLOAT64_TYPE
+            ? 2
+            : 1;
+    const int leasedEnd = leasedFirst + leasedWords;
+    return firstRegister < leasedEnd && leasedFirst < candidateEnd;
 }
 
 bool
@@ -3783,6 +3827,20 @@ MAA::submitLogicalPageInstruction(
     panic_if(wordBytes != sizeof(float) && wordBytes != sizeof(double),
              "Logical page scheduler received unsupported word size %d\n",
              wordBytes);
+    panic_if((instruction->isLogicalALUScalar() ||
+              instruction->isLogicalALUVector()) &&
+                 (instruction->datatype !=
+                      Instruction::DataType::FLOAT32_TYPE &&
+                  instruction->datatype !=
+                      Instruction::DataType::FLOAT64_TYPE),
+             "Logical ALU scheduler supports only FP32/FP64 arithmetic\n");
+    panic_if((instruction->isLogicalALUScalar() ||
+              instruction->isLogicalALUVector()) &&
+                 (instruction->optype < Instruction::OPType::ADD_OP ||
+                  instruction->optype > Instruction::OPType::MAX_OP),
+             "Logical ALU scheduler supports only ADD/SUB/MUL/DIV/MIN/MAX, "
+             "got operation %u\n",
+             static_cast<unsigned>(instruction->optype));
     if (instruction->isLogicalStream()) {
         const int completion = instruction->logicalCompletionSpdID;
         panic_if(completion < 0 ||
@@ -3791,6 +3849,7 @@ MAA::submitLogicalPageInstruction(
                  "Logical stream lacks a valid completion span\n");
         for (int lane = 0; lane < wordBytes / sizeof(uint32_t); ++lane) {
             panic_if(logicalTileReservedLane(completion + lane) ||
+                         logicalCompletionLaneOwned(completion + lane) ||
                          ifile->hasTileReference(maaID, completion + lane),
                      "Logical stream completion span aliases reserved/live "
                      "tile %d\n", completion + lane);
@@ -3880,6 +3939,8 @@ MAA::submitLogicalPageInstruction(
     execution.nextPage = 0;
     execution.architecturalSequence = logicalPageArchitecturalSequence;
     if (instruction->isLogicalStream()) {
+        reserveResponseBearingPublishCompletion(
+            maaID, instruction->logicalCompletionSpdID, wordBytes);
         spd->setTileIdle(instruction->logicalCompletionSpdID, wordBytes);
         spd->setTileNotReady(instruction->logicalCompletionSpdID, wordBytes);
     }
@@ -4719,6 +4780,8 @@ MAA::retireLogicalPageInstruction(
         const int wordBytes = execution.architectural.WordSize();
         spd->setTileFinished(completion, wordBytes);
         setTileReady(completion, wordBytes);
+        releaseResponseBearingPublishCompletion(
+            maaID, completion, wordBytes);
     }
     PacketPtr packet = execution.completionPacket;
     const int core = execution.architectural.core_id;
@@ -4980,6 +5043,21 @@ MAA::drain()
                  }),
              "Logical page scheduler checkpoint/drain requested with a live "
              "architectural record\n");
+    panic_if(std::any_of(
+                 logicalPageDescriptors.begin(),
+                 logicalPageDescriptors.end(),
+                 [](const std::array<
+                        LogicalPageDescriptorState,
+                        LogicalPageScheduler::LogicalDescriptors> &states) {
+                     return std::any_of(
+                         states.begin(), states.end(),
+                         [](const LogicalPageDescriptorState &state) {
+                             return state.configured;
+                         });
+                 }),
+             "Logical page scheduler checkpoint/drain requested with "
+             "configured descriptor generations; serialization is "
+             "unsupported\n");
     panic_if(hasLiveSoaJitState(),
              "SoA/JIT checkpoint/drain requested with a live instruction, "
              "packet, context, read, or WriteResp; serialization is "
@@ -5022,6 +5100,20 @@ MAA::drainResume()
                  }),
              "Logical page scheduler resumed with a live architectural "
              "record\n");
+    panic_if(std::any_of(
+                 logicalPageDescriptors.begin(),
+                 logicalPageDescriptors.end(),
+                 [](const std::array<
+                        LogicalPageDescriptorState,
+                        LogicalPageScheduler::LogicalDescriptors> &states) {
+                     return std::any_of(
+                         states.begin(), states.end(),
+                         [](const LogicalPageDescriptorState &state) {
+                             return state.configured;
+                         });
+                 }),
+             "Logical page scheduler resumed with configured descriptor "
+             "generations\n");
     panic_if(hasLiveSoaJitState(),
              "SoA/JIT drain resumed with live protocol state\n");
     logicalSpdBridge->reopenAdmission();
@@ -5037,6 +5129,8 @@ void MAA::dispatchRegister() {
         PacketPtr pkt = *pkt_it;
         const int register_words = reg->size / sizeof(uint32_t);
         if (ifile->canPushRegister(*reg) &&
+            !logicalPageUsesRegister(
+                reg->maa_id, reg->register_id, register_words) &&
             !transparentController.usesRegister(
                 reg->maa_id, reg->register_id, register_words)) {
             DPRINTF(MAAController,

@@ -905,6 +905,8 @@ protected:
         unsigned maaID, LogicalPageExecution &execution);
     bool instructionTouchesLogicalReservedFrame(
         const Instruction &instruction) const;
+    bool logicalPageUsesRegister(
+        int maaID, int firstRegister, int registerWords) const;
     std::vector<LogicalSPDExecution> logicalSpdExecutions;
     LogicalSPDCacheLiveAdapterState logicalSpdLiveBoundary;
     bool submitLogicalSPDDescriptor(
@@ -944,6 +946,7 @@ public:
         return logical_tile_page_scheduler;
     }
     bool logicalTileReservedLane(int tileID) const;
+    bool logicalCompletionLaneOwned(int tileID) const;
     bool hasNonStreamActivity(int streamID) const;
     Tick getCurTick();
 

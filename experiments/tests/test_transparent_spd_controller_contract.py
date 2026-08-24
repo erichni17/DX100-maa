@@ -99,7 +99,9 @@ class TransparentControllerContractTest(unittest.TestCase):
         self.assertIn("tryIssueTransparentMicroOp();", body)
         retry = maa.index("void MAA::tryIssueTransparentMicroOp()")
         retry_body = maa[
-            retry : maa.index("void MAA::dispatchRegister()", retry)
+            retry : maa.index(
+                "\nbool\nMAA::submitLogicalSPDDescriptor(", retry
+            )
         ]
         self.assertIn("transparentControllerLookupReadyTick", retry_body)
         self.assertIn("schedule(issueInstructionEvent", retry_body)

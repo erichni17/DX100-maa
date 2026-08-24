@@ -115,8 +115,8 @@ class LogicalSpdCacheAbiContractTest(unittest.TestCase):
             "controller state mutation",
             "VectorOperandShape shape",
             "validateLogicalALUVector",
-            "Logical ALU_VECTOR ABI decoded and validated",
-            "live execution is unsupported until the ",
+            "Logical ALU_VECTOR ABI is disabled unless the ",
+            "logical tile page scheduler is enabled",
         ):
             self.assertIn(evidence, self.cpu_port)
 
@@ -211,14 +211,18 @@ class LogicalSpdCacheAbiContractTest(unittest.TestCase):
             "if (current_instruction->isLogicalALUVector())"
         )
         validation = self.cpu_port.index("validateLogicalALUVector", vector)
-        unsupported = self.cpu_port.index(
-            "live execution is unsupported", validation
+        option_gate = self.cpu_port.index(
+            "panic_if(!logicalTilePageSchedulerEnabled()", validation
+        )
+        reachable = self.cpu_port.index(
+            "my_instruction_recvs[instruction_id] = true", option_gate
         )
         self.assertLess(vector, validation)
-        self.assertLess(validation, unsupported)
-        self.assertNotIn(
-            "my_instruction_recvs[instruction_id] = true",
-            self.cpu_port[validation:unsupported],
+        self.assertLess(validation, option_gate)
+        self.assertLess(option_gate, reachable)
+        self.assertIn(
+            "scheduleDispatchInstructionEvent()",
+            self.cpu_port[reachable:],
         )
 
     def test_logical_stream_forms_reuse_stream_opcodes_and_fail_closed(self):
@@ -244,15 +248,19 @@ class LogicalSpdCacheAbiContractTest(unittest.TestCase):
         )
         validation = self.cpu_port.index("validateLogicalStreamLoad", stream)
         span = self.cpu_port.index("validateBackingSpan", validation)
-        unsupported = self.cpu_port.index(
-            "Logical STREAM ABI decoded and validated", span
+        option_gate = self.cpu_port.index(
+            "panic_if(!logicalTilePageSchedulerEnabled()", span
+        )
+        reachable = self.cpu_port.index(
+            "my_instruction_recvs[instruction_id] = true", option_gate
         )
         self.assertLess(stream, validation)
         self.assertLess(validation, span)
-        self.assertLess(span, unsupported)
-        self.assertNotIn(
-            "my_instruction_recvs[instruction_id] = true",
-            self.cpu_port[validation:unsupported],
+        self.assertLess(span, option_gate)
+        self.assertLess(option_gate, reachable)
+        self.assertIn(
+            "scheduleDispatchInstructionEvent()",
+            self.cpu_port[reachable:],
         )
         for evidence in (
             "logicalCompletionSpdID =",

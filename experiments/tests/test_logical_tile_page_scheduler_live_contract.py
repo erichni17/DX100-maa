@@ -10,6 +10,7 @@ GUEST = ROOT / "benchmarks/API/test_logical_tile_page_scheduler_live.cpp"
 RUNNER = ROOT / "experiments/scripts/run_logical_tile_page_scheduler_live.sh"
 MAA = ROOT / "src/mem/MAA/MAA.cc"
 STREAM = ROOT / "src/mem/MAA/StreamAccess.cc"
+CPU_PORT = ROOT / "src/mem/MAA/CpuSidePort.cc"
 
 
 class LogicalTilePageSchedulerLiveContract(unittest.TestCase):
@@ -19,6 +20,7 @@ class LogicalTilePageSchedulerLiveContract(unittest.TestCase):
         cls.runner = RUNNER.read_text()
         cls.maa = MAA.read_text()
         cls.stream = STREAM.read_text()
+        cls.cpu_port = CPU_PORT.read_text()
 
     def test_guest_covers_required_fp32_operations(self):
         for call in (
@@ -117,6 +119,120 @@ class LogicalTilePageSchedulerLiveContract(unittest.TestCase):
         self.assertIn("logical_page_native_complete", self.maa)
         self.assertIn("MemCmd::WriteReq", self.stream)
         self.assertIn("MemCmd::WriteResp", self.stream)
+
+    def test_stream_and_vector_decode_reach_scheduler_only_when_enabled(self):
+        self.assertGreaterEqual(
+            self.cpu_port.count("!logicalTilePageSchedulerEnabled()"), 2
+        )
+        self.assertIn("Logical STREAM ABI is disabled unless", self.cpu_port)
+        self.assertIn(
+            "Logical ALU_VECTOR ABI is disabled unless", self.cpu_port
+        )
+        self.assertGreaterEqual(
+            self.cpu_port.count("logical tile page scheduler is enabled"), 2
+        )
+        self.assertIn("received for logical page scheduling", self.cpu_port)
+        self.assertIn("received for logical vector page", self.cpu_port)
+        self.assertNotIn(
+            "live execution is unsupported until the logical controller",
+            self.cpu_port,
+        )
+
+    def test_scalar_register_span_is_leased_until_retirement(self):
+        self.assertIn("MAA::logicalPageUsesRegister(", self.maa)
+        self.assertIn("!execution.active", self.maa)
+        self.assertIn("isLogicalALUScalar()", self.maa)
+        self.assertIn(
+            "firstRegister < leasedEnd && leasedFirst < candidateEnd",
+            self.maa,
+        )
+        dispatch = self.maa.index("void MAA::dispatchRegister()")
+        dispatch_body = self.maa[
+            dispatch : self.maa.index(
+                "void MAA::dispatchInstruction()", dispatch
+            )
+        ]
+        self.assertIn("!logicalPageUsesRegister(", dispatch_body)
+        self.assertLess(
+            dispatch_body.index("!logicalPageUsesRegister("),
+            dispatch_body.index("rf->setData"),
+        )
+
+    def test_drain_rejects_persistent_descriptor_generations(self):
+        drain = self.maa.index("MAA::drain()")
+        resume = self.maa.index("MAA::drainResume()", drain)
+        drain_body = self.maa[drain:resume]
+        resume_body = self.maa[
+            resume : self.maa.index("void MAA::dispatchRegister", resume)
+        ]
+        for body in (drain_body, resume_body):
+            self.assertIn("logicalPageDescriptors", body)
+            self.assertIn("state.configured", body)
+        self.assertIn("serialization is unsupported", drain_body)
+
+    def test_guest_cannot_address_reserved_frame_lanes(self):
+        self.assertGreaterEqual(
+            self.cpu_port.count("logicalTileReservedLane("), 5
+        )
+        self.assertIn("Guest cacheable data request references", self.cpu_port)
+        self.assertIn(
+            "Guest readiness read references reserved", self.cpu_port
+        )
+
+    def test_admission_rejects_non_arithmetic_or_width_changing_alu(self):
+        submit = self.maa.index("MAA::submitLogicalPageInstruction(")
+        configure = self.maa.index("configureLogicalPageDestination(", submit)
+        body = self.maa[submit:configure]
+        self.assertIn("supports only FP32/FP64 arithmetic", body)
+        self.assertIn("supports only ADD/SUB/MUL/DIV/MIN/MAX", body)
+        self.assertIn("Instruction::OPType::MAX_OP", body)
+
+    def test_completion_span_has_fixed_submission_to_retire_owner(self):
+        submit = self.maa.index("MAA::submitLogicalPageInstruction(")
+        retire = self.maa.index("MAA::retireLogicalPageInstruction(", submit)
+        submit_body = self.maa[submit:retire]
+        retire_body = self.maa[
+            retire : self.maa.index("MAA::serviceLogicalSPD", retire)
+        ]
+        self.assertIn(
+            "logicalCompletionLaneOwned(completion + lane)", submit_body
+        )
+        self.assertIn("reserveResponseBearingPublishCompletion(", submit_body)
+        self.assertIn("releaseResponseBearingPublishCompletion(", retire_body)
+        self.assertLess(
+            retire_body.index("setTileReady(completion"),
+            retire_body.index("releaseResponseBearingPublishCompletion("),
+        )
+        self.assertGreaterEqual(
+            self.cpu_port.count("logicalCompletionLaneOwned("), 3
+        )
+        size = self.cpu_port.index("Guest size read references reserved")
+        ready = self.cpu_port.index("Guest readiness read references reserved")
+        self.assertNotIn(
+            "logicalCompletionLaneOwned", self.cpu_port[size - 160 : size]
+        )
+        self.assertNotIn(
+            "logicalCompletionLaneOwned", self.cpu_port[ready - 160 : ready]
+        )
+        busy = self.maa.index("MAA::responseBearingPublishDestinationBusy")
+        busy_body = self.maa[
+            busy : self.maa.index(
+                "MAA::reserveResponseBearingPublishCompletion", busy
+            )
+        ]
+        self.assertIn(
+            "logicalCompletionLaneOwned(first_tile + offset)", busy_body
+        )
+
+    def test_extended_scalar_ids_cannot_enter_legacy_bridge(self):
+        gate = self.cpu_port.index(
+            "Logical ALU_SCALAR descriptor IDs 2..6 require the "
+        )
+        accepted = self.cpu_port.index(
+            "my_instruction_recvs[instruction_id] = true", gate
+        )
+        self.assertLess(gate, accepted)
+        self.assertIn("legacy IDs 0/1 are", self.cpu_port[gate:accepted])
 
     def test_runner_shell_is_valid(self):
         subprocess.run(["bash", "-n", str(RUNNER)], check=True)
