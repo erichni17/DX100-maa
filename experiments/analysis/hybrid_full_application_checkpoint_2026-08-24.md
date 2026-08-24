@@ -35,12 +35,14 @@ Raw CG reports:
 | NAS CG | `dx100-cg-page-product-full-baf142f7-r1` | `/data1/nier/dx100-runs/2026-08-24-cg-page-product-full-baf142f7-r1` | trace-free full checkpoint |
 | NAS IS | `dx100-is-scalar-soa-full-a44aaa60-r5` | `/data1/nier/dx100-runs/2026-08-24-is-scalar-soa-full-a44aaa60-r5` | full O3 ROI |
 | HashJoin PRH | `dx100-hashjoin-prh-full-recovery-20260824-061147` | `/data1/nier/dx100-runs/hashjoin-hybrid-prh-full-d7d29bf5-20260824-061147` | PRH-only recovery; PRO is not rerun |
-| GAPBS SSSP S22 | `dx100-sssp-old-result-full-s22-aa41bdd7-r1` | `/data1/nier/dx100-runs/2026-08-24-sssp-old-result-full-s22-aa41bdd7-r1` | candidate guest/input checkpoint preparation |
+| GAPBS SSSP S22 | `dx100-sssp-old-result-full-s22-2840d930-r2` | `/data1/nier/dx100-runs/2026-08-24-sssp-old-result-full-s22-2840d930-r2` | reviewed candidate checkpoint preparation |
 
-All units have infinite runtime and process-exit watchers under
-`/data1/nier/.dx-runtime-state`. An exit observation is not success; each raw
-root still requires its terminal marker, exact correctness result, final
-stats, balanced response ledgers, and hashes.
+All units have infinite runtime. CG, IS, and HashJoin have process-exit
+watchers under `/data1/nier/.dx-runtime-state`. The external SSSP watcher was
+not installed because its service launch was denied; the runner itself still
+fails closed and writes `gate.complete` only after its exact output,
+configuration, checkpoint identity, two stats windows, and issue/response
+ledgers validate. An exit observation is not success.
 
 ## Active optimization probes
 
