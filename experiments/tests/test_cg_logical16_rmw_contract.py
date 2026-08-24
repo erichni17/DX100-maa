@@ -36,12 +36,13 @@ class CGLogical16RmwContractTests(unittest.TestCase):
         self.assertIn('mode != "MAA_DEFERRED" || argc != 3', self.source)
         self.assertIn("read_cg_treatment_selector", self.source)
 
-    def test_only_residual_full_windows_use_soa_jit(self):
+    def test_residual_full_windows_keep_the_original_soa_jit_path(self):
         residual = self.source.index("// LOOP 2")
-        soa = self.source.index("maa_indirect_rmw_vector_soa_jit<float>")
-        self.assertGreater(soa, residual)
+        soa = self.source.index(
+            "maa_indirect_rmw_vector_soa_jit<float>", residual
+        )
         self.assertEqual(
-            self.source.count("maa_indirect_rmw_vector_soa_jit<float>"), 1
+            self.source.count("maa_indirect_rmw_vector_soa_jit<float>"), 2
         )
         self.assertIn("gather_size == TILE_SIZE", self.source[residual:soa])
         self.assertIn(
@@ -59,17 +60,22 @@ class CGLogical16RmwContractTests(unittest.TestCase):
                 self.source.index("const bool soa_residual_full_window"),
             )
         ]
-        self.assertIn("cg_soa_indices[tid] + page_offset", producer)
-        self.assertIn("cg_soa_values[tid] + page_offset", producer)
-        self.assertIn("index_dst[word] >=", producer)
-        self.assertIn("static_cast<uint32_t>(j_max - j_base)", producer)
+        staging = producer[
+            producer.index("if (soa_residual_full_window)") : producer.index(
+                "cg_soa_value_words[tid] += page_size;"
+            )
+        ]
+        self.assertIn("cg_soa_indices[tid] + page_offset", staging)
+        self.assertIn("cg_soa_values[tid] + page_offset", staging)
+        self.assertIn("index_dst[word] >=", staging)
+        self.assertIn("static_cast<uint32_t>(j_max - j_base)", staging)
         self.assertLess(
-            producer.index("maa_stream_store<uint32_t>(index_dst"),
-            producer.index("wait_ready(t0)"),
+            staging.index("maa_stream_store<uint32_t>(index_dst"),
+            staging.index("wait_ready(t0)"),
         )
         self.assertLess(
-            producer.index("maa_stream_store<float>(value_dst"),
-            producer.index("wait_ready(t7)"),
+            staging.index("maa_stream_store<float>(value_dst"),
+            staging.index("wait_ready(t7)"),
         )
 
     def test_residual_staging_never_cpu_reads_past_the_physical_spd_page(self):
@@ -107,16 +113,19 @@ class CGLogical16RmwContractTests(unittest.TestCase):
         )
 
     def test_logical_window_storage_is_external_and_accounted(self):
-        self.assertIn(
-            "static uint32_t cg_soa_indices[NUM_CORES][TILE_SIZE]", self.source
+        self.assertRegex(
+            self.source,
+            r"static uint32_t\s+cg_soa_indices\[NUM_CORES\]\[TILE_SIZE\]",
         )
-        self.assertIn(
-            "static float cg_soa_values[NUM_CORES][TILE_SIZE]", self.source
+        self.assertRegex(
+            self.source,
+            r"static float\s+cg_soa_values\[NUM_CORES\]\[TILE_SIZE\]",
         )
         self.assertIn("add_mem_region(cg_soa_indices[core]", self.source)
         self.assertIn("add_mem_region(cg_soa_values[core]", self.source)
-        self.assertIn("external_staging_bytes=", self.source)
-        self.assertIn("producer=cpu_after_spd_completion", self.source)
+        self.assertIn("external_coherent_backing_bytes=", self.source)
+        self.assertIn("cg_virtual_gather_coherent_backing_bytes", self.source)
+        self.assertIn('"cpu_after_spd_completion"', self.source)
         self.assertIn("performance_promotable=0", self.source)
 
     def test_row_pointer_streams_use_page_local_physical_positions(self):
@@ -132,11 +141,12 @@ class CGLogical16RmwContractTests(unittest.TestCase):
         # The virtual gather owns logical k positions, but the ordinary
         # colidx/a consumers are real 4K SPD tiles.  Their base address,
         # rather than their SPD index, carries the absolute page position.
-        for token in (
-            "maa_stream_load<int>(&colidx[page_base], r2, r3,",
-            "maa_stream_load<float>(&a[page_base], r2, r3, r1, t5);",
-        ):
-            self.assertEqual(self.source.count(token), 4)
+        expected_counts = {
+            "maa_stream_load<int>(&colidx[page_base], r2, r3,": 4,
+            "maa_stream_load<float>(&a[page_base], r2, r3, r1, t5);": 6,
+        }
+        for token, expected in expected_counts.items():
+            self.assertEqual(self.source.count(token), expected)
         self.assertNotIn("maa_const<int>(page_base, r2);", self.source)
         self.assertNotIn(
             "maa_const<int>(page_base + page_size, r3);", self.source

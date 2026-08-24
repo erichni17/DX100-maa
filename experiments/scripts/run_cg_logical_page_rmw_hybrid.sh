@@ -90,15 +90,16 @@ restore_cmd=(
     --maa_physical_tile_elements=4096 --maa_logical_tile_page_scheduler
     --maa_num_offset_table_entries=16384
     --maa_num_offset_table_epoch_entries=16384
-    --maa_num_initial_row_table_slices=16
+    --maa_num_initial_row_table_slices=32
     --maa_soa_jit_predicate_active_credits=16
     --maa_soa_jit_active_value_owners=32
     --cmd "$guest" --options "MAA_DEFERRED $selector"
 )
 
 source_commit=$(git -C "$root" rev-parse HEAD)
-reference_line=$(grep -E "^CG_FINGERPRINT .* elements=$cg_na .* result=PASS$" \
-    "$reference")
+reference_line=$(grep -E \
+    "^CG_FINGERPRINT .* elements=$cg_na .* result=PASS$" \
+    "$reference" || true)
 [[ $(grep -Ec "^CG_FINGERPRINT .* elements=$cg_na .* result=PASS$" \
           "$reference") -eq 1 ]] || {
     echo "frozen reference lacks one exact CG fingerprint" >&2
@@ -114,8 +115,14 @@ reference_line=$(grep -E "^CG_FINGERPRINT .* elements=$cg_na .* result=PASS$" \
     printf 'arm=hybrid_only\ncomparison_arms=0\n'
     printf 'native_reruns=0\nwall_timeout=none\n'
     printf 'logical_elements=16384\nphysical_tile_elements=4096\n'
+    printf 'num_initial_row_table_slices=32\n'
     printf 'guest_lanes=32\nlogical_scheduler_reserved_lanes=8\n'
+    printf 'external_coherent_backing_bytes=1048576\n'
+    printf 'physical_spd_payload_bytes=655360\n'
+    printf 'logical_scheduler_reserved_lane_payload_bytes=131072\n'
     printf 'hidden_logical_payload_bytes=0\nhost_payload_access=0\n'
+    printf '%s\n' \
+        'fingerprint_criterion=exact_quantized_hashes:x_q5,x_q6,z_q5,z_q6;finite:nonfinite_x=0,nonfinite_z=0,result=PASS;relative_tolerances:x_sum=1e-8,x_norm_sq=1e-8,z_sum=1e-8,z_norm_sq=1e-8,rnorm=1e-3,zeta=1e-10'
     printf 'checkpoint_command='; printf '%q ' "${checkpoint_cmd[@]}"; printf '\n'
     printf 'restore_command='; printf '%q ' "${restore_cmd[@]}"; printf '\n'
 } > "$out/manifest.txt"
@@ -153,10 +160,67 @@ restore="$out/run/restore.log"
 stats="$out/run/stats.txt"
 trace="$out/run/logical_page_trace.log"
 [[ -s $stats && -s $trace ]]
-[[ $(grep -Fxc "$reference_line" "$restore" || true) -eq 1 ]] || {
-    echo "candidate CG fingerprint does not match the frozen physical4 reference" >&2
+candidate_line=$(grep -E \
+    "^CG_FINGERPRINT .* elements=$cg_na .* result=PASS$" \
+    "$restore" || true)
+[[ $(grep -Ec \
+          "^CG_FINGERPRINT .* elements=$cg_na .* result=PASS$" \
+          "$restore") -eq 1 ]] || {
+    echo "candidate lacks one passing CG fingerprint" >&2
     exit 1
 }
+
+fingerprint_field() {
+    local line=$1
+    local key=$2
+    sed -n "s/.* $key=\\([^ ]*\\).*/\\1/p" <<<"$line"
+}
+for line in "$reference_line" "$candidate_line"; do
+    [[ $(fingerprint_field "$line" result) == PASS ]]
+    [[ $(fingerprint_field "$line" nonfinite_x) == 0 ]]
+    [[ $(fingerprint_field "$line" nonfinite_z) == 0 ]]
+done
+for key in x_q5 x_q6 z_q5 z_q6; do
+    [[ -n $(fingerprint_field "$reference_line" "$key") ]]
+    [[ $(fingerprint_field "$candidate_line" "$key") == \
+       $(fingerprint_field "$reference_line" "$key") ]] || {
+        echo "candidate CG quantized fingerprint $key differs from reference" >&2
+        exit 1
+    }
+done
+
+relative_delta() {
+    local field=$1
+    local candidate
+    local reference
+    candidate=$(fingerprint_field "$candidate_line" "$field")
+    reference=$(fingerprint_field "$reference_line" "$field")
+    [[ $candidate =~ ^-?[0-9]+([.][0-9]*)?([eE][+-]?[0-9]+)?$ ]]
+    [[ $reference =~ ^-?[0-9]+([.][0-9]*)?([eE][+-]?[0-9]+)?$ ]]
+    awk -v candidate="$candidate" -v reference="$reference" '
+        function abs(value) { return value < 0 ? -value : value }
+        BEGIN {
+            denominator = abs(reference)
+            if (denominator < 1.0e-300)
+                denominator = 1.0e-300
+            printf "%.17g", abs(candidate - reference) / denominator
+        }
+    '
+}
+
+fingerprint_relative_deltas=
+for bound in x_sum:1e-8 x_norm_sq:1e-8 z_sum:1e-8 \
+             z_norm_sq:1e-8 rnorm:1e-3 zeta:1e-10; do
+    scalar=${bound%%:*}
+    tolerance=${bound#*:}
+    delta=$(relative_delta "$scalar")
+    awk -v delta="$delta" -v tolerance="$tolerance" \
+        'BEGIN { exit !(delta <= tolerance) }' || {
+        echo "candidate CG $scalar relative delta $delta exceeds $tolerance" >&2
+        exit 1
+    }
+    fingerprint_relative_deltas+="${fingerprint_relative_deltas:+,}$scalar=$delta"
+done
 [[ $(grep -Ec '^CG_LOGICAL16_RMW_SELECTION treatment=logical_page_soa_jit .*host_payload_access=0 performance_promotable=0$' "$restore" || true) -eq 1 ]]
 [[ $(grep -Ec '^CG_LOGICAL16_RMW_TERMINAL treatment=logical_page_soa_jit .*host_payload_access=0 performance_promotable=0 result=PASS$' "$restore" || true) -eq 1 ]]
 [[ $(grep -Fxc 'ROI End!!!' "$restore" || true) -eq 1 ]]
@@ -166,7 +230,7 @@ trace="$out/run/logical_page_trace.log"
 for resolved in num_maas=1 num_tiles_per_core=10 \
     num_tile_elements=16384 physical_tile_elements=4096 \
     logical_tile_page_scheduler=true num_offset_table_entries=16384 \
-    num_offset_table_epoch_entries=16384 num_initial_row_table_slices=16 \
+    num_offset_table_epoch_entries=16384 num_initial_row_table_slices=32 \
     soa_jit_predicate_active_credits=16 soa_jit_active_value_owners=32; do
     grep -Fqx "$resolved" "$out/run/config.ini"
 done
@@ -184,11 +248,26 @@ index_pages=$(field index_publish_pages)
 value_pages=$(field value_publish_pages)
 logical_alus=$(field logical_alu_vectors)
 logical_windows=$(field logical_page_windows)
+q_eligible=$(field q_spmv_eligible_windows)
+q_routed=$(field q_spmv_routed_windows)
+residual_eligible=$(field residual_spmv_eligible_windows)
+residual_routed=$(field residual_spmv_routed_windows)
+external_backing=$(field external_coherent_backing_bytes)
+physical_spd_payload=$(field physical_spd_payload_bytes)
+reserved_lanes=$(field logical_scheduler_reserved_lanes)
+reserved_lane_payload=$(field logical_scheduler_reserved_lane_payload_bytes)
 [[ $windows =~ ^[1-9][0-9]*$ ]]
 [[ $logical_windows -eq $windows && $logical_alus -eq $windows ]]
+[[ $q_eligible =~ ^[1-9][0-9]*$ && $q_routed -eq $q_eligible ]]
+[[ $residual_eligible =~ ^[1-9][0-9]*$ && \
+   $residual_routed -eq $residual_eligible ]]
+[[ $windows -eq $((q_routed + residual_routed)) ]]
 [[ $index_words -eq $((windows * 16384)) ]]
 [[ $value_words -eq $index_words && $product_words -eq $index_words ]]
 [[ $index_pages -eq $((windows * 4)) && $value_pages -eq $index_pages ]]
+[[ $external_backing -eq 1048576 ]]
+[[ $physical_spd_payload -eq 655360 ]]
+[[ $reserved_lanes -eq 8 && $reserved_lane_payload -eq 131072 ]]
 
 stat_sum() {
     local suffix=$1
@@ -255,6 +334,13 @@ cmp -s "$out/input/source_status.before" "$out/input/source_status.after"
     printf 'checkpoint_sha256=%s\nreference_sha256=%s\n' \
         "$checkpoint_sha" "$reference_sha"
     printf 'simTicks=%s\nlogical_windows=%s\n' "$sim_ticks" "$windows"
+    printf 'q_spmv_eligible_routed=%s/%s\n' "$q_eligible" "$q_routed"
+    printf 'residual_spmv_eligible_routed=%s/%s\n' \
+        "$residual_eligible" "$residual_routed"
+    printf 'external_coherent_backing_bytes=%s\n' "$external_backing"
+    printf 'physical_spd_payload_bytes=%s\n' "$physical_spd_payload"
+    printf 'logical_scheduler_reserved_lane_payload_bytes=%s\n' \
+        "$reserved_lane_payload"
     printf 'logical_page_actions=%s/%s\n' "$logical_dispatches" "$logical_completes"
     printf 'logical_page_instructions=%s/%s\n' "$logical_admits" "$logical_retires"
     printf 'publisher_write_responses=%s/%s\n' "$publish_responses" "$publish_issues"
@@ -262,7 +348,12 @@ cmp -s "$out/input/source_status.before" "$out/input/source_status.after"
     printf 'IND_SoaJitFallbacks=0\nIND_SoaJitOpenContexts=0\n'
     printf 'fallback_basis=IND_BoundedGlobalMergeFallbacks\n'
     printf 'open_state_basis=instructions_equal_terminals_and_all_response_ledgers_closed\n'
-    printf 'fingerprint=%s\n' "$reference_line"
+    printf '%s\n' \
+        'fingerprint_criterion=exact_quantized_hashes:x_q5,x_q6,z_q5,z_q6;finite:nonfinite_x=0,nonfinite_z=0,result=PASS;relative_tolerances:x_sum=1e-8,x_norm_sq=1e-8,z_sum=1e-8,z_norm_sq=1e-8,rnorm=1e-3,zeta=1e-10'
+    printf 'fingerprint_relative_deltas=%s\n' \
+        "$fingerprint_relative_deltas"
+    printf 'reference_fingerprint=%s\n' "$reference_line"
+    printf 'candidate_fingerprint=%s\n' "$candidate_line"
 } > "$out/result.txt"
 sha256sum "$out/manifest.txt" "$out/result.txt" "$restore" "$stats" \
     "$out/run/config.ini" "$trace" "$out/input/source_status.after" \
