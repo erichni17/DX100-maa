@@ -74,6 +74,23 @@ still points at the lead worktree library.
 Report:
 `experiments/analysis/soa_jit_old_result_write_coalescing_2026-08-24.md`.
 
+### Rejected shared-context expansion
+
+The exact context8/context64 small A/B rejects 64 active contexts as a shared
+default. HashJoin PRO improves only 0.1322%, while SSSP regresses 1.6964%.
+SSSP old-result writes rise from 17,805 to 52,747 because wider A-line
+concurrency fragments the fixed eight-line dense4 publisher. The option also
+costs 30,464 modeled bytes per indirect unit relative to context8, or 121,856
+bytes across four units, and its 64-way searches are not timing-qualified.
+
+The next shared candidate therefore retains eight active contexts and moves
+only completed A writes into an eight-credit compact `WriteResp` retirement
+tracker. Its gate must preserve exact terminal response ownership and reject
+the mechanism if the extra overlap again harms old-result coalescing.
+
+Report:
+`experiments/analysis/hybrid_general_hotpath_worker_2026-08-24.md`.
+
 ## HashJoin partial result
 
 The hardened one-shot classifier now recovers full PRO as a terminal-valid
