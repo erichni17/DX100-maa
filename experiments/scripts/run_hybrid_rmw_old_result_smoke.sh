@@ -47,7 +47,7 @@ restore_cmd=(
     --l3_mshrs=256 --l3_write_buffers=128 --l3_ports=4
     --cacheline_size=64 --mem-type Ramulator2
     --ramulator-config "$ramulator" --mem-channels=1
-    --maa --maa_num_maas=1 --maa_num_indirect_units_per_maa=1
+    --maa --maa_num_maas=1 --maa_num_indirect_units_per_maa=4
     --maa_num_tile_elements=16384 --maa_physical_tile_elements=4096
     --maa_num_offset_table_entries=16384
     --maa_num_offset_table_epoch_entries=16384
@@ -60,7 +60,7 @@ restore_cmd=(
     printf 'gem5_sha256='; sha256sum "$gem5" | awk '{print $1}'
     printf 'guest_sha256='; sha256sum "$guest" | awk '{print $1}'
     printf 'logical_elements=16384\nphysical_tile_elements=4096\n'
-    printf 'row_table_slices=32\n'
+    printf 'num_indirect_units_per_maa=4\nrow_table_slices=32\n'
     printf 'old_result_line_credits=8\nold_result_payload_bytes=512\n'
     printf 'native_arms=0\nwall_timeout=none\n'
 } >"$out/manifest.txt"
@@ -76,6 +76,7 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 "${restore_cmd[@]}" \
 restore="$out/run/restore.log"
 stats="$out/run/stats.txt"
 trace="$out/run/old_result_trace.log"
+config_ini="$out/run/config.ini"
 expected='HYBRID_RMW_OLD_RESULT_RESULT generations=2 logical=16384 errors=0'
 [[ $(grep -Fxc "$expected" "$restore" || true) -eq 1 ]]
 [[ $(grep -Ec '^HYBRID_RMW_OLD_RESULT_GENERATION generation=[12] errors=0$' \
@@ -85,6 +86,8 @@ expected='HYBRID_RMW_OLD_RESULT_RESULT generations=2 logical=16384 errors=0'
 [[ $(grep -Eic 'panic|fatal|assert|abort|segmentation fault|error:' \
           "$restore" || true) -eq 0 ]]
 [[ -s $stats && -s $trace ]]
+[[ $(grep -Fxc 'num_indirect_units_per_maa=4' "$config_ini" || true) -eq 1 ]]
+[[ $(grep -Fxc 'num_initial_row_table_slices=32' "$config_ini" || true) -eq 1 ]]
 
 stat_sum() {
     local suffix=$1

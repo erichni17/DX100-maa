@@ -67,6 +67,17 @@ class SoaJitOldResultIntegration(unittest.TestCase):
         self.assertIn("native_arms=0", self.runner)
         self.assertIn("wall_timeout=none", self.runner)
 
+    def test_smoke_runner_uses_full_indirect_geometry(self):
+        self.assertIn("--maa_num_indirect_units_per_maa=4", self.runner)
+        self.assertNotIn("--maa_num_indirect_units_per_maa=1", self.runner)
+        self.assertIn("num_indirect_units_per_maa=4", self.runner)
+        self.assertIn("row_table_slices=32", self.runner)
+        self.assertIn("--maa_num_initial_row_table_slices=32", self.runner)
+        self.assertIn("grep -Fxc 'num_indirect_units_per_maa=4'", self.runner)
+        self.assertIn(
+            "grep -Fxc 'num_initial_row_table_slices=32'", self.runner
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
