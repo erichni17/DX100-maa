@@ -5,7 +5,7 @@ set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 root=$(cd "$script_dir/../.." && pwd)
-gem5=${GEM5_BINARY:-/data1/nier/DX100/build/X86/gem5.opt.ovl_base}
+gem5=${GEM5_BINARY:?set GEM5_BINARY to a SoA/JIT-capable gem5.opt}
 config=$root/configs/deprecated/example/se.py
 ramulator=$root/ext/ramulator2/ramulator2/example_gem5_config.yaml
 guest=$root/benchmarks/hashjoin/src/bin/x86/hj_maa_16K_hybrid
@@ -43,8 +43,14 @@ export LD_LIBRARY_PATH="$root/ext/ramulator2/ramulator2:${LD_LIBRARY_PATH:-}"
 stat_sum() {
     local stats=$1
     local suffix=$2
-    awk -v suffix="$suffix" '$1 ~ ("_" suffix "$") { sum += $2 }
-        END { printf "%.0f\n", sum }' "$stats"
+    awk -v suffix="$suffix" '
+        /^---------- Begin Simulation Statistics/ { section++ }
+        section == 1 && $1 ~ ("_" suffix "$") { sum += $2 }
+        /^---------- End Simulation Statistics/ && section == 1 {
+            printf "%.0f\n", sum
+            exit
+        }
+    ' "$stats"
 }
 
 field() {
@@ -65,15 +71,38 @@ printf 'kernel\tresult\trouted\tsoa_instructions\tsoa_terminals\tsimTicks\n' \
     >"$out/results.tsv"
 
 for kernel in PRO PRH; do
-    run=$out/$kernel
+    case_root=$out/$kernel
+    checkpoint=$case_root/checkpoint
+    run=$case_root/run
+    mkdir -p "$checkpoint"
     mkdir -p "$run"
     options="-a $kernel -n $OMP_THREADS -r $R_SIZE -s $S_SIZE -x $R_SEED -y $S_SEED"
 
     set +e
     OMP_PROC_BIND=false OMP_NUM_THREADS=$OMP_THREADS \
+        "$gem5" --listener-mode=off --outdir="$checkpoint" \
+        "$config" --cpu-type=AtomicSimpleCPU -n 4 --mem-size=2GB \
+        --max-checkpoints=1 --cmd="$guest" --options="$options" \
+        >"$case_root/checkpoint.log" 2>&1
+    checkpoint_rc=$?
+    set -e
+    [[ $checkpoint_rc -eq 0 ]] || {
+        echo "$kernel checkpoint gem5 exited with rc=$checkpoint_rc" >&2
+        exit 1
+    }
+    checkpoint_dir=$(find "$checkpoint" -maxdepth 1 -type d \
+        -name 'cpt.*' -print -quit)
+    [[ -n "$checkpoint_dir" ]] || {
+        echo "$kernel checkpoint is missing" >&2
+        exit 1
+    }
+
+    set +e
+    OMP_PROC_BIND=false OMP_NUM_THREADS=$OMP_THREADS \
         "$gem5" --listener-mode=off --outdir="$run" \
         --debug-flags=MAAVirtualTrace --debug-file=soa_jit_trace.log \
-        "$config" --cpu-type=X86O3CPU -n 4 --mem-size=2GB \
+        "$config" --cpu-type=X86O3CPU -r 1 -n 4 --mem-size=2GB \
+        --checkpoint-dir="$checkpoint" \
         --sys-clock=3.2GHz --cpu-clock=3.2GHz \
         --caches --l1d_size=32kB --l1d_assoc=8 \
         --l1d-hwp-type=StridePrefetcher --l1d_mshrs=16 \
@@ -167,6 +196,7 @@ done
     printf 'input=r_size:%d,s_size:%d,r_seed:%d,s_seed:%d,non_unique:0,full_range:0\n' \
         "$R_SIZE" "$S_SIZE" "$R_SEED" "$S_SEED"
     printf 'expected_cardinality=%d\n' "$EXPECTED_RESULT"
+    printf 'checkpoint_paths=PRO/checkpoint,PRH/checkpoint\n'
     printf 'geometry=memory_channels:2,row_table_slices:32,indirect_units:4,logical_elements:16384,physical_elements:4096\n'
 } >"$out/manifest.txt"
 

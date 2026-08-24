@@ -241,6 +241,11 @@ def test_build_and_runner_are_candidate_only_and_close_mechanism():
     assert "for kernel in PRO PRH; do" in runner
     assert 'timeout "$' not in runner
     assert "HASHJOIN_HYBRID_SOA_JIT=" not in runner
+    assert "GEM5_BINARY:?set GEM5_BINARY" in runner
+    assert "--cpu-type=AtomicSimpleCPU" in runner
+    assert "--max-checkpoints=1" in runner
+    assert "--cpu-type=X86O3CPU -r 1" in runner
+    assert '--checkpoint-dir="$checkpoint"' in runner
     assert "R_SIZE=65536" in runner and "S_SIZE=65536" in runner
     assert "EXPECTED_RESULT=65536" in runner
     for geometry in (
