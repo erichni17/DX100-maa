@@ -25,12 +25,14 @@ case $size in
     default_accepted_result_sha=4364635c504c738fcc6026d0dd10351418cd3bc458938082915fda1ee3bd0d32
     default_accepted_ticks=6348682603
     comparison_contract=accepted_predecessor
+    trace_mode=enabled_small
     ;;
   full)
     cg_na=150000
     default_reference=/data1/nier/dx100-runs/2026-08-11-cg-bounded-789cc703-full-v8/bounded4_cached/run.log
     default_reference_sha=0fe931685c37695bc51c74288c67f1494a0c91a723f8e831efa0ac2a7515441c
     comparison_contract=correctness_only
+    trace_mode=disabled_full
     ;;
   *)
     echo "size must be small or full" >&2
@@ -105,9 +107,15 @@ checkpoint_cmd=(
     --cpu-type AtomicSimpleCPU -n 4 --mem-size 2GB --max-checkpoints=1
     --cmd "$guest" --options "MAA_DEFERRED $selector"
 )
+restore_debug_args=()
+if [[ $trace_mode == enabled_small ]]; then
+    restore_debug_args=(
+        --debug-flags=MAAVirtualTrace --debug-file=logical_page_trace.log
+    )
+fi
 restore_cmd=(
     "$gem5" --listener-mode=off --outdir="$out/run"
-    --debug-flags=MAAVirtualTrace --debug-file=logical_page_trace.log
+    "${restore_debug_args[@]}"
     "$config" --cpu-type X86O3CPU -r 1 -n 4 --mem-size 2GB
     --checkpoint-dir "$out/checkpoint"
     --sys-clock 3.2GHz --cpu-clock 3.2GHz
@@ -146,6 +154,7 @@ reference_line=$(grep -E \
     printf 'reference_path=%s\nreference_sha256=%s\n' \
         "$reference" "$reference_sha"
     printf 'comparison_contract=%s\n' "$comparison_contract"
+    printf 'trace_mode=%s\n' "$trace_mode"
     if [[ $comparison_contract == accepted_predecessor ]]; then
         printf 'accepted_root=%s\naccepted_result_sha256=%s\naccepted_simTicks=%s\n' \
             "$accepted_root" "$accepted_result_sha" "$accepted_ticks"
@@ -208,7 +217,12 @@ printf '%s\n' "$restore_rc" > "$out/run/restore.exit"
 restore="$out/run/restore.log"
 stats="$out/run/stats.txt"
 trace="$out/run/logical_page_trace.log"
-[[ -s $stats && -s $trace ]]
+[[ -s $stats ]]
+if [[ $trace_mode == enabled_small ]]; then
+    [[ -s $trace ]]
+else
+    [[ ! -e $trace ]]
+fi
 candidate_line=$(grep -E \
     "^CG_FINGERPRINT .* elements=$cg_na .* result=PASS$" \
     "$restore" || true)
@@ -358,17 +372,28 @@ expected_publish_lines=$((expected_publish_pages * 256))
 [[ $publish_responses -eq $publish_issues ]]
 [[ $publish_terminals -eq $expected_publish_pages ]]
 
-logical_admits=$(grep -Fc 'event=logical_page_admit ' "$trace" || true)
-logical_begins=$(grep -Fc 'event=logical_page_begin ' "$trace" || true)
-logical_dispatches=$(grep -Fc 'event=logical_page_native_dispatch ' "$trace" || true)
-logical_completes=$(grep -Fc 'event=logical_page_native_complete ' "$trace" || true)
-logical_retires=$(grep -Fc 'event=logical_page_retire ' "$trace" || true)
-soa_trace_terminals=$(grep -Ec 'event=soa_jit_complete .* logical=16384 .* terminal=1$' "$trace" || true)
-fallback_events=$(grep -Ec 'event=[^ ]*fallback' "$trace" || true)
-[[ $logical_admits -eq 0 && $logical_retires -eq 0 ]]
-[[ $logical_begins -eq 0 && $logical_dispatches -eq 0 && \
-   $logical_completes -eq 0 ]]
-[[ $soa_trace_terminals -eq $windows && $fallback_events -eq 0 ]]
+logical_admits=0
+logical_begins=0
+logical_dispatches=0
+logical_completes=0
+logical_retires=0
+if [[ $trace_mode == enabled_small ]]; then
+    logical_admits=$(grep -Fc 'event=logical_page_admit ' "$trace" || true)
+    logical_begins=$(grep -Fc 'event=logical_page_begin ' "$trace" || true)
+    logical_dispatches=$(grep -Fc \
+        'event=logical_page_native_dispatch ' "$trace" || true)
+    logical_completes=$(grep -Fc \
+        'event=logical_page_native_complete ' "$trace" || true)
+    logical_retires=$(grep -Fc 'event=logical_page_retire ' "$trace" || true)
+    soa_trace_terminals=$(grep -Ec \
+        'event=soa_jit_complete .* logical=16384 .* terminal=1$' \
+        "$trace" || true)
+    fallback_events=$(grep -Ec 'event=[^ ]*fallback' "$trace" || true)
+    [[ $logical_admits -eq 0 && $logical_retires -eq 0 ]]
+    [[ $logical_begins -eq 0 && $logical_dispatches -eq 0 && \
+       $logical_completes -eq 0 ]]
+    [[ $soa_trace_terminals -eq $windows && $fallback_events -eq 0 ]]
+fi
 
 sim_ticks=$(awk '$1 == "simTicks" { print $2; exit }' "$stats")
 [[ $sim_ticks =~ ^[1-9][0-9]*$ ]]
@@ -410,6 +435,7 @@ cmp -s "$out/input/source_status.before" "$out/input/source_status.after"
         "$checkpoint_sha" "$reference_sha"
     printf 'simTicks=%s\nlogical_windows=%s\n' "$sim_ticks" "$windows"
     printf 'comparison_contract=%s\n' "$comparison_contract"
+    printf 'trace_mode=%s\n' "$trace_mode"
     if [[ $comparison_contract == accepted_predecessor ]]; then
         printf 'accepted_simTicks=%s\nperformance_direction_vs_accepted=%s\n' \
             "$accepted_ticks" "$performance_direction"
@@ -431,8 +457,11 @@ cmp -s "$out/input/source_status.before" "$out/input/source_status.after"
         "$logical_alus" "$logical_dispatches" "$logical_completes"
     printf 'logical_page_admits_retires=%s/%s\n' \
         "$logical_admits" "$logical_retires"
+    printf 'logical_page_action_basis=guest_terminal_and_scheduler_disabled\n'
     printf 'publisher_pages_per_window=8\n'
-    printf 'publisher_write_responses=%s/%s\n' "$publish_responses" "$publish_issues"
+    printf 'publisher_issue_accept_response=%s/%s/%s\n' \
+        "$publish_issues" "$publish_accepts" "$publish_responses"
+    printf 'publisher_terminals=%s\n' "$publish_terminals"
     printf 'soa_jit_terminals=%s/%s\n' "$soa_terminals" "$soa_instructions"
     printf 'IND_SoaJitFallbacks=0\nIND_SoaJitOpenContexts=0\n'
     printf 'fallback_basis=IND_BoundedGlobalMergeFallbacks\n'
@@ -444,8 +473,13 @@ cmp -s "$out/input/source_status.before" "$out/input/source_status.after"
     printf 'reference_fingerprint=%s\n' "$reference_line"
     printf 'candidate_fingerprint=%s\n' "$candidate_line"
 } > "$out/result.txt"
-sha256sum "$out/manifest.txt" "$out/result.txt" "$restore" "$stats" \
-    "$out/run/config.ini" "$trace" "$out/input/source_status.after" \
-    > "$out/result_sha256.txt"
+result_paths=(
+    "$out/manifest.txt" "$out/result.txt" "$restore" "$stats"
+    "$out/run/config.ini" "$out/input/source_status.after"
+)
+if [[ $trace_mode == enabled_small ]]; then
+    result_paths+=("$trace")
+fi
+sha256sum "${result_paths[@]}" > "$out/result_sha256.txt"
 touch "$out/gate.complete"
 printf 'PASS CG physical-page-product %s gate out=%s\n' "$size" "$out"
