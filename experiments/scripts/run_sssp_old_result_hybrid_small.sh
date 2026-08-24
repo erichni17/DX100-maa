@@ -72,8 +72,8 @@ restore_cmd=(
     --l2_write_buffers=16 --l3cache --l3_size=8MB --l3_assoc=16
     --l3_mshrs=256 --l3_write_buffers=128 --l3_ports=4
     --cacheline_size=64 --mem-type Ramulator2
-    --ramulator-config "$ramulator" --mem-channels=1
-    --maa --maa_num_maas=1 --maa_num_indirect_units_per_maa=1
+    --ramulator-config "$ramulator" --mem-channels=2
+    --maa --maa_num_maas=1 --maa_num_indirect_units_per_maa=4
     --maa_num_tile_elements=16384 --maa_physical_tile_elements=4096
     --maa_num_offset_table_entries=16384
     --maa_num_offset_table_epoch_entries=16384
@@ -88,7 +88,8 @@ restore_cmd=(
     printf 'guest_sha256='; sha256sum "$guest" | awk '{print $1}'
     printf 'graph_sha256='; sha256sum "$graph" | awk '{print $1}'
     printf 'logical_elements=16384\nphysical_tile_elements=4096\n'
-    printf 'row_table_slices=32\nexpected_routed_windows=4\n'
+    printf 'mem_channels=2\nindirect_units=4\nrow_table_slices=32\n'
+    printf 'expected_routed_windows=4\n'
     printf 'native_arms=0\nwall_timeout=none\nfull_graph=false\n'
 } >"$out/manifest.txt"
 

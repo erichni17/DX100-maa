@@ -121,6 +121,8 @@ class SsspOldResultHybridContract(unittest.TestCase):
         self.assertIn("full_graph=false", self.runner)
         self.assertIn("--maa_physical_tile_elements=4096", self.runner)
         self.assertIn("--maa_num_tile_elements=16384", self.runner)
+        self.assertIn("--mem-channels=2", self.runner)
+        self.assertIn("--maa_num_indirect_units_per_maa=4", self.runner)
         self.assertIn("--maa_num_initial_row_table_slices=32", self.runner)
         self.assertIn("expected_routed_windows=4", self.runner)
         self.assertIn("hash_a=a0531a7ddb9387df", self.runner)
