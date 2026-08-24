@@ -62,7 +62,7 @@ class SoaJitOldResultIntegration(unittest.TestCase):
             ROOT / "benchmarks/API/test_hybrid_rmw_old_result.cpp"
         ).read_text()
         self.assertIn("constexpr int TargetRows = 128", guest)
-        self.assertIn("constexpr int RowStrideWords = 32768", guest)
+        self.assertIn("constexpr int RowStrideWords = 65536", guest)
         self.assertIn(
             "indices[logical] = (logical % TargetRows) * RowStrideWords", guest
         )
@@ -70,7 +70,7 @@ class SoaJitOldResultIntegration(unittest.TestCase):
         self.assertIn("result_hash=", guest)
         self.assertIn("ExpectedResultHash = 16970917775049394563ULL", guest)
         self.assertIn("candidate_only=1", self.runner)
-        self.assertIn("row_stride_bytes=131072", self.runner)
+        self.assertIn("row_stride_bytes=262144", self.runner)
         self.assertIn("$selected -eq 32768 && $rejected -eq 0", self.runner)
         self.assertIn(
             "$predicate_hits -eq 32768 && $predicate_uses -eq 32768",

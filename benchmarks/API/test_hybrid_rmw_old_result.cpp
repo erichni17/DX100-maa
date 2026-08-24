@@ -18,7 +18,7 @@ namespace
 
 constexpr int Logical = 16 * 1024;
 constexpr int TargetRows = 128;
-constexpr int RowStrideWords = 32768;
+constexpr int RowStrideWords = 65536;
 constexpr int TargetSpanWords =
     (TargetRows - 1) * RowStrideWords + 1;
 constexpr uint32_t RejectedSentinelBits = 0x7fc0a55aU;
@@ -60,7 +60,7 @@ initialize()
             static_cast<float>(target - TargetRows / 2);
     }
     for (int logical = 0; logical < Logical; ++logical) {
-        // 128 addresses in one bank/slice advance by 131072 bytes each,
+        // 128 addresses in one bank/slice advance by 262144 bytes each,
         // exceeding the 64 row entries in the original 2-channel/32-slice
         // table. Repeated passes over each target make old-result order
         // observable across the forced drain and the second generation.

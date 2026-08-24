@@ -63,7 +63,7 @@ restore_cmd=(
     printf 'logical_elements=16384\nphysical_tile_elements=4096\n'
     printf 'memory_channels=2\nnum_indirect_units_per_maa=4\n'
     printf 'row_table_slices=32\nrow_targets=128\n'
-    printf 'row_stride_bytes=131072\nall_true_predicate_span=16384\n'
+    printf 'row_stride_bytes=262144\nall_true_predicate_span=16384\n'
     printf 'old_result_line_credits=8\nold_result_payload_bytes=512\n'
 } >"$out/manifest.txt"
 
