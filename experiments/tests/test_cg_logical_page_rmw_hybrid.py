@@ -181,6 +181,7 @@ class CGLogicalPageRmwHybridContract(unittest.TestCase):
             "4364635c504c738fcc6026d0dd10351418cd3bc458938082915fda1ee3bd0d32",
             "default_accepted_ticks=6348682603",
             "comparison_contract=accepted_predecessor",
+            "trace_mode=enabled_small",
         ):
             self.assertIn(token, small_case)
 
@@ -193,12 +194,30 @@ class CGLogicalPageRmwHybridContract(unittest.TestCase):
             "/data1/nier/dx100-runs/2026-08-11-cg-bounded-789cc703-full-v8/bounded4_cached/run.log",
             "0fe931685c37695bc51c74288c67f1494a0c91a723f8e831efa0ac2a7515441c",
             "comparison_contract=correctness_only",
+            "trace_mode=disabled_full",
         ):
             self.assertIn(token, full_case)
         self.assertNotIn("accepted", full_case)
         self.assertIn(
             "if [[ $comparison_contract == accepted_predecessor ]]", runner
         )
+
+    def test_full_trace_is_disabled_and_optional_hashing_is_exact(self):
+        runner = RUNNER_PATH.read_text()
+        for token in (
+            "restore_debug_args=()",
+            "if [[ $trace_mode == enabled_small ]]",
+            "[[ ! -e $trace ]]",
+            'result_paths+=("$trace")',
+            "trace_mode=%s",
+            "logical_page_action_basis=guest_terminal_and_scheduler_disabled",
+        ):
+            self.assertIn(token, runner)
+        self.assertEqual(runner.count("--debug-flags=MAAVirtualTrace"), 1)
+        self.assertEqual(
+            runner.count("--debug-file=logical_page_trace.log"), 1
+        )
+        self.assertNotIn('"$out/run/config.ini" "$trace"', runner)
 
     def test_runner_requires_exact_mechanism_and_provenance_closure(self):
         runner = RUNNER_PATH.read_text()
@@ -225,6 +244,8 @@ class CGLogicalPageRmwHybridContract(unittest.TestCase):
             "comparison_contract=correctness_only",
             "expected_publish_pages=$((windows * 8))",
             "publisher_pages_per_window=8",
+            "publisher_issue_accept_response=",
+            "publisher_terminals=",
             'find "$out" -mindepth 1 -print -quit',
             "refusing nonempty output",
         ):
