@@ -131,6 +131,8 @@ struct arg_t {
     uint64_t hybrid_second_eligible;
     uint64_t hybrid_second_routed;
     uint64_t hybrid_second_tails;
+    uint64_t hybrid_first_scatter_4k_actions;
+    uint64_t hybrid_second_scatter_4k_actions;
 #endif
 #endif
 } __attribute__((aligned(CACHE_LINE_SIZE)));
@@ -175,6 +177,7 @@ alloc_aligned(size_t size) {
 static_assert(TILE_SIZE == 16384,
               "HASHJOIN_HYBRID_SOA_JIT requires a logical 16K tile");
 static const uint32_t HASHJOIN_HYBRID_LOGICAL_ELEMENTS = 16384;
+static const uint32_t HASHJOIN_HYBRID_PHYSICAL_ELEMENTS = 4096;
 static const int HASHJOIN_HYBRID_MAX_THREADS = 4;
 static const int HASHJOIN_HYBRID_MAX_REGION_ID = 31;
 #endif
@@ -466,7 +469,8 @@ void radix_cluster_maa(relation_t *outRel,
     double *inRel_tuples_double = (double *)inRel->tuples;
     double *outRel_tuples_double = (double *)outRel->tuples;
 
-    for (i = 0; i < inRel->num_tuples; i += TILE_SIZE) {
+    for (i = 0; i < inRel->num_tuples;) {
+        uint32_t step = TILE_SIZE;
 #ifdef HASHJOIN_HYBRID_SOA_JIT
         const uint32_t remaining = inRel->num_tuples - i;
         if (remaining >= HASHJOIN_HYBRID_LOGICAL_ELEMENTS) {
@@ -484,11 +488,15 @@ void radix_cluster_maa(relation_t *outRel,
                 reg1, reg4, tile2, Operation_t::ADD_OP);
             wait_ready(tile2);
             ++args->hybrid_second_routed;
+            i += HASHJOIN_HYBRID_LOGICAL_ELEMENTS;
             continue;
         }
         ++args->hybrid_second_tails;
-        maa_const<int>(inRel->num_tuples * 2, reg1);
-        maa_const<int>(inRel->num_tuples, reg4);
+        step = remaining < HASHJOIN_HYBRID_PHYSICAL_ELEMENTS
+            ? remaining
+            : HASHJOIN_HYBRID_PHYSICAL_ELEMENTS;
+        maa_const<int>((i + step) * 2, reg1);
+        maa_const<int>(i + step, reg4);
 #endif
         maa_const(i * 2, reg0);
         maa_stream_load<int>(inRel_tuples_int, reg0, reg1, regConst2, tile0);
@@ -498,6 +506,7 @@ void radix_cluster_maa(relation_t *outRel,
         // private hist
         maa_indirect_rmw_scalar<int>(hist, tile2, regConst1, Operation_t::ADD_OP);
         wait_ready(tile0);
+        i += step;
     }
     wait_ready(tile2);
 #ifdef HASHJOIN_HYBRID_SOA_JIT
@@ -522,7 +531,21 @@ void radix_cluster_maa(relation_t *outRel,
     //     ++dst[idx];
     // }
 
-    for (i = 0; i < inRel->num_tuples; i += TILE_SIZE) {
+    uint32_t scatter_step = TILE_SIZE;
+#ifdef HASHJOIN_HYBRID_SOA_JIT
+    scatter_step = HASHJOIN_HYBRID_PHYSICAL_ELEMENTS;
+#endif
+    for (i = 0; i < inRel->num_tuples; i += scatter_step) {
+#ifdef HASHJOIN_HYBRID_SOA_JIT
+        const uint32_t remaining = inRel->num_tuples - i;
+        const uint32_t physical_elements =
+            remaining < HASHJOIN_HYBRID_PHYSICAL_ELEMENTS
+            ? remaining
+            : HASHJOIN_HYBRID_PHYSICAL_ELEMENTS;
+        maa_const<int>((i + physical_elements) * 2, reg1);
+        maa_const<int>(i + physical_elements, reg4);
+        ++args->hybrid_second_scatter_4k_actions;
+#endif
         maa_const(i * 2, reg0);
         maa_const(i, reg5);
         // read from inRel->tuples[i].key, apply HASH_BIT_MODULO, and update hist
@@ -799,7 +822,8 @@ void parallel_radix_partition_maa(part_t *const part) {
     //     uint32_t idx = HASH_BIT_MODULO(rel[i].key, MASK, R);
     //     my_hist[idx] ++;
     // }
-    for (i = 0; i < num_tuples; i += TILE_SIZE) {
+    for (i = 0; i < num_tuples;) {
+        uint32_t step = TILE_SIZE;
 #ifdef HASHJOIN_HYBRID_SOA_JIT
         const uint32_t remaining = num_tuples - i;
         if (remaining >= HASHJOIN_HYBRID_LOGICAL_ELEMENTS) {
@@ -817,11 +841,15 @@ void parallel_radix_partition_maa(part_t *const part) {
                 reg1, reg4, tile2, Operation_t::ADD_OP);
             wait_ready(tile2);
             ++args->hybrid_first_routed;
+            i += HASHJOIN_HYBRID_LOGICAL_ELEMENTS;
             continue;
         }
         ++args->hybrid_first_tails;
-        maa_const<int>(num_tuples * 2, reg1);
-        maa_const<int>(num_tuples, reg4);
+        step = remaining < HASHJOIN_HYBRID_PHYSICAL_ELEMENTS
+            ? remaining
+            : HASHJOIN_HYBRID_PHYSICAL_ELEMENTS;
+        maa_const<int>((i + step) * 2, reg1);
+        maa_const<int>(i + step, reg4);
 #endif
         maa_const(i * 2, reg0);
         maa_stream_load<int>(relKeyStart, reg0, reg1, regConst2, tile0);
@@ -831,6 +859,7 @@ void parallel_radix_partition_maa(part_t *const part) {
         // private my_hist
         maa_indirect_rmw_scalar<int>(my_hist, tile2, regConst1, Operation_t::ADD_OP);
         wait_ready(tile0);
+        i += step;
     }
     wait_ready(tile2);
 #ifdef HASHJOIN_HYBRID_SOA_JIT
@@ -876,7 +905,21 @@ void parallel_radix_partition_maa(part_t *const part) {
     //     tmp[dst[idx]] = rel[i];
     //     ++dst[idx];
     // }
-    for (i = 0; i < num_tuples; i += TILE_SIZE) {
+    uint32_t scatter_step = TILE_SIZE;
+#ifdef HASHJOIN_HYBRID_SOA_JIT
+    scatter_step = HASHJOIN_HYBRID_PHYSICAL_ELEMENTS;
+#endif
+    for (i = 0; i < num_tuples; i += scatter_step) {
+#ifdef HASHJOIN_HYBRID_SOA_JIT
+        const uint32_t remaining = num_tuples - i;
+        const uint32_t physical_elements =
+            remaining < HASHJOIN_HYBRID_PHYSICAL_ELEMENTS
+            ? remaining
+            : HASHJOIN_HYBRID_PHYSICAL_ELEMENTS;
+        maa_const<int>((i + physical_elements) * 2, reg1);
+        maa_const<int>(i + physical_elements, reg4);
+        ++args->hybrid_first_scatter_4k_actions;
+#endif
         maa_const(i * 2, reg0);
         maa_const(i, reg5);
         // read from inRel->tuples[i].key, apply HASH_BIT_MODULO, and update hist
@@ -1465,6 +1508,8 @@ join_init_run(relation_t *relR, relation_t *relS, JoinFunction jf, int nthreads)
         args[i].hybrid_second_eligible = 0;
         args[i].hybrid_second_routed = 0;
         args[i].hybrid_second_tails = 0;
+        args[i].hybrid_first_scatter_4k_actions = 0;
+        args[i].hybrid_second_scatter_4k_actions = 0;
     }
 #endif
 
@@ -1545,6 +1590,8 @@ join_init_run(relation_t *relR, relation_t *relS, JoinFunction jf, int nthreads)
     uint64_t second_eligible = 0;
     uint64_t second_routed = 0;
     uint64_t second_tails = 0;
+    uint64_t first_scatter_4k_actions = 0;
+    uint64_t second_scatter_4k_actions = 0;
     for (i = 0; i < nthreads; ++i) {
         first_eligible += args[i].hybrid_first_eligible;
         first_routed += args[i].hybrid_first_routed;
@@ -1552,11 +1599,16 @@ join_init_run(relation_t *relR, relation_t *relS, JoinFunction jf, int nthreads)
         second_eligible += args[i].hybrid_second_eligible;
         second_routed += args[i].hybrid_second_routed;
         second_tails += args[i].hybrid_second_tails;
+        first_scatter_4k_actions +=
+            args[i].hybrid_first_scatter_4k_actions;
+        second_scatter_4k_actions +=
+            args[i].hybrid_second_scatter_4k_actions;
     }
     printf("HASHJOIN_HYBRID_SOA_JIT enabled=1 "
            "first_eligible=%lu first_routed=%lu first_tails=%lu "
            "second_eligible=%lu second_routed=%lu second_tails=%lu "
-           "eligible=%lu routed=%lu physical_spd_elements=16384 "
+           "first_scatter_4k_actions=%lu second_scatter_4k_actions=%lu "
+           "eligible=%lu routed=%lu physical_spd_elements=4096 "
            "logical_reorder_elements=16384 row_table_slices=32 "
            "indirect_units=4 candidate_only=1\n",
            static_cast<unsigned long>(first_eligible),
@@ -1565,6 +1617,8 @@ join_init_run(relation_t *relR, relation_t *relS, JoinFunction jf, int nthreads)
            static_cast<unsigned long>(second_eligible),
            static_cast<unsigned long>(second_routed),
            static_cast<unsigned long>(second_tails),
+           static_cast<unsigned long>(first_scatter_4k_actions),
+           static_cast<unsigned long>(second_scatter_4k_actions),
            static_cast<unsigned long>(first_eligible + second_eligible),
            static_cast<unsigned long>(first_routed + second_routed));
 #endif

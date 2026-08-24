@@ -100,10 +100,15 @@ def threaded_padded_scatter(
                 )
             destination += bucket * FIRST_PADDING_TUPLES
             destinations.append(destination)
-        for item in chunk:
-            bucket = radix_index(item[0], 0)
-            scattered[destinations[bucket]] = item
-            destinations[bucket] += 1
+        page_starts = range(0, len(chunk), 4096) if candidate else (0,)
+        for page_start in page_starts:
+            page = (
+                chunk[page_start : page_start + 4096] if candidate else chunk
+            )
+            for item in page:
+                bucket = radix_index(item[0], 0)
+                scattered[destinations[bucket]] = item
+                destinations[bucket] += 1
     return tuple(scattered), histograms
 
 
@@ -121,10 +126,15 @@ def serial_shifted_padded_scatter(
     for bucket, count in enumerate(histogram):
         destinations.append(offset + bucket * SMALL_PADDING_TUPLES)
         offset += count
-    for item in relation:
-        bucket = radix_index(item[0], RADIX_BITS_PER_PASS)
-        scattered[destinations[bucket]] = item
-        destinations[bucket] += 1
+    page_starts = range(0, len(relation), 4096) if candidate else (0,)
+    for page_start in page_starts:
+        page = (
+            relation[page_start : page_start + 4096] if candidate else relation
+        )
+        for item in page:
+            bucket = radix_index(item[0], RADIX_BITS_PER_PASS)
+            scattered[destinations[bucket]] = item
+            destinations[bucket] += 1
     return tuple(scattered), histogram
 
 
@@ -165,6 +175,7 @@ def test_source_uses_compile_time_candidate_at_both_histogram_sites():
     assert source.count("maa_indirect_rmw_scalar_soa_jit<int32_t>") == 2
     assert "#ifdef HASHJOIN_HYBRID_SOA_JIT" in source
     assert "static_assert(TILE_SIZE == 16384" in source
+    assert "HASHJOIN_HYBRID_PHYSICAL_ELEMENTS = 4096" in source
     assert "HASHJOIN_HYBRID_SOA_JIT requires 32-bit HashJoin keys" in source
 
     shifted = source[
@@ -191,6 +202,14 @@ def test_source_uses_compile_time_candidate_at_both_histogram_sites():
         "maa_indirect_store_vector<double>(tmp_double, tile2, tile4)"
         in threaded
     )
+    assert (
+        source.count("scatter_step = HASHJOIN_HYBRID_PHYSICAL_ELEMENTS") == 2
+    )
+    assert (
+        source.count("maa_const<int>((i + physical_elements) * 2, reg1)") == 2
+    )
+    assert "hybrid_first_scatter_4k_actions" in source
+    assert "hybrid_second_scatter_4k_actions" in source
 
 
 def test_one_contiguous_backing_region_stays_within_region_limit():
@@ -253,12 +272,14 @@ def test_build_and_runner_are_candidate_only_and_close_mechanism():
         "--maa_num_initial_row_table_slices=32",
         "--maa_num_indirect_units_per_maa=4",
         "--maa_num_tile_elements=16384",
-        "--maa_physical_tile_elements=16384",
+        "--maa_physical_tile_elements=4096",
     ):
         assert geometry in runner
     for closure in (
         "enabled",
         "routed -gt 0",
+        "first_scatter_4k_actions -eq 32",
+        "second_scatter_4k_actions -gt 0",
         "max_region_id",
         "IND_SoaJitInstructions",
         "IND_SoaJitTerminalCompletions",
