@@ -151,25 +151,41 @@ void StreamAccessUnit::executeInstruction() {
         my_dst_tile = my_instruction->dst1SpdID;
         my_src_tile = my_instruction->src1SpdID;
         my_cond_tile = my_instruction->condSpdID;
-        panic_if(my_instruction->src1RegID == -1 ||
-                     my_instruction->src2RegID == -1 ||
-                     my_instruction->src3RegID == -1,
+        panic_if(!my_instruction->logicalPageManaged &&
+                     (my_instruction->src1RegID == -1 ||
+                      my_instruction->src2RegID == -1 ||
+                      my_instruction->src3RegID == -1),
                  "S[%d] stream instruction lacks a required range/identity "
                  "register\n", my_stream_id);
-        my_min = maa->rf->getData<int>(my_instruction->src1RegID);
-        my_max = maa->rf->getData<int>(my_instruction->src2RegID);
-        my_stride = maa->rf->getData<int>(my_instruction->src3RegID);
+        if (my_instruction->logicalPageManaged) {
+            my_min = 0;
+            my_max = my_instruction->controllerElements;
+            my_stride = 1;
+        } else {
+            my_min = maa->rf->getData<int>(my_instruction->src1RegID);
+            my_max = maa->rf->getData<int>(my_instruction->src2RegID);
+            my_stride = maa->rf->getData<int>(my_instruction->src3RegID);
+        }
         my_response_bearing_publish =
             isResponseBearingPublishInstruction(my_instruction);
         if (my_response_bearing_publish) {
             my_publish_completion_tile =
                 responseBearingPublishCompletionTile(my_instruction);
             my_dst_tile = my_publish_completion_tile;
-            my_publish_logical_page = static_cast<uint32_t>(my_min);
-            my_publish_logical_element_offset =
-                static_cast<uint32_t>(my_max);
-            my_publish_guest_generation =
-                static_cast<uint32_t>(my_stride);
+            if (my_instruction->logicalPageManaged) {
+                my_publish_logical_page = my_instruction->controllerPage;
+                my_publish_logical_element_offset =
+                    my_instruction->controllerPage *
+                    my_instruction->controllerElements;
+                my_publish_guest_generation =
+                    my_instruction->dst1LogicalGeneration;
+            } else {
+                my_publish_logical_page = static_cast<uint32_t>(my_min);
+                my_publish_logical_element_offset =
+                    static_cast<uint32_t>(my_max);
+                my_publish_guest_generation =
+                    static_cast<uint32_t>(my_stride);
+            }
             // The guarded operation is always one complete physical page;
             // the register values above are identity, not legacy bounds.
             my_min = 0;
@@ -212,7 +228,8 @@ void StreamAccessUnit::executeInstruction() {
             const uint64_t publication_bytes =
                 static_cast<uint64_t>(ResponsePublisher::PageElements) *
                 my_word_size;
-            panic_if(my_instruction->controllerManaged ||
+            panic_if((my_instruction->controllerManaged &&
+                      !my_instruction->logicalPageManaged) ||
                          my_instruction->src1SpdID == -1 ||
                          my_publish_completion_tile == -1 ||
                          my_instruction->src2SpdID != -1 ||
@@ -524,7 +541,8 @@ void StreamAccessUnit::executeInstruction() {
         if (my_instruction->opcode == Instruction::OpcodeType::STREAM_LD) {
             maa->spd->setSize(my_dst_tile, my_size);
         }
-        if (my_instruction->controllerManaged) {
+        if (my_instruction->controllerManaged &&
+            !my_instruction->logicalPageManaged) {
             maa->recordTransparentStreamTraffic(
                 my_instruction->controllerAction, my_sent_requests,
                 static_cast<uint64_t>(my_sent_requests) * block_size);

@@ -31,9 +31,13 @@ public:
 
     static bool isResponseBearingPublishInstruction(
         const Instruction *instruction) {
-        if (instruction == nullptr || instruction->controllerManaged ||
+        if (instruction == nullptr ||
+            (instruction->controllerManaged &&
+             !instruction->logicalPageManaged) ||
             instruction->opcode != Instruction::OpcodeType::STREAM_ST)
             return false;
+        if (instruction->logicalPageManaged)
+            return instruction->controllerDstSlot != -1;
         return instruction->dst1SpdID != -1 ||
             (instruction->controllerTransactionID ==
                  ResponseBearingPublishInstructionTag &&
