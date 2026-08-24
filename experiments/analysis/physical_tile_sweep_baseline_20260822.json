@@ -1,0 +1,35 @@
+{
+  "schema": "dx100.physical_tile_sweep_baseline.v1",
+  "created": "2026-08-23",
+  "report_created": "2026-08-22T09:21:30-04:00",
+  "root": "/data1/nier/dx100-runs/2026-07-20-full-tile-sweep/monitor-3h/reports/20260822_092051",
+  "workloads": 11,
+  "tile_sizes": [1024, 2048, 4096, 8192, 16384, 32768, 65536],
+  "valid_points": 77,
+  "native_reference_tile": 16384,
+  "files": {
+    "source": {
+      "path": "tile_sweep_source.tsv",
+      "sha256": "e870eba1f74cd37c2f58695ef7ac6a5778ab030e635f55e0ce1464d72f0142cd"
+    },
+    "validation": {
+      "path": "validation.json",
+      "sha256": "386ac0a306f27fc4a55c8d757dee9e7d6ef568c9b334394445e2fb181515b306"
+    },
+    "summary": {
+      "path": "README.md",
+      "sha256": "a55bb990cc1b9f6cb860b8846ae121e11ab0c42b4c2fd79413bb72c909e737ac"
+    }
+  },
+  "acceptance": {
+    "valid_points": 77,
+    "binary_cohort_safe": true,
+    "safety_gate": true,
+    "known_report_issue": "finalizer source worktree has tracked changes",
+    "known_report_issue_scope": "report reproducibility metadata; the report still records 77 valid evidence points"
+  },
+  "policy": {
+    "development": "reuse these native endpoints and run hybrid arms only",
+    "attribution": "run a matched non-hybrid control only when the candidate changes semantic work, ROI, input, or the instruction path needed for the specific causal claim"
+  }
+}
