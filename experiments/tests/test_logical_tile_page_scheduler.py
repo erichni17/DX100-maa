@@ -22,6 +22,7 @@ class LogicalTilePageSchedulerSourceContractTest(unittest.TestCase):
         for evidence in (
             "LogicalDescriptors = 8",
             "PhysicalFrames = 4",
+            "MaxFrameLaneSpan = 2",
             "LogicalElements = 16 * 1024",
             "PagesPerTile = 4",
             "ElementsPerPage = 4 * 1024",

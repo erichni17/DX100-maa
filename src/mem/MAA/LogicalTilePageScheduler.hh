@@ -24,6 +24,7 @@ class LogicalTilePageScheduler
   public:
     static constexpr uint16_t LogicalDescriptors = 8;
     static constexpr uint8_t PhysicalFrames = 4;
+    static constexpr uint8_t MaxFrameLaneSpan = 2;
     static constexpr uint32_t LogicalElements = 16 * 1024;
     static constexpr uint32_t PagesPerTile = 4;
     static constexpr uint32_t ElementsPerPage = 4 * 1024;
@@ -376,9 +377,14 @@ class LogicalTilePageScheduler
         for (size_t left = 0; left < PhysicalFrames; ++left) {
             if (frameIds[left] == NoFrame)
                 return false;
-            for (size_t right = left + 1; right < PhysicalFrames; ++right)
-                if (frameIds[left] == frameIds[right])
+            for (size_t right = left + 1; right < PhysicalFrames; ++right) {
+                const uint32_t leftBase = frameIds[left];
+                const uint32_t rightBase = frameIds[right];
+                if (leftBase < rightBase + MaxFrameLaneSpan &&
+                    rightBase < leftBase + MaxFrameLaneSpan) {
                     return false;
+                }
+            }
         }
         return true;
     }

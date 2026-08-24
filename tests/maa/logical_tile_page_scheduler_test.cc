@@ -368,6 +368,14 @@ frameAndTransactionExhaustionAreClosed()
                          Scheduler::NoDescriptor, 0, 0}) ==
           Status::InvalidFrameConfiguration);
 
+    const std::array<uint16_t, Scheduler::PhysicalFrames> overlapping{
+        {0, 1, 4, 6}};
+    Scheduler invalidSpan(overlapping);
+    CHECK(invalidSpan.admit(
+              {Shape::Materialize, Scheduler::NoDescriptor,
+               Scheduler::NoDescriptor, 0, 0}) ==
+          Status::InvalidFrameConfiguration);
+
     Scheduler exhausted(Frames);
     configureFp32(exhausted);
     CHECK(exhausted.setTransactionCursorForTesting(
