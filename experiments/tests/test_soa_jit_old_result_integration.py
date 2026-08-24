@@ -39,6 +39,8 @@ class SoaJitOldResultIntegration(unittest.TestCase):
         self.assertNotIn("std::vector", self.buffer)
         self.assertIn("issueForPressure", self.buffer)
         self.assertIn("awaitingResponses() != 0", self.buffer)
+        self.assertIn("validWordCount(candidate.validWords)", self.buffer)
+        self.assertIn("words == chosenWords", self.buffer)
         self.assertIn("sizeof(SoaJitOldResultBuffer) == 1128", self.buffer)
         self.assertIn("SoaJitOldResultWriteMode::Pressure", self.indirect)
         self.assertIn("SoaJitOldResultWriteMode::Drain", self.indirect)
