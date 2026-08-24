@@ -83,10 +83,75 @@ common_env=(
 
 env "${common_env[@]}" "$case_runner" "$frozen_gem5" \
     "$frozen_binary" transparent_4k "$out/current"
+set +e
 env "${common_env[@]}" \
     "DX100_EXTRA_MAA_ARGS_FILE=$out/inputs/strict.args" \
     "$case_runner" "$frozen_gem5" "$frozen_binary" \
     transparent_4k "$out/strict"
+strict_rc=$?
+set -e
+
+if [[ $strict_rc -ne 0 ]]; then
+    strict_log="$out/strict/restore.log"
+    if grep -Eq \
+        'strict two-phase (physical RowTable exposes only|cannot retain all)' \
+        "$strict_log"; then
+        python3 - "$out" "$strict_rc" <<'PY'
+import csv
+import pathlib
+import re
+import sys
+
+root = pathlib.Path(sys.argv[1])
+strict_rc = int(sys.argv[2])
+with (root / "current" / "result.tsv").open(newline="") as stream:
+    current = next(csv.DictReader(stream, delimiter="\t"))
+log = (root / "strict" / "restore.log").read_text()
+match = re.search(
+    r"strict two-phase physical RowTable exposes only (\d+) line slots "
+    r"for (\d+) descriptors",
+    log,
+)
+if match is None:
+    match = re.search(
+        r"strict two-phase cannot retain all (\d+) descriptors", log
+    )
+    physical_slots = "runtime_distribution_failure"
+    logical = match.group(1) if match else "unknown"
+else:
+    physical_slots, logical = match.groups()
+with (root / "pair.tsv").open("w", newline="") as stream:
+    writer = csv.writer(stream, delimiter="\t")
+    writer.writerow(
+        ("arm", "status", "simTicks", "output_hash", "index_words",
+         "row_table_full_events", "physical_row_line_slots", "logical")
+    )
+    writer.writerow(
+        ("current", "complete", current["simTicks"],
+         current["output_hash"], current["index_words"],
+         current["row_table_full_events"], "n/a", 16384)
+    )
+    writer.writerow(
+        ("strict", "reject_capacity", "n/a", "n/a", 0, 0,
+         physical_slots, logical)
+    )
+(root / "verdict.txt").write_text(
+    "REJECT_CAPACITY strict_rc=" + str(strict_rc)
+    + " physical_row_line_slots=" + physical_slots
+    + " logical_descriptors=" + logical
+    + " candidate_launch=prohibited\n"
+)
+(root / "campaign.exit").write_text("0\n")
+PY
+        sha256sum "$frozen_gem5" "$frozen_binary" "$selector" \
+            "$out/current/result.tsv" "$strict_log" "$out/pair.tsv" \
+            > "$out/artifact_sha256.txt"
+        cat "$out/verdict.txt"
+        exit 0
+    fi
+    echo "strict restore failed without a capacity classification" >&2
+    exit "$strict_rc"
+fi
 
 python3 - "$out" <<'PY'
 import csv

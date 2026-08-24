@@ -90,6 +90,8 @@ class HybridStrictTwoPhaseContract(unittest.TestCase):
         self.assertIn("--maa_virtual_strict_two_phase", runner)
         self.assertIn("DX100_SHARED_CHECKPOINT_DIR", runner)
         self.assertIn("strict_ticks > current_ticks", runner)
+        self.assertIn("REJECT_CAPACITY", runner)
+        self.assertIn("candidate_launch=prohibited", runner)
         self.assertIn("descriptor_spool_b_scans", runner)
         self.assertNotIn("native_16k", runner)
         self.assertNotIn("timeout ", runner)
