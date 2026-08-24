@@ -3,11 +3,11 @@
  * @author  Cagri Balkesen <cagri.balkesen@inf.ethz.ch>
  * @date    Sun Feb 20:19:51 2012
  * @version $Id: parallel_radix_join.c 3017 2012-12-07 10:56:20Z bcagri $
- * 
+ *
  * @brief  Provides implementations for several variants of Radix Hash Join.
- * 
+ *
  * (c) 2012, ETH Zurich, Systems Group
- * 
+ *
  */
 
 #include <cstdint>
@@ -52,7 +52,7 @@
 #define HASH_BIT_MODULO(K, MASK, NBITS) (((K) & MASK) >> NBITS)
 
 #ifndef NEXT_POW_2
-/** 
+/**
  *  compute the next number, greater than or equal to 32-bit unsigned v.
  *  taken from "bit twiddling hacks":
  *  http://graphics.stanford.edu/~seander/bithacks.html
@@ -123,6 +123,15 @@ struct arg_t {
 #ifdef MAA
     int reg0, reg1, reg2, reg3, reg4, reg5, regConst2, regConst1;
     int tile0, tile1, tile2, tile3, tile4, tile5, tile6, tile7;
+#ifdef HASHJOIN_HYBRID_SOA_JIT
+    uint32_t *hybrid_soa_indices;
+    uint64_t hybrid_first_eligible;
+    uint64_t hybrid_first_routed;
+    uint64_t hybrid_first_tails;
+    uint64_t hybrid_second_eligible;
+    uint64_t hybrid_second_routed;
+    uint64_t hybrid_second_tails;
+#endif
 #endif
 } __attribute__((aligned(CACHE_LINE_SIZE)));
 
@@ -156,23 +165,37 @@ alloc_aligned(size_t size) {
     return ret;
 }
 
+#ifdef HASHJOIN_HYBRID_SOA_JIT
+#if !defined(MAA) || !defined(GEM5)
+#error HASHJOIN_HYBRID_SOA_JIT is a gem5 MAA candidate-only target
+#endif
+#ifdef KEY_8B
+#error HASHJOIN_HYBRID_SOA_JIT requires 32-bit HashJoin keys
+#endif
+static_assert(TILE_SIZE == 16384,
+              "HASHJOIN_HYBRID_SOA_JIT requires a logical 16K tile");
+static const uint32_t HASHJOIN_HYBRID_LOGICAL_ELEMENTS = 16384;
+static const int HASHJOIN_HYBRID_MAX_THREADS = 4;
+static const int HASHJOIN_HYBRID_MAX_REGION_ID = 31;
+#endif
+
 /** \endinternal */
 
-/** 
+/**
  * @defgroup Radix Radix Join Implementation Variants
  * @{
  */
 
-/** 
+/**
  *  This algorithm builds the hashtable using the bucket chaining idea and used
  *  in PRO implementation. Join between given two relations is evaluated using
  *  the "bucket chaining" algorithm proposed by Manegold et al. It is used after
  *  the partitioning phase, which is common for all algorithms. Moreover, R and
  *  S typically fit into L2 or at least R and |R|*sizeof(int) fits into L2 cache.
- * 
+ *
  * @param R input relation R
  * @param S input relation S
- * 
+ *
  * @return number of result tuples
  */
 
@@ -249,7 +272,7 @@ get_hist_size(uint32_t relSize) {
 
 /**
  * Histogram-based hash table build method together with relation re-ordering as
- * described by Kim et al. It joins partitions Ri, Si of relations R & S. 
+ * described by Kim et al. It joins partitions Ri, Si of relations R & S.
  * This is version is not optimized with SIMD and prefetching. The parallel
  * radix join implementation using this function is PRH.
  */
@@ -330,10 +353,10 @@ prefetch(void *addr) {
     /* #endif */
 }
 
-/** 
- * Radix clustering algorithm (originally described by Manegold et al) 
+/**
+ * Radix clustering algorithm (originally described by Manegold et al)
  * The algorithm mimics the 2-pass radix clustering algorithm from
- * Kim et al. The difference is that it does not compute 
+ * Kim et al. The difference is that it does not compute
  * prefix-sum, instead the sum (offset in the code) is computed iteratively.
  *
  * @warning This method puts padding between clusters, see
@@ -381,10 +404,10 @@ void radix_cluster(relation_t *outRel,
 }
 
 #ifdef MAA
-/** 
- * Radix clustering algorithm (originally described by Manegold et al) 
+/**
+ * Radix clustering algorithm (originally described by Manegold et al)
  * The algorithm mimics the 2-pass radix clustering algorithm from
- * Kim et al. The difference is that it does not compute 
+ * Kim et al. The difference is that it does not compute
  * prefix-sum, instead the sum (offset in the code) is computed iteratively.
  *
  * @warning This method puts padding between clusters, see
@@ -444,6 +467,29 @@ void radix_cluster_maa(relation_t *outRel,
     double *outRel_tuples_double = (double *)outRel->tuples;
 
     for (i = 0; i < inRel->num_tuples; i += TILE_SIZE) {
+#ifdef HASHJOIN_HYBRID_SOA_JIT
+        const uint32_t remaining = inRel->num_tuples - i;
+        if (remaining >= HASHJOIN_HYBRID_LOGICAL_ELEMENTS) {
+            ++args->hybrid_second_eligible;
+            for (uint32_t lane = 0;
+                 lane < HASHJOIN_HYBRID_LOGICAL_ELEMENTS; ++lane) {
+                args->hybrid_soa_indices[lane] = HASH_BIT_MODULO(
+                    inRel->tuples[i + lane].key, M, R);
+            }
+            maa_const<int>(0, reg0);
+            maa_const<int>(HASHJOIN_HYBRID_LOGICAL_ELEMENTS, reg1);
+            maa_const<int>(1, reg4);
+            maa_indirect_rmw_scalar_soa_jit<int32_t>(
+                hist, args->hybrid_soa_indices, NULL, regConst1, reg0,
+                reg1, reg4, tile2, Operation_t::ADD_OP);
+            wait_ready(tile2);
+            ++args->hybrid_second_routed;
+            continue;
+        }
+        ++args->hybrid_second_tails;
+        maa_const<int>(inRel->num_tuples * 2, reg1);
+        maa_const<int>(inRel->num_tuples, reg4);
+#endif
         maa_const(i * 2, reg0);
         maa_stream_load<int>(inRel_tuples_int, reg0, reg1, regConst2, tile0);
         maa_alu_scalar<int>(tile0, reg2, tile1, Operation_t::AND_OP);
@@ -454,6 +500,10 @@ void radix_cluster_maa(relation_t *outRel,
         wait_ready(tile0);
     }
     wait_ready(tile2);
+#ifdef HASHJOIN_HYBRID_SOA_JIT
+    maa_const<int>(inRel->num_tuples * 2, reg1);
+    maa_const<int>(inRel->num_tuples, reg4);
+#endif
 
     offset = 0;
     /* determine the start and end of each cluster depending on the counts. */
@@ -493,15 +543,15 @@ void radix_cluster_maa(relation_t *outRel,
 }
 #endif
 
-/** 
+/**
  * Radix clustering algorithm which does not put padding in between
  * clusters. This is used only by single threaded radix join implementation RJ.
- * 
- * @param outRel 
- * @param inRel 
- * @param hist 
- * @param R 
- * @param D 
+ *
+ * @param outRel
+ * @param inRel
+ * @param hist
+ * @param R
+ * @param D
  */
 void radix_cluster_nopadding(relation_t *outRel, relation_t *inRel, int R, int D) {
     tuple_t **dst;
@@ -516,7 +566,7 @@ void radix_cluster_nopadding(relation_t *outRel, relation_t *inRel, int R, int D
 
     tuples_per_cluster = (uint32_t *)calloc(fanOut, sizeof(uint32_t));
     /* the following are fixed size when D is same for all the passes,
-       and can be re-used from call to call. Allocating in this function 
+       and can be re-used from call to call. Allocating in this function
        just in case D differs from call to call. */
     dst = (tuple_t **)malloc(sizeof(tuple_t *) * fanOut);
     /* dst_end = (tuple_t**)malloc(sizeof(tuple_t*)*fanOut); */
@@ -556,11 +606,11 @@ void radix_cluster_nopadding(relation_t *outRel, relation_t *inRel, int R, int D
     free(tuples_per_cluster);
 }
 
-/** 
+/**
  * This function implements the radix clustering of a given input
  * relations. The relations to be clustered are defined in task_t and after
  * clustering, each partition pair is added to the join_queue to be joined.
- * 
+ *
  * @param task description of the relation to be partitioned
  * @param join_queue task queue to add join tasks after clustering
  */
@@ -621,12 +671,12 @@ void serial_radix_partition(task_t *const task,
     }
 }
 
-/** 
+/**
  * This function implements the parallel radix partitioning of a given input
  * relation. Parallel partitioning is done by histogram-based relation
  * re-ordering as described by Kim et al. Parallel partitioning method is
  * commonly used by all parallel radix join algorithms.
- * 
+ *
  * @param part description of the relation to be partitioned
  */
 void parallel_radix_partition(part_t *const part) {
@@ -692,12 +742,12 @@ void parallel_radix_partition(part_t *const part) {
 }
 
 #ifdef MAA
-/** 
+/**
  * This function implements the parallel radix partitioning of a given input
  * relation. Parallel partitioning is done by histogram-based relation
  * re-ordering as described by Kim et al. Parallel partitioning method is
  * commonly used by all parallel radix join algorithms.
- * 
+ *
  * @param part description of the relation to be partitioned
  */
 void parallel_radix_partition_maa(part_t *const part) {
@@ -750,6 +800,29 @@ void parallel_radix_partition_maa(part_t *const part) {
     //     my_hist[idx] ++;
     // }
     for (i = 0; i < num_tuples; i += TILE_SIZE) {
+#ifdef HASHJOIN_HYBRID_SOA_JIT
+        const uint32_t remaining = num_tuples - i;
+        if (remaining >= HASHJOIN_HYBRID_LOGICAL_ELEMENTS) {
+            ++args->hybrid_first_eligible;
+            for (uint32_t lane = 0;
+                 lane < HASHJOIN_HYBRID_LOGICAL_ELEMENTS; ++lane) {
+                args->hybrid_soa_indices[lane] = HASH_BIT_MODULO(
+                    rel[i + lane].key, MASK, R);
+            }
+            maa_const<int>(0, reg0);
+            maa_const<int>(HASHJOIN_HYBRID_LOGICAL_ELEMENTS, reg1);
+            maa_const<int>(1, reg4);
+            maa_indirect_rmw_scalar_soa_jit<int32_t>(
+                my_hist, args->hybrid_soa_indices, NULL, regConst1, reg0,
+                reg1, reg4, tile2, Operation_t::ADD_OP);
+            wait_ready(tile2);
+            ++args->hybrid_first_routed;
+            continue;
+        }
+        ++args->hybrid_first_tails;
+        maa_const<int>(num_tuples * 2, reg1);
+        maa_const<int>(num_tuples, reg4);
+#endif
         maa_const(i * 2, reg0);
         maa_stream_load<int>(relKeyStart, reg0, reg1, regConst2, tile0);
         maa_alu_scalar<int>(tile0, reg2, tile1, Operation_t::AND_OP);
@@ -760,6 +833,10 @@ void parallel_radix_partition_maa(part_t *const part) {
         wait_ready(tile0);
     }
     wait_ready(tile2);
+#ifdef HASHJOIN_HYBRID_SOA_JIT
+    maa_const<int>(num_tuples * 2, reg1);
+    maa_const<int>(num_tuples, reg4);
+#endif
 
     /* compute local prefix sum on hist */
     for (i = 0; i < fanOut; i++) {
@@ -818,7 +895,7 @@ void parallel_radix_partition_maa(part_t *const part) {
     }
 }
 #endif
-/** 
+/**
  * @defgroup SoftwareManagedBuffer Optimized Partitioning Using SW-buffers
  * @{
  */
@@ -834,15 +911,15 @@ typedef union {
 
 #define TUPLESPERCACHELINE (CACHE_LINE_SIZE / sizeof(tuple_t))
 
-/** 
+/**
  * Makes a non-temporal write of 64 bytes from src to dst.
  * Uses vectorized non-temporal stores if available, falls
  * back to assignment copy.
  *
  * @param dst
  * @param src
- * 
- * @return 
+ *
+ * @return
  */
 static inline void
 store_nontemp_64B(void *dst, void *src) {
@@ -850,14 +927,14 @@ store_nontemp_64B(void *dst, void *src) {
     *(cacheline_t *)dst = *(cacheline_t *)src;
 }
 
-/** 
+/**
  * This function implements the parallel radix partitioning of a given input
  * relation. Parallel partitioning is done by histogram-based relation
  * re-ordering as described by Kim et al. Parallel partitioning method is
  * commonly used by all parallel radix join algorithms. However this
  * implementation is further optimized to benefit from write-combining and
  * non-temporal writes.
- * 
+ *
  * @param part description of the relation to be partitioned
  */
 void parallel_radix_partition_optimized(part_t *const part) {
@@ -952,14 +1029,14 @@ void parallel_radix_partition_optimized(part_t *const part) {
 
 /** @} */
 
-/** 
- * The main thread of parallel radix join. It does partitioning in parallel with
- * other threads and during the join phase, picks up join tasks from the task
- * queue and calls appropriate JoinFunction to compute the join task.
- * 
- * @param param 
- * 
- * @return 
+/**
+ * The main thread of parallel radix join. It does partitioning in parallel
+ * with other threads and during the join phase, picks up join tasks from the
+ * task queue and calls appropriate JoinFunction to compute the join task.
+ *
+ * @param param
+ *
+ * @return
  */
 void *prj_thread(void *param) {
     arg_t *args = (arg_t *)param;
@@ -1291,10 +1368,11 @@ void *prj_thread(void *param) {
 
 /**
  * The template function for different joins: Basically each parallel radix join
- * has a initialization step, partitioning step and build-probe steps. All our 
- * parallel radix implementations have exactly the same initialization and 
- * partitioning steps. Difference is only in the build-probe step. Here are all 
- * the parallel radix join implemetations and their Join (build-probe) functions:
+ * has a initialization step, partitioning step and build-probe steps. All our
+ * parallel radix implementations have exactly the same initialization and
+ * partitioning steps. Difference is only in the build-probe step. Here are all
+ * the parallel radix join implemetations and their Join (build-probe)
+ * functions:
  *
  * - PRO,  Parallel Radix Join Optimized --> bucket_chaining_join()
  * - PRH,  Parallel Radix Join Histogram-based --> histogram_join()
@@ -1304,6 +1382,17 @@ int64_t
 join_init_run(relation_t *relR, relation_t *relS, JoinFunction jf, int nthreads) {
     int i;
     arg_t *args = new arg_t[nthreads];
+#ifdef HASHJOIN_HYBRID_SOA_JIT
+    uint32_t *hybrid_soa_indices_base = NULL;
+    if (nthreads > HASHJOIN_HYBRID_MAX_THREADS) {
+        fprintf(stderr,
+                "HASHJOIN_HYBRID_SOA_JIT supports at most %d threads; "
+                "requested %d would exceed memory region ID %d\n",
+                HASHJOIN_HYBRID_MAX_THREADS, nthreads,
+                HASHJOIN_HYBRID_MAX_REGION_ID);
+        exit(EXIT_FAILURE);
+    }
+#endif
 
     int32_t **histR, **histS, **outR, **outS, **dst;
     void **histR_start, **histS_start;
@@ -1362,11 +1451,35 @@ join_init_run(relation_t *relR, relation_t *relS, JoinFunction jf, int nthreads)
     alloc_MAA();
     init_MAA();
 
+#ifdef HASHJOIN_HYBRID_SOA_JIT
+    hybrid_soa_indices_base = static_cast<uint32_t *>(alloc_aligned(
+        static_cast<size_t>(nthreads) * HASHJOIN_HYBRID_LOGICAL_ELEMENTS *
+        sizeof(uint32_t)));
+    MALLOC_CHECK(hybrid_soa_indices_base);
+    for (i = 0; i < nthreads; ++i) {
+        args[i].hybrid_soa_indices = hybrid_soa_indices_base +
+            static_cast<size_t>(i) * HASHJOIN_HYBRID_LOGICAL_ELEMENTS;
+        args[i].hybrid_first_eligible = 0;
+        args[i].hybrid_first_routed = 0;
+        args[i].hybrid_first_tails = 0;
+        args[i].hybrid_second_eligible = 0;
+        args[i].hybrid_second_routed = 0;
+        args[i].hybrid_second_tails = 0;
+    }
+#endif
+
     int reg = 7;
     m5_add_mem_region(relR->tuples_start, relR->tuples_end, reg++);
     m5_add_mem_region(relS->tuples_start, relS->tuples_end, reg++);
     m5_add_mem_region(tmpRelR, tmpRelR + (relR->num_tuples + RELATION_PADDING / sizeof(tuple_t)), reg++);
     m5_add_mem_region(tmpRelS, tmpRelS + (relS->num_tuples + RELATION_PADDING / sizeof(tuple_t)), reg++);
+#ifdef HASHJOIN_HYBRID_SOA_JIT
+    m5_add_mem_region(
+        hybrid_soa_indices_base,
+        hybrid_soa_indices_base +
+            static_cast<size_t>(nthreads) * HASHJOIN_HYBRID_LOGICAL_ELEMENTS,
+        reg++);
+#endif
     for (int i = 0; i < nthreads; i++) {
         m5_add_mem_region(histR[i], histR[i] + (maxFanOut + 1), reg++);
         m5_add_mem_region(histS[i], histS[i] + (maxFanOut + 1), reg++);
@@ -1374,6 +1487,14 @@ join_init_run(relation_t *relR, relation_t *relS, JoinFunction jf, int nthreads)
         m5_add_mem_region(outS[i], outS[i] + (maxFanOut + 1), reg++);
         m5_add_mem_region(dst[i], dst[i] + (maxFanOut + 1), reg++);
     }
+#ifdef HASHJOIN_HYBRID_SOA_JIT
+    const int hybrid_max_region_id = reg - 1;
+    assert(hybrid_max_region_id <= HASHJOIN_HYBRID_MAX_REGION_ID);
+    printf("HASHJOIN_HYBRID_REGION_LAYOUT backing_regions=1 threads=%d "
+           "max_region_id=%d limit=%d\n",
+           nthreads, hybrid_max_region_id,
+           HASHJOIN_HYBRID_MAX_REGION_ID);
+#endif
 
     /* first assign chunks of relR & relS for each thread */
     numperthr[0] = relR->num_tuples / nthreads;
@@ -1417,6 +1538,37 @@ join_init_run(relation_t *relR, relation_t *relS, JoinFunction jf, int nthreads)
         result += args[i].result;
     }
 
+#ifdef HASHJOIN_HYBRID_SOA_JIT
+    uint64_t first_eligible = 0;
+    uint64_t first_routed = 0;
+    uint64_t first_tails = 0;
+    uint64_t second_eligible = 0;
+    uint64_t second_routed = 0;
+    uint64_t second_tails = 0;
+    for (i = 0; i < nthreads; ++i) {
+        first_eligible += args[i].hybrid_first_eligible;
+        first_routed += args[i].hybrid_first_routed;
+        first_tails += args[i].hybrid_first_tails;
+        second_eligible += args[i].hybrid_second_eligible;
+        second_routed += args[i].hybrid_second_routed;
+        second_tails += args[i].hybrid_second_tails;
+    }
+    printf("HASHJOIN_HYBRID_SOA_JIT enabled=1 "
+           "first_eligible=%lu first_routed=%lu first_tails=%lu "
+           "second_eligible=%lu second_routed=%lu second_tails=%lu "
+           "eligible=%lu routed=%lu physical_payload_elements=4096 "
+           "logical_reorder_elements=16384 row_table_slices=32 "
+           "indirect_units=4 candidate_only=1\n",
+           static_cast<unsigned long>(first_eligible),
+           static_cast<unsigned long>(first_routed),
+           static_cast<unsigned long>(first_tails),
+           static_cast<unsigned long>(second_eligible),
+           static_cast<unsigned long>(second_routed),
+           static_cast<unsigned long>(second_tails),
+           static_cast<unsigned long>(first_eligible + second_eligible),
+           static_cast<unsigned long>(first_routed + second_routed));
+#endif
+
 #ifdef GEM5
     m5_dump_stats(0, 0);
     m5_work_end(0, 0);
@@ -1437,6 +1589,9 @@ join_init_run(relation_t *relR, relation_t *relS, JoinFunction jf, int nthreads)
     free(outR);
     free(outS);
     free(dst);
+#ifdef HASHJOIN_HYBRID_SOA_JIT
+    free(hybrid_soa_indices_base);
+#endif
     task_queue_free(part_queue);
     task_queue_free(join_queue);
 #ifdef SKEW_HANDLING
