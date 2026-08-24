@@ -105,6 +105,22 @@ LogicalSPDCacheTransport::~LogicalSPDCacheTransport()
 }
 
 LogicalSPDCacheTransport::Status
+LogicalSPDCacheTransport::reconfigureGeometry(std::size_t pageBytes,
+                                              std::size_t pages)
+{
+    if (publicMutationStatus() != Status::Accepted || !drained())
+        return Status::Busy;
+    if (pageBytes < LineBytes || pageBytes > MaxPageBytes ||
+        pageBytes % LineBytes != 0 || pages == 0 ||
+        pages > PagesPerDescriptor)
+        return Status::Invalid;
+    configuredPageBytes = pageBytes;
+    configuredLinesPerPage = pageBytes / LineBytes;
+    configuredPagesPerDescriptor = pages;
+    return Status::Accepted;
+}
+
+LogicalSPDCacheTransport::Status
 LogicalSPDCacheTransport::publicMutationStatus()
 {
     if (terminalPoisoned)

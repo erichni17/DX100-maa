@@ -22,11 +22,18 @@ constexpr std::size_t Elements = 16384;
 constexpr bool Serial4K = LOGICAL_SPD_CACHE_MODE == 0;
 constexpr std::size_t Pages = Serial4K ? 4 : 8;
 constexpr std::size_t PageElements = Serial4K ? 4096 : 2048;
-constexpr std::size_t BackingBytes = Elements * sizeof(double);
+#ifdef LOGICAL_SPD_CACHE_FP32
+using Scalar = float;
+#else
+using Scalar = double;
+#endif
+constexpr std::size_t BackingBytes = Elements * sizeof(Scalar);
+#ifndef LOGICAL_SPD_CACHE_FP32
 constexpr uint64_t ExpectedHash = 7303085050985348899ULL;
+#endif
 
 uint64_t
-hashDouble(uint64_t hash, double value)
+hashScalar(uint64_t hash, Scalar value)
 {
     uint64_t encoded = 0;
     std::memcpy(&encoded, &value, sizeof(encoded));
@@ -37,13 +44,13 @@ hashDouble(uint64_t hash, double value)
     return hash;
 }
 
-double *
+Scalar *
 allocateBacking()
 {
     void *allocation = nullptr;
     if (posix_memalign(&allocation, BackingBytes, BackingBytes) != 0)
         return nullptr;
-    return static_cast<double *>(allocation);
+    return static_cast<Scalar *>(allocation);
 }
 
 } // anonymous namespace
@@ -52,13 +59,13 @@ int
 main()
 {
     static_assert(Elements == TILE_SIZE, "smoke requires a 16K logical tile");
-    double *source = allocateBacking();
-    double *destination = allocateBacking();
+    Scalar *source = allocateBacking();
+    Scalar *destination = allocateBacking();
     if (source == nullptr || destination == nullptr)
         return 2;
 
     for (std::size_t index = 0; index < Elements; ++index) {
-        source[index] = 1.0 + static_cast<double>(index % 251);
+        source[index] = Scalar{1.0} + static_cast<Scalar>(index % 251);
         destination[index] = -1.0;
     }
 
@@ -80,30 +87,43 @@ main()
     clear_mem_region();
     add_mem_region(source, source + Elements);
     add_mem_region(destination, destination + Elements);
-    const int scalar = get_new_reg<double>(2.0);
+    const int scalar = get_new_reg<Scalar>(Scalar{2.0});
 
     m5_work_begin(0, 0);
     m5_reset_stats(0, 0);
-    maa_alu_scalar_logical<double>(0, 1, source, destination, scalar,
+    maa_alu_scalar_logical<Scalar>(0, 1, source, destination, scalar,
                                    Operation_t::MUL_OP);
 
     uint64_t outputHash = 1469598103934665603ULL;
     std::size_t errors = 0;
     for (std::size_t index = 0; index < Elements; ++index) {
-        const double expected = source[index] * 2.0;
-        outputHash = hashDouble(outputHash, destination[index]);
+        const Scalar expected = source[index] * Scalar{2.0};
+        outputHash = hashScalar(outputHash, destination[index]);
         if (destination[index] != expected)
             ++errors;
     }
     std::cout << "LOGICAL_SPD_CACHE_LIVE_RESULT elements=" << Elements
               << " pages=" << Pages
-              << " expected_hash=" << ExpectedHash
+              << " expected_hash="
+#ifndef LOGICAL_SPD_CACHE_FP32
+              << ExpectedHash
+#else
+              << "type_derived"
+#endif
               << " output_hash=" << outputHash
               << " errors=" << errors << std::endl;
     m5_dump_stats(0, 0);
     m5_work_end(0, 0);
-    m5_exit(errors == 0 && outputHash == ExpectedHash ? 0 : 1);
+    m5_exit(errors == 0
+#ifndef LOGICAL_SPD_CACHE_FP32
+            && outputHash == ExpectedHash
+#endif
+            ? 0 : 1);
     std::free(destination);
     std::free(source);
-    return errors == 0 && outputHash == ExpectedHash ? 0 : 1;
+    return errors == 0
+#ifndef LOGICAL_SPD_CACHE_FP32
+        && outputHash == ExpectedHash
+#endif
+        ? 0 : 1;
 }

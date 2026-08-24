@@ -43,6 +43,27 @@ class LogicalSPDCacheDatapath
         std::size_t size = 0;
     };
 
+    static Result transform32(Operation operation, const float *source,
+                              float *destination, std::size_t size,
+                              uint64_t bits)
+    {
+        if (!source || !destination || size == 0 || size > MaxPageElements)
+            return Result::Invalid;
+        float scalar = 0; std::memcpy(&scalar, &bits, sizeof(scalar));
+        for (std::size_t i = 0; i < size; ++i) switch (operation) {
+          case Operation::Add: destination[i] = source[i] + scalar; break;
+          case Operation::Sub: destination[i] = source[i] - scalar; break;
+          case Operation::Mul: destination[i] = source[i] * scalar; break;
+          case Operation::Div: destination[i] = source[i] / scalar; break;
+          case Operation::Min:
+            destination[i] = std::min(source[i], scalar); break;
+          case Operation::Max:
+            destination[i] = std::max(source[i], scalar); break;
+          default: return Result::Invalid;
+        }
+        return Result::Accepted;
+    }
+
     static Result
     transform(Operation operation, ConstSpan source, Span destination,
               uint64_t capturedScalarBits)

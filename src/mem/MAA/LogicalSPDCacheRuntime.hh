@@ -337,9 +337,20 @@ class LogicalSPDCacheRuntime
         uint8_t dataType = Slice::Float64DataType)
     {
         const Slice::Status mutation = controlMutationStatus();
-        return mutation != Slice::Status::Accepted
-                   ? mutation
-                   : slice.registerSource(logical, backing, dataType);
+        if (mutation != Slice::Status::Accepted)
+            return mutation;
+        for (uint8_t existing = 0; existing < Slice::LogicalDescriptors;
+             ++existing) {
+            const auto &record = slice.descriptor(existing);
+            if (record.role != Slice::DescriptorRole::Free &&
+                record.dataType != dataType)
+                return Slice::Status::Invalid;
+        }
+        if (transport.reconfigureGeometry(slice.activePageBytes(dataType),
+                                          slice.activePages()) !=
+            Transport::Status::Accepted)
+            return Slice::Status::Invalid;
+        return slice.registerSource(logical, backing, dataType);
     }
 
     Slice::Status admit(const Slice::Admission &request)
@@ -555,15 +566,19 @@ class LogicalSPDCacheRuntime
             slotSpan(action.sourceSlot);
         const Transport::PageSpan destinationSpan =
             slotSpan(action.destinationSlot);
-        const double *source =
-            reinterpret_cast<const double *>(sourceSpan.data);
-        double *destination =
-            reinterpret_cast<double *>(destinationSpan.data);
-        if (datapath.transform(
-                operation, {source, slice.activePageElements()},
-                {destination, slice.activePageElements()},
-                action.scalarBits) !=
-            Datapath::Result::Accepted) {
+        const uint8_t type = slice.descriptor(action.source.logical).dataType;
+        const Datapath::Result result = type == Slice::Float32DataType ?
+            datapath.transform32(operation,
+                reinterpret_cast<const float *>(sourceSpan.data),
+                reinterpret_cast<float *>(destinationSpan.data),
+                slice.activePageElements(), action.scalarBits) :
+            datapath.transform(operation,
+                {reinterpret_cast<const double *>(sourceSpan.data),
+                 slice.activePageElements()},
+                {reinterpret_cast<double *>(destinationSpan.data),
+                 slice.activePageElements()},
+                action.scalarBits);
+        if (result != Datapath::Result::Accepted) {
             return poisonSliceStatus();
         }
         if (slice.completeCompute(action) != Slice::Status::Accepted)
@@ -665,7 +680,7 @@ class LogicalSPDCacheRuntime
         const Slice::Status status = slice.reset();
         if (status != Slice::Status::Accepted)
             return status;
-        payload.fill(0.0);
+        payload.fill(std::byte{0});
         return Slice::Status::Accepted;
     }
 
@@ -723,8 +738,10 @@ class LogicalSPDCacheRuntime
     bool geometryValid() const { return transport.geometryValid(); }
     bool sealed() const { return runtimeSealed; }
     Mode cacheMode() const { return slice.cacheMode(); }
-    std::size_t payloadBytes() const { return payload.size() * sizeof(double); }
-    std::size_t pageBytes() const { return slice.activePageBytes(); }
+    std::size_t payloadBytes() const
+    { return Slice::PayloadElements * Slice::wordBytes(activeDataType()); }
+    std::size_t pageBytes() const
+    { return slice.activePageBytes(activeDataType()); }
     std::size_t pageElements() const { return slice.activePageElements(); }
     std::size_t pageCount() const { return slice.activePages(); }
     std::size_t slotCount() const { return slice.activeSlots(); }
@@ -755,9 +772,10 @@ class LogicalSPDCacheRuntime
     {
         if (slot >= slice.activeSlots())
             return {};
-        const std::size_t offset = slot * slice.activePageElements();
-        return {reinterpret_cast<const std::byte *>(payload.data() + offset),
-                slice.activePageBytes()};
+        const std::size_t offset =
+            slot * slice.activePageBytes(activeDataType());
+        return {payload.data() + offset,
+                slice.activePageBytes(activeDataType())};
     }
 
     const Transport::RequestPacket *pendingHandle() const
@@ -802,9 +820,10 @@ class LogicalSPDCacheRuntime
     {
         if (slot >= slice.activeSlots())
             return {};
-        const std::size_t offset = slot * slice.activePageElements();
-        return {reinterpret_cast<std::byte *>(payload.data() + offset),
-                slice.activePageBytes()};
+        const std::size_t offset =
+            slot * slice.activePageBytes(activeDataType());
+        return {payload.data() + offset,
+                slice.activePageBytes(activeDataType())};
     }
 
     Slice::Status controlMutationStatus()
@@ -963,8 +982,17 @@ class LogicalSPDCacheRuntime
     LogicalSPDCacheSlice slice{};
     LogicalSPDCacheTransport transport;
     LogicalSPDCacheDatapath datapath{};
+    uint8_t activeDataType() const
+    {
+        for (uint8_t logical = 0;
+             logical < Slice::LogicalDescriptors; ++logical)
+            if (slice.descriptor(logical).role !=
+                Slice::DescriptorRole::Free)
+                return slice.descriptor(logical).dataType;
+        return Slice::Float64DataType;
+    }
     alignas(Transport::LineBytes)
-        std::array<double, Slice::PayloadElements> payload{};
+        std::array<std::byte, Slice::PayloadBytes> payload{};
     PageCorrelation pageCorrelation{};
     ComputeCorrelation computeCorrelation{};
     bool runtimeAbortRequested = false;

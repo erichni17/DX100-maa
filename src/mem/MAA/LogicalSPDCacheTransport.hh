@@ -327,6 +327,8 @@ class LogicalSPDCacheTransport
                           CopyHook hook = nullptr, void *context = nullptr);
     Status abortAction(AbortCode code);
     Status reset();
+    Status reconfigureGeometry(std::size_t pageBytes,
+                               std::size_t pagesPerDescriptor);
     Status seal();
 
     bool assertInvariants() const;
