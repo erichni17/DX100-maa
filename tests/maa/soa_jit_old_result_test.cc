@@ -197,18 +197,47 @@ runPressureDensitySelection()
     CHECK(buffer.begin(7, Base, LogicalWords) ==
           SoaJitOldResultBuffer::Result::Accepted);
     uint32_t selected = 0;
-    for (uint32_t line = 0; line < SoaJitOldResultBuffer::Credits; ++line) {
-        const float old = static_cast<float>(line);
+    for (uint32_t word = 0;
+         word < SoaJitOldResultBuffer::WordsPerLine; ++word) {
+        const float old = static_cast<float>(word);
         CHECK(buffer.capture(
-                  7, line, line * SoaJitOldResultBuffer::WordsPerLine,
+                  7, 0, word,
                   reinterpret_cast<const uint8_t *>(&old), sizeof(old)) ==
               SoaJitOldResultBuffer::Result::Accepted);
         ++selected;
     }
+    SoaJitOldResultBuffer::Request full;
+    CHECK(buffer.issue(&full, false) ==
+          SoaJitOldResultBuffer::Result::Accepted);
+    CHECK(full.identity.lineAddress == Base);
+    CHECK(full.identity.validWords == 0xffff);
+
+    const float oldest = 1.0F;
+    CHECK(buffer.capture(
+              7, 1, SoaJitOldResultBuffer::WordsPerLine,
+              reinterpret_cast<const uint8_t *>(&oldest), sizeof(oldest)) ==
+          SoaJitOldResultBuffer::Result::Accepted);
+    ++selected;
     for (uint32_t word = 1; word < 8; ++word) {
-        const float old = static_cast<float>(100 + word);
+        const float old = static_cast<float>(200 + word);
         CHECK(buffer.capture(
-                  7, 1, SoaJitOldResultBuffer::WordsPerLine + word,
+                  7, 2,
+                  2 * SoaJitOldResultBuffer::WordsPerLine + word,
+                  reinterpret_cast<const uint8_t *>(&old), sizeof(old)) ==
+              SoaJitOldResultBuffer::Result::Accepted);
+        ++selected;
+    }
+    const float denseFirst = 200.0F;
+    CHECK(buffer.capture(
+              7, 2, 2 * SoaJitOldResultBuffer::WordsPerLine,
+              reinterpret_cast<const uint8_t *>(&denseFirst),
+              sizeof(denseFirst)) ==
+          SoaJitOldResultBuffer::Result::Accepted);
+    ++selected;
+    for (uint32_t line = 3; line < SoaJitOldResultBuffer::Credits; ++line) {
+        const float old = static_cast<float>(line);
+        CHECK(buffer.capture(
+                  7, line, line * SoaJitOldResultBuffer::WordsPerLine,
                   reinterpret_cast<const uint8_t *>(&old), sizeof(old)) ==
               SoaJitOldResultBuffer::Result::Accepted);
         ++selected;
@@ -223,9 +252,16 @@ runPressureDensitySelection()
     CHECK(buffer.issueForPressure(&pressure) ==
           SoaJitOldResultBuffer::Result::Accepted);
     CHECK(pressure.identity.lineAddress ==
-          Base + SoaJitOldResultBuffer::LineBytes);
+          Base + 2 * SoaJitOldResultBuffer::LineBytes);
     CHECK(pressure.identity.validWords == 0xff);
+    CHECK(buffer.awaitingResponses() == 2);
+    SoaJitOldResultBuffer::Request blocked;
+    CHECK(buffer.issueForPressure(&blocked) ==
+          SoaJitOldResultBuffer::Result::NoReadyLine);
+    CHECK(blocked.payload == nullptr);
     CHECK(buffer.acknowledge(pressure.identity) ==
+          SoaJitOldResultBuffer::Result::Accepted);
+    CHECK(buffer.acknowledge(full.identity) ==
           SoaJitOldResultBuffer::Result::Accepted);
     CHECK(buffer.capture(
               7, 9, 8 * SoaJitOldResultBuffer::WordsPerLine,
