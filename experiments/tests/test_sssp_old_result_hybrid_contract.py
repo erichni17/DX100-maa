@@ -41,6 +41,14 @@ class SsspOldResultHybridContract(unittest.TestCase):
         self.assertIn("routed_windows <= eligible_windows", self.source)
 
     def test_four_physical_pages_precede_ordered_old_result(self):
+        chunk = self.source[
+            self.source.index("SsspHybridChunkFrontierWords(") : self.source.index(
+                "PublishSsspHybridPage("
+            )
+        ]
+        self.assertIn("NUM_CORES * 4096", chunk)
+        self.assertNotIn("NUM_CORES * 8192", chunk)
+        self.assertNotIn("NUM_CORES * 16384", chunk)
         publish = self.source.index("PublishSsspHybridPage(")
         old_result = self.source.index(
             "maa_indirect_rmw_vector_soa_jit_old_result(", publish

@@ -120,9 +120,7 @@ static uint32_t sssp_hybrid_publish_generations[NUM_CORES] = {};
 
 static int
 SsspHybridChunkFrontierWords(int frontier_words) {
-    return frontier_words > NUM_CORES * 16384 ? 16384
-           : frontier_words > NUM_CORES * 8192 ? 8192
-           : frontier_words > NUM_CORES * 4096 ? 4096
+    return frontier_words > NUM_CORES * 4096 ? 4096
            : frontier_words > NUM_CORES * 2048 ? 2048
                                                  : 1024;
 }
@@ -516,11 +514,15 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                                       : cft > NUM_CORES * 2048  ? 2048
                                                                 : 1024;
 #elif TILE_SIZE == 16384
+#ifdef SSSP_OLD_RESULT_HYBRID
+                const int tile_size = SsspHybridChunkFrontierWords(cft);
+#else
                 const int tile_size = cft > NUM_CORES * 16384  ? 16384
                                       : cft > NUM_CORES * 8192 ? 8192
                                       : cft > NUM_CORES * 4096 ? 4096
                                       : cft > NUM_CORES * 2048 ? 2048
                                                                : 1024;
+#endif
 #elif TILE_SIZE == 8192
                 const int tile_size = cft > NUM_CORES * 8192   ? 8192
                                       : cft > NUM_CORES * 4096 ? 4096
