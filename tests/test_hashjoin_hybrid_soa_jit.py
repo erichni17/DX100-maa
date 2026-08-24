@@ -253,7 +253,7 @@ def test_build_and_runner_are_candidate_only_and_close_mechanism():
         "--maa_num_initial_row_table_slices=32",
         "--maa_num_indirect_units_per_maa=4",
         "--maa_num_tile_elements=16384",
-        "--maa_physical_tile_elements=4096",
+        "--maa_physical_tile_elements=16384",
     ):
         assert geometry in runner
     for closure in (
