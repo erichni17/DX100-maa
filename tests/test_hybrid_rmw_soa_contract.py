@@ -112,6 +112,39 @@ def test_full_window_and_timed_jit_protocol_have_exact_drain():
         assert invariant in terminal
 
 
+def test_old_result_selection_closes_after_context_drain_before_partial_publish():
+    source = read("src/mem/MAA/IndirectAccess.cc")
+    build = source[
+        source.index(
+            "bool IndirectAccessUnit::serviceSoaJitBuild()"
+        ) : source.index("IndirectAccessUnit::issueSoaJitScalar")
+    ]
+    assert "closeSelection" not in build
+
+    request = source[
+        source.index("case Status::Request:") : source.index(
+            "if (usesBoundedSourceResponses())",
+            source.index("case Status::Request:"),
+        )
+    ]
+    context_drain = request.index("if (!soaJitContextsEmpty())")
+    rows_claimed = request.index(
+        "if (!soa_jit_all_rows_claimed)", context_drain
+    )
+    old_result = request.index("if (isSoaJitOldResultRmw())", rows_claimed)
+    close = request.index("closeSelection", old_result)
+    partial_publish = request.index(
+        "serviceSoaJitOldResultWrites(true)", close
+    )
+    assert context_drain < rows_claimed < old_result < close < partial_publish
+    assert request.count("closeSelection") == 1
+    assert "!soa_jit_old_result_selection_closed" in request[old_result:close]
+    assert (
+        "soa_jit_old_result_selection_closed = true"
+        in request[close:partial_publish]
+    )
+
+
 def test_all_soa_buffers_have_exact_disjoint_physical_cache_lines():
     source = read("src/mem/MAA/IndirectAccess.cc")
     begin = source.index("validateSoaJitAddressSpans")

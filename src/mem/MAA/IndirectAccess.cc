@@ -4376,15 +4376,6 @@ bool IndirectAccessUnit::serviceSoaJitBuild()
         return true;
     }
     soa_jit_all_rows_claimed = true;
-    if (isSoaJitOldResultRmw() &&
-        !soa_jit_old_result_selection_closed) {
-        const auto result = soa_jit_old_result_buffer.closeSelection(
-            soa_jit_selected, soa_jit_predicate_rejected);
-        panic_if(result != SoaJitOldResultBuffer::Result::Accepted,
-                 "I[%d] old-result selection closure failed: %u\n",
-                 my_indirect_id, static_cast<unsigned>(result));
-        soa_jit_old_result_selection_closed = true;
-    }
     return false;
 }
 bool
@@ -6261,6 +6252,19 @@ void IndirectAccessUnit::executeInstruction() {
                     break;
                 }
                 if (isSoaJitOldResultRmw()) {
+                    if (!soa_jit_old_result_selection_closed) {
+                        const auto result =
+                            soa_jit_old_result_buffer.closeSelection(
+                                soa_jit_selected,
+                                soa_jit_predicate_rejected);
+                        panic_if(
+                            result !=
+                                SoaJitOldResultBuffer::Result::Accepted,
+                            "I[%d] old-result selection closure failed: %u\n",
+                            my_indirect_id,
+                            static_cast<unsigned>(result));
+                        soa_jit_old_result_selection_closed = true;
+                    }
                     progressed = serviceSoaJitOldResultWrites(true) ||
                         progressed;
                     if (!soa_jit_old_result_buffer.complete()) {
