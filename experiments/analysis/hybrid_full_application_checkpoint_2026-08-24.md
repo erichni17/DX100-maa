@@ -35,11 +35,12 @@ Raw CG reports:
 | NAS CG | `dx100-cg-page-product-full-baf142f7-r1` | `/data1/nier/dx100-runs/2026-08-24-cg-page-product-full-baf142f7-r1` | trace-free full checkpoint |
 | NAS IS | `dx100-is-scalar-soa-full-a44aaa60-r5` | `/data1/nier/dx100-runs/2026-08-24-is-scalar-soa-full-a44aaa60-r5` | full O3 ROI |
 | HashJoin PRH | `dx100-hashjoin-prh-full-recovery-20260824-061147` | `/data1/nier/dx100-runs/hashjoin-hybrid-prh-full-d7d29bf5-20260824-061147` | correct raw output; shifted pass is tail-only and pre-hardening evidence remains incomplete |
+| HashJoin PRH, hardened | `dx100-hashjoin-prh-hardened-20260824-r1` | `/data1/nier/dx100-runs/2026-08-24-hashjoin-prh-hardened-r1` | active candidate-only full gate with frozen mechanism-status and hash contracts |
 | GAPBS SSSP S22, original | `dx100-sssp-old-result-full-e690867f-r1` | `/data1/nier/dx100-runs/2026-08-24-sssp-old-result-full-e690867f-r1` | failed closed on unvirtualized 4,133-element tail |
-| GAPBS SSSP S22, reviewed repair | `dx100-sssp-tail-repair-7b6f9c21-full-r1` | `/data1/nier/worktrees/codex-coordination/sessions/sssp-tail-repair-successor-20260824-155812-7c1e3190/evidence/sssp-tail-repair-7b6f9c21-r1` | active full O3 candidate; small exact gate passed |
+| GAPBS SSSP S22, reviewed repair | `dx100-sssp-tail-repair-7b6f9c21-full-r1` | `/data1/nier/worktrees/codex-coordination/sessions/sssp-tail-repair-successor-20260824-155812-7c1e3190/evidence/sssp-tail-repair-7b6f9c21-r1` | rejected: exact-CPU fallback fell through to illegal SPD element 4,096 at a 4,132-word batch |
 
-CG, IS, and the reviewed SSSP repair remain active with infinite runtime; PRH
-and the original SSSP candidate have exited.
+CG, IS, and the hardened PRH recovery remain active with infinite runtime.
+Both SSSP full candidates and the pre-hardening PRH recovery have exited.
 Existing `dx-runtime` watch records are stale:
 their worker PIDs are dead even where the record still says `watching`.
 Acceptance therefore relies on each runner's internal fail-closed gate plus a
@@ -174,18 +175,24 @@ hybrid windows, routes batches up to 4K through bounded SPD, and uses exact
 ordered CPU MIN for irregular 4K+1 through 16K-1 batches. Its small exact gate
 passes total = produced = consumed = 69,632 words, 65,536 accelerated plus
 4,096 CPU words, zero measured illegal SPD attempts, exact output, and closed
-old-result responses. One exclusive-lease full S22 candidate service is active;
-no full result is claimed before its persistent wrapper and explicit validator
-both pass.
+old-result responses. The full S22 gate nevertheless rejected the source at
+tick `239,082,572,292`: a 4,132-word exact-CPU batch was handled in software
+but then fell through into the legacy host-SPD block, which dereferenced
+element 4,096. The wrapper and explicit validator both fail, so the small gate
+was insufficient and no SSSP full result is claimed. A source-level control-flow
+repair must execute the production dispatch helper for both 4,132 and 4,133,
+pass a fresh small exact gate, and use a new exclusive full evidence root.
 
 ## Resume order
 
 1. Validate CG and IS after their services exit; do not read timing before
    their correctness and terminal gates close.
-2. Allow the reviewed SSSP repair service to exit, then run its explicit
-   validator before reading timing; native baselines remain reusable.
-3. Treat PRH's shifted phase as tail-only for this input and require hardened
-   mechanism-status evidence before any future promotion.
+2. Repair the SSSP exact-CPU fallthrough, require an executable production-path
+   regression and fresh small exact gate, then relaunch candidate-only full S22;
+   native baselines remain reusable.
+3. Allow the hardened PRH candidate gate to exit and classify its frozen
+   mechanism-status and hash evidence. Its shifted phase is tail-only for this
+   input and must never be misreported as routed coverage.
 4. Resume compact-retirement only from the certified `0d88fb41` fresh-root
    instructions, and reject it unless both kernels are nonregressing with one
    improving by at least the predeclared 0.5% threshold.
