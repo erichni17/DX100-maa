@@ -1,4 +1,5 @@
 import pathlib
+import struct
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -33,6 +34,9 @@ class SsspOldResultHybridContract(unittest.TestCase):
         self.assertIn(
             "hybrid_destination_epochs[wn.v] == hybrid_epoch", self.source
         )
+        self.assertIn(
+            "hybrid_destination_owners[wn.v] != chunk_owner", self.source
+        )
         self.assertIn("wn.w <= 0", self.source)
         self.assertIn("routed_windows <= eligible_windows", self.source)
 
@@ -45,7 +49,7 @@ class SsspOldResultHybridContract(unittest.TestCase):
             "wait_ready(completion_tile);", old_result
         )
         frontier = self.source.index(
-            "sssp_hybrid_old_results[tid][lane] > candidate", completion
+            "sssp_hybrid_old_results[tid][lane] > final_distance", completion
         )
         self.assertLess(publish, old_result)
         self.assertLess(old_result, completion)
@@ -55,6 +59,46 @@ class SsspOldResultHybridContract(unittest.TestCase):
         self.assertIn("kSsspPhysicalWords", self.source)
         self.assertIn("index_publish_pages == routed_windows * 4", self.source)
         self.assertIn("value_publish_pages == routed_windows * 4", self.source)
+        self.assertIn("duplicate_order=legacy_physical_pages", self.source)
+
+    def test_ordered_old_results_reproduce_legacy_page_winners(self):
+        initial = {7: 100, 9: 80}
+        indices = [7, 9, 7, 7, 9]
+        candidates = [70, 60, 50, 65, 55]
+        current = dict(initial)
+        old_results = []
+        for index, candidate in zip(indices, candidates):
+            old_results.append(current[index])
+            current[index] = min(current[index], candidate)
+
+        page_final = current
+        legacy = [
+            candidate == page_final[index] and old > page_final[index]
+            for index, candidate, old in zip(indices, candidates, old_results)
+        ]
+        reconstructed_final = {}
+        for index, candidate, old in reversed(
+            list(zip(indices, candidates, old_results))
+        ):
+            reconstructed_final.setdefault(index, min(old, candidate))
+        reconstructed = [
+            candidate == reconstructed_final[index]
+            and old > reconstructed_final[index]
+            for index, candidate, old in zip(indices, candidates, old_results)
+        ]
+        self.assertEqual(reconstructed, legacy)
+        self.assertEqual(reconstructed, [False, False, True, False, True])
+
+    def test_integer_bits_are_fp_ordered_over_admitted_domain(self):
+        samples = [0, 1, 2, 4096, (2**31 - 1) // 2]
+        as_float = [
+            struct.unpack("!f", struct.pack("!I", value))[0]
+            for value in samples
+        ]
+        self.assertEqual(
+            sorted(range(len(samples)), key=samples.__getitem__),
+            sorted(range(len(samples)), key=as_float.__getitem__),
+        )
 
     def test_coherent_spans_replace_host_spd_reads_on_routed_path(self):
         helper_start = self.source.index("RunSsspHybridWindow(")

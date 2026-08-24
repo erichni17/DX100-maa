@@ -104,7 +104,7 @@ restore="$out/run/restore.log"
 stats="$out/run/stats.txt"
 trace="$out/run/sssp_old_result_trace.log"
 fingerprint='SSSP_FINGERPRINT vertices=69633 reached=69633 unreachable=0 distance_sum=135168 max_distance=2 hash_a=a0531a7ddb9387df hash_b=39f1ea63bc8817e8 triangle_violations=0 missing_predecessors=0 nonpositive_weights=0 negative_distances=0 result=PASS'
-terminal='SSSP_OLD_RESULT_HYBRID_TERMINAL treatment=old_result_hybrid eligible_windows=4 routed_windows=4 index_publish_pages=16 value_publish_pages=16 old_result_words=65536 legacy_words=0 logical_reorder_words=16384 physical_spd_words=4096 row_table_slices=32 predicate_span=coherent_aligned old_result_span=coherent_aligned host_spd_reads=0 hidden_result_payload_bytes=0 counts_close=1'
+terminal='SSSP_OLD_RESULT_HYBRID_TERMINAL treatment=old_result_hybrid eligible_windows=4 routed_windows=4 index_publish_pages=16 value_publish_pages=16 old_result_words=65536 legacy_words=0 logical_reorder_words=16384 physical_spd_words=4096 row_table_slices=32 predicate_span=coherent_aligned old_result_span=coherent_aligned duplicate_order=legacy_physical_pages host_spd_reads=0 hidden_result_payload_bytes=0 counts_close=1'
 [[ $(grep -Fxc "$fingerprint" "$restore" || true) -eq 1 ]]
 [[ $(grep -Fxc "$terminal" "$restore" || true) -eq 1 ]]
 [[ $(grep -Ec '^Exiting @ tick [0-9]+ because m5_exit instruction encountered$' \
