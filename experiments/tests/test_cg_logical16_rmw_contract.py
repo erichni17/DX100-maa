@@ -42,7 +42,10 @@ class CGLogical16RmwContractTests(unittest.TestCase):
             "maa_indirect_rmw_vector_soa_jit<float>", residual
         )
         self.assertEqual(
-            self.source.count("maa_indirect_rmw_vector_soa_jit<float>"), 2
+            self.source[residual:].count(
+                "maa_indirect_rmw_vector_soa_jit<float>"
+            ),
+            1,
         )
         self.assertIn("gather_size == TILE_SIZE", self.source[residual:soa])
         self.assertIn(
