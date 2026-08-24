@@ -17,11 +17,16 @@ the campaigns below reruns a native arm.
   0.0633% below its immediate predecessor.
 - Full-CG and HashJoin runners now disable per-event tracing. The small CG
   trace exceeded 1 GB, so full tracing would have distorted long runs.
+- CG pre-A lookahead is a valid near-flat result, not a promoted optimization:
+  exact first-ROI ticks changed from `6,344,668,065` to `6,341,118,332`
+  (0.055948% lower). The option remains default-off and is retained for its
+  prior full-GZP benefit.
 
 Raw CG reports:
 
 - `experiments/analysis/cg_page_product_fusion_live_2026-08-24.md`
 - `experiments/analysis/cg_page_product_lane_removal_live_2026-08-24.md`
+- `experiments/analysis/cg_page_product_pre_a_ablation_2026-08-24.md`
 
 ## Active full gates
 
@@ -38,24 +43,23 @@ stats, balanced response ledgers, and hashes.
 
 ## Active optimization probes
 
-- CG pre-A off/on pair:
-  `/data1/nier/dx100-runs/2026-08-24-cg-page-product-pre-a-pair-baf142f7-r1`.
-  The two trace-free restores share the accepted eight-lane checkpoint and
-  differ only by row-directed pre-A value lookahead.
-- Generic old-result write coalescing: commits `f153dfaa`, `c0cb4414`, and
-  `21e1a7ac` retain the existing eight-line, 1,128-byte per-unit buffer. Under
-  pressure, at most one partial line is in flight; the densest line is chosen,
-  while full-line writes remain concurrent. Unit and sanitizer tests pass.
-  The isolated exact gem5 rebuild is still in progress; no performance result
-  exists yet.
+- Generic old-result write coalescing commits `f153dfaa`, `c0cb4414`, and
+  `21e1a7ac` retain the existing eight-line, 1,128-byte per-unit buffer. The
+  exact binary is archived as SHA-256 `36ed7d5c...a3ec9f`.
+- The one-partial-write policy is rejected. On the frozen sparse old-result
+  checkpoint, writes fell from 11,399 to 10,165 (10.83%) and packing rose from
+  2.225 to 2.496 useful words/write, but first-ROI latency regressed from
+  `687,827,203` to `733,637,257 simTicks` (6.66%). SSSP was not launched.
+- The next active probe parameterizes partial-pressure concurrency at
+  1/2/4/8 over the same fixed eight slots. Default 8 preserves the accepted
+  behavior; all arms will restore the same frozen sparse checkpoint. A policy
+  is selectable only if it improves packing without regressing latency.
 
 ## Resume order
 
-1. Classify the CG pre-A pair; keep it only if exact work is unchanged and
-   treatment ticks improve.
-2. Finish the old-result build, archive/hash the exact binary, run the exact
-   old-result smoke, then the small SSSP application only after the smoke.
-3. On each full-service exit, validate correctness before comparing first-ROI
+1. Finish the bounded old-result partial-concurrency implementation and
+   matched sparse sweep; launch SSSP only from a non-regressing policy.
+2. On each full-service exit, validate correctness before comparing first-ROI
    `simTicks` to the frozen physical tile sweep.
-4. Update this checkpoint with accepted results or explicit rejections; do not
+3. Update this checkpoint with accepted results or explicit rejections; do not
    infer speedups from live, incomplete, or final-post-ROI timing alone.
