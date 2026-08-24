@@ -26,6 +26,7 @@
 #include "mem/MAA/SoaJitOverlapState.hh"
 #include "mem/MAA/SoaJitResultPipeline.hh"
 #include "mem/MAA/SoaJitScalarBroadcast.hh"
+#include "mem/MAA/SoaJitWriteRetirement.hh"
 #include "mem/MAA/Tables.hh"
 #include "mem/MAA/VirtualCombinePayloadStore.hh"
 #include "mem/MAA/VirtualCombinerPageOrder.hh"
@@ -294,6 +295,7 @@ public:
                   int _virtual_index_partitions,
                   int _virtual_index_filter_words_per_cycle,
                   int _soa_jit_active_contexts,
+                  bool _soa_jit_compact_write_retirement,
                   int _soa_jit_value_lookahead,
                   bool _soa_jit_value_cache_enable,
                   bool _soa_jit_pre_a_value_lookahead,
@@ -566,9 +568,12 @@ protected:
     SoaJitResultPipeline soa_jit_result_pipeline;
     SoaJitScalarBroadcast soa_jit_scalar_broadcast;
     SoaJitOldResultBuffer soa_jit_old_result_buffer;
+    SoaJitWriteRetirement soa_jit_write_retirement;
     struct SoaJitWriteSenderState : public Packet::SenderState
     {
-        SoaJitScalarBroadcast::WriteIdentity identity{};
+        bool compact = false;
+        SoaJitScalarBroadcast::WriteIdentity contextIdentity{};
+        SoaJitWriteRetirement::Identity compactIdentity{};
     };
     struct SoaJitOldResultSenderState : public Packet::SenderState
     {
@@ -589,6 +594,7 @@ protected:
     bool soa_jit_operation_active = false;
     SoaJitValueCoalescer soa_jit_value_coalescer;
     int soa_jit_active_contexts = 1;
+    bool soa_jit_compact_write_retirement = false;
     int soa_jit_value_lookahead = 1;
     bool soa_jit_value_cache_enable = false;
     bool soa_jit_pre_a_value_lookahead = false;
@@ -648,6 +654,7 @@ protected:
     uint64_t soa_jit_apply_lane_high_water = 0;
     uint64_t soa_jit_a_write_issues = 0;
     uint64_t soa_jit_a_write_responses = 0;
+    uint64_t soa_jit_write_retirement_stalls = 0;
     uint64_t soa_jit_old_result_captures = 0;
     uint64_t soa_jit_old_result_write_issues = 0;
     uint64_t soa_jit_old_result_write_responses = 0;
@@ -767,9 +774,11 @@ protected:
     bool serviceSoaJitOldResultWrites(SoaJitOldResultWriteMode mode);
     bool completeSoaJitOldResultWrite(
         const SoaJitOldResultBuffer::Identity &identity);
-    void issueSoaJitWrite(SoaJitContext &context);
+    bool issueSoaJitWrite(SoaJitContext &context);
     bool completeSoaJitWrite(
         const SoaJitScalarBroadcast::WriteIdentity &identity);
+    bool completeSoaJitWrite(
+        const SoaJitWriteRetirement::Identity &identity);
     void validateSoaJitAddressSpans();
     bool soaJitContextsEmpty() const;
     void observeSoaJitResultPipeline();

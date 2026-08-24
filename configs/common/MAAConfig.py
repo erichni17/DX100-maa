@@ -199,6 +199,10 @@ def _get_maa_opts(options):
         opts["soa_jit_active_contexts"] = getattr(
             options, "maa_soa_jit_active_contexts"
         )
+    if hasattr(options, "maa_soa_jit_compact_write_retirement"):
+        opts["soa_jit_compact_write_retirement"] = getattr(
+            options, "maa_soa_jit_compact_write_retirement"
+        )
 
     if hasattr(options, "maa_soa_jit_old_result_partial_credits"):
         opts["soa_jit_old_result_partial_credits"] = getattr(

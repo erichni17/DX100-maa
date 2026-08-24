@@ -205,6 +205,11 @@ class MAA(ClockedObject):
         "Active SoA/JIT A-line contexts (8, 16, 32, or default-off 64; "
         "fixed maximum hardware is 64)",
     )
+    soa_jit_compact_write_retirement = Param.Bool(
+        False,
+        "Use eight exact response credits to release completed SoA/JIT "
+        "A-line contexts after packet-queue ownership transfer",
+    )
     soa_jit_old_result_partial_credits = Param.Unsigned(
         8,
         "Concurrent partial old-result pressure writes (1, 2, 4, or 8; "

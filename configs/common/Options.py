@@ -481,6 +481,14 @@ def addNoISAOptions(parser):
         ),
     )
     parser.add_argument(
+        "--maa_soa_jit_compact_write_retirement",
+        action="store_true",
+        help=(
+            "Default-off fixed eight-credit exact WriteResp ownership for "
+            "completed SoA/JIT A-line packets"
+        ),
+    )
+    parser.add_argument(
         "--maa_soa_jit_old_result_partial_credits",
         type=int,
         default=8,

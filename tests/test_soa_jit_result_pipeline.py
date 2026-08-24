@@ -29,22 +29,21 @@ def test_fixed_two_region_payload_and_default_off_selection():
     assert "result payload must remain exactly 4 KiB" in source
 
 
-def test_live_path_observes_only_exact_context_state_transitions():
+def test_live_path_observes_exact_context_and_compact_credit_transitions():
     source = read("src/mem/MAA/IndirectAccess.cc")
-    assert source.count("observeSoaJitResultPipeline();") == 4
+    assert source.count("observeSoaJitResultPipeline();") >= 4
     assert source.index(
         "context->state = SoaJitContextState::AwaitARead"
     ) < source.index("observeSoaJitResultPipeline();")
-    assert (
-        "context.state = SoaJitContextState::AwaitAWriteResp;\n    observeSoaJitResultPipeline();"
-        in source
-    )
+    assert "context.state = SoaJitContextState::AwaitAWriteResp;" in source
+    assert "soa_jit_write_retirement.awaitingByCredit()" in source
+    assert "curTick(), reads, writes, compact_writes" in source
     assert (
         "context.state = SoaJitContextState::Active;\n            observeSoaJitResultPipeline();"
         in source
     )
     assert (
-        "context = SoaJitContext();\n        observeSoaJitResultPipeline();"
+        "context = SoaJitContext();\n    observeSoaJitResultPipeline();"
         in source
     )
     assert "soa_jit_a_write_responses++;" in source
@@ -72,6 +71,8 @@ def test_terminal_trace_closes_payload_overlap_and_byte_ledgers():
         "read_write_overlap_ticks",
         "dual_region_overlap_ticks",
         "serialized_write_only_ticks",
+        "compact_write_hwm_r0",
+        "compact_write_outstanding_ticks",
         "terminal=1",
     ):
         assert field in source

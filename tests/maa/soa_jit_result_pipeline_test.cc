@@ -60,6 +60,26 @@ main()
     CHECK(!overflow.observe(1, {33, 0}, {0, 0}));
     CHECK(!overflow.assertInvariants(64));
 
+    Pipeline compact;
+    compact.reset(0);
+    CHECK(compact.observe(10, {8, 0}, {0, 0}, {8, 0}));
+    CHECK(compact.observe(30, {4, 0}, {0, 0}, {4, 0}));
+    CHECK(compact.observe(40, {0, 0}, {0, 0}, {0, 0}));
+    CHECK(compact.aWriteHighWater() ==
+          (std::array<uint8_t, 2>{0, 0}));
+    CHECK(compact.compactWriteHighWater() ==
+          (std::array<uint8_t, 2>{8, 0}));
+    CHECK(compact.activeLineHighWater() ==
+          (std::array<uint8_t, 2>{8, 0}));
+    CHECK(compact.resultReadWriteOverlapTicks() == 30);
+    CHECK(compact.compactWriteOutstandingTicks() == 30);
+    CHECK(compact.assertInvariants(8));
+
+    Pipeline compact_overflow;
+    compact_overflow.reset(0);
+    CHECK(!compact_overflow.observe(1, {0, 0}, {0, 0}, {9, 0}));
+    CHECK(!compact_overflow.assertInvariants(8));
+
     std::cout << "SoA/JIT result pipeline tests passed\n";
     return 0;
 }

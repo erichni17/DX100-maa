@@ -112,12 +112,50 @@ def test_bounded_epoch_and_timed_jit_protocol_have_exact_drain():
         "soa_jit_lookahead_issues != soa_jit_selected",
         "soa_jit_value_deliveries != soa_jit_selected",
         "soa_jit_a_write_issues != soa_jit_a_write_responses",
+        "soa_jit_write_retirement.empty()",
+        "soa_jit_write_retirement.issueCount() !=",
+        "soa_jit_write_retirement.responseCount() !=",
         "soa_jit_predicate_line_issues !=",
         "soa_jit_predicate_line_hits != expected_predicate_uses",
         "soa_jit_predicate_uses != expected_predicate_uses",
         "soa_jit_predicate_feeder_high_water >",
     ):
         assert invariant in terminal
+
+
+def test_default_off_compact_write_retirement_transfers_exact_ownership():
+    header = read("src/mem/MAA/SoaJitWriteRetirement.hh")
+    indirect = read("src/mem/MAA/IndirectAccess.cc")
+    simobject = read("src/mem/MAA/MAA.py")
+    options = read("configs/common/Options.py")
+    config = read("configs/common/MAAConfig.py")
+
+    assert (
+        "soa_jit_compact_write_retirement = Param.Bool(\n        False,"
+        in simobject
+    )
+    assert '"--maa_soa_jit_compact_write_retirement"' in options
+    assert 'opts["soa_jit_compact_write_retirement"]' in config
+    assert "Credits = 8" in header
+    assert "PersistentStateBits" in header
+    assert "MaxTransientPacketPayloadBytes" in header
+
+    issue = indirect[
+        indirect.index(
+            "bool IndirectAccessUnit::issueSoaJitWrite"
+        ) : indirect.index("bool IndirectAccessUnit::receiveSoaJitData")
+    ]
+    reserve = issue.index("soa_jit_write_retirement.reserve")
+    send = issue.index("maa->sendPacket")
+    commit = issue.index("soa_jit_write_retirement.commit")
+    clear = issue.index("context = SoaJitContext()", commit)
+    assert reserve < send < commit < clear
+    assert "soa_jit_write_retirement_stalls++" in issue
+    assert "scheduleExecuteInstructionEvent(1)" in issue
+    assert "sender_state_mapping=credit_tag_indexes_tracker_" in indirect
+    assert "duplicated_identity_is_validation_metadata" in indirect
+    assert "persistent_state_bits=" in indirect
+    assert "transient_packet_payload_hwm_bytes=" in indirect
 
 
 def test_pressure_epoch_refills_same_cursor_without_closing_old_result():
@@ -215,9 +253,7 @@ def test_old_result_selection_closes_after_context_drain_before_partial_publish(
     )
     old_result = request.index("if (isSoaJitOldResultRmw())", rows_claimed)
     close = request.index("closeSelection", old_result)
-    partial_publish = request.index(
-        "serviceSoaJitOldResultWrites(true)", close
-    )
+    partial_publish = request.index("SoaJitOldResultWriteMode::Drain", close)
     assert context_drain < rows_claimed < old_result < close < partial_publish
     assert request.count("closeSelection") == 1
     assert "!soa_jit_old_result_selection_closed" in request[old_result:close]

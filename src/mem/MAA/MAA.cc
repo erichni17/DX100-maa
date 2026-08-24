@@ -184,6 +184,8 @@ MAA::MAA(const MAAParams &p)
       virtual_index_filter_words_per_cycle(
           p.virtual_index_filter_words_per_cycle),
       soa_jit_active_contexts(p.soa_jit_active_contexts),
+      soa_jit_compact_write_retirement(
+          p.soa_jit_compact_write_retirement),
       soa_jit_old_result_partial_credits(
           p.soa_jit_old_result_partial_credits),
       soa_jit_old_result_dense_pressure(
@@ -708,6 +710,7 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
                                         virtual_index_partitions,
                                         virtual_index_filter_words_per_cycle,
                                         soa_jit_active_contexts,
+                                        soa_jit_compact_write_retirement,
                                         soa_jit_value_lookahead,
                                         soa_jit_value_cache_enable,
                                         soa_jit_pre_a_value_lookahead,
@@ -7501,6 +7504,57 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitAWriteResponses"),
             statistics::units::Count::get(),
             "exact A WriteResp completions"));
+        IND_SoaJitCompactWriteRetirementEnabled.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_SoaJitCompactWriteRetirementEnabled"),
+                statistics::units::Count::get(),
+                "completed operations using compact A-write retirement"));
+        IND_SoaJitCompactWriteRetirementCredits.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_SoaJitCompactWriteRetirementCredits"),
+                statistics::units::Count::get(),
+                "sum of provisioned compact A-write credits"));
+        IND_SoaJitCompactWriteRetirementCreditHighWater.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_SoaJitCompactWriteRetirementCreditHighWater"),
+                statistics::units::Count::get(),
+                "sum of concurrent compact A-write credit high water"));
+        IND_SoaJitCompactWriteRetirementStalls.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_SoaJitCompactWriteRetirementStalls"),
+                statistics::units::Count::get(),
+                "completed A-line writes retained because all compact "
+                "credits were occupied"));
+        IND_SoaJitCompactWriteRetirementPersistentBits.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_SoaJitCompactWriteRetirementPersistentBits"),
+                statistics::units::Count::get(),
+                "sum of modeled persistent compact tracker bits"));
+        IND_SoaJitCompactWriteRetirementPersistentBytes.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_SoaJitCompactWriteRetirementPersistentBytes"),
+                statistics::units::Byte::get(),
+                "sum of rounded modeled persistent compact tracker bytes"));
+        IND_SoaJitCompactWriteTransientPayloadHighWaterBytes
+            .push_back(new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_SoaJitCompactWriteTransientPayloadHighWaterBytes"),
+                statistics::units::Byte::get(),
+                "sum of transient copied packet-payload high water, not "
+                "persistent tracker storage"));
         IND_SoaJitOldResultCaptures.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitOldResultCaptures"),
             statistics::units::Count::get(),

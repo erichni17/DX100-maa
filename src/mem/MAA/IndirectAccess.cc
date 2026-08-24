@@ -119,6 +119,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
                                   int _virtual_index_partitions,
                                   int _virtual_index_filter_words_per_cycle,
                                   int _soa_jit_active_contexts,
+                                  bool _soa_jit_compact_write_retirement,
                                   int _soa_jit_value_lookahead,
                                   bool _soa_jit_value_cache_enable,
                                   bool _soa_jit_pre_a_value_lookahead,
@@ -218,6 +219,8 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
              "I[%d] SoA/JIT value lookahead (%d) must be 1, 2, 4, or 8\n",
              my_indirect_id, _soa_jit_value_lookahead);
     soa_jit_active_contexts = _soa_jit_active_contexts;
+    soa_jit_compact_write_retirement =
+        _soa_jit_compact_write_retirement;
     soa_jit_value_lookahead = _soa_jit_value_lookahead;
     soa_jit_value_cache_enable = _soa_jit_value_cache_enable;
     soa_jit_pre_a_value_lookahead =
@@ -4178,11 +4181,14 @@ void IndirectAccessUnit::chargeDirectIndexFilterLatency(int words) {
 }
 bool IndirectAccessUnit::soaJitContextsEmpty() const
 {
-    return std::all_of(
+    const bool contexts_empty = std::all_of(
         soa_jit_contexts.begin(), soa_jit_contexts.end(),
         [](const SoaJitContext &context) {
             return context.state == SoaJitContextState::Free;
         });
+    return contexts_empty &&
+        (!soa_jit_compact_write_retirement ||
+         soa_jit_write_retirement.empty());
 }
 
 void
@@ -4190,6 +4196,7 @@ IndirectAccessUnit::observeSoaJitResultPipeline()
 {
     std::array<uint8_t, SoaJitResultPipeline::Regions> reads{};
     std::array<uint8_t, SoaJitResultPipeline::Regions> writes{};
+    std::array<uint8_t, SoaJitResultPipeline::Regions> compact_writes{};
     for (size_t index = 0;
          index < static_cast<size_t>(soa_jit_active_contexts); ++index) {
         const size_t region = SoaJitResultPipeline::regionForLine(index);
@@ -4203,7 +4210,16 @@ IndirectAccessUnit::observeSoaJitResultPipeline()
                  SoaJitContextState::AwaitAWriteResp)
             writes[region]++;
     }
-    panic_if(!soa_jit_result_pipeline.observe(curTick(), reads, writes),
+    if (soa_jit_compact_write_retirement) {
+        const auto credits = soa_jit_write_retirement.awaitingByCredit();
+        for (size_t credit = 0; credit < credits.size(); ++credit) {
+            const size_t region =
+                SoaJitResultPipeline::regionForLine(credit);
+            compact_writes[region] += credits[credit];
+        }
+    }
+    panic_if(!soa_jit_result_pipeline.observe(
+                 curTick(), reads, writes, compact_writes),
              "I[%d] invalid SoA/JIT result-pipeline observation\n",
              my_indirect_id);
 }
@@ -4214,6 +4230,8 @@ IndirectAccessUnit::hasLiveSoaJitState() const
            (my_instruction != nullptr && my_instruction->isSoaJitRmw()) ||
            !soaPredicateLinesEmpty() ||
            !soaJitContextsEmpty() ||
+           (soa_jit_compact_write_retirement &&
+            soa_jit_write_retirement.activeRun()) ||
            soa_jit_old_result_buffer.activeRun() ||
            !soa_jit_old_result_buffer.empty() ||
            !soa_jit_value_coalescer.prefetchComplete();
@@ -4857,8 +4875,10 @@ IndirectAccessUnit::serviceSoaJitLookahead()
                      "I[%d] SoA/JIT alias chain has incomplete lookahead "
                      "closure\n",
                      my_indirect_id);
-            issueSoaJitWrite(context);
-            progressed = true;
+            if (issueSoaJitWrite(context))
+                progressed = true;
+            else
+                break;
         }
     }
     return progressed;
@@ -5031,7 +5051,7 @@ IndirectAccessUnit::completeSoaJitOldResultWrite(
             identity.validWords);
     return true;
 }
-void IndirectAccessUnit::issueSoaJitWrite(SoaJitContext &context)
+bool IndirectAccessUnit::issueSoaJitWrite(SoaJitContext &context)
 {
     panic_if(context.generation != soa_jit_generation ||
                  context.nextOffset != -1 || context.remaining != 0 ||
@@ -5051,21 +5071,55 @@ void IndirectAccessUnit::issueSoaJitWrite(SoaJitContext &context)
                  static_cast<size_t>(soa_jit_active_contexts),
              "I[%d] scalar/JIT write context is outside active geometry\n",
              my_indirect_id);
+    const Addr write_address = context.aPaddr;
+    SoaJitWriteRetirement::Identity compact_identity{};
     auto *sender = new SoaJitWriteSenderState;
-    sender->identity = {
-        soa_jit_generation, static_cast<uint16_t>(context_index),
-        context.aPaddr};
+    if (soa_jit_compact_write_retirement) {
+        const auto reserve = soa_jit_write_retirement.reserve(
+            soa_jit_generation, write_address, &compact_identity);
+        if (reserve == SoaJitWriteRetirement::Result::Full) {
+            delete sender;
+            delete pkt;
+            soa_jit_write_retirement_stalls++;
+            scheduleExecuteInstructionEvent(1);
+            return false;
+        }
+        panic_if(reserve != SoaJitWriteRetirement::Result::Accepted,
+                 "I[%d] SoA/JIT compact write reserve failed: %u\n",
+                 my_indirect_id, static_cast<unsigned>(reserve));
+        sender->compact = true;
+        sender->compactIdentity = compact_identity;
+    } else {
+        sender->contextIdentity = {
+            soa_jit_generation, static_cast<uint16_t>(context_index),
+            context.aPaddr};
+    }
     pkt->pushSenderState(sender);
-    context.state = SoaJitContextState::AwaitAWriteResp;
-    observeSoaJitResultPipeline();
     soa_jit_a_write_issues++;
     maa->sendPacket(FuncUnitType::INDIRECT, my_indirect_id, pkt,
                     maa->getClockEdge(Cycles(0)), true);
+    if (soa_jit_compact_write_retirement) {
+        const auto commit =
+            soa_jit_write_retirement.commit(compact_identity);
+        panic_if(commit != SoaJitWriteRetirement::Result::Accepted,
+                 "I[%d] SoA/JIT compact queue transfer failed: %u\n",
+                 my_indirect_id, static_cast<unsigned>(commit));
+        context = SoaJitContext();
+    } else {
+        context.state = SoaJitContextState::AwaitAWriteResp;
+    }
+    observeSoaJitResultPipeline();
     DPRINTF(MAAVirtualTrace,
-            "event=soa_jit_a_write_issue schema=1 unit=%d "
-            "operation_tick=%lu generation=%lu addr=0x%lx aliases=%lu\n",
+            "event=soa_jit_a_write_issue schema=2 unit=%d "
+            "operation_tick=%lu generation=%lu addr=0x%lx aliases=%lu "
+            "compact=%d credit=%u transient_payload_bytes=%lu\n",
             my_indirect_id, my_decode_start_tick, soa_jit_generation,
-            context.aPaddr, soa_jit_aliases_applied);
+            write_address, soa_jit_aliases_applied,
+            soa_jit_compact_write_retirement,
+            soa_jit_compact_write_retirement
+                ? compact_identity.credit : 0,
+            static_cast<unsigned long>(SoaJitWriteRetirement::LineBytes));
+    return true;
 }
 bool IndirectAccessUnit::receiveSoaJitData(
     Addr addr, uint8_t *dataptr, bool is_block_cached)
@@ -5191,6 +5245,27 @@ bool IndirectAccessUnit::completeSoaJitWrite(
     observeSoaJitResultPipeline();
     return true;
 }
+bool IndirectAccessUnit::completeSoaJitWrite(
+    const SoaJitWriteRetirement::Identity &identity)
+{
+    if (!soa_jit_compact_write_retirement)
+        return false;
+    const auto result = soa_jit_write_retirement.acknowledge(identity);
+    if (result != SoaJitWriteRetirement::Result::Accepted)
+        return false;
+    panic_if(identity.generation != soa_jit_generation,
+             "I[%d] stale compact SoA/JIT WriteResp owner\n",
+             my_indirect_id);
+    soa_jit_a_write_responses++;
+    DPRINTF(MAAVirtualTrace,
+            "event=soa_jit_a_write_response schema=2 unit=%d "
+            "operation_tick=%lu generation=%lu sequence=%lu credit=%u "
+            "addr=0x%lx compact=1\n",
+            my_indirect_id, my_decode_start_tick, identity.generation,
+            identity.issueSequence, identity.credit, identity.address);
+    observeSoaJitResultPipeline();
+    return true;
+}
 void IndirectAccessUnit::checkSoaJitTerminal()
 {
     const uint64_t expected_predicate_uses =
@@ -5239,6 +5314,24 @@ void IndirectAccessUnit::checkSoaJitTerminal()
                  soa_jit_a_read_issues != soa_jit_a_read_responses ||
                  soa_jit_a_read_issues != soa_jit_a_write_issues ||
                  soa_jit_a_write_issues != soa_jit_a_write_responses ||
+                 (soa_jit_compact_write_retirement
+                      ? (!soa_jit_write_retirement.activeRun() ||
+                         !soa_jit_write_retirement.empty() ||
+                         !soa_jit_write_retirement.assertInvariants() ||
+                         soa_jit_write_retirement.reservationCount() !=
+                             soa_jit_a_write_issues ||
+                         soa_jit_write_retirement.issueCount() !=
+                             soa_jit_a_write_issues ||
+                         soa_jit_write_retirement.responseCount() !=
+                             soa_jit_a_write_responses ||
+                         soa_jit_write_retirement.creditHighWater() >
+                             SoaJitWriteRetirement::Credits)
+                      : (soa_jit_write_retirement.activeRun() ||
+                         !soa_jit_write_retirement.empty() ||
+                         soa_jit_write_retirement.reservationCount() != 0 ||
+                         soa_jit_write_retirement.issueCount() != 0 ||
+                         soa_jit_write_retirement.responseCount() != 0 ||
+                         soa_jit_write_retirement_stalls != 0)) ||
                  (isSoaJitOldResultRmw()
                       ? (!soa_jit_old_result_selection_closed ||
                          !soa_jit_old_result_finished ||
@@ -5294,6 +5387,12 @@ void IndirectAccessUnit::checkSoaJitTerminal()
     offset_table->check_reset();
     for (int slice = 0; slice < num_RT_slices[my_RT_config]; ++slice)
         RT[my_RT_config][slice].check_reset();
+    if (soa_jit_compact_write_retirement) {
+        panic_if(soa_jit_write_retirement.finish() !=
+                     SoaJitWriteRetirement::Result::Accepted,
+                 "I[%d] SoA/JIT compact write tracker did not finish\n",
+                 my_indirect_id);
+    }
 }
 void IndirectAccessUnit::executeInstruction() {
     if (state == Status::Idle) {
@@ -5626,6 +5725,11 @@ void IndirectAccessUnit::executeInstruction() {
             line = SoaPredicateLine();
         for (auto &context : soa_jit_contexts)
             context = SoaJitContext();
+        panic_if(soa_jit_write_retirement.reset() !=
+                     SoaJitWriteRetirement::Result::Accepted,
+                 "I[%d] retained compact write-retirement ownership at "
+                 "decode\n",
+                 my_indirect_id);
         soa_jit_result_pipeline.reset(curTick());
         soa_jit_scalar_broadcast.reset();
         soa_jit_value_coalescer.configure(
@@ -5683,6 +5787,7 @@ void IndirectAccessUnit::executeInstruction() {
         soa_jit_apply_lane_high_water = 0;
         soa_jit_a_write_issues = 0;
         soa_jit_a_write_responses = 0;
+        soa_jit_write_retirement_stalls = 0;
         soa_jit_old_result_captures = 0;
         soa_jit_old_result_write_issues = 0;
         soa_jit_old_result_write_responses = 0;
@@ -5964,6 +6069,14 @@ void IndirectAccessUnit::executeInstruction() {
                      "I[%d] SoA/JIT generation exhausted\n",
                      my_indirect_id);
             soa_jit_generation = soa_jit_next_generation++;
+            if (soa_jit_compact_write_retirement) {
+                panic_if(soa_jit_write_retirement.begin(
+                             soa_jit_generation) !=
+                             SoaJitWriteRetirement::Result::Accepted,
+                         "I[%d] compact write-retirement generation begin "
+                         "failed\n",
+                         my_indirect_id);
+            }
             if (isSoaJitOldResultRmw()) {
                 panic_if(my_word_size != sizeof(float) ||
                              my_instruction->datatype !=
@@ -6982,6 +7095,41 @@ void IndirectAccessUnit::executeInstruction() {
                 soa_jit_a_write_issues;
             (*maa->stats.IND_SoaJitAWriteResponses[my_indirect_id]) +=
                 soa_jit_a_write_responses;
+            (*maa->stats
+                  .IND_SoaJitCompactWriteRetirementEnabled
+                      [my_indirect_id]) +=
+                soa_jit_compact_write_retirement;
+            (*maa->stats
+                  .IND_SoaJitCompactWriteRetirementCredits
+                      [my_indirect_id]) +=
+                soa_jit_compact_write_retirement
+                    ? SoaJitWriteRetirement::Credits : 0;
+            (*maa->stats
+                  .IND_SoaJitCompactWriteRetirementCreditHighWater
+                      [my_indirect_id]) +=
+                soa_jit_compact_write_retirement
+                    ? soa_jit_write_retirement.creditHighWater() : 0;
+            (*maa->stats
+                  .IND_SoaJitCompactWriteRetirementStalls
+                      [my_indirect_id]) +=
+                soa_jit_write_retirement_stalls;
+            (*maa->stats
+                  .IND_SoaJitCompactWriteRetirementPersistentBits
+                      [my_indirect_id]) +=
+                soa_jit_compact_write_retirement
+                    ? SoaJitWriteRetirement::PersistentStateBits : 0;
+            (*maa->stats
+                  .IND_SoaJitCompactWriteRetirementPersistentBytes
+                      [my_indirect_id]) +=
+                soa_jit_compact_write_retirement
+                    ? SoaJitWriteRetirement::PersistentStateBytes : 0;
+            (*maa->stats
+                  .IND_SoaJitCompactWriteTransientPayloadHighWaterBytes
+                      [my_indirect_id]) +=
+                soa_jit_compact_write_retirement
+                    ? soa_jit_write_retirement.creditHighWater() *
+                          SoaJitWriteRetirement::LineBytes
+                    : 0;
             (*maa->stats.IND_SoaJitOldResultCaptures[my_indirect_id]) +=
                 soa_jit_old_result_captures;
             (*maa->stats.IND_SoaJitOldResultWriteIssues[my_indirect_id]) +=
@@ -7028,6 +7176,52 @@ void IndirectAccessUnit::executeInstruction() {
                     soa_jit_selected, soa_jit_predicate_rejected,
                     isSoaJitOldResultRmw(), isSoaJitScalarRmw());
             DPRINTF(MAAVirtualTrace,
+                    "event=soa_jit_compact_write_retirement schema=1 "
+                    "unit=%d operation_tick=%lu enabled=%d generation=%lu "
+                    "credits=%lu reservations=%lu queue_transfers=%lu "
+                    "responses=%lu credit_hwm=%lu stalls=%lu "
+                    "persistent_state_bits=%lu persistent_state_bytes=%lu "
+                    "response_credit_tag_bits_per_packet=%lu "
+                    "transient_response_credit_tag_hwm_bits=%lu "
+                    "transient_response_credit_tag_hwm_bytes=%lu "
+                    "transient_packet_payload_hwm_bytes=%lu "
+                    "sender_state_mapping=credit_tag_indexes_tracker_"
+                    "duplicated_identity_is_validation_metadata "
+                    "terminal=1\n",
+                    my_indirect_id, my_decode_start_tick,
+                    soa_jit_compact_write_retirement,
+                    soa_jit_generation,
+                    soa_jit_compact_write_retirement
+                        ? SoaJitWriteRetirement::Credits : 0,
+                    soa_jit_write_retirement.reservationCount(),
+                    soa_jit_write_retirement.issueCount(),
+                    soa_jit_write_retirement.responseCount(),
+                    soa_jit_write_retirement.creditHighWater(),
+                    soa_jit_write_retirement_stalls,
+                    soa_jit_compact_write_retirement
+                        ? SoaJitWriteRetirement::PersistentStateBits : 0,
+                    soa_jit_compact_write_retirement
+                        ? SoaJitWriteRetirement::PersistentStateBytes : 0,
+                    soa_jit_compact_write_retirement
+                        ? SoaJitWriteRetirement::
+                              TransientResponseCreditTagBits : 0,
+                    soa_jit_compact_write_retirement
+                        ? soa_jit_write_retirement.creditHighWater() *
+                              SoaJitWriteRetirement::
+                                  TransientResponseCreditTagBits
+                        : 0,
+                    soa_jit_compact_write_retirement
+                        ? (soa_jit_write_retirement.creditHighWater() *
+                               SoaJitWriteRetirement::
+                                   TransientResponseCreditTagBits +
+                           7) /
+                              8
+                        : 0,
+                    soa_jit_compact_write_retirement
+                        ? soa_jit_write_retirement.creditHighWater() *
+                              SoaJitWriteRetirement::LineBytes
+                        : 0);
+            DPRINTF(MAAVirtualTrace,
                     "event=soa_jit_old_result_complete schema=1 unit=%d "
                     "operation_tick=%lu enabled=%d generation=%lu "
                     "captures=%lu rejected=%lu write_issues=%lu "
@@ -7061,6 +7255,8 @@ void IndirectAccessUnit::executeInstruction() {
                 soa_jit_result_pipeline.aReadHighWater();
             const auto &result_write_hwm =
                 soa_jit_result_pipeline.aWriteHighWater();
+            const auto &compact_write_hwm =
+                soa_jit_result_pipeline.compactWriteHighWater();
             const auto &result_traffic_hwm =
                 soa_jit_result_pipeline.activeLineHighWater();
             constexpr size_t fixed_result_context_bytes =
@@ -7122,7 +7318,7 @@ void IndirectAccessUnit::executeInstruction() {
             static_assert(SoaJitValueCoalescer::MaxWaiters % 8 == 0);
             static_assert(lookahead_value_bytes_per_context == 64);
             DPRINTF(MAAVirtualTrace,
-                    "event=soa_jit_result_pipeline schema=2 unit=%d "
+                    "event=soa_jit_result_pipeline schema=3 unit=%d "
                     "operation_tick=%lu generation=%lu active_contexts=%d "
                     "regions=%lu lines_per_region=%lu "
                     "region_payload_bytes=%lu fixed_result_payload_bytes=%lu "
@@ -7147,10 +7343,12 @@ void IndirectAccessUnit::executeInstruction() {
                     "incremental_result_total_state_bytes_vs_32=%lu "
                     "a_read_hwm_r0=%u a_read_hwm_r1=%u "
                     "a_write_hwm_r0=%u a_write_hwm_r1=%u "
+                    "compact_write_hwm_r0=%u compact_write_hwm_r1=%u "
                     "traffic_hwm_r0=%u traffic_hwm_r1=%u "
                     "read_write_overlap_ticks=%lu "
                     "dual_region_overlap_ticks=%lu "
-                    "serialized_write_only_ticks=%lu terminal=1\n",
+                    "serialized_write_only_ticks=%lu "
+                    "compact_write_outstanding_ticks=%lu terminal=1\n",
                     my_indirect_id, my_decode_start_tick,
                     soa_jit_generation, soa_jit_active_contexts,
                     SoaJitResultPipeline::Regions,
@@ -7181,10 +7379,12 @@ void IndirectAccessUnit::executeInstruction() {
                     incremental_result_total_state_bytes,
                     result_read_hwm[0], result_read_hwm[1],
                     result_write_hwm[0], result_write_hwm[1],
+                    compact_write_hwm[0], compact_write_hwm[1],
                     result_traffic_hwm[0], result_traffic_hwm[1],
                     soa_jit_result_pipeline.resultReadWriteOverlapTicks(),
                     soa_jit_result_pipeline.dualRegionResultOverlapTicks(),
-                    soa_jit_result_pipeline.serializedWriteOnlyTicks());
+                    soa_jit_result_pipeline.serializedWriteOnlyTicks(),
+                    soa_jit_result_pipeline.compactWriteOutstandingTicks());
             DPRINTF(MAAVirtualTrace,
                     "event=soa_jit_complete schema=2 unit=%d "
                     "operation_tick=%lu generation=%lu logical=%d "
@@ -9991,8 +10191,11 @@ void IndirectAccessUnit::retirementWriteComplete(
         auto *peek = dynamic_cast<SoaJitWriteSenderState *>(
             responsePacket == nullptr ? nullptr :
                                         responsePacket->senderState);
-        panic_if(peek == nullptr || peek->identity.address != addr,
-                 "I[%d] SoA/JIT WriteResp lacks exact generation/context "
+        const Addr owner_address = peek == nullptr ? 0 :
+            peek->compact ? peek->compactIdentity.address :
+                            peek->contextIdentity.address;
+        panic_if(peek == nullptr || owner_address != addr,
+                 "I[%d] SoA/JIT WriteResp lacks exact response "
                  "ownership at 0x%lx\n",
                  my_indirect_id, addr);
         auto *sender = dynamic_cast<SoaJitWriteSenderState *>(
@@ -10000,13 +10203,25 @@ void IndirectAccessUnit::retirementWriteComplete(
         panic_if(sender != peek,
                  "I[%d] SoA/JIT WriteResp sender-state stack diverged\n",
                  my_indirect_id);
-        const auto identity = sender->identity;
-        delete sender;
-        panic_if(!completeSoaJitWrite(identity),
-                 "I[%d] SoA/JIT rejected stale/unmatched WriteResp "
-                 "generation=%lu context=%u addr=0x%lx active=%lu\n",
-                 my_indirect_id, identity.generation, identity.context,
-                 identity.address, soa_jit_generation);
+        if (sender->compact) {
+            const auto identity = sender->compactIdentity;
+            delete sender;
+            panic_if(!completeSoaJitWrite(identity),
+                     "I[%d] SoA/JIT rejected stale/unmatched compact "
+                     "WriteResp generation=%lu sequence=%lu credit=%u "
+                     "addr=0x%lx active=%lu\n",
+                     my_indirect_id, identity.generation,
+                     identity.issueSequence, identity.credit,
+                     identity.address, soa_jit_generation);
+        } else {
+            const auto identity = sender->contextIdentity;
+            delete sender;
+            panic_if(!completeSoaJitWrite(identity),
+                     "I[%d] SoA/JIT rejected stale/unmatched WriteResp "
+                     "generation=%lu context=%u addr=0x%lx active=%lu\n",
+                     my_indirect_id, identity.generation, identity.context,
+                     identity.address, soa_jit_generation);
+        }
         scheduleNextExecution(true);
         return;
     }

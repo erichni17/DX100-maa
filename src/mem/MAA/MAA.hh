@@ -461,6 +461,7 @@ public:
     std::vector<Addr> virtual_index_range_boundaries;
     unsigned int virtual_index_filter_words_per_cycle;
     unsigned int soa_jit_active_contexts;
+    bool soa_jit_compact_write_retirement;
     unsigned int soa_jit_old_result_partial_credits;
     bool soa_jit_old_result_dense_pressure;
     unsigned int soa_jit_value_lookahead;
@@ -1226,6 +1227,20 @@ public:
         std::vector<statistics::Scalar *> IND_SoaJitAliasesApplied;
         std::vector<statistics::Scalar *> IND_SoaJitAWriteIssues;
         std::vector<statistics::Scalar *> IND_SoaJitAWriteResponses;
+        std::vector<statistics::Scalar *>
+            IND_SoaJitCompactWriteRetirementEnabled;
+        std::vector<statistics::Scalar *>
+            IND_SoaJitCompactWriteRetirementCredits;
+        std::vector<statistics::Scalar *>
+            IND_SoaJitCompactWriteRetirementCreditHighWater;
+        std::vector<statistics::Scalar *>
+            IND_SoaJitCompactWriteRetirementStalls;
+        std::vector<statistics::Scalar *>
+            IND_SoaJitCompactWriteRetirementPersistentBits;
+        std::vector<statistics::Scalar *>
+            IND_SoaJitCompactWriteRetirementPersistentBytes;
+        std::vector<statistics::Scalar *>
+            IND_SoaJitCompactWriteTransientPayloadHighWaterBytes;
         std::vector<statistics::Scalar *> IND_SoaJitOldResultCaptures;
         std::vector<statistics::Scalar *> IND_SoaJitOldResultWriteIssues;
         std::vector<statistics::Scalar *> IND_SoaJitOldResultWriteResponses;
