@@ -30,6 +30,11 @@ class MAA(ClockedObject):
         0,
         "Logical SPD cache mode: 0=Serial4K, 1=PingPong2K",
     )
+    logical_tile_page_scheduler = Param.Bool(
+        False,
+        "Opt in to four-page logical instructions over four reserved native "
+        "4K SPD frame spans",
+    )
     num_regs_per_core = Param.Unsigned(
         8,
         "Number of 32-bit scalar registers per core attached to the DX100 instance",

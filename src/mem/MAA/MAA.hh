@@ -25,6 +25,7 @@
 #include "mem/MAA/InactiveProducerMaskedFragmentRetention.hh"
 #include "mem/MAA/LogicalSPDCacheGem5Bridge.hh"
 #include "mem/MAA/LogicalSPDCacheLiveAdapterState.hh"
+#include "mem/MAA/LogicalTilePageScheduler.hh"
 #include "mem/cache/tags/base.hh"
 #include "mem/packet.hh"
 #include "mem/packet_queue.hh"
@@ -412,6 +413,7 @@ public:
     unsigned int physical_tile_elements;
     unsigned int transparent_spd_mode;
     unsigned int logical_spd_cache_mode;
+    bool logical_tile_page_scheduler;
     unsigned int page_materialization_wakeup_batches;
     unsigned int page_materialization_fragment_buffers;
     bool page_materialization_direct_spd_fragments;
@@ -854,6 +856,55 @@ protected:
         ContextID contextID = InvalidContextID;
         Addr pc = 0;
     };
+    using LogicalPageScheduler = maa::LogicalTilePageScheduler;
+    static constexpr uint16_t LogicalDenseStoreDescriptor =
+        LogicalPageScheduler::LogicalDescriptors - 1;
+    struct LogicalPageDescriptorState
+    {
+        bool configured = false;
+        LogicalPageScheduler::DescriptorConfig config{};
+    };
+    /**
+     * One fixed architectural execution record per MAA.  Native action
+     * identity remains immutable from scheduler issue through the functional
+     * unit's terminal callback; no payload is stored here.
+     */
+    struct LogicalPageExecution
+    {
+        bool active = false;
+        bool actionInFlight = false;
+        bool actionDispatched = false;
+        Instruction architectural{};
+        PacketPtr completionPacket = nullptr;
+        LogicalPageScheduler::Operation operation{};
+        LogicalPageScheduler::NativeAction action{};
+        uint8_t nextPage = 0;
+        uint64_t architecturalSequence = 0;
+    };
+    std::vector<std::unique_ptr<LogicalPageScheduler>> logicalPageSchedulers;
+    std::vector<std::array<LogicalPageDescriptorState,
+                           LogicalPageScheduler::LogicalDescriptors>>
+        logicalPageDescriptors;
+    std::vector<LogicalPageExecution> logicalPageExecutions;
+    uint64_t logicalPageArchitecturalSequence = 0;
+    std::array<uint16_t, LogicalPageScheduler::PhysicalFrames>
+        logicalPageFrameIDs(unsigned maaID) const;
+    bool submitLogicalPageInstruction(
+        InstructionPtr instruction, PacketPtr completionPacket);
+    bool configureLogicalPageSource(
+        unsigned maaID, uint16_t descriptor, Addr backing, uint8_t datatype,
+        uint64_t *generation);
+    bool configureLogicalPageDestination(
+        unsigned maaID, uint16_t descriptor, Addr backing, uint8_t datatype,
+        uint64_t *generation);
+    void serviceLogicalPageScheduler();
+    bool dispatchLogicalPageAction(
+        unsigned maaID, LogicalPageExecution &execution);
+    void finishLogicalPageAction(InstructionPtr instruction);
+    void retireLogicalPageInstruction(
+        unsigned maaID, LogicalPageExecution &execution);
+    bool instructionTouchesLogicalReservedFrame(
+        const Instruction &instruction) const;
     std::vector<LogicalSPDExecution> logicalSpdExecutions;
     LogicalSPDCacheLiveAdapterState logicalSpdLiveBoundary;
     bool submitLogicalSPDDescriptor(
@@ -888,6 +939,11 @@ public:
     Tick my_last_idle_tick;
     Tick my_last_reset_tick;
     bool allFuncUnitsIdle();
+    bool logicalTilePageSchedulerEnabled() const
+    {
+        return logical_tile_page_scheduler;
+    }
+    bool logicalTileReservedLane(int tileID) const;
     bool hasNonStreamActivity(int streamID) const;
     Tick getCurTick();
 

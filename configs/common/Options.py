@@ -250,6 +250,14 @@ def addNoISAOptions(parser):
         help="Logical SPD cache mode: 0=Serial4K, 1=PingPong2K",
     )
     parser.add_argument(
+        "--maa_logical_tile_page_scheduler",
+        action="store_true",
+        help=(
+            "Opt in to the production four-page logical scheduler; reserves "
+            "four non-overlapping 4K SPD frame spans per MAA"
+        ),
+    )
+    parser.add_argument(
         "--maa_num_regs_per_core",
         type=int,
         default=8,

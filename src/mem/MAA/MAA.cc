@@ -119,6 +119,7 @@ MAA::MAA(const MAAParams &p)
                                  : p.physical_tile_elements),
       transparent_spd_mode(p.transparent_spd_mode),
       logical_spd_cache_mode(p.logical_spd_cache_mode),
+      logical_tile_page_scheduler(p.logical_tile_page_scheduler),
       page_materialization_wakeup_batches(
           p.page_materialization_wakeup_batches),
       page_materialization_fragment_buffers(
@@ -227,6 +228,21 @@ MAA::MAA(const MAAParams &p)
     panic_if(logical_spd_cache_mode > 1,
              "Invalid logical SPD cache mode %u (expected 0 or 1)\n",
              logical_spd_cache_mode);
+    if (logical_tile_page_scheduler) {
+        panic_if(num_tile_elements != LogicalPageScheduler::LogicalElements ||
+                     physical_tile_elements !=
+                         LogicalPageScheduler::ElementsPerPage,
+                 "Logical tile page scheduler requires 16384 logical and "
+                 "4096 physical elements, got %u/%u\n",
+                 num_tile_elements, physical_tile_elements);
+        panic_if(num_tiles % num_maas != 0 ||
+                     num_tiles / num_maas <
+                         LogicalPageScheduler::PhysicalFrames *
+                             LogicalPageScheduler::MaxFrameLaneSpan,
+                 "Logical tile page scheduler needs at least eight existing "
+                 "SPD lane IDs per MAA, got %u tiles across %u MAAs\n",
+                 num_tiles, num_maas);
+    }
     panic_if(soa_jit_predicate_active_credits != 1 &&
                  soa_jit_predicate_active_credits != 4 &&
                  soa_jit_predicate_active_credits != 8 &&
@@ -398,6 +414,16 @@ MAA::MAA(const MAAParams &p)
     logicalSpdBridge = std::make_unique<LogicalSPDCacheGem5Bridge>(
         num_maas, logicalSpdMode);
     logicalSpdExecutions.resize(num_maas);
+    logicalPageDescriptors.resize(num_maas);
+    logicalPageExecutions.resize(num_maas);
+    if (logical_tile_page_scheduler) {
+        logicalPageSchedulers.reserve(num_maas);
+        for (unsigned maaID = 0; maaID < num_maas; ++maaID) {
+            logicalPageSchedulers.push_back(
+                std::make_unique<LogicalPageScheduler>(
+                    logicalPageFrameIDs(maaID)));
+        }
+    }
     num_instructions_per_maa = num_instructions_per_core * num_cores_per_maas;
     num_instructions_total = num_instructions_per_maa * num_maas;
     ifile = new IF(num_instructions_per_maa, num_maas, num_tiles, this);
@@ -801,7 +827,8 @@ void MAA::issueInstruction() {
                                 StreamAccessUnit::
                                     responseBearingPublishCompletionTile(
                                         inst);
-                            if (publisher_completion != -1) {
+                            if (publisher_completion != -1 &&
+                                !inst->logicalPageManaged) {
                                 spd->setTileService(
                                     publisher_completion,
                                     getInstructionTileWordSize(
@@ -3585,6 +3612,292 @@ void MAA::finishTransparentBlockerTracking(uint64_t generation) {
     transparentBlockerTracking = false;
     transparentInstructionFileBlocked = false;
 }
+
+std::array<uint16_t, MAA::LogicalPageScheduler::PhysicalFrames>
+MAA::logicalPageFrameIDs(unsigned maaID) const
+{
+    panic_if(maaID >= num_maas || num_tiles % num_maas != 0,
+             "Cannot derive logical frame IDs for MAA %u\n", maaID);
+    const unsigned lanesPerMAA = num_tiles / num_maas;
+    const unsigned reservedLanes = LogicalPageScheduler::PhysicalFrames *
+        LogicalPageScheduler::MaxFrameLaneSpan;
+    panic_if(lanesPerMAA < reservedLanes,
+             "MAA %u has only %u SPD lanes for %u reserved lanes\n",
+             maaID, lanesPerMAA, reservedLanes);
+    const unsigned first = maaID * lanesPerMAA + lanesPerMAA - reservedLanes;
+    std::array<uint16_t, LogicalPageScheduler::PhysicalFrames> frames{};
+    for (unsigned index = 0; index < frames.size(); ++index)
+        frames[index] = first +
+            index * LogicalPageScheduler::MaxFrameLaneSpan;
+    return frames;
+}
+
+bool
+MAA::logicalTileReservedLane(int tileID) const
+{
+    if (!logical_tile_page_scheduler || tileID < 0 ||
+        tileID >= static_cast<int>(num_tiles)) {
+        return false;
+    }
+    for (unsigned maaID = 0; maaID < num_maas; ++maaID) {
+        const auto frames = logicalPageFrameIDs(maaID);
+        for (const uint16_t frame : frames) {
+            if (tileID >= frame && tileID <
+                frame + LogicalPageScheduler::MaxFrameLaneSpan) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool
+MAA::instructionTouchesLogicalReservedFrame(
+    const Instruction &instruction) const
+{
+    if (!logical_tile_page_scheduler || instruction.logicalPageManaged)
+        return false;
+    const int tiles[] = {
+        instruction.src1SpdID, instruction.src2SpdID,
+        instruction.dst1SpdID, instruction.dst2SpdID,
+        instruction.condSpdID,
+    };
+    for (const int tile : tiles) {
+        if (tile < 0)
+            continue;
+        const int lanes = instruction.WordSize() / sizeof(uint32_t);
+        for (int lane = 0; lane < lanes; ++lane) {
+            if (logicalTileReservedLane(tile + lane))
+                return true;
+        }
+    }
+    return false;
+}
+
+bool
+MAA::configureLogicalPageSource(
+    unsigned maaID, uint16_t descriptor, Addr backing, uint8_t datatype,
+    uint64_t *generation)
+{
+    panic_if(maaID >= num_maas || descriptor >=
+                 LogicalPageScheduler::LogicalDescriptors ||
+                 generation == nullptr,
+             "Invalid logical page source descriptor %u/%u\n",
+             maaID, descriptor);
+    const bool fp32 = datatype == static_cast<uint8_t>(
+        Instruction::DataType::FLOAT32_TYPE);
+    const bool fp64 = datatype == static_cast<uint8_t>(
+        Instruction::DataType::FLOAT64_TYPE);
+    panic_if(!fp32 && !fp64,
+             "Logical page scheduler supports only FP32/FP64, got %u\n",
+             datatype);
+    auto &state = logicalPageDescriptors[maaID][descriptor];
+    const uint8_t wordBytes = fp32 ? sizeof(float) : sizeof(double);
+    const auto type = fp32 ? LogicalPageScheduler::DataType::Float32 :
+                             LogicalPageScheduler::DataType::Float64;
+    if (state.configured && state.config.backingAddress == backing &&
+        state.config.dataType == type &&
+        state.config.wordBytes == wordBytes &&
+        state.config.readyPageMask == LogicalPageScheduler::AllPagesReady) {
+        *generation = state.config.generation;
+        return true;
+    }
+    LogicalPageScheduler::DescriptorConfig config;
+    config.generation = state.configured ? state.config.generation + 1 : 1;
+    panic_if(config.generation == 0,
+             "Logical source descriptor generation wrapped\n");
+    config.backingAddress = backing;
+    config.backingBytes = uint64_t{LogicalPageScheduler::LogicalElements} *
+        wordBytes;
+    config.dataType = type;
+    config.wordBytes = wordBytes;
+    config.readyPageMask = LogicalPageScheduler::AllPagesReady;
+    const auto status = logicalPageSchedulers[maaID]->configure(
+        descriptor, config);
+    panic_if(status != LogicalPageScheduler::Status::Accepted,
+             "Logical source descriptor %u configure failed with %u\n",
+             descriptor, static_cast<unsigned>(status));
+    state.configured = true;
+    state.config = config;
+    *generation = config.generation;
+    return true;
+}
+
+bool
+MAA::configureLogicalPageDestination(
+    unsigned maaID, uint16_t descriptor, Addr backing, uint8_t datatype,
+    uint64_t *generation)
+{
+    panic_if(maaID >= num_maas || descriptor >=
+                 LogicalPageScheduler::LogicalDescriptors ||
+                 generation == nullptr,
+             "Invalid logical page destination descriptor %u/%u\n",
+             maaID, descriptor);
+    const bool fp32 = datatype == static_cast<uint8_t>(
+        Instruction::DataType::FLOAT32_TYPE);
+    const bool fp64 = datatype == static_cast<uint8_t>(
+        Instruction::DataType::FLOAT64_TYPE);
+    panic_if(!fp32 && !fp64,
+             "Logical page scheduler supports only FP32/FP64, got %u\n",
+             datatype);
+    auto &state = logicalPageDescriptors[maaID][descriptor];
+    LogicalPageScheduler::DescriptorConfig config;
+    config.generation = state.configured ? state.config.generation + 1 : 1;
+    panic_if(config.generation == 0,
+             "Logical destination descriptor generation wrapped\n");
+    config.backingAddress = backing;
+    config.wordBytes = fp32 ? sizeof(float) : sizeof(double);
+    config.backingBytes = uint64_t{LogicalPageScheduler::LogicalElements} *
+        config.wordBytes;
+    config.dataType = fp32 ? LogicalPageScheduler::DataType::Float32 :
+                             LogicalPageScheduler::DataType::Float64;
+    config.readyPageMask = 0;
+    const auto status = logicalPageSchedulers[maaID]->configure(
+        descriptor, config);
+    panic_if(status != LogicalPageScheduler::Status::Accepted,
+             "Logical destination descriptor %u configure failed with %u\n",
+             descriptor, static_cast<unsigned>(status));
+    state.configured = true;
+    state.config = config;
+    *generation = config.generation;
+    return true;
+}
+
+bool
+MAA::submitLogicalPageInstruction(
+    InstructionPtr instruction, PacketPtr completionPacket)
+{
+    panic_if(!logical_tile_page_scheduler || instruction == nullptr ||
+                 completionPacket == nullptr ||
+                 instruction->maa_id < 0 ||
+                 instruction->maa_id >= static_cast<int>(num_maas),
+             "Invalid logical page scheduler submission\n");
+    const unsigned maaID = instruction->maa_id;
+    auto &execution = logicalPageExecutions[maaID];
+    if (execution.active)
+        return false;
+    panic_if(!instruction->hasLogicalOperands(),
+             "Logical page submission lacks logical operands\n");
+    const uint8_t datatype = static_cast<uint8_t>(instruction->datatype);
+    const int wordBytes = instruction->WordSize();
+    panic_if(wordBytes != sizeof(float) && wordBytes != sizeof(double),
+             "Logical page scheduler received unsupported word size %d\n",
+             wordBytes);
+    if (instruction->isLogicalStream()) {
+        const int completion = instruction->logicalCompletionSpdID;
+        panic_if(completion < 0 ||
+                     completion + wordBytes / sizeof(uint32_t) >
+                         static_cast<int>(num_tiles),
+                 "Logical stream lacks a valid completion span\n");
+        for (int lane = 0; lane < wordBytes / sizeof(uint32_t); ++lane) {
+            panic_if(logicalTileReservedLane(completion + lane) ||
+                         ifile->hasTileReference(maaID, completion + lane),
+                     "Logical stream completion span aliases reserved/live "
+                     "tile %d\n", completion + lane);
+        }
+    }
+
+    LogicalPageScheduler::Operation operation;
+    uint64_t src1Generation = 0;
+    uint64_t src2Generation = 0;
+    uint64_t dstGeneration = 0;
+    if (instruction->isLogicalStreamLoad()) {
+        operation.shape = LogicalPageScheduler::Shape::Materialize;
+        operation.destination = instruction->dst1LogicalID;
+        configureLogicalPageDestination(
+            maaID, operation.destination,
+            instruction->logicalSourceBackingAddr, datatype,
+            &dstGeneration);
+    } else if (instruction->isLogicalStreamStore()) {
+        operation.shape = LogicalPageScheduler::Shape::DenseStreamStore;
+        operation.source1 = instruction->src1LogicalID;
+        operation.destination = LogicalDenseStoreDescriptor;
+        const auto &source = logicalPageDescriptors[maaID][operation.source1];
+        const auto expectedType = instruction->datatype ==
+                Instruction::DataType::FLOAT32_TYPE
+            ? LogicalPageScheduler::DataType::Float32
+            : LogicalPageScheduler::DataType::Float64;
+        panic_if(!source.configured ||
+                     source.config.dataType != expectedType ||
+                     source.config.readyPageMask !=
+                         LogicalPageScheduler::AllPagesReady,
+                 "Logical STREAM_ST source descriptor %u is not a complete "
+                 "typed generation\n", operation.source1);
+        src1Generation = source.config.generation;
+        configureLogicalPageDestination(
+            maaID, operation.destination,
+            instruction->logicalDestinationBackingAddr, datatype,
+            &dstGeneration);
+    } else if (instruction->isLogicalALUScalar()) {
+        operation.shape = LogicalPageScheduler::Shape::UnaryScalarAlu;
+        operation.source1 = instruction->src1LogicalID;
+        operation.destination = instruction->dst1LogicalID;
+        configureLogicalPageSource(
+            maaID, operation.source1,
+            instruction->logicalSourceBackingAddr, datatype,
+            &src1Generation);
+        configureLogicalPageDestination(
+            maaID, operation.destination, instruction->backingAddr,
+            datatype, &dstGeneration);
+    } else if (instruction->isLogicalALUVector()) {
+        operation.shape = LogicalPageScheduler::Shape::BinaryVectorAlu;
+        operation.source1 = instruction->src1LogicalID;
+        operation.source2 = instruction->src2LogicalID;
+        operation.destination = instruction->dst1LogicalID;
+        configureLogicalPageSource(
+            maaID, operation.source1,
+            instruction->logicalSourceBackingAddr, datatype,
+            &src1Generation);
+        if (operation.source2 == operation.source1) {
+            src2Generation = src1Generation;
+        } else {
+            configureLogicalPageSource(
+                maaID, operation.source2,
+                instruction->logicalSource2BackingAddr, datatype,
+                &src2Generation);
+        }
+        configureLogicalPageDestination(
+            maaID, operation.destination,
+            instruction->logicalDestinationBackingAddr, datatype,
+            &dstGeneration);
+    } else {
+        panic("Unsupported logical scheduler opcode %u\n",
+              static_cast<unsigned>(instruction->opcode));
+    }
+
+    ++logicalPageArchitecturalSequence;
+    panic_if(logicalPageArchitecturalSequence == 0,
+             "Logical architectural sequence wrapped\n");
+    instruction->src1LogicalGeneration = src1Generation;
+    instruction->src2LogicalGeneration = src2Generation;
+    instruction->dst1LogicalGeneration = dstGeneration;
+    execution.active = true;
+    execution.actionInFlight = false;
+    execution.actionDispatched = false;
+    execution.architectural = *instruction;
+    execution.completionPacket = completionPacket;
+    execution.operation = operation;
+    execution.nextPage = 0;
+    execution.architecturalSequence = logicalPageArchitecturalSequence;
+    if (instruction->isLogicalStream()) {
+        spd->setTileIdle(instruction->logicalCompletionSpdID, wordBytes);
+        spd->setTileNotReady(instruction->logicalCompletionSpdID, wordBytes);
+    }
+    DPRINTF(MAAVirtualTrace,
+            "event=logical_page_admit schema=1 sequence=%lu maa=%u "
+            "opcode=%u operation=%u datatype=%u scalar_reg=%d src1=%d "
+            "src1_generation=%lu src2=%d src2_generation=%lu dst=%d "
+            "dst_generation=%lu completion=%d pages=4 page_elements=4096\n",
+            execution.architecturalSequence, maaID,
+            static_cast<unsigned>(instruction->opcode),
+            static_cast<unsigned>(instruction->optype), datatype,
+            instruction->src1RegID, instruction->src1LogicalID,
+            src1Generation, instruction->src2LogicalID, src2Generation,
+            instruction->dst1LogicalID, dstGeneration,
+            instruction->logicalCompletionSpdID);
+    scheduleLogicalSPDEvent();
+    return true;
+}
 void MAA::emitTransparentMacroSummary(uint64_t generation,
                                       Tick producerRegistrationTick) {
     using Stage = HybridMacroEventTracker::Stage;
@@ -4134,9 +4447,297 @@ MAA::recvLogicalSPDTimingResp(PacketPtr pkt, uint8_t respondingPort)
     return true;
 }
 
+bool
+MAA::dispatchLogicalPageAction(
+    unsigned maaID, LogicalPageExecution &execution)
+{
+    const auto &action = execution.action;
+    Instruction instruction;
+    instruction.core_id = execution.architectural.core_id;
+    instruction.maa_id = maaID;
+    instruction.CID = execution.architectural.CID;
+    instruction.PC = execution.architectural.PC;
+    instruction.datatype = execution.architectural.datatype;
+    instruction.optype = execution.architectural.optype;
+    instruction.controllerManaged = true;
+    instruction.logicalPageManaged = true;
+    instruction.controllerTransactionID = action.transaction;
+    instruction.controllerPage = action.page;
+    instruction.controllerElementOffset = 0;
+    instruction.controllerElements = LogicalPageScheduler::ElementsPerPage;
+    instruction.src1LogicalGeneration = action.source1Generation;
+    instruction.src2LogicalGeneration = action.source2Generation;
+    instruction.dst1LogicalGeneration = action.destinationGeneration;
+    instruction.src1Status = Instruction::TileStatus::Finished;
+    instruction.src2Status = Instruction::TileStatus::Finished;
+    instruction.condStatus = Instruction::TileStatus::Finished;
+    instruction.dst1Status = Instruction::TileStatus::WaitForService;
+    instruction.dst2Status = Instruction::TileStatus::WaitForService;
+
+    const Addr address = action.backingAddress + action.byteOffset;
+    switch (action.kind) {
+      case LogicalPageScheduler::ActionKind::MaterializeFill:
+      case LogicalPageScheduler::ActionKind::Source1Fill:
+      case LogicalPageScheduler::ActionKind::Source2Fill:
+        instruction.opcode = Instruction::OpcodeType::STREAM_LD;
+        instruction.accessType = Instruction::AccessType::READ;
+        instruction.dst1SpdID = action.kind ==
+                LogicalPageScheduler::ActionKind::MaterializeFill
+            ? action.destinationFrame
+            : (action.kind == LogicalPageScheduler::ActionKind::Source1Fill
+                   ? action.source1Frame
+                   : action.source2Frame);
+        instruction.baseAddr = address;
+        instruction.addrRangeID = getAddrRegion(address);
+        panic_if(instruction.addrRangeID < 0,
+                 "Logical fill address 0x%lx is unregistered\n", address);
+        instruction.minAddr = addrRegions[instruction.addrRangeID].first;
+        instruction.maxAddr = addrRegions[instruction.addrRangeID].second;
+        break;
+      case LogicalPageScheduler::ActionKind::UnaryScalarCompute:
+        instruction.opcode = Instruction::OpcodeType::ALU_SCALAR;
+        instruction.accessType = Instruction::AccessType::COMPUTE;
+        instruction.src1SpdID = action.source1Frame;
+        instruction.dst1SpdID = action.destinationFrame;
+        instruction.src1RegID = execution.architectural.src1RegID;
+        break;
+      case LogicalPageScheduler::ActionKind::BinaryVectorCompute:
+        instruction.opcode = Instruction::OpcodeType::ALU_VECTOR;
+        instruction.accessType = Instruction::AccessType::COMPUTE;
+        instruction.src1SpdID = action.source1Frame;
+        instruction.src2SpdID = action.source2Frame ==
+                LogicalPageScheduler::NoFrame
+            ? action.source1Frame
+            : action.source2Frame;
+        instruction.dst1SpdID = action.destinationFrame;
+        break;
+      case LogicalPageScheduler::ActionKind::DenseStreamStore:
+      case LogicalPageScheduler::ActionKind::DestinationWrite:
+        instruction.opcode = Instruction::OpcodeType::STREAM_ST;
+        instruction.accessType = Instruction::AccessType::WRITE;
+        instruction.src1SpdID = action.kind ==
+                LogicalPageScheduler::ActionKind::DenseStreamStore
+            ? action.source1Frame
+            : action.destinationFrame;
+        instruction.controllerDstSlot = instruction.src1SpdID;
+        instruction.baseAddr = address;
+        instruction.addrRangeID = getAddrRegion(address);
+        panic_if(instruction.addrRangeID < 0,
+                 "Logical write address 0x%lx is unregistered\n", address);
+        instruction.minAddr = addrRegions[instruction.addrRangeID].first;
+        instruction.maxAddr = addrRegions[instruction.addrRangeID].second;
+        break;
+    }
+
+    if (!ifile->pushInstruction(instruction))
+        return false;
+    if (instruction.dst1SpdID != -1) {
+        spd->setTileIdle(instruction.dst1SpdID, instruction.WordSize());
+        spd->setTileNotReady(instruction.dst1SpdID, instruction.WordSize());
+    }
+    DPRINTF(MAAVirtualTrace,
+            "event=logical_page_native_dispatch schema=1 sequence=%lu "
+            "maa=%u page=%u action=%u transaction=%lu opcode=%u src1=%d "
+            "src2=%d dst=%d address=0x%lx bytes=%lu\n",
+            execution.architecturalSequence, maaID, action.page,
+            static_cast<unsigned>(action.kind), action.transaction,
+            static_cast<unsigned>(instruction.opcode), instruction.src1SpdID,
+            instruction.src2SpdID, instruction.dst1SpdID, address,
+            action.byteLength);
+    execution.actionDispatched = true;
+    scheduleIssueInstructionEvent(1);
+    return true;
+}
+
+void
+MAA::serviceLogicalPageScheduler()
+{
+    if (!logical_tile_page_scheduler)
+        return;
+    for (unsigned maaID = 0; maaID < num_maas; ++maaID) {
+        auto &execution = logicalPageExecutions[maaID];
+        if (!execution.active)
+            continue;
+        auto &scheduler = *logicalPageSchedulers[maaID];
+        if (execution.actionInFlight) {
+            if (!execution.actionDispatched &&
+                !dispatchLogicalPageAction(maaID, execution)) {
+                scheduleLogicalSPDEvent(1);
+            }
+            continue;
+        }
+        if (!scheduler.active()) {
+            if (execution.nextPage ==
+                LogicalPageScheduler::PagesPerTile) {
+                retireLogicalPageInstruction(maaID, execution);
+                continue;
+            }
+            execution.operation.page = execution.nextPage;
+            const auto admitted = scheduler.admit(execution.operation);
+            panic_if(admitted != LogicalPageScheduler::Status::Accepted,
+                     "Logical page %u admission failed with %u\n",
+                     execution.nextPage,
+                     static_cast<unsigned>(admitted));
+            DPRINTF(MAAVirtualTrace,
+                    "event=logical_page_begin schema=1 sequence=%lu maa=%u "
+                    "page=%u shape=%u\n",
+                    execution.architecturalSequence, maaID,
+                    execution.nextPage,
+                    static_cast<unsigned>(execution.operation.shape));
+            ++execution.nextPage;
+        }
+        LogicalPageScheduler::NativeAction action;
+        const auto status = scheduler.nextAction(&action);
+        if (status == LogicalPageScheduler::Status::FrameUnavailable) {
+            scheduleLogicalSPDEvent(1);
+            continue;
+        }
+        panic_if(status != LogicalPageScheduler::Status::Accepted,
+                 "Logical scheduler next action failed with %u\n",
+                 static_cast<unsigned>(status));
+        execution.action = action;
+        execution.actionInFlight = true;
+        execution.actionDispatched = false;
+        if (!dispatchLogicalPageAction(maaID, execution))
+            scheduleLogicalSPDEvent(1);
+    }
+}
+
+void
+MAA::finishLogicalPageAction(InstructionPtr instruction)
+{
+    panic_if(!logical_tile_page_scheduler || instruction == nullptr ||
+                 !instruction->logicalPageManaged ||
+                 instruction->maa_id < 0 ||
+                 instruction->maa_id >= static_cast<int>(num_maas),
+             "Invalid logical page native completion\n");
+    const unsigned maaID = instruction->maa_id;
+    auto &execution = logicalPageExecutions[maaID];
+    const auto &action = execution.action;
+    panic_if(!execution.active || !execution.actionInFlight ||
+                 !execution.actionDispatched ||
+                 instruction->controllerTransactionID != action.transaction ||
+                 instruction->controllerPage != action.page ||
+                 instruction->datatype != execution.architectural.datatype ||
+                 instruction->src1LogicalGeneration !=
+                     action.source1Generation ||
+                 instruction->src2LogicalGeneration !=
+                     action.source2Generation ||
+                 instruction->dst1LogicalGeneration !=
+                     action.destinationGeneration,
+             "Logical native completion lost exact action identity\n");
+    const Addr address = action.backingAddress + action.byteOffset;
+    switch (action.kind) {
+      case LogicalPageScheduler::ActionKind::MaterializeFill:
+        panic_if(instruction->opcode != Instruction::OpcodeType::STREAM_LD ||
+                     instruction->dst1SpdID != action.destinationFrame ||
+                     instruction->baseAddr != address,
+                 "Logical materialize completion identity mismatch\n");
+        break;
+      case LogicalPageScheduler::ActionKind::Source1Fill:
+        panic_if(instruction->opcode != Instruction::OpcodeType::STREAM_LD ||
+                     instruction->dst1SpdID != action.source1Frame ||
+                     instruction->baseAddr != address,
+                 "Logical source1 completion identity mismatch\n");
+        break;
+      case LogicalPageScheduler::ActionKind::Source2Fill:
+        panic_if(instruction->opcode != Instruction::OpcodeType::STREAM_LD ||
+                     instruction->dst1SpdID != action.source2Frame ||
+                     instruction->baseAddr != address,
+                 "Logical source2 completion identity mismatch\n");
+        break;
+      case LogicalPageScheduler::ActionKind::UnaryScalarCompute:
+        panic_if(instruction->opcode != Instruction::OpcodeType::ALU_SCALAR ||
+                     instruction->src1SpdID != action.source1Frame ||
+                     instruction->dst1SpdID != action.destinationFrame ||
+                     instruction->optype != execution.architectural.optype ||
+                     instruction->src1RegID !=
+                         execution.architectural.src1RegID,
+                 "Logical unary completion identity mismatch\n");
+        break;
+      case LogicalPageScheduler::ActionKind::BinaryVectorCompute:
+        panic_if(instruction->opcode != Instruction::OpcodeType::ALU_VECTOR ||
+                     instruction->src1SpdID != action.source1Frame ||
+                     instruction->src2SpdID !=
+                         (action.source2Frame ==
+                                  LogicalPageScheduler::NoFrame
+                              ? action.source1Frame
+                              : action.source2Frame) ||
+                     instruction->dst1SpdID != action.destinationFrame ||
+                     instruction->optype != execution.architectural.optype,
+                 "Logical vector completion identity mismatch\n");
+        break;
+      case LogicalPageScheduler::ActionKind::DenseStreamStore:
+        panic_if(instruction->opcode != Instruction::OpcodeType::STREAM_ST ||
+                     instruction->src1SpdID != action.source1Frame ||
+                     instruction->baseAddr != address,
+                 "Logical dense-store completion identity mismatch\n");
+        break;
+      case LogicalPageScheduler::ActionKind::DestinationWrite:
+        panic_if(instruction->opcode != Instruction::OpcodeType::STREAM_ST ||
+                     instruction->src1SpdID != action.destinationFrame ||
+                     instruction->baseAddr != address,
+                 "Logical destination-write completion identity mismatch\n");
+        break;
+    }
+    const auto completed = logicalPageSchedulers[maaID]->complete(action);
+    panic_if(completed != LogicalPageScheduler::Status::Accepted,
+             "Logical scheduler rejected exact native completion with %u\n",
+             static_cast<unsigned>(completed));
+    if (execution.operation.destination !=
+            LogicalPageScheduler::NoDescriptor &&
+        logicalPageSchedulers[maaID]->pageReady(
+            execution.operation.destination,
+            action.destinationGeneration, action.page)) {
+        logicalPageDescriptors[maaID][execution.operation.destination]
+            .config.readyPageMask |= uint8_t{1} << action.page;
+    }
+    DPRINTF(MAAVirtualTrace,
+            "event=logical_page_native_complete schema=1 sequence=%lu "
+            "maa=%u page=%u action=%u transaction=%lu opcode=%u\n",
+            execution.architecturalSequence, maaID, action.page,
+            static_cast<unsigned>(action.kind), action.transaction,
+            static_cast<unsigned>(instruction->opcode));
+    execution.actionInFlight = false;
+    execution.actionDispatched = false;
+    scheduleLogicalSPDEvent();
+}
+
+void
+MAA::retireLogicalPageInstruction(
+    unsigned maaID, LogicalPageExecution &execution)
+{
+    panic_if(!execution.active || execution.actionInFlight ||
+                 logicalPageSchedulers[maaID]->active() ||
+                 execution.nextPage != LogicalPageScheduler::PagesPerTile ||
+                 execution.completionPacket == nullptr,
+             "Logical architectural retirement attempted before four pages "
+             "closed\n");
+    if (execution.architectural.isLogicalStream()) {
+        const int completion =
+            execution.architectural.logicalCompletionSpdID;
+        const int wordBytes = execution.architectural.WordSize();
+        spd->setTileFinished(completion, wordBytes);
+        setTileReady(completion, wordBytes);
+    }
+    PacketPtr packet = execution.completionPacket;
+    const int core = execution.architectural.core_id;
+    const uint64_t sequence = execution.architecturalSequence;
+    const auto opcode = execution.architectural.opcode;
+    execution = LogicalPageExecution{};
+    packet->makeTimingResponse();
+    packet->headerDelay = packet->payloadDelay = 0;
+    cpuSidePorts[core]->schedTimingResp(packet, getClockEdge(Cycles(1)));
+    DPRINTF(MAAVirtualTrace,
+            "event=logical_page_retire schema=1 sequence=%lu maa=%u "
+            "opcode=%u pages=4 exact_write_boundary=1\n",
+            sequence, maaID, static_cast<unsigned>(opcode));
+}
+
 void
 MAA::serviceLogicalSPD()
 {
+    serviceLogicalPageScheduler();
     using Bridge = LogicalSPDCacheGem5Bridge;
     using Slice = Bridge::Runtime::Slice;
     using Transport = Bridge::Runtime::Transport;
@@ -4372,6 +4973,13 @@ MAA::drain()
     panic_if(!logicalSpdBridge->allQuiescent(),
              "Logical SPD checkpoint/drain requested with live state; "
              "serialization is unsupported\n");
+    panic_if(std::any_of(
+                 logicalPageExecutions.begin(), logicalPageExecutions.end(),
+                 [](const LogicalPageExecution &execution) {
+                     return execution.active;
+                 }),
+             "Logical page scheduler checkpoint/drain requested with a live "
+             "architectural record\n");
     panic_if(hasLiveSoaJitState(),
              "SoA/JIT checkpoint/drain requested with a live instruction, "
              "packet, context, read, or WriteResp; serialization is "
@@ -4407,6 +5015,13 @@ MAA::drainResume()
              "Direct-retirement drain resumed with live line credits\n");
     panic_if(!logicalSpdBridge->allQuiescent(),
              "Logical SPD drain resumed with non-quiescent live state\n");
+    panic_if(std::any_of(
+                 logicalPageExecutions.begin(), logicalPageExecutions.end(),
+                 [](const LogicalPageExecution &execution) {
+                     return execution.active;
+                 }),
+             "Logical page scheduler resumed with a live architectural "
+             "record\n");
     panic_if(hasLiveSoaJitState(),
              "SoA/JIT drain resumed with live protocol state\n");
     logicalSpdBridge->reopenAdmission();
@@ -4461,6 +5076,30 @@ void MAA::dispatchInstruction() {
         if (*recv_it == true) {
             InstructionPtr instruction = *instruction_it;
             PacketPtr pkt = *pkt_it;
+            panic_if(logical_tile_page_scheduler &&
+                         !instruction->hasLogicalOperands() &&
+                         instructionTouchesLogicalReservedFrame(*instruction),
+                     "Legacy physical instruction aliases a reserved logical "
+                     "SPD frame span: %s\n", instruction->print().c_str());
+            if (logical_tile_page_scheduler &&
+                instruction->hasLogicalOperands()) {
+                if (!submitLogicalPageInstruction(instruction, pkt)) {
+                    ++pkt_it;
+                    ++recv_it;
+                    ++rid_it;
+                    ++instruction_it;
+                    continue;
+                }
+                DPRINTF(MAAController,
+                        "%s: logical page instruction %s dispatched\n",
+                        __func__, instruction->print());
+                pkt_it = my_instruction_pkts.erase(pkt_it);
+                recv_it = my_instruction_recvs.erase(recv_it);
+                rid_it = my_instruction_RIDs.erase(rid_it);
+                instruction_it = my_instructions.erase(instruction_it);
+                delete instruction;
+                continue;
+            }
             const bool prearm =
                 !isTokenBoundPageMaterialization(instruction) &&
                 isPageZeroPrearmMaterialization(instruction);
@@ -4753,7 +5392,8 @@ void MAA::finishInstructionCompute(Instruction *instruction) {
     controller_request.transactionID = instruction->controllerTransactionID;
     const int publisher_completion =
         StreamAccessUnit::responseBearingPublishCompletionTile(instruction);
-    if (publisher_completion != -1) {
+    const bool logical_page_managed = instruction->logicalPageManaged;
+    if (publisher_completion != -1 && !logical_page_managed) {
         const int word_size = instruction->WordSize();
         panic_if(instruction->dst1SpdID != -1,
                  "Publisher retained a guest completion tile inside IF\n");
@@ -4783,7 +5423,7 @@ void MAA::finishInstructionCompute(Instruction *instruction) {
     ifile->finishInstructionCompute(instruction);
     if (num_maas > 1)
         invalidator->finishInstruction(instruction);
-    if (publisher_completion != -1) {
+    if (publisher_completion != -1 && !logical_page_managed) {
         instruction->dst1SpdID = -1;
         releaseResponseBearingPublishCompletion(
             instruction->maa_id, publisher_completion,
@@ -4810,7 +5450,9 @@ void MAA::finishInstructionCompute(Instruction *instruction) {
         assert(false);
     }
     }
-    if (controller_managed) {
+    if (logical_page_managed) {
+        finishLogicalPageAction(instruction);
+    } else if (controller_managed) {
         updateTransparentBlockerTracking();
         panic_if(!transparentController.complete(controller_request),
                  "Transparent controller rejected completion of page %d "
