@@ -149,6 +149,21 @@ main()
     CHECK(empty.complete());
     CHECK(empty.finish() == SoaJitOldResultBuffer::Result::Accepted);
 
+    SoaJitOldResultBuffer delayed;
+    CHECK(delayed.begin(5, 0x4000, 1) ==
+          SoaJitOldResultBuffer::Result::Accepted);
+    CHECK(delayed.closeSelection(1, 0) ==
+          SoaJitOldResultBuffer::Result::SelectionMismatch);
+    CHECK(!delayed.selectionIsClosed());
+    const float old = 42.0F;
+    CHECK(delayed.capture(5, 0, 0,
+                          reinterpret_cast<const uint8_t *>(&old),
+                          sizeof(old)) ==
+          SoaJitOldResultBuffer::Result::Accepted);
+    CHECK(delayed.closeSelection(1, 0) ==
+          SoaJitOldResultBuffer::Result::Accepted);
+    CHECK(delayed.selectionIsClosed());
+
     std::cout << "SOA_JIT_OLD_RESULT_TEST_PASS\n";
     return 0;
 }
