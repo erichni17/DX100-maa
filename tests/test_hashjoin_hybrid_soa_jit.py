@@ -298,6 +298,7 @@ def test_build_and_runner_are_candidate_only_and_close_mechanism():
         "EXPECTED_FIRST_SCATTER_4K_ACTIONS",
         "result_sha256.txt",
         "source_fingerprint",
+        "gate.complete",
     ):
         assert closure in runner
 
@@ -318,6 +319,20 @@ def test_full_runner_contract_is_pinned_and_fails_closed():
     assert "native_rerun=0" in runner and "wall_timeout=none" in runner
     assert "for kernel in PRO PRH; do" in runner
     assert "EXPECTED_FIRST_SCATTER_4K_ACTIONS=984" in runner
+
+
+def test_terminal_evidence_is_written_then_frozen_as_raw_evidence():
+    runner = RUNNER.read_text(encoding="utf-8")
+    source_check = runner.index(
+        '[[ $(source_fingerprint) == "$SOURCE_FINGERPRINT" ]]'
+    )
+    manifest = runner.index('} >"$out/manifest.txt"')
+    terminal = runner.index('>"$out/gate.complete"')
+    hashes = runner.index('find "$out" -type f ! -name result_sha256.txt')
+    assert source_check < manifest < terminal < hashes
+    assert "! -name manifest.txt" not in runner
+    assert "terminal_marker=gate.complete" in runner
+    assert "terminal=pass" in runner
 
 
 def test_pro_and_prh_probe_and_collision_functions_remain_legacy():
@@ -355,6 +370,9 @@ class HashJoinHybridSoaJitCandidateGate(unittest.TestCase):
 
     def test_full_runner_contract(self):
         test_full_runner_contract_is_pinned_and_fails_closed()
+
+    def test_terminal_evidence_contract(self):
+        test_terminal_evidence_is_written_then_frozen_as_raw_evidence()
 
     def test_probe_contract(self):
         test_pro_and_prh_probe_and_collision_functions_remain_legacy()
