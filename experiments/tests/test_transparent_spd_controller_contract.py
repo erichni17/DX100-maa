@@ -43,7 +43,7 @@ class TransparentControllerContractTest(unittest.TestCase):
         end = source.index("} else if (!overlap_pages", begin)
         transparent_path = source[begin:end]
         self.assertIn(
-            "maa_virtual_tile_alu_scalar_store<double>", transparent_path
+            "maa_virtual_tile_alu_scalar_store<Value>", transparent_path
         )
         self.assertNotIn("maa_stream_load", transparent_path)
         self.assertNotIn("wait_virtual_page", transparent_path)
@@ -62,7 +62,7 @@ class TransparentControllerContractTest(unittest.TestCase):
             source,
         )
         controls = source[source.index("if (wait_before_consumer) {") :]
-        consumer = controls.index("maa_virtual_tile_alu_scalar_store<double>")
+        consumer = controls.index("maa_virtual_tile_alu_scalar_store<Value>")
         self.assertLess(
             controls.index("wait_ready(completion_tile)"), consumer
         )
@@ -73,8 +73,8 @@ class TransparentControllerContractTest(unittest.TestCase):
         self.assertEqual(
             1,
             controls[
-                : consumer + len("maa_virtual_tile_alu_scalar_store<double>")
-            ].count("maa_virtual_tile_alu_scalar_store<double>"),
+                : consumer + len("maa_virtual_tile_alu_scalar_store<Value>")
+            ].count("maa_virtual_tile_alu_scalar_store<Value>"),
         )
 
     def test_opcode_is_parsed_and_controller_owned(self):
@@ -95,7 +95,7 @@ class TransparentControllerContractTest(unittest.TestCase):
     def test_scheduled_issue_event_retries_controller(self):
         maa = (ROOT / "src/mem/MAA/MAA.cc").read_text()
         issue = maa.index("void MAA::issueInstruction()")
-        body = maa[issue : maa.index("uint8_t MAA::getTileStatus", issue)]
+        body = maa[issue : maa.index("MAA::getInstructionTileWordSize", issue)]
         self.assertIn("tryIssueTransparentMicroOp();", body)
         retry = maa.index("void MAA::tryIssueTransparentMicroOp()")
         retry_body = maa[

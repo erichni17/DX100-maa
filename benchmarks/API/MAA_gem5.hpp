@@ -563,7 +563,9 @@ inline void maa_indirect_load_virtual_index(
  * Submit the bounded transparent consumer descriptor.  Hardware waits for
  * each acknowledged backing page, fills one real physical SPD tile, executes
  * a native scalar ALU operation, and stores that page before remapping it.
- * This first ABI intentionally describes only the gather->ALU->store chain.
+ * The operation and element type use the ordinary DX100 scalar-ALU contract;
+ * the controller virtualizes the gather->ALU->store chain independent of a
+ * particular benchmark, data type, or scalar operation.
  */
 template <class T1>
 inline void maa_virtual_tile_alu_scalar_store(

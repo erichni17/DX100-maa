@@ -34,6 +34,8 @@ validDescriptor(TransparentSPDController::Mode mode)
     descriptor.maaID = 0;
     descriptor.contextID = 0;
     descriptor.generation = 1;
+    descriptor.dataType = 5;
+    descriptor.operation = 2;
     descriptor.backingAddr = 0x11000;
     descriptor.backingMinAddr = 0x10000;
     descriptor.backingMaxAddr = 0x40000;
@@ -159,6 +161,14 @@ void testFailClosedValidation()
     CHECK(TransparentSPDController::validate(descriptor) != nullptr);
 
     descriptor = validDescriptor(TransparentSPDController::Mode::Serial4K);
+    descriptor.dataType = TransparentSPDController::NumDataTypes;
+    CHECK(TransparentSPDController::validate(descriptor) != nullptr);
+
+    descriptor = validDescriptor(TransparentSPDController::Mode::Serial4K);
+    descriptor.operation = TransparentSPDController::NumOperations;
+    CHECK(TransparentSPDController::validate(descriptor) != nullptr);
+
+    descriptor = validDescriptor(TransparentSPDController::Mode::Serial4K);
     descriptor.destinationAddr = descriptor.backingAddr + 4096;
     descriptor.destinationMinAddr = descriptor.backingMinAddr;
     descriptor.destinationMaxAddr = descriptor.backingMaxAddr;
@@ -172,6 +182,27 @@ void testFailClosedValidation()
     CHECK(controller.notifyPageReady(descriptor.tokenTile, 0));
     CHECK(!controller.notifyPageReady(descriptor.tokenTile, 0));
     CHECK(controller.failed());
+}
+
+void testWordWidthsAndOperations()
+{
+    for (int word_size : {4, 8}) {
+        for (uint8_t data_type = 0;
+             data_type < TransparentSPDController::NumDataTypes;
+             ++data_type) {
+            for (uint8_t operation = 0;
+                 operation < TransparentSPDController::NumOperations;
+                 ++operation) {
+                auto descriptor = validDescriptor(
+                    TransparentSPDController::Mode::Serial4K);
+                descriptor.wordSize = word_size;
+                descriptor.dataType = data_type;
+                descriptor.operation = operation;
+                CHECK(TransparentSPDController::validate(descriptor) ==
+                      nullptr);
+            }
+        }
+    }
 }
 
 void testFiniteLifetimeOwnership()
@@ -202,6 +233,7 @@ int main()
     testSerial(TransparentSPDController::Mode::Serial2K, 8, 2048);
     testPingPongOverlapAndOwnership();
     testFailClosedValidation();
+    testWordWidthsAndOperations();
     testFiniteLifetimeOwnership();
     std::cout << "transparent_spd_controller_test: PASS" << std::endl;
     return 0;

@@ -21,20 +21,28 @@ namespace {
 constexpr int total_elements = 16384;
 constexpr int guard_elements = 32;
 constexpr size_t cache_line_bytes = 64;
-constexpr size_t cache_line_elements = cache_line_bytes / sizeof(double);
+#if defined(VIRTUAL_CONSUMER_FP32_ADD)
+using Value = float;
+constexpr Value scalar_value = 3.0F;
+constexpr Operation_t scalar_operation = Operation_t::ADD_OP;
+#else
+using Value = double;
+constexpr Value scalar_value = 3.0;
+constexpr Operation_t scalar_operation = Operation_t::MUL_OP;
+#endif
+constexpr size_t cache_line_elements = cache_line_bytes / sizeof(Value);
 constexpr size_t descriptor_spool_units = 4;
 constexpr size_t descriptor_spool_slot_bytes =
-    total_elements * 8 + 4 * 64;
+    total_elements * sizeof(Value) + 4 * 64;
 constexpr size_t descriptor_spool_elements =
-    descriptor_spool_units * descriptor_spool_slot_bytes / sizeof(double);
-constexpr double scale = 3.0;
+    descriptor_spool_units * descriptor_spool_slot_bytes / sizeof(Value);
 constexpr size_t cache_pollution_bytes = 32 * 1024 * 1024;
 
 uint64_t
-hashValue(uint64_t hash, double value)
+hashValue(uint64_t hash, Value value)
 {
-    uint64_t bits;
-    std::memcpy(&bits, &value, sizeof(bits));
+    uint64_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(value));
     hash ^= bits;
     return hash * 1099511628211ULL;
 }
@@ -106,32 +114,32 @@ main(int argc, char **argv)
         return 2;
     }
 
-    std::vector<double> source(total_elements * 8);
+    std::vector<Value> source(total_elements * 8);
     std::vector<uint32_t> indices(total_elements);
     // The direct-retirement fast path operates on complete cache lines. Keep
     // explicit guards while aligning the two payload regions; arbitrary
     // unaligned application buffers remain on the existing safe fallback.
-    std::vector<double> backing_storage(
+    std::vector<Value> backing_storage(
         total_elements + 2 * guard_elements + cache_line_elements - 1 +
             descriptor_spool_elements,
         -1.0);
-    std::vector<double> destination_storage(
+    std::vector<Value> destination_storage(
         total_elements + 2 * guard_elements + cache_line_elements - 1,
         -1.0);
-    std::vector<double> fence_storage(1, 0.0);
-    const auto align_payload = [](double *candidate) {
+    std::vector<Value> fence_storage(1, 0.0);
+    const auto align_payload = [](Value *candidate) {
         const uintptr_t address = reinterpret_cast<uintptr_t>(candidate);
         const uintptr_t aligned =
             (address + cache_line_bytes - 1) & ~(cache_line_bytes - 1);
-        return reinterpret_cast<double *>(aligned);
+        return reinterpret_cast<Value *>(aligned);
     };
-    double *backing =
+    Value *backing =
         align_payload(backing_storage.data() + guard_elements);
-    double *destination =
+    Value *destination =
         align_payload(destination_storage.data() + guard_elements);
 
     for (int i = 0; i < static_cast<int>(source.size()); ++i)
-        source[i] = static_cast<double>(i * 17 + 3);
+        source[i] = static_cast<Value>(i * 17 + 3);
     for (int i = 0; i < total_elements; ++i)
         indices[i] = (i * 97 + 13) % source.size();
     std::cout << "VIRTUAL_TILE_CONSUMER_LAYOUT mode=" << mode
@@ -202,11 +210,11 @@ main(int argc, char **argv)
     const int min_reg = get_new_reg<int>(0);
     const int max_reg = get_new_reg<int>(total_elements);
     const int stride_reg = get_new_reg<int>(1);
-    const int scale_reg = get_new_reg<double>(scale);
+    const int scale_reg = get_new_reg<Value>(scalar_value);
     const int page_min_reg = get_new_reg<int>(0);
     const int page_max_reg = get_new_reg<int>(4096);
     const int page_stride_reg = get_new_reg<int>(1);
-    const int output_tile = get_new_tile<double>();
+    const int output_tile = get_new_tile<Value>();
 
     if (!reload_only) {
         m5_work_begin(0, 0);
@@ -214,7 +222,7 @@ main(int argc, char **argv)
     }
     if (mode == "native" || mode == "native_direct") {
         const int idx_tile = get_new_tile<uint32_t>();
-        const int gathered_tile = get_new_tile<double>();
+            const int gathered_tile = get_new_tile<Value>();
         for (int offset = 0; offset < total_elements;
              offset += page_elements) {
             const int count = std::min(page_elements,
@@ -226,22 +234,22 @@ main(int argc, char **argv)
                 maa_stream_load<uint32_t>(
                     indices.data() + offset, min_reg, max_reg, stride_reg,
                     idx_tile);
-                maa_indirect_load<double>(source.data(), idx_tile,
-                                          gathered_tile);
+                maa_indirect_load<Value>(source.data(), idx_tile,
+                                         gathered_tile);
             } else {
-                maa_indirect_load_index<double>(
+                maa_indirect_load_index<Value>(
                     source.data(), indices.data() + offset, gathered_tile,
                     min_reg, max_reg, stride_reg);
             }
-            maa_alu_scalar<double>(gathered_tile, scale_reg, output_tile,
-                                   Operation_t::MUL_OP);
-            maa_stream_store<double>(destination + offset, min_reg, max_reg,
-                                     stride_reg, output_tile);
+            maa_alu_scalar<Value>(gathered_tile, scale_reg, output_tile,
+                                  scalar_operation);
+            maa_stream_store<Value>(destination + offset, min_reg, max_reg,
+                                    stride_reg, output_tile);
         }
     } else {
-        const int completion_tile = get_new_tile<double>();
-        const int page_tile = get_new_tile<double>();
-        const int alternate_page_tile = get_new_tile<double>();
+        const int completion_tile = get_new_tile<Value>();
+        const int page_tile = get_new_tile<Value>();
+        const int alternate_page_tile = get_new_tile<Value>();
         const bool token_stream_ld_page0_prearm =
             mode == "token_stream_ld_page0_prearm";
 
@@ -251,7 +259,7 @@ main(int argc, char **argv)
         // The MAA holds this exact token/backing/range tuple dormant until
         // the matching virtual gather registers the token generation.
         if (token_stream_ld_page0_prearm) {
-            maa_stream_load_virtual_page_prearm<double>(
+            maa_stream_load_virtual_page_prearm<Value>(
                 backing, completion_tile, page_min_reg, page_max_reg,
                 page_stride_reg, page_tile);
         }
@@ -266,11 +274,11 @@ main(int argc, char **argv)
             if (cond_tile != -1)
                 maa_stream_load<uint32_t>(conditions.data(), min_reg,
                                           max_reg, stride_reg, cond_tile);
-            maa_indirect_load_virtual<double>(source.data(), idx_tile,
-                                              completion_tile, backing,
-                                              cond_tile);
+            maa_indirect_load_virtual<Value>(source.data(), idx_tile,
+                                             completion_tile, backing,
+                                             cond_tile);
         } else {
-            maa_indirect_load_virtual_index<double>(
+            maa_indirect_load_virtual_index<Value>(
                 source.data(), indices.data(), completion_tile, backing,
                 min_reg, max_reg, stride_reg);
         }
@@ -313,10 +321,10 @@ main(int argc, char **argv)
             // Application code submits one logical consumer.  Page-ready
             // gating, coherent backing reloads, physical-tile remapping, and
             // the native ALU/store chain are owned by the MAA controller.
-            maa_virtual_tile_alu_scalar_store<double>(
+            maa_virtual_tile_alu_scalar_store<Value>(
                 backing, destination, completion_tile, page_tile,
                 output_tile, scale_reg, page_min_reg, page_max_reg,
-                page_stride_reg, Operation_t::MUL_OP);
+                page_stride_reg, scalar_operation);
         } else if (!overlap_pages && !token_stream_ld &&
                    !token_stream_ld_pingpong &&
                    !wait_before_consumer) {
@@ -342,25 +350,25 @@ main(int argc, char **argv)
                 // virtual gather retires. Rewriting them here would delay
                 // materializer admission until exact WriteResp payloads are
                 // no longer available for forwarding.
-                maa_stream_load_virtual_page<double>(
+                maa_stream_load_virtual_page<Value>(
                     backing + offset, completion_tile, page_min_reg,
                     page_max_reg, page_stride_reg, page_tile);
                 if (second_count > 0) {
-                    maa_stream_load_virtual_page<double>(
+                    maa_stream_load_virtual_page<Value>(
                         backing + second_offset, completion_tile,
                         page_min_reg, page_max_reg, page_stride_reg,
                         alternate_page_tile);
                 }
-                maa_alu_scalar<double>(page_tile, scale_reg, output_tile,
-                                       Operation_t::MUL_OP);
-                maa_stream_store<double>(
+                maa_alu_scalar<Value>(page_tile, scale_reg, output_tile,
+                                      scalar_operation);
+                maa_stream_store<Value>(
                     destination + offset, page_min_reg, page_max_reg,
                     page_stride_reg, output_tile);
                 if (second_count > 0) {
-                    maa_alu_scalar<double>(
+                    maa_alu_scalar<Value>(
                         alternate_page_tile, scale_reg, output_tile,
-                        Operation_t::MUL_OP);
-                    maa_stream_store<double>(
+                        scalar_operation);
+                    maa_stream_store<Value>(
                         destination + second_offset, page_min_reg,
                         page_max_reg, page_stride_reg, output_tile);
                 }
@@ -385,25 +393,25 @@ main(int argc, char **argv)
                         // Immutable page-local registers let this instruction
                         // be admitted while the producer still owns its
                         // logical range registers.
-                        maa_stream_load_virtual_page<double>(
+                        maa_stream_load_virtual_page<Value>(
                             backing + offset, completion_tile, page_min_reg,
                             page_max_reg, page_stride_reg, page_tile);
                     }
-                    maa_alu_scalar<double>(
+                    maa_alu_scalar<Value>(
                         page_tile, scale_reg, output_tile,
-                        Operation_t::MUL_OP);
-                    maa_stream_store<double>(
+                        scalar_operation);
+                    maa_stream_store<Value>(
                         destination + offset, page_min_reg, page_max_reg,
                         page_stride_reg, output_tile);
                 } else {
                     maa_const(0, min_reg);
                     maa_const(count, max_reg);
-                    maa_stream_load<double>(backing + offset, min_reg,
-                                            max_reg, stride_reg, page_tile);
-                    maa_alu_scalar<double>(
+                    maa_stream_load<Value>(backing + offset, min_reg,
+                                           max_reg, stride_reg, page_tile);
+                    maa_alu_scalar<Value>(
                         page_tile, scale_reg, output_tile,
-                        Operation_t::MUL_OP);
-                    maa_stream_store<double>(
+                        scalar_operation);
+                    maa_stream_store<Value>(
                         destination + offset, min_reg, max_reg, stride_reg,
                         output_tile);
                 }
@@ -417,8 +425,8 @@ main(int argc, char **argv)
     // as a destination creates a dependency fence that includes final stores.
     maa_const(0, min_reg);
     maa_const(1, max_reg);
-    maa_stream_load<double>(fence_storage.data(), min_reg, max_reg, stride_reg,
-                            output_tile);
+    maa_stream_load<Value>(fence_storage.data(), min_reg, max_reg, stride_reg,
+                           output_tile);
     wait_ready(output_tile);
     m5_dump_stats(0, 0);
     m5_work_end(0, 0);
@@ -426,10 +434,12 @@ main(int argc, char **argv)
     int errors = 0;
     uint64_t hash = 1469598103934665603ULL;
     for (int i = 0; i < total_elements; ++i) {
-        const double gathered = source[indices[i]];
+        const Value gathered = source[indices[i]];
         const bool selected = !conditional_staged || conditions[i] != 0;
-        const double expected_backing = selected ? gathered : -1.0;
-        const double expected = expected_backing * scale;
+        const Value expected_backing = selected ? gathered : Value{-1};
+        const Value expected = scalar_operation == Operation_t::ADD_OP
+            ? expected_backing + scalar_value
+            : expected_backing * scalar_value;
         if (destination[i] != expected && errors++ < 10) {
             std::cerr << "destination mismatch[" << i << "]: got "
                       << destination[i] << ", expected " << expected

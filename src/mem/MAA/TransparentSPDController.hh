@@ -30,6 +30,8 @@ class TransparentSPDController
     static constexpr int ProducerPages = LogicalElements / PhysicalElements;
     static constexpr int MaxChunks = LogicalElements / HalfElements;
     static constexpr int MaxSlots = 2;
+    static constexpr uint8_t NumDataTypes = 6;
+    static constexpr uint8_t NumOperations = 16;
 
     enum class Mode : uint8_t
     {
@@ -142,6 +144,10 @@ class TransparentSPDController
             return "invalid iso-area controller mode";
         if (descriptor.wordSize != 4 && descriptor.wordSize != 8)
             return "word size must be four or eight bytes";
+        if (descriptor.dataType >= NumDataTypes)
+            return "invalid DX100 data type";
+        if (descriptor.operation >= NumOperations)
+            return "invalid DX100 scalar operation";
         if (descriptor.tokenTile < 0 || descriptor.physicalTile < 0 ||
             descriptor.outputTile < 0)
             return "tile identifiers must be nonnegative";

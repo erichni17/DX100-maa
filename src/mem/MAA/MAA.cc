@@ -1038,12 +1038,6 @@ bool MAA::submitTransparentDescriptor(InstructionPtr instruction,
              TransparentSPDController::LogicalElements,
              TransparentSPDController::PageElements, num_tile_elements,
              physical_tile_elements);
-    panic_if(instruction->datatype != Instruction::DataType::FLOAT64_TYPE ||
-                 instruction->optype != Instruction::OPType::MUL_OP,
-             "Transparent controller currently supports only FLOAT64 "
-             "scalar multiply, got %s\n",
-             instruction->print());
-
     const int word_size = instruction->WordSize();
     const int tile_words = word_size / sizeof(uint32_t);
     const auto valid_tile_span = [&](int first) {
