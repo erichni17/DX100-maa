@@ -314,6 +314,23 @@ def test_full_runner_contract_is_pinned_and_fails_closed():
         in runner
     )
     assert "full mode requires an immutable clean source worktree" in runner
+    assert (
+        "TRACKED_BUILD_ARTIFACT=$root/benchmarks/hashjoin/src/npj2epb.o"
+        in runner
+    )
+    assert "TRACKED_BUILD_ARTIFACT_SHA256" in runner
+    assert "TRACKED_BUILD_ARTIFACT_SNAPSHOT=$(mktemp)" in runner
+    assert (
+        'cp -- "$TRACKED_BUILD_ARTIFACT" "$TRACKED_BUILD_ARTIFACT_SNAPSHOT"'
+        in runner
+    )
+    assert (
+        'cmp -s "$TRACKED_BUILD_ARTIFACT_SNAPSHOT" "$TRACKED_BUILD_ARTIFACT"'
+        in runner
+    )
+    assert 'require_clean_source "before either gem5 launch"' in runner
+    assert "readonly GUEST_SHA256=$(sha256sum" in runner
+    assert "printf 'guest_sha256=%s\\n' \"$GUEST_SHA256\"" in runner
     assert "source changed while the HashJoin gate was running" in runner
     assert "full mode requires gem5 binary" in runner
     assert "native_rerun=0" in runner and "wall_timeout=none" in runner

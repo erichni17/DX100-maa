@@ -11,6 +11,7 @@ root=$(cd "$script_dir/../.." && pwd)
 config=$root/configs/deprecated/example/se.py
 ramulator=$root/ext/ramulator2/ramulator2/example_gem5_config.yaml
 guest=$root/benchmarks/hashjoin/src/bin/x86/hj_maa_16K_hybrid
+readonly TRACKED_BUILD_ARTIFACT=$root/benchmarks/hashjoin/src/npj2epb.o
 readonly MODE=${HASHJOIN_HYBRID_MODE:-small}
 readonly FULL_GEM5_BINARY=/data1/nier/dx100-binaries/gem5-2d02fa40568d3ed374258d717f15cad3afeca62343fc1ccaa1640215a8586152.opt
 readonly FULL_GEM5_SHA256=2d02fa40568d3ed374258d717f15cad3afeca62343fc1ccaa1640215a8586152
@@ -47,6 +48,14 @@ source_fingerprint() {
         | sha256sum | awk '{print $1}'
 }
 
+require_clean_source() {
+    local phase=$1
+    [[ -z $(git -C "$root" status --porcelain --untracked-files=all) ]] || {
+        echo "full mode requires an immutable clean source worktree ($phase)" >&2
+        exit 2
+    }
+}
+
 [[ ! -e "$out" ]] || {
     echo "output already exists: $out" >&2
     exit 2
@@ -64,10 +73,15 @@ if [[ $MODE == full ]]; then
         echo "full mode gem5 hash does not match its pinned binary" >&2
         exit 2
     }
-    [[ -z $(git -C "$root" status --porcelain --untracked-files=all) ]] || {
-        echo "full mode requires an immutable clean source worktree" >&2
+    [[ -f "$TRACKED_BUILD_ARTIFACT" ]] || {
+        echo "full mode is missing tracked build artifact: $TRACKED_BUILD_ARTIFACT" >&2
         exit 2
     }
+    require_clean_source "before build"
+    readonly TRACKED_BUILD_ARTIFACT_SHA256=$(sha256sum "$TRACKED_BUILD_ARTIFACT" \
+        | awk '{print $1}')
+    TRACKED_BUILD_ARTIFACT_SNAPSHOT=$(mktemp)
+    cp -- "$TRACKED_BUILD_ARTIFACT" "$TRACKED_BUILD_ARTIFACT_SNAPSHOT"
 fi
 readonly SOURCE_COMMIT=$(git -C "$root" rev-parse HEAD)
 readonly SOURCE_FINGERPRINT=$(source_fingerprint)
@@ -80,6 +94,20 @@ fi
     echo "missing candidate guest: $guest" >&2
     exit 2
 }
+if [[ $MODE == full ]]; then
+    # compile_x86.sh updates this tracked object before linking the guest.
+    # Restore its exact pre-build bytes before either gem5 invocation.
+    cmp -s "$TRACKED_BUILD_ARTIFACT_SNAPSHOT" "$TRACKED_BUILD_ARTIFACT" || \
+        cp -- "$TRACKED_BUILD_ARTIFACT_SNAPSHOT" "$TRACKED_BUILD_ARTIFACT"
+    [[ $(sha256sum "$TRACKED_BUILD_ARTIFACT" | awk '{print $1}') \
+        == "$TRACKED_BUILD_ARTIFACT_SHA256" ]] || {
+        echo "full mode could not restore the tracked build artifact" >&2
+        exit 1
+    }
+    rm -f -- "$TRACKED_BUILD_ARTIFACT_SNAPSHOT"
+    require_clean_source "before either gem5 launch"
+fi
+readonly GUEST_SHA256=$(sha256sum "$guest" | awk '{print $1}')
 
 mkdir -p "$out"
 export LD_LIBRARY_PATH="$root/ext/ramulator2/ramulator2:${LD_LIBRARY_PATH:-}"
@@ -256,7 +284,7 @@ fi
     printf 'source_commit=%s\n' "$SOURCE_COMMIT"
     printf 'source_fingerprint=%s\n' "$SOURCE_FINGERPRINT"
     printf 'source_status=%s\n' "$(git -C "$root" status --short | wc -l)"
-    printf 'guest_sha256='; sha256sum "$guest" | awk '{print $1}'
+    printf 'guest_sha256=%s\n' "$GUEST_SHA256"
     printf 'gem5_sha256='; sha256sum "$gem5" | awk '{print $1}'
     printf 'input=r_size:%d,s_size:%d,r_seed:%d,s_seed:%d,non_unique:0,full_range:0\n' \
         "$R_SIZE" "$S_SIZE" "$R_SEED" "$S_SEED"
