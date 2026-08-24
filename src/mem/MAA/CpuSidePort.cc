@@ -351,6 +351,9 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
             }
             case 2: {
                 panic_if(instruction_id == -1, "Received new instruction[2] before insturction[0]!\n");
+                current_instruction->state = Instruction::Status::Idle;
+                current_instruction->CID = pkt->req->contextId();
+                current_instruction->PC = pkt->req->getPC();
                 if (current_instruction->isLogicalALUScalar() ||
                     current_instruction->isLogicalALUVector()) {
                     panic_if(
@@ -433,9 +436,6 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                              "logical controller is integrated\n");
                 }
                 current_instruction->baseAddr = data;
-                current_instruction->state = Instruction::Status::Idle;
-                current_instruction->CID = pkt->req->contextId();
-                current_instruction->PC = pkt->req->getPC();
                 if (current_instruction->isSoaJitRmw()) {
                     panic_if(
                         !current_instruction->hasValidSoaJitRmwOperands(),

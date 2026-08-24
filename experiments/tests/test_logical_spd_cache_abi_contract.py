@@ -33,6 +33,18 @@ class LogicalSpdCacheAbiContractTest(unittest.TestCase):
         self.assertIn("-std=c++11", self.gate)
         self.assertNotIn("-std=c++17", self.gate)
 
+    def test_word_two_captures_identity_before_logical_early_return(
+        self,
+    ) -> None:
+        word_two = self.cpu_port.index("case 2:")
+        logical = self.cpu_port.index(
+            "current_instruction->isLogicalALUScalar()", word_two
+        )
+        context = self.cpu_port.index("current_instruction->CID", word_two)
+        pc = self.cpu_port.index("current_instruction->PC", word_two)
+        self.assertLess(context, logical)
+        self.assertLess(pc, logical)
+
     def test_high_byte_audit_preserves_legacy_physical_zeroes(self) -> None:
         for evidence in (
             "LegacyPhysicalHighByte = 0x00",

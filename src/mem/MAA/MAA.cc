@@ -3993,7 +3993,7 @@ MAA::submitLogicalSPDDescriptor(
     execution.pc = instruction->PC;
     DPRINTF(MAAVirtualTrace,
             "event=logical_spd_admit maa=%d generation=%lu incarnation=%lu "
-            "callback=%lu operation=%u datatype=%u word_bytes=%zu "
+            "callback=%lu operation=%u datatype=%u word_bytes=%lu "
             "source=0x%lx "
             "destination=0x%lx elements=%lu "
             "mode=%u page_elements=%lu pages=%lu slots=%lu "
@@ -4001,7 +4001,8 @@ MAA::submitLogicalSPDDescriptor(
             "source_contract=pre_materialized_backing\n",
             instruction->maa_id, claim.token.generation,
             claim.token.runtimeIdentity, claim.token.identity,
-            static_cast<unsigned>(instruction->optype), dataType, wordBytes,
+            static_cast<unsigned>(instruction->optype), dataType,
+            static_cast<unsigned long>(wordBytes),
             instruction->logicalSourceBackingAddr,
             instruction->backingAddr,
             static_cast<unsigned long>(LogicalElements),
