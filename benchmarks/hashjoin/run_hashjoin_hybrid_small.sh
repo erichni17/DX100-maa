@@ -128,7 +128,7 @@ for kernel in PRO PRH; do
         exit 1
     }
 
-    expected="[INFO ] Results = $EXPECTED_RESULT. DONE."
+    expected="HASHJOIN_HYBRID_RESULT result=$EXPECTED_RESULT"
     [[ $(grep -Fxc "$expected" "$run/run.log" || true) -eq 1 ]]
     [[ $(grep -Ec '^Exiting @ tick [0-9]+ because m5_exit instruction encountered$' \
               "$run/run.log" || true) -eq 1 ]]

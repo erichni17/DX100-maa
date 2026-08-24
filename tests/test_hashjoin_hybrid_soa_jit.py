@@ -246,6 +246,7 @@ def test_one_contiguous_backing_region_stays_within_region_limit():
 
 
 def test_build_and_runner_are_candidate_only_and_close_mechanism():
+    source = SOURCE.read_text(encoding="utf-8")
     build = BUILD.read_text(encoding="utf-8")
     runner = RUNNER.read_text(encoding="utf-8")
     candidate_line = next(
@@ -267,6 +268,9 @@ def test_build_and_runner_are_candidate_only_and_close_mechanism():
     assert '--checkpoint-dir="$checkpoint"' in runner
     assert "R_SIZE=65536" in runner and "S_SIZE=65536" in runner
     assert "EXPECTED_RESULT=65536" in runner
+    assert "HASHJOIN_HYBRID_RESULT result=$EXPECTED_RESULT" in runner
+    assert 'printf("HASHJOIN_HYBRID_RESULT result=%ld\\n"' in source
+    assert "fflush(stdout);" in source
     for geometry in (
         "--mem-channels=2",
         "--maa_num_initial_row_table_slices=32",
