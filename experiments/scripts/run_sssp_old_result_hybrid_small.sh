@@ -27,7 +27,8 @@ wel="$out/graph/sssp_old_result_hybrid_small.wel"
 graph="$out/graph/sssp_old_result_hybrid_small.wsg"
 
 "${CXX:-g++}" -I"$root/benchmarks/gapbs/src" -std=c++11 -O3 -Wall \
-    -Wextra -Werror -fopenmp "$root/benchmarks/gapbs/src/converter.cc" \
+    -Wextra -Werror -Wno-unused-parameter -fopenmp \
+    "$root/benchmarks/gapbs/src/converter.cc" \
     -o "$converter"
 "${CXX:-g++}" -I"$root/benchmarks/API" -I"$root/include" \
     -I"$root/util/m5/src" -std=c++11 -O3 -Wall -Wextra -Werror \
