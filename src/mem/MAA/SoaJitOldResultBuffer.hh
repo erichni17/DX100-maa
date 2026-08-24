@@ -206,7 +206,7 @@ class SoaJitOldResultBuffer
             *request = Request{};
         if (!active)
             return Result::Inactive;
-        if (awaitingResponses() != 0)
+        if (partialResponseOutstanding())
             return Result::NoReadyLine;
         Slot *chosen = nullptr;
         size_t chosenWords = 0;
@@ -314,6 +314,16 @@ class SoaJitOldResultBuffer
             validWords >>= 1;
         }
         return count;
+    }
+
+    bool partialResponseOutstanding() const
+    {
+        for (const auto &slot : slots) {
+            if (slot.state == State::AwaitingResponse &&
+                slot.validWords != std::numeric_limits<uint16_t>::max())
+                return true;
+        }
+        return false;
     }
 
     Result issueSlot(Slot *chosen, Request *request)
