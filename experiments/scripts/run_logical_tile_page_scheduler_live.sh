@@ -21,19 +21,19 @@ binary="$out/artifacts/test_logical_tile_page_scheduler_live"
 "${CXX:-g++}" -I"$root/benchmarks/API" -I"$root/include" \
     -I"$root/util/m5/src" -std=c++11 -O2 -Wall -Wextra -Werror \
     -Wno-ignored-qualifiers -DGEM5 -DTILE_SIZE=16384 -DNUM_CORES=4 \
-    -DMAA_MEM_SIZE=0x80000000 \
+    -DMAA_MEM_SIZE=0x100000000ULL \
     "$root/util/m5/src/abi/x86/m5op.S" "$source_file" -o "$binary"
 
 checkpoint_cmd=(
     "$gem5" --listener-mode=off --outdir="$out/checkpoint"
-    "$config" --cpu-type AtomicSimpleCPU -n 4 --mem-size 2GB
+    "$config" --cpu-type AtomicSimpleCPU -n 4 --mem-size 4GB
     --max-checkpoints=1 --cmd "$binary"
 )
 restore_cmd=(
     "$gem5" --listener-mode=off --outdir="$out/run"
     --debug-flags=MAAVirtualTrace,MAATrace
     --debug-file=logical_page_trace.log
-    "$config" --cpu-type X86O3CPU -r 1 -n 4 --mem-size 2GB
+    "$config" --cpu-type X86O3CPU -r 1 -n 4 --mem-size 4GB
     --checkpoint-dir="$out/checkpoint"
     --sys-clock 3.2GHz --cpu-clock 3.2GHz
     --caches --l1d_size=32kB --l1d_assoc=8 --l1d_mshrs=16
