@@ -54,11 +54,24 @@ class LogicalTilePageSchedulerLiveContract(unittest.TestCase):
     def test_runner_is_one_production_arm(self):
         self.assertEqual(self.runner.count("restore_cmd=("), 1)
         self.assertIn("--maa_logical_tile_page_scheduler", self.runner)
+        self.assertIn("--maa_num_tiles_per_core=4", self.runner)
         self.assertIn("comparison_arms=0", self.runner)
         self.assertNotIn("native4", self.runner.lower())
-        self.assertNotIn("native16", self.runner.lower())
+        self.assertNotIn("native16_cmd", self.runner.lower())
         self.assertNotIn("baseline", self.runner.lower())
         self.assertNotIn("timeout ", self.runner.lower())
+
+    def test_runner_binds_exact_existing_lane_accounting(self):
+        for field in (
+            "total_lanes=16",
+            "reserved_lanes=8",
+            "guest_visible_lanes=8",
+            "additional_payload_bytes=0",
+            "payload_reduction_vs_same_16-lane_native16=75%%",
+        ):
+            self.assertIn(field, self.runner)
+        self.assertIn("'num_tiles_per_core=4'", self.runner)
+        self.assertNotIn("--maa_num_tiles_per_core=8", self.runner)
 
     def test_runner_requires_exact_architectural_and_native_closure(self):
         for clause in (

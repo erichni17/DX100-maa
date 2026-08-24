@@ -44,7 +44,7 @@ restore_cmd=(
     --l3_mshrs=256 --l3_write_buffers=128 --l3_ports=4
     --cacheline_size=64 --mem-type Ramulator2
     --ramulator-config "$ramulator" --mem-channels=1
-    --maa --maa_num_maas=1 --maa_num_tiles_per_core=8
+    --maa --maa_num_maas=1 --maa_num_tiles_per_core=4
     --maa_num_tile_elements=16384 --maa_physical_tile_elements=4096
     --maa_logical_tile_page_scheduler
     --maa_num_initial_row_table_slices=16 --cmd "$binary"
@@ -55,6 +55,9 @@ restore_cmd=(
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'logical_elements=16384\npage_elements=4096\npages=4\n'
     printf 'reserved_frames_per_maa=4\nreserved_lane_span=2\n'
+    printf 'total_lanes=16\nreserved_lanes=8\nguest_visible_lanes=8\n'
+    printf 'additional_payload_bytes=0\n'
+    printf 'payload_reduction_vs_same_16-lane_native16=75%%\n'
     printf 'datatype=fp32\narchitectural_operations=9\ngenerations=2\n'
     printf 'expected_native_actions=80\nexpected_write_pages=24\n'
     printf 'expected_write_responses=6144\ncomparison_arms=0\n'
@@ -161,7 +164,7 @@ done
 grep -Eq 'event=logical_page_admit .*dst=0 dst_generation=2 ' "$trace"
 grep -Eq 'event=logical_page_admit .*src1=0 src1_generation=2 .*dst=2 dst_generation=2 ' "$trace"
 for resolved in \
-    'num_maas=1' 'num_tiles_per_core=8' 'num_tile_elements=16384' \
+    'num_maas=1' 'num_tiles_per_core=4' 'num_tile_elements=16384' \
     'physical_tile_elements=4096' 'logical_tile_page_scheduler=true' \
     'num_initial_row_table_slices=16'; do
     grep -Fqx "$resolved" "$out/run/config.ini"
