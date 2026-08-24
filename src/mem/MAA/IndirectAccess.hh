@@ -259,8 +259,6 @@ protected:
     bool strict_admission_closed = false;
     Tick strict_admission_closed_tick = 0;
     uint64_t strict_b_words = 0;
-    bool strict_last_b_line_valid = false;
-    Addr strict_last_b_line_addr = 0;
     uint64_t strict_fill_stalls = 0;
     ReorderSurvivalTracker reorder_survival;
     uint64_t reorder_instruction_sequence = 0;

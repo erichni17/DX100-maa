@@ -10,6 +10,24 @@ class HybridStrictRowTableCapacityContract(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.runner = RUNNER.read_text(encoding="utf-8")
 
+    def test_one_b_scan_uses_logical_words_not_physical_address_order(
+        self,
+    ) -> None:
+        source = (ROOT / "src/mem/MAA/IndirectAccess.cc").read_text(
+            encoding="utf-8"
+        )
+        header = (ROOT / "src/mem/MAA/IndirectAccess.hh").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("strict_last_b_line", source)
+        self.assertNotIn("strict_last_b_line", header)
+        self.assertIn(
+            "strict_b_words != static_cast<uint64_t>(my_max)", source
+        )
+        self.assertIn("attribution_row_insert_successes !=", source)
+        self.assertIn("static_cast<uint64_t>(my_max)", source)
+        self.assertIn("strict B fetch issued after admission closure", source)
+
     def test_reuses_exact_f84_binary_checkpoint_and_row64_arm(self) -> None:
         for token in (
             "f84b11353e54431211bf2beb6d730caa4a543e07",

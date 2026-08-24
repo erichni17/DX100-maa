@@ -5489,8 +5489,6 @@ void IndirectAccessUnit::executeInstruction() {
         strict_admission_closed = false;
         strict_admission_closed_tick = 0;
         strict_b_words = 0;
-        strict_last_b_line_valid = false;
-        strict_last_b_line_addr = 0;
         strict_fill_stalls = 0;
         attribution_execute_sequence = 1;
         if (debug::MAAReorderTrace)
@@ -8210,13 +8208,6 @@ void IndirectAccessUnit::createDirectIndexReadPacket(Addr addr, int latency) {
             panic_if(strict_admission_closed,
                      "I[%d] strict B fetch issued after admission closure\n",
                      my_indirect_id);
-            panic_if(strict_last_b_line_valid &&
-                         addr <= strict_last_b_line_addr,
-                     "I[%d] strict B line 0x%lx repeats or reorders after "
-                     "0x%lx\n",
-                     my_indirect_id, addr, strict_last_b_line_addr);
-            strict_last_b_line_valid = true;
-            strict_last_b_line_addr = addr;
         }
         if (macro_b_first_issue_tick == 0)
             macro_b_first_issue_tick = curTick();
