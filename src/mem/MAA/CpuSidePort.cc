@@ -85,6 +85,10 @@ bool MAA::CpuSidePort::tryTiming(PacketPtr pkt) {
             const Addr offset = address_range.getOffset();
             const int tile_id =
                 offset / (maa.num_tile_elements * sizeof(uint32_t));
+            panic_if(maa.logicalTileReservedLane(tile_id) ||
+                         maa.logicalCompletionLaneOwned(tile_id),
+                     "Guest cacheable read references reserved/owned SPD "
+                     "lane %d\n", tile_id);
             if (!maa.spd->getTileReady(tile_id)) {
                 assert(retryTileID == -1);
                 assert(!tileRequestRetryOutstanding);
@@ -121,11 +125,20 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
         case AddressRangeType::Type::SPD_DATA_CACHEABLE_RANGE: {
             Addr offset = address_range.getOffset();
             int tile_id = offset / (num_tile_elements * sizeof(uint32_t));
-            panic_if(pkt->getSize() != 64, "Invalid size for SPD data: %d\n", pkt->getSize());
-            int element_id = (offset % (num_tile_elements * sizeof(uint32_t))) / sizeof(uint32_t);
+            panic_if(logicalTileReservedLane(tile_id) ||
+                         logicalCompletionLaneOwned(tile_id),
+                     "Guest cacheable write references reserved/owned SPD "
+                     "lane %d\n", tile_id);
+            panic_if(pkt->getSize() != 64,
+                     "Invalid size for SPD data: %d\n", pkt->getSize());
+            int element_id =
+                (offset % (num_tile_elements * sizeof(uint32_t))) /
+                sizeof(uint32_t);
             for (int i = 0; i < 64 / sizeof(uint32_t); i++) {
                 uint32_t data = pkt->getPtr<uint32_t>()[i];
-                DPRINTF(MAACpuPort, "%s: TILE[%d][%d] = %u\n", __func__, tile_id, element_id + i, data);
+                DPRINTF(MAACpuPort,
+                        "%s: TILE[%d][%d] = %u\n", __func__, tile_id,
+                        element_id + i, data);
                 spd->setData<uint32_t>(tile_id, element_id + i, data);
             }
             assert(pkt->needsResponse() == false);
@@ -431,10 +444,20 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                         current_instruction->logicalDestinationMaxAddr =
                             addrRegions[range].second;
                     }
-                    panic_if(true,
-                             "Logical STREAM ABI decoded and validated, but "
-                             "live execution is unsupported until the "
-                             "logical controller is integrated\n");
+                    panic_if(!logicalTilePageSchedulerEnabled(),
+                             "Logical STREAM ABI is disabled unless the "
+                             "logical tile page scheduler is enabled\n");
+                    current_instruction->baseAddr = data;
+                    current_instruction->addrRangeID = range;
+                    current_instruction->minAddr = addrRegions[range].first;
+                    current_instruction->maxAddr = addrRegions[range].second;
+                    my_instruction_recvs[instruction_id] = true;
+                    DPRINTF(MAAController,
+                            "%s: %s received for logical page scheduling\n",
+                            __func__, current_instruction->print());
+                    respond_immediately = false;
+                    scheduleDispatchInstructionEvent();
+                    break;
                 }
                 current_instruction->baseAddr = data;
                 if (current_instruction->isSoaJitRmw()) {
@@ -655,6 +678,16 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                              "Rejected logical ALU_SCALAR destination "
                              "backing (%d) before controller state mutation\n",
                              static_cast<int>(destination_validation));
+                    // The accepted legacy bridge remains exactly two
+                    // descriptors wide.  IDs 2..6 exist only for the opt-in
+                    // production page scheduler and must not reach it.
+                    panic_if(
+                        !logicalTilePageSchedulerEnabled() &&
+                            (current_instruction->src1LogicalID >= 2 ||
+                             current_instruction->dst1LogicalID >= 2),
+                        "Logical ALU_SCALAR descriptor IDs 2..6 require the "
+                        "logical tile page scheduler; legacy IDs 0/1 are "
+                        "unchanged\n");
                     current_instruction->logicalSourceBackingAddr = data;
                     current_instruction->logicalSourceAddrRangeID =
                         source_range;
@@ -784,12 +817,35 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                              shape.source2BackingAddr, shape.datatype)),
                         "Rejected logical ALU_VECTOR overlapping backing "
                         "spans before controller state mutation\n");
-                    // Intentionally fail closed: the decoder contract is
-                    // complete, but no live logical-vector controller exists.
-                    panic_if(true,
-                             "Logical ALU_VECTOR ABI decoded and validated, "
-                             "but live execution is unsupported until the "
-                             "logical controller is integrated\n");
+                    panic_if(!logicalTilePageSchedulerEnabled(),
+                             "Logical ALU_VECTOR ABI is disabled unless the "
+                             "logical tile page scheduler is enabled\n");
+                    current_instruction->logicalSourceAddrRangeID =
+                        source1_range;
+                    current_instruction->logicalSourceMinAddr =
+                        addrRegions[source1_range].first;
+                    current_instruction->logicalSourceMaxAddr =
+                        addrRegions[source1_range].second;
+                    current_instruction->logicalSource2AddrRangeID =
+                        source2_range;
+                    current_instruction->logicalSource2MinAddr =
+                        addrRegions[source2_range].first;
+                    current_instruction->logicalSource2MaxAddr =
+                        addrRegions[source2_range].second;
+                    current_instruction->logicalDestinationAddrRangeID =
+                        destination_range;
+                    current_instruction->logicalDestinationMinAddr =
+                        addrRegions[destination_range].first;
+                    current_instruction->logicalDestinationMaxAddr =
+                        addrRegions[destination_range].second;
+                    my_instruction_recvs[instruction_id] = true;
+                    DPRINTF(MAAController,
+                            "%s: %s received for logical vector page "
+                            "scheduling\n",
+                            __func__, current_instruction->print());
+                    respond_immediately = false;
+                    scheduleDispatchInstructionEvent();
+                    break;
                 }
                 panic_if(!current_instruction->isSoaJitRmw(),
                          "Instruction word five is only valid for the "
@@ -882,6 +938,9 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
             Addr offset = address_range.getOffset();
             assert(offset % sizeof(uint16_t) == 0);
             int element_id = offset / sizeof(uint16_t);
+            panic_if(logicalTileReservedLane(element_id),
+                     "Guest size read references reserved SPD lane "
+                     "%d\n", element_id);
             int full_size = spd->getSize(element_id);
             uint16_t data = (full_size > static_cast<int>(std::numeric_limits<uint16_t>::max()))
                                 ? std::numeric_limits<uint16_t>::max()
@@ -902,6 +961,9 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
             Addr offset = address_range.getOffset();
             assert(offset % sizeof(uint16_t) == 0);
             int ready_tile_id = offset / sizeof(uint16_t);
+            panic_if(logicalTileReservedLane(ready_tile_id),
+                     "Guest readiness read references reserved SPD "
+                     "lane %d\n", ready_tile_id);
             const uint16_t one = 1;
             pkt->setData((const uint8_t *)&one);
             assert(pkt->needsResponse());
@@ -991,6 +1053,10 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
         case AddressRangeType::Type::SPD_DATA_CACHEABLE_RANGE: {
             Addr offset = address_range.getOffset();
             int tile_id = offset / (num_tile_elements * sizeof(uint32_t));
+            panic_if(logicalTileReservedLane(tile_id) ||
+                         logicalCompletionLaneOwned(tile_id),
+                     "Guest cacheable data request references "
+                     "reserved/owned SPD lane %d\n", tile_id);
             int element_id = offset % (num_tile_elements * sizeof(uint32_t));
             assert(element_id % sizeof(uint32_t) == 0);
             element_id /= sizeof(uint32_t);
