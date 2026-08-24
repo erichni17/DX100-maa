@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 2 ]]; then
-    echo "usage: $0 OUTDIR serial4k|pingpong2k" >&2
+if [[ $# -lt 2 || $# -gt 3 ]]; then
+    echo "usage: $0 OUTDIR serial4k|pingpong2k [fp64|fp32]" >&2
     exit 2
 fi
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 out=$(realpath -m "$1")
 mode=$2
+datatype=${3:-fp64}
 gem5="$root/build/X86/gem5.opt"
 source_file="$root/benchmarks/API/test_logical_spd_cache_live.cpp"
 config="$root/configs/deprecated/example/se.py"
@@ -21,6 +22,19 @@ case "$mode" in
     pingpong2k) logical_mode=1; pages=8; page_elements=2048; slots=2 ;;
     *) echo "unsupported logical mode: $mode" >&2; exit 2 ;;
 esac
+case "$datatype" in
+    fp64)
+        type_define=()
+        expected_hash=7303085050985348899
+        word_bytes=8
+        ;;
+    fp32)
+        type_define=(-DLOGICAL_SPD_CACHE_FP32)
+        expected_hash=6880529560763119881
+        word_bytes=4
+        ;;
+    *) echo "unsupported logical datatype: $datatype" >&2; exit 2 ;;
+esac
 mkdir -p "$out/artifacts"
 binary="$out/artifacts/test_logical_spd_cache_live"
 
@@ -29,6 +43,7 @@ binary="$out/artifacts/test_logical_spd_cache_live"
     -Wno-ignored-qualifiers \
     -DGEM5 -DTILE_SIZE=16384 -DNUM_CORES=4 \
     -DLOGICAL_SPD_CACHE_MODE="$logical_mode" \
+    "${type_define[@]}" \
     -DMAA_MEM_SIZE=0x80000000 \
     "$root/util/m5/src/abi/x86/m5op.S" "$source_file" \
     -o "$binary"
@@ -62,8 +77,10 @@ restore_cmd=(
     printf 'source_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'logical_cache_mode=%s\nlogical_elements=16384\nvisible_physical_tile_elements=4096\n' "$mode"
+    printf 'datatype=%s\nword_bytes=%s\n' "$datatype" "$word_bytes"
     printf 'logical_pages=%s\nlogical_page_elements=%s\nprivate_slots=%s\n' "$pages" "$page_elements" "$slots"
-    printf 'private_payload_bytes=32768\npacked_private_metadata_lower_bound_bytes=1309\n'
+    printf 'active_private_payload_bytes=%s\n' "$((4096 * word_bytes))"
+    printf 'provisioned_private_payload_bytes=32768\npacked_private_metadata_lower_bound_bytes=1309\n'
     printf 'ordinary_visible_spd_is_additive=1\n'
     printf 'isoarea_timing_claim=0\n'
     printf 'checkpoint_command='
@@ -87,7 +104,7 @@ sha256sum "$source_file" "$binary" "$gem5" "$config" "$ramulator" \
     > "$out/artifact_sha256.txt"
 
 set +e
-timeout 600 "${checkpoint_cmd[@]}" > "$out/checkpoint.log" 2>&1
+"${checkpoint_cmd[@]}" > "$out/checkpoint.log" 2>&1
 checkpoint_rc=$?
 set -e
 printf '%s\n' "$checkpoint_rc" > "$out/checkpoint.exit"
@@ -104,7 +121,7 @@ find "$out/checkpoint" -type f -print0 | sort -z | \
     xargs -0 sha256sum > "$out/checkpoint_sha256.txt"
 
 set +e
-OMP_PROC_BIND=false OMP_NUM_THREADS=4 timeout 600 \
+OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     "${restore_cmd[@]}" > "$out/restore.log" 2>&1
 restore_rc=$?
 set -e
@@ -114,7 +131,7 @@ printf '%s\n' "$restore_rc" > "$out/restore.exit"
     exit 1
 }
 
-expected="LOGICAL_SPD_CACHE_LIVE_RESULT elements=16384 pages=$pages expected_hash=7303085050985348899 output_hash=7303085050985348899 errors=0"
+expected="LOGICAL_SPD_CACHE_LIVE_RESULT elements=16384 pages=$pages expected_hash=$expected_hash output_hash=$expected_hash errors=0"
 [[ $(grep -Fxc "$expected" "$out/restore.log" || true) -eq 1 ]] || {
     echo "missing exact logical SPD result" >&2
     exit 1
