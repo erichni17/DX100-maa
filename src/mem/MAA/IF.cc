@@ -17,6 +17,7 @@ Instruction::Instruction() : baseAddr(0xFFFFFFFFFFFFFFFF),
                              indexAddr(0xFFFFFFFFFFFFFFFF),
                              predicateAddr(0),
                              soaJitMaskedIndex(false),
+                             soaJitScalarRegID(-1),
                              logicalSourceBackingAddr(0xFFFFFFFFFFFFFFFF),
                              logicalSource2BackingAddr(0xFFFFFFFFFFFFFFFF),
                              logicalDestinationBackingAddr(0xFFFFFFFFFFFFFFFF),
@@ -231,7 +232,8 @@ Instruction::getMemoryAccesses(
 
     if (isSoaJitRmw()) {
         append(addrRangeID, AccessType::WRITE);
-        append(backingAddrRangeID, AccessType::READ);
+        if (isSoaJitVectorRmw())
+            append(backingAddrRangeID, AccessType::READ);
         append(indexAddrRangeID, AccessType::READ);
         if (predicateAddr != 0)
             append(predicateAddrRangeID, AccessType::READ);
@@ -571,6 +573,23 @@ bool IF::canPushRegister(Register _reg) {
     int maa_id = _reg.maa_id;
     for (int i = 0; i < num_instructions_per_maa; i++) {
         if (valids[maa_id][i] == true) {
+            Instruction &instruction = instructions[maa_id][i];
+            if (instruction.isSoaJitScalarRmw()) {
+                const int pending_begin = register_id;
+                const int pending_end = pending_begin +
+                    _reg.size / static_cast<int>(sizeof(uint32_t));
+                const int scalar_begin = instruction.soaJitScalarRegID;
+                const int scalar_end = scalar_begin +
+                    instruction.WordSize() /
+                        static_cast<int>(sizeof(uint32_t));
+                const auto overlaps = [](int lhs_begin, int lhs_end,
+                                         int rhs_begin, int rhs_end) {
+                    return lhs_begin < rhs_end && rhs_begin < lhs_end;
+                };
+                if (overlaps(pending_begin, pending_end,
+                             scalar_begin, scalar_end))
+                    return false;
+            }
             if ((instructions[maa_id][i].dst1RegID == register_id) ||
                 (instructions[maa_id][i].dst2RegID == register_id) ||
                 (instructions[maa_id][i].src1RegID == register_id) ||

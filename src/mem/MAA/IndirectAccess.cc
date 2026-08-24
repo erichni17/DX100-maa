@@ -854,6 +854,10 @@ bool IndirectAccessUnit::isDirectIndexLoad() const {
 bool IndirectAccessUnit::isSoaJitRmw() const {
     return my_instruction != nullptr && my_instruction->isSoaJitRmw();
 }
+bool IndirectAccessUnit::isSoaJitScalarRmw() const {
+    return my_instruction != nullptr &&
+           my_instruction->isSoaJitScalarRmw();
+}
 bool IndirectAccessUnit::isSoaJitMaskedIndexRmw() const {
     return my_instruction != nullptr &&
            my_instruction->isSoaJitMaskedIndexRmw();
@@ -1304,9 +1308,14 @@ IndirectAccessUnit::validateSoaJitAddressSpans()
     panic_if(!isSoaJitRmw(),
              "I[%d] SoA/JIT span validation used by another shape\n",
              my_indirect_id);
-    panic_if(!SoaJitSafety::typedOperandsAligned(
-                 my_base_addr, my_backing_addr, my_index_addr,
-                 my_predicate_addr, my_word_size),
+    const bool operands_aligned = isSoaJitScalarRmw()
+        ? SoaJitSafety::scalarOperandsAligned(
+              my_base_addr, my_index_addr, my_predicate_addr,
+              my_word_size)
+        : SoaJitSafety::typedOperandsAligned(
+              my_base_addr, my_backing_addr, my_index_addr,
+              my_predicate_addr, my_word_size);
+    panic_if(!operands_aligned,
              "I[%d] misaligned typed SoA/JIT operand reached decode\n",
              my_indirect_id);
     if (my_max == 0)
@@ -1345,26 +1354,35 @@ IndirectAccessUnit::validateSoaJitAddressSpans()
                  minimum, maximum);
     };
 
-    std::array<Span, 4> spans{{
-        {"mutable-A", my_base_addr, my_max_addr},
-        {"values", my_backing_addr,
-         checkedEnd(my_backing_addr, source_elements, my_word_size,
-                    "values")},
-        {"indices", my_index_addr,
-         checkedEnd(my_index_addr, source_elements, sizeof(uint32_t),
-                    "indices")},
-        {"predicate", my_predicate_addr,
-         my_predicate_addr == 0
-             ? 0
-             : checkedEnd(my_predicate_addr, source_elements,
-                          sizeof(uint32_t), "predicate")},
-    }};
-    const size_t span_count = my_predicate_addr == 0 ? 3 : 4;
+    std::array<Span, 4> spans{};
+    size_t span_count = 0;
+    spans[span_count++] = {"mutable-A", my_base_addr, my_max_addr};
+    if (!isSoaJitScalarRmw()) {
+        spans[span_count++] = {
+            "values", my_backing_addr,
+            checkedEnd(my_backing_addr, source_elements, my_word_size,
+                       "values")};
+    }
+    const size_t index_span = span_count;
+    spans[span_count++] = {
+        "indices", my_index_addr,
+        checkedEnd(my_index_addr, source_elements, sizeof(uint32_t),
+                   "indices")};
+    size_t predicate_span = spans.size();
+    if (my_predicate_addr != 0) {
+        predicate_span = span_count;
+        spans[span_count++] = {
+            "predicate", my_predicate_addr,
+            checkedEnd(my_predicate_addr, source_elements,
+                       sizeof(uint32_t), "predicate")};
+    }
     inside(spans[0], my_min_addr, my_max_addr);
-    inside(spans[1], my_backing_min_addr, my_backing_max_addr);
-    inside(spans[2], my_index_min_addr, my_index_max_addr);
-    if (span_count == 4)
-        inside(spans[3], my_predicate_min_addr, my_predicate_max_addr);
+    if (!isSoaJitScalarRmw())
+        inside(spans[1], my_backing_min_addr, my_backing_max_addr);
+    inside(spans[index_span], my_index_min_addr, my_index_max_addr);
+    if (predicate_span != spans.size())
+        inside(spans[predicate_span], my_predicate_min_addr,
+               my_predicate_max_addr);
 
     const auto overlaps = [](Addr first_begin, Addr first_end,
                              Addr second_begin, Addr second_end) {
@@ -4182,7 +4200,7 @@ IndirectAccessUnit::soaJitLookaheadOccupancy() const
 bool
 IndirectAccessUnit::soaJitValuePrefetchComplete() const
 {
-    return soa_jit_value_prefetch_credits == 0 ||
+    return isSoaJitScalarRmw() || soa_jit_value_prefetch_credits == 0 ||
            (soa_jit_value_prefetch_cursor.nextLogical ==
                 static_cast<uint32_t>(my_max) &&
             soa_jit_value_coalescer.prefetchComplete());
@@ -4191,7 +4209,7 @@ IndirectAccessUnit::soaJitValuePrefetchComplete() const
 bool
 IndirectAccessUnit::serviceSoaJitValuePrefetch()
 {
-    if (soa_jit_value_prefetch_credits == 0)
+    if (isSoaJitScalarRmw() || soa_jit_value_prefetch_credits == 0)
         return false;
     panic_if(!isSoaJitRmw() || soa_jit_generation == 0 || my_max < 0 ||
                  (my_word_size != 4 && my_word_size != 8) ||
@@ -4351,6 +4369,57 @@ bool IndirectAccessUnit::serviceSoaJitBuild()
     return false;
 }
 bool
+IndirectAccessUnit::issueSoaJitScalar(
+    size_t context_index, size_t slot_index, int offset)
+{
+    panic_if(!isSoaJitScalarRmw() ||
+                 context_index >=
+                     static_cast<size_t>(soa_jit_active_contexts) ||
+                 slot_index >= SoaJitValueCoalescer::MaxLookahead,
+             "I[%d] invalid scalar-broadcast lookahead owner %lu/%lu\n",
+             my_indirect_id, context_index, slot_index);
+    SoaJitContext &context = soa_jit_contexts[context_index];
+    SoaJitLookaheadSlot &slot = context.lookahead[slot_index];
+    const bool pre_a = context.state == SoaJitContextState::AwaitARead;
+    panic_if(context.generation != soa_jit_generation ||
+                 (context.state != SoaJitContextState::Active &&
+                  !(soa_jit_pre_a_value_lookahead && pre_a)) ||
+                 slot.state != SoaJitLookaheadState::Free || offset < 0 ||
+                 context.issueOffset != offset || context.remaining <= 0 ||
+                 !soa_jit_scalar_broadcast.valid() ||
+                 soa_jit_scalar_broadcast.valueBytes() !=
+                     static_cast<size_t>(my_word_size),
+             "I[%d] invalid captured scalar lookahead state\n",
+             my_indirect_id);
+    const OffsetTableEntry entry = offset_table->peek_entry(offset);
+    slot = SoaJitLookaheadSlot();
+    slot.generation = soa_jit_generation;
+    slot.offset = offset;
+    slot.logicalItr = entry.itr;
+    slot.aWord = static_cast<uint16_t>(entry.wid);
+    std::memcpy(slot.value.data(), soa_jit_scalar_broadcast.data(),
+                my_word_size);
+    slot.state = SoaJitLookaheadState::Ready;
+    context.issueOffset = entry.next_itr;
+    context.lookaheadOccupancy++;
+    soa_jit_lookahead_issues++;
+    soa_jit_lookahead_responses++;
+    soa_jit_value_deliveries++;
+    if (pre_a)
+        soa_jit_pre_a_value_issues++;
+    soa_jit_lookahead_high_water = std::max<uint64_t>(
+        soa_jit_lookahead_high_water, soaJitLookaheadOccupancy());
+    DPRINTF(MAAVirtualTrace,
+            "event=soa_jit_scalar_capture schema=1 unit=%d "
+            "operation_tick=%lu generation=%lu context=%lu slot=%lu "
+            "offset=%d logical_itr=%d bytes=%d pre_a=%d\n",
+            my_indirect_id, my_decode_start_tick, soa_jit_generation,
+            context_index, slot_index, offset, entry.itr, my_word_size,
+            pre_a);
+    return true;
+}
+
+bool
 IndirectAccessUnit::issueSoaJitValueRead(
     size_t context_index, size_t slot_index, int offset)
 {
@@ -4480,8 +4549,12 @@ IndirectAccessUnit::fillSoaJitLookahead(size_t context_index)
                  my_indirect_id);
         const size_t slot_index =
             std::distance(context.lookahead.begin(), slot);
-        if (!issueSoaJitValueRead(
-                context_index, slot_index, context.issueOffset))
+        const bool success = isSoaJitScalarRmw()
+            ? issueSoaJitScalar(
+                  context_index, slot_index, context.issueOffset)
+            : issueSoaJitValueRead(
+                  context_index, slot_index, context.issueOffset);
+        if (!success)
             break;
         issued = true;
     }
@@ -4629,6 +4702,16 @@ void IndirectAccessUnit::applySoaJitValue(
 {
     uint8_t *destination =
         context.aLine.data() + a_word * my_word_size;
+    if (isSoaJitScalarRmw()) {
+        panic_if(value == nullptr ||
+                     std::memcmp(value, soa_jit_scalar_broadcast.data(),
+                                 my_word_size) != 0 ||
+                     soa_jit_scalar_broadcast.apply(destination) !=
+                         SoaJitScalarBroadcast::Status::Accepted,
+                 "I[%d] captured scalar apply rejected\n",
+                 my_indirect_id);
+        return;
+    }
 #define APPLY_SOA_JIT(TYPE) \
     do { \
         TYPE lhs{}; \
@@ -4671,6 +4754,17 @@ void IndirectAccessUnit::issueSoaJitWrite(SoaJitContext &context)
     pkt->headerDelay = pkt->payloadDelay = 0;
     pkt->allocate();
     pkt->setData(context.aLine.data());
+    const size_t context_index = static_cast<size_t>(
+        &context - soa_jit_contexts.data());
+    panic_if(context_index >=
+                 static_cast<size_t>(soa_jit_active_contexts),
+             "I[%d] scalar/JIT write context is outside active geometry\n",
+             my_indirect_id);
+    auto *sender = new SoaJitWriteSenderState;
+    sender->identity = {
+        soa_jit_generation, static_cast<uint16_t>(context_index),
+        context.aPaddr};
+    pkt->pushSenderState(sender);
     context.state = SoaJitContextState::AwaitAWriteResp;
     observeSoaJitResultPipeline();
     soa_jit_a_write_issues++;
@@ -4778,28 +4872,33 @@ bool IndirectAccessUnit::receiveSoaJitData(
     scheduleNextExecution(true);
     return true;
 }
-bool IndirectAccessUnit::completeSoaJitWrite(Addr addr)
+bool IndirectAccessUnit::completeSoaJitWrite(
+    const SoaJitScalarBroadcast::WriteIdentity &identity)
 {
-    for (auto &context : soa_jit_contexts) {
-        if (context.state != SoaJitContextState::AwaitAWriteResp ||
-            context.aPaddr != addr)
-            continue;
-        panic_if(context.generation != soa_jit_generation ||
-                     context.nextOffset != -1 || context.remaining != 0 ||
-                     context.preAUsesPending != 0,
-                 "I[%d] invalid exact SoA/JIT WriteResp owner\n",
-                 my_indirect_id);
-        soa_jit_a_write_responses++;
-        DPRINTF(MAAVirtualTrace,
-                "event=soa_jit_a_write_response schema=1 unit=%d "
-                "operation_tick=%lu generation=%lu addr=0x%lx\n",
-                my_indirect_id, my_decode_start_tick, soa_jit_generation,
-                addr);
-        context = SoaJitContext();
-        observeSoaJitResultPipeline();
-        return true;
-    }
-    return false;
+    if (identity.context >=
+        static_cast<uint16_t>(soa_jit_active_contexts))
+        return false;
+    auto &context = soa_jit_contexts[identity.context];
+    const SoaJitScalarBroadcast::WriteIdentity expected{
+        context.generation, identity.context, context.aPaddr};
+    if (context.state != SoaJitContextState::AwaitAWriteResp ||
+        SoaJitScalarBroadcast::validateCompletion(expected, identity) !=
+            SoaJitScalarBroadcast::Status::Accepted)
+        return false;
+    panic_if(context.generation != soa_jit_generation ||
+                 context.nextOffset != -1 || context.remaining != 0 ||
+                 context.preAUsesPending != 0,
+             "I[%d] invalid exact SoA/JIT WriteResp owner\n",
+             my_indirect_id);
+    soa_jit_a_write_responses++;
+    DPRINTF(MAAVirtualTrace,
+            "event=soa_jit_a_write_response schema=1 unit=%d "
+            "operation_tick=%lu generation=%lu addr=0x%lx\n",
+            my_indirect_id, my_decode_start_tick, soa_jit_generation,
+            identity.address);
+    context = SoaJitContext();
+    observeSoaJitResultPipeline();
+    return true;
 }
 void IndirectAccessUnit::checkSoaJitTerminal()
 {
@@ -5198,6 +5297,7 @@ void IndirectAccessUnit::executeInstruction() {
         for (auto &context : soa_jit_contexts)
             context = SoaJitContext();
         soa_jit_result_pipeline.reset(curTick());
+        soa_jit_scalar_broadcast.reset();
         soa_jit_value_coalescer.configure(
             soa_jit_value_cache_enable, soa_jit_value_prefetch_credits,
             soa_jit_active_value_owners);
@@ -5281,6 +5381,31 @@ void IndirectAccessUnit::executeInstruction() {
                 panic_if(!my_instruction->hasValidSoaJitRmwOperands(),
                          "I[%d] malformed SoA/JIT RMW reached decode\n",
                          my_indirect_id);
+                if (isSoaJitScalarRmw()) {
+                    const auto register_validation =
+                        SoaJitScalarBroadcast::validateRegisters(
+                            my_instruction->soaJitScalarRegID,
+                            my_word_size / sizeof(uint32_t),
+                            my_instruction->src1RegID,
+                            my_instruction->src2RegID,
+                            my_instruction->src3RegID,
+                            maa->num_regs);
+                    panic_if(
+                        register_validation !=
+                                SoaJitScalarBroadcast::Status::Accepted ||
+                            soa_jit_scalar_broadcast.capture(
+                                maa->rf->getDataPtr(
+                                    my_instruction->soaJitScalarRegID),
+                                my_word_size,
+                                static_cast<uint8_t>(
+                                    my_instruction->datatype),
+                                static_cast<uint8_t>(
+                                    my_instruction->optype)) !=
+                                SoaJitScalarBroadcast::Status::Accepted,
+                        "I[%d] rejected scalar capture before Row/Offset "
+                        "mutation\n",
+                        my_indirect_id);
+                }
                 panic_if(maa->virtual_index_range_passes ||
                              maa->virtual_index_descriptor_spool ||
                              maa->virtual_bounded_global_merge,
@@ -5425,9 +5550,10 @@ void IndirectAccessUnit::executeInstruction() {
                      my_index_max_addr);
         }
         if (isSoaJitRmw()) {
-            panic_if(my_backing_addr_range_id < 0 ||
-                         my_backing_addr < my_backing_min_addr ||
-                         my_backing_addr >= my_backing_max_addr,
+            panic_if(!isSoaJitScalarRmw() &&
+                         (my_backing_addr_range_id < 0 ||
+                          my_backing_addr < my_backing_min_addr ||
+                          my_backing_addr >= my_backing_max_addr),
                      "I[%d] SoA/JIT values base 0x%lx has no valid "
                      "registered range\n",
                      my_indirect_id, my_backing_addr);
@@ -5436,18 +5562,18 @@ void IndirectAccessUnit::executeInstruction() {
                 panic_if(last_source < 0,
                          "I[%d] SoA/JIT range begins below zero\n",
                          my_indirect_id);
-                const Addr value_span =
-                    my_backing_max_addr - my_backing_addr;
                 const Addr index_span =
                     my_index_max_addr - my_index_addr;
-                const uint64_t last_value_offset =
-                    static_cast<uint64_t>(last_source) * my_word_size;
                 const uint64_t last_index_offset =
                     static_cast<uint64_t>(last_source) * sizeof(uint32_t);
-                panic_if(value_span < static_cast<Addr>(my_word_size) ||
+                panic_if((!isSoaJitScalarRmw() &&
+                          (my_backing_max_addr - my_backing_addr <
+                               static_cast<Addr>(my_word_size) ||
+                           static_cast<uint64_t>(last_source) *
+                                   my_word_size >
+                               my_backing_max_addr - my_backing_addr -
+                                   my_word_size)) ||
                              index_span < sizeof(uint32_t) ||
-                             last_value_offset >
-                                 value_span - my_word_size ||
                              last_index_offset >
                                  index_span - sizeof(uint32_t),
                          "I[%d] SoA/JIT values or indices span exceeds its "
@@ -9304,11 +9430,28 @@ void IndirectAccessUnit::transitionAttributionStage(
 }
 
 void IndirectAccessUnit::retirementWriteComplete(
-    Addr addr, const uint8_t *writeRespPayload, unsigned payloadBytes) {
+    Addr addr, const uint8_t *writeRespPayload, unsigned payloadBytes,
+    PacketPtr responsePacket) {
     if (isSoaJitRmw()) {
-        panic_if(!completeSoaJitWrite(addr),
-                 "I[%d] SoA/JIT received unmatched WriteResp 0x%lx\n",
+        auto *peek = dynamic_cast<SoaJitWriteSenderState *>(
+            responsePacket == nullptr ? nullptr :
+                                        responsePacket->senderState);
+        panic_if(peek == nullptr || peek->identity.address != addr,
+                 "I[%d] SoA/JIT WriteResp lacks exact generation/context "
+                 "ownership at 0x%lx\n",
                  my_indirect_id, addr);
+        auto *sender = dynamic_cast<SoaJitWriteSenderState *>(
+            responsePacket->popSenderState());
+        panic_if(sender != peek,
+                 "I[%d] SoA/JIT WriteResp sender-state stack diverged\n",
+                 my_indirect_id);
+        const auto identity = sender->identity;
+        delete sender;
+        panic_if(!completeSoaJitWrite(identity),
+                 "I[%d] SoA/JIT rejected stale/unmatched WriteResp "
+                 "generation=%lu context=%u addr=0x%lx active=%lu\n",
+                 my_indirect_id, identity.generation, identity.context,
+                 identity.address, soa_jit_generation);
         scheduleNextExecution(true);
         return;
     }

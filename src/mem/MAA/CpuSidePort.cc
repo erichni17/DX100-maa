@@ -17,6 +17,7 @@
 #include "mem/MAA/RangeFuser.hh"
 #include "mem/MAA/SPD.hh"
 #include "mem/MAA/SoaJitSafety.hh"
+#include "mem/MAA/SoaJitScalarBroadcast.hh"
 #include "mem/MAA/StreamAccess.hh"
 #include "mem/packet.hh"
 #include "params/MAA.hh"
@@ -438,7 +439,7 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                 current_instruction->baseAddr = data;
                 if (current_instruction->isSoaJitRmw()) {
                     panic_if(
-                        !current_instruction->hasValidSoaJitRmwOperands(),
+                        !current_instruction->hasValidSoaJitRmwShape(),
                         "Rejected SoA/JIT RMW ABI shape: dst1(old value) "
                         "must be absent, dst2(completion) and all three "
                         "range registers must be present, and register "
@@ -527,6 +528,34 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                     // Staged only: this incomplete instruction is never
                     // admitted or dispatched until word five validates it.
                     current_instruction->logicalDestinationBackingAddr = data;
+                    break;
+                }
+                if (current_instruction->isSoaJitScalarRmw()) {
+                    panic_if(
+                        data > static_cast<uint64_t>(
+                                   std::numeric_limits<int16_t>::max()),
+                        "Rejected SoA/JIT scalar register encoding 0x%lx\n",
+                        data);
+                    current_instruction->soaJitScalarRegID =
+                        static_cast<int16_t>(data);
+                    const auto validation =
+                        SoaJitScalarBroadcast::validateRegisters(
+                            current_instruction->soaJitScalarRegID,
+                            current_instruction->WordSize() /
+                                sizeof(uint32_t),
+                            current_instruction->src1RegID,
+                            current_instruction->src2RegID,
+                            current_instruction->src3RegID, num_regs);
+                    panic_if(
+                        validation !=
+                            SoaJitScalarBroadcast::Status::Accepted ||
+                            !SoaJitScalarBroadcast::datatypeMatchesWidth(
+                                static_cast<uint8_t>(
+                                    current_instruction->datatype),
+                                current_instruction->WordSize()),
+                        "Rejected SoA/JIT scalar width/type/register alias "
+                        "shape (%d) before timed request dispatch\n",
+                        static_cast<int>(validation));
                     break;
                 }
                 current_instruction->backingAddr = data;
@@ -768,17 +797,32 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                 panic_if(!current_instruction->hasValidSoaJitRmwOperands(),
                          "Rejected malformed SoA/JIT RMW before word-five "
                          "dispatch\n");
+                panic_if(current_instruction->isSoaJitScalarRmw() &&
+                             data == SoaJitSafety::MaskedIndexModeTag,
+                         "Scalar-broadcast SoA/JIT requires a null or "
+                         "registered predicate span; masked-index mode is "
+                         "vector-only\n");
                 current_instruction->soaJitMaskedIndex =
+                    current_instruction->isSoaJitVectorRmw() &&
                     data == SoaJitSafety::MaskedIndexModeTag;
                 current_instruction->predicateAddr =
                     current_instruction->soaJitMaskedIndex ? 0 : data;
                 const int soa_word_size = current_instruction->WordSize();
+                const bool operands_aligned =
+                    current_instruction->isSoaJitScalarRmw()
+                        ? SoaJitSafety::scalarOperandsAligned(
+                              current_instruction->baseAddr,
+                              current_instruction->indexAddr,
+                              current_instruction->predicateAddr,
+                              soa_word_size)
+                        : SoaJitSafety::typedOperandsAligned(
+                              current_instruction->baseAddr,
+                              current_instruction->backingAddr,
+                              current_instruction->indexAddr,
+                              current_instruction->predicateAddr,
+                              soa_word_size);
                 panic_if(
-                    !SoaJitSafety::typedOperandsAligned(
-                        current_instruction->baseAddr,
-                        current_instruction->backingAddr,
-                        current_instruction->indexAddr,
-                        current_instruction->predicateAddr, soa_word_size),
+                    !operands_aligned,
                     "Rejected misaligned typed SoA/JIT A, value, index, or "
                     "predicate operand before timed request dispatch\n");
                 if (current_instruction->predicateAddr != 0) {

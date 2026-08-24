@@ -790,7 +790,7 @@ void MAA::recvTimingResp(PacketPtr pkt, bool cached) {
                 my_num_outstanding_indirect_pkts[tmp.maaIDs[i]]--;
                 sendNextDeferredPacket(paddr);
                 indirectAccessUnits[tmp.maaIDs[i]].retirementWriteComplete(
-                    paddr, pkt->getConstPtr<uint8_t>(), pkt->getSize());
+                    paddr, pkt->getConstPtr<uint8_t>(), pkt->getSize(), pkt);
             } else {
                 panic_if(indirectAccessUnits[tmp.maaIDs[i]].recvData(pkt->getAddr(), pkt->getPtr<uint8_t>(), tmp.cached) == false, "%s: received %s but rejected from indirectAccessUnits[%d]\n", __func__, pkt->print(), tmp.maaIDs[i]);
             }
