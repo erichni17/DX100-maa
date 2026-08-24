@@ -39,6 +39,7 @@ Raw CG reports:
 | HashJoin PRH, hardened | `dx100-hashjoin-prh-hardened-20260824-r1` | `/data1/nier/dx100-runs/2026-08-24-hashjoin-prh-hardened-r1` | active candidate-only full gate with frozen mechanism-status and hash contracts |
 | GAPBS SSSP S22, original | `dx100-sssp-old-result-full-e690867f-r1` | `/data1/nier/dx100-runs/2026-08-24-sssp-old-result-full-e690867f-r1` | failed closed on unvirtualized 4,133-element tail |
 | GAPBS SSSP S22, reviewed repair | `dx100-sssp-tail-repair-7b6f9c21-full-r1` | `/data1/nier/worktrees/codex-coordination/sessions/sssp-tail-repair-successor-20260824-155812-7c1e3190/evidence/sssp-tail-repair-7b6f9c21-r1` | rejected: L1 stride prefetch crossed the 4K physical SPD aperture at element 4,096 |
+| GAPBS SSSP S22, causal ablation | `dx100-sssp-l1d-prefetch-ablation-20260824-r1` | `/data1/nier/dx100-runs/2026-08-24-sssp-l1d-prefetch-ablation-r1` | active non-promotable replay; identical frozen inputs with only L1D stride prefetch removed |
 
 CG, IS, and the hardened PRO/PRH recoveries remain active with infinite runtime.
 Both SSSP full candidates and the pre-hardening PRH recovery have exited.
@@ -184,7 +185,11 @@ small gate does not; after a full physical-page host scan, the speculative next
 cache line begins at element 4,096 and the CPU-side aperture currently treats
 it as an architectural demand. This explains both the exact boundary and the
 small/full discrepancy. The wrapper and explicit validator both fail, so no
-SSSP full result is claimed.
+SSSP full result is claimed. A frozen candidate-only causal ablation is active
+with only the L1D stride prefetcher removed. Its sole acceptance criterion is
+crossing the old failure tick without the element-4,096 panic; it cannot support
+correctness promotion or a performance comparison because its cache
+configuration differs.
 
 Worker commit `2040dfd9` is rejected. It preflights the aggregate frontier
 chunk and diverts every chunk above 4K to CPU, including valid 16K logical
