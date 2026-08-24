@@ -6,6 +6,7 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 full_runner="$root/experiments/scripts/run_sssp_old_result_hybrid_full.sh"
 source_file="$root/benchmarks/gapbs/src/sssp.cc"
 route_header="$root/benchmarks/gapbs/src/sssp_tail_route.hh"
+replay_header="$root/benchmarks/gapbs/src/sssp_tail_replay.hh"
 graph=/data1/nier/worktrees/DX100-full-tile-sweep-20260720/benchmarks/gapbs/serialized_graph_22.wsg
 graph_sha256=23eb25e34343334976554071a8184f7b03358fe1892ba44cd2f5a38369f4eebc
 
@@ -81,6 +82,7 @@ prepare_gate() {
         printf 'source_commit=%s\nsource_sha256=%s\n' \
             "$source_commit" "$(hash_value "$source_file")"
         printf 'route_header_sha256=%s\n' "$(hash_value "$route_header")"
+        printf 'replay_header_sha256=%s\n' "$(hash_value "$replay_header")"
         printf 'full_runner_sha256=%s\n' "$(hash_value "$full_runner")"
         printf 'gate_runner_sha256=%s\n' "$(hash_value "$0")"
         printf 'candidate_guest_path=%s\ncandidate_guest_sha256=%s\n' \
@@ -89,8 +91,9 @@ prepare_gate() {
         printf 'logical_elements=16384\nphysical_tile_elements=4096\n'
         printf 'native_arms=0\nwall_timeout=none\nlaunch_count=0\n'
     } >"$manifest"
-    sha256sum "$guest" "$source_file" "$route_header" "$full_runner" \
-        "$0" "$frozen/build.command" >"$frozen/files.sha256"
+    sha256sum "$guest" "$source_file" "$route_header" "$replay_header" \
+        "$full_runner" "$0" "$frozen/build.command" \
+        >"$frozen/files.sha256"
     hash_value "$frozen/files.sha256" >"$frozen/identity.sha256"
     chmod 0444 "$manifest" "$frozen/build.command" "$frozen/files.sha256" \
         "$frozen/identity.sha256"
@@ -106,8 +109,20 @@ prepare_gate() {
 }
 
 launch_gate() {
-    local gate=$1 unit=$2 frozen manifest guest guest_sha load_state
+    local gate=$1 unit=$2 frozen manifest guest guest_sha load_state lease
     gate=$(realpath -m "$gate")
+    lease="$gate/launch.lease"
+    if ! mkdir "$lease"; then
+        echo "refusing gate with an existing exclusive launch lease: $gate" >&2
+        return 2
+    fi
+    {
+        printf 'schema=dx100.sssp.tail_repair.launch_lease.v1\n'
+        printf 'owner_pid=%s\nunit=%s.service\n' "$$" "$unit"
+        printf 'acquired_at=%s\n' "$(date -Ins)"
+    } >"$lease/owner.tmp"
+    mv "$lease/owner.tmp" "$lease/owner"
+    chmod 0444 "$lease/owner"
     frozen="$gate/frozen"
     manifest="$frozen/candidate.manifest"
     guest="$frozen/sssp_maa_2G_old_result_hybrid_fp"
@@ -145,6 +160,11 @@ launch_gate() {
     } >"$gate/launch.accepted.tmp"
     mv "$gate/launch.accepted.tmp" "$gate/launch.accepted"
     chmod 0444 "$gate/launch.accepted"
+    {
+        printf 'state=accepted\naccepted_at=%s\n' "$(date -Ins)"
+    } >"$lease/accepted.tmp"
+    mv "$lease/accepted.tmp" "$lease/accepted"
+    chmod 0444 "$lease/accepted"
     systemctl --user show "$unit.service" --no-pager \
         --property=Id --property=LoadState --property=ActiveState \
         --property=SubState --property=MainPID \
@@ -197,7 +217,8 @@ status_gate() {
         --property=Id --property=LoadState --property=ActiveState \
         --property=SubState --property=MainPID --property=Result \
         --property=ExecMainCode --property=ExecMainStatus
-    for ledger in prepared.ledger launch.intent launch.accepted systemd.result; do
+    for ledger in prepared.ledger launch.lease/owner launch.lease/accepted \
+        launch.intent launch.accepted systemd.result; do
         if [[ -s $gate/$ledger ]]; then
             printf '%s\n' "--- $ledger"
             sed -n '1,80p' "$gate/$ledger"
@@ -209,7 +230,8 @@ validate_gate() {
     local gate=$1 unit=$2 manifest guest_sha active result exit_status
     gate=$(realpath -m "$gate")
     manifest="$gate/frozen/candidate.manifest"
-    for ledger in prepared.ledger launch.intent launch.accepted systemd.result; do
+    for ledger in prepared.ledger launch.lease/owner launch.lease/accepted \
+        launch.intent launch.accepted systemd.result; do
         [[ -s $gate/$ledger ]]
     done
     [[ $(manifest_value "$gate/launch.intent" launch_count) == 1 ]]

@@ -1,3 +1,5 @@
+import hashlib
+import os
 import pathlib
 import subprocess
 import tempfile
@@ -23,6 +25,7 @@ class SsspTailRepairGateContract(unittest.TestCase):
             "--prepare GATE_ROOT",
             "candidate_guest_sha256",
             "route_header_sha256",
+            "replay_header_sha256",
             "frozen/identity.sha256",
             "state=frozen",
             "chmod 0555",
@@ -41,6 +44,8 @@ class SsspTailRepairGateContract(unittest.TestCase):
         launch = self.gate.index("systemd-run --user")
         self.assertLess(intent, launch)
         self.assertIn("launch_count=1", self.gate)
+        self.assertIn('lease="$gate/launch.lease"', self.gate)
+        self.assertIn('mkdir "$lease"', self.gate)
         self.assertIn("[[ ! -e $gate/launch.intent", self.gate)
         self.assertIn("[[ ! -e $gate/full ]]", self.gate)
         self.assertIn("native_arms=0", self.gate)
@@ -54,13 +59,16 @@ class SsspTailRepairGateContract(unittest.TestCase):
             "cpu_4133_batches > 0",
             "cpu_words >= 4133",
             "legacy_words == bounded_words + cpu_words",
+            "total_words > 0 && total_words == produced_words",
+            "produced_words == consumed_words",
+            "accelerated_words == routed * 16384",
             "max_host_spd_element < 4096",
-            "out_of_range_spd_ids == 0",
+            "illegal_host_spd_attempts == 0",
             "instructions == routed && terminals == routed",
             "old_issues == old_responses",
             "a_read_issues == a_write_issues",
             "checkpoint.before.identity.sha256",
-            "checkpoint.callback.files.sha256",
+            "checkpoint.validation.files.sha256",
             "candidate_guest_origin",
         ):
             self.assertIn(exact, self.full)
@@ -74,6 +82,54 @@ class SsspTailRepairGateContract(unittest.TestCase):
                 check=False,
             )
         self.assertNotEqual(completed.returncode, 0)
+
+    def test_two_concurrent_launchers_cross_one_exclusive_lease(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            gate = tmp_path / "gate"
+            frozen = gate / "frozen"
+            fake_bin = tmp_path / "bin"
+            frozen.mkdir(parents=True)
+            fake_bin.mkdir()
+            guest = frozen / "sssp_maa_2G_old_result_hybrid_fp"
+            guest.write_bytes(b"frozen-test-guest")
+            guest.chmod(0o555)
+            guest_sha = hashlib.sha256(guest.read_bytes()).hexdigest()
+            (frozen / "candidate.manifest").write_text(
+                "candidate_guest_sha256=" + guest_sha + "\n"
+            )
+            (gate / "prepared.ledger").write_text(
+                "state=prepared\nlaunch_count=0\n"
+            )
+            launch_log = tmp_path / "launch.log"
+            systemctl = fake_bin / "systemctl"
+            systemctl.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [[ $* == *--value* ]]; then echo not-found; "
+                "else printf 'Id=fake.service\\nLoadState=loaded\\n'; fi\n"
+            )
+            systemctl.chmod(0o755)
+            systemd_run = fake_bin / "systemd-run"
+            systemd_run.write_text(
+                "#!/usr/bin/env bash\n"
+                "sleep 0.2\n"
+                "printf 'launch\\n' >>\"$SSSP_TEST_LAUNCH_LOG\"\n"
+            )
+            systemd_run.chmod(0o755)
+            env = dict(os.environ)
+            env["PATH"] = str(fake_bin) + os.pathsep + env["PATH"]
+            env["SSSP_TEST_LAUNCH_LOG"] = str(launch_log)
+            first = subprocess.Popen(
+                [str(GATE), "--launch", str(gate), "race-a"], env=env
+            )
+            second = subprocess.Popen(
+                [str(GATE), "--launch", str(gate), "race-b"], env=env
+            )
+            results = sorted([first.wait(), second.wait()])
+            self.assertEqual(results, [0, 2])
+            self.assertEqual(launch_log.read_text().splitlines(), ["launch"])
+            self.assertTrue((gate / "launch.lease/owner").is_file())
+            self.assertTrue((gate / "launch.lease/accepted").is_file())
 
 
 if __name__ == "__main__":

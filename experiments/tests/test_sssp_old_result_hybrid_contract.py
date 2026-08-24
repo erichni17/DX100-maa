@@ -9,6 +9,9 @@ class SsspOldResultHybridContract(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.source = (ROOT / "benchmarks/gapbs/src/sssp.cc").read_text()
+        cls.replay = (
+            ROOT / "benchmarks/gapbs/src/sssp_tail_replay.hh"
+        ).read_text()
         cls.makefile = (ROOT / "benchmarks/gapbs/Makefile").read_text()
         cls.runner = (
             ROOT / "experiments/scripts/run_sssp_old_result_hybrid_small.sh"
@@ -57,11 +60,12 @@ class SsspOldResultHybridContract(unittest.TestCase):
             "wait_ready(completion_tile);", old_result
         )
         frontier = self.source.index(
-            "sssp_hybrid_old_results[tid][lane] > final_distance", completion
+            "sssp_tail_replay::ReplayOldResultPage", completion
         )
         self.assertLess(publish, old_result)
         self.assertLess(old_result, completion)
         self.assertLess(completion, frontier)
+        self.assertIn("old_results[lane] > final_distance", self.replay)
         self.assertIn("hybrid_pending_pages == 4", self.source)
         self.assertIn("hybrid_pending_pages = 0", self.source)
         self.assertIn(

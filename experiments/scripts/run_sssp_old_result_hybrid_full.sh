@@ -11,6 +11,7 @@ config="$root/configs/deprecated/example/se.py"
 ramulator_config="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
 source_file="$root/benchmarks/gapbs/src/sssp.cc"
 route_header="$root/benchmarks/gapbs/src/sssp_tail_route.hh"
+replay_header="$root/benchmarks/gapbs/src/sssp_tail_replay.hh"
 prebuilt_guest=${SSSP_PREBUILT_GUEST:-}
 prebuilt_guest_sha256=${SSSP_PREBUILT_GUEST_SHA256:-}
 frozen_sweep="$root/experiments/analysis/physical_tile_sweep_baseline_20260822.json"
@@ -104,13 +105,13 @@ validate_evidence() (
     require_hash "$frozen_sweep" "$frozen_sweep_sha256"
 
     hash_tree "$out/checkpoint" \
-        >"$out/provenance/checkpoint.callback.files.sha256.tmp"
-    mv "$out/provenance/checkpoint.callback.files.sha256.tmp" \
-        "$out/provenance/checkpoint.callback.files.sha256"
+        >"$out/provenance/checkpoint.validation.files.sha256.tmp"
+    mv "$out/provenance/checkpoint.validation.files.sha256.tmp" \
+        "$out/provenance/checkpoint.validation.files.sha256"
     cmp -s "$out/provenance/checkpoint.before.files.sha256" \
         "$out/provenance/checkpoint.after.files.sha256"
     cmp -s "$out/provenance/checkpoint.before.files.sha256" \
-        "$out/provenance/checkpoint.callback.files.sha256"
+        "$out/provenance/checkpoint.validation.files.sha256"
     [[ $(<"$out/provenance/checkpoint.before.identity.sha256") == \
         "$(hash_value "$out/provenance/checkpoint.before.files.sha256")" ]]
     [[ $(<"$out/provenance/checkpoint.after.identity.sha256") == \
@@ -175,8 +176,9 @@ validate_evidence() (
 
     local eligible routed index_pages value_pages old_words legacy_words
     local discarded_pages bounded_batches bounded_words cpu_batches cpu_words
-    local cpu_4133_batches
-    local max_host_spd_element out_of_range_spd_ids
+    local cpu_4133_batches total_words produced_words consumed_words
+    local accelerated_words coverage_cpu_words scalar_cpu_words
+    local coverage_iterations illegal_host_spd_attempts max_host_spd_element
     eligible=$(terminal_value "$terminal" eligible_windows)
     routed=$(terminal_value "$terminal" routed_windows)
     index_pages=$(terminal_value "$terminal" index_publish_pages)
@@ -189,12 +191,23 @@ validate_evidence() (
     cpu_batches=$(terminal_value "$terminal" exact_cpu_fallback_batches)
     cpu_words=$(terminal_value "$terminal" exact_cpu_fallback_words)
     cpu_4133_batches=$(terminal_value "$terminal" exact_cpu_4133_batches)
+    total_words=$(terminal_value "$terminal" total_edge_words)
+    produced_words=$(terminal_value "$terminal" produced_words)
+    consumed_words=$(terminal_value "$terminal" consumed_words)
+    accelerated_words=$(terminal_value "$terminal" accelerated_words)
+    coverage_cpu_words=$(terminal_value "$terminal" cpu_words)
+    scalar_cpu_words=$(terminal_value "$terminal" scalar_cpu_words)
+    coverage_iterations=$(terminal_value "$terminal" coverage_iterations)
     max_host_spd_element=$(terminal_value "$terminal" max_host_spd_element)
-    out_of_range_spd_ids=$(terminal_value "$terminal" out_of_range_spd_ids)
+    illegal_host_spd_attempts=$(terminal_value \
+        "$terminal" illegal_host_spd_attempts)
     for value in "$eligible" "$routed" "$index_pages" "$value_pages" \
         "$old_words" "$legacy_words" "$discarded_pages" "$bounded_batches" \
         "$bounded_words" "$cpu_batches" "$cpu_words" \
-        "$cpu_4133_batches" "$out_of_range_spd_ids"; do
+        "$cpu_4133_batches" "$total_words" "$produced_words" \
+        "$consumed_words" "$accelerated_words" "$coverage_cpu_words" \
+        "$scalar_cpu_words" "$coverage_iterations" \
+        "$illegal_host_spd_attempts"; do
         [[ $value =~ ^[0-9]+$ ]]
     done
     [[ $max_host_spd_element =~ ^-?[0-9]+$ ]]
@@ -203,9 +216,16 @@ validate_evidence() (
     (( value_pages == routed * 4 + discarded_pages ))
     (( old_words == routed * 16384 ))
     (( legacy_words == bounded_words + cpu_words ))
+    (( total_words > 0 && total_words == produced_words ))
+    (( produced_words == consumed_words ))
+    (( consumed_words == accelerated_words + bounded_words + \
+        coverage_cpu_words ))
+    (( coverage_cpu_words == scalar_cpu_words + cpu_words ))
+    (( accelerated_words == routed * 16384 ))
+    (( coverage_iterations > 0 ))
     (( cpu_batches > 0 && cpu_words >= 4133 && cpu_4133_batches > 0 ))
     (( max_host_spd_element < 4096 ))
-    (( out_of_range_spd_ids == 0 ))
+    (( illegal_host_spd_attempts == 0 ))
 
     local instructions terminals selected rejected predicate_issues
     local predicate_responses index_words value_issues value_responses
@@ -302,9 +322,19 @@ write_result() {
             "$(terminal_value "$terminal" exact_cpu_fallback_words)"
         printf 'exact_cpu_4133_batches=%s\n' \
             "$(terminal_value "$terminal" exact_cpu_4133_batches)"
-        printf 'max_host_spd_element=%s\nout_of_range_spd_ids=%s\n' \
+        printf 'total_edge_words=%s\nproduced_words=%s\nconsumed_words=%s\n' \
+            "$(terminal_value "$terminal" total_edge_words)" \
+            "$(terminal_value "$terminal" produced_words)" \
+            "$(terminal_value "$terminal" consumed_words)"
+        printf 'accelerated_words=%s\ncpu_words=%s\nscalar_cpu_words=%s\n' \
+            "$(terminal_value "$terminal" accelerated_words)" \
+            "$(terminal_value "$terminal" cpu_words)" \
+            "$(terminal_value "$terminal" scalar_cpu_words)"
+        printf 'coverage_iterations=%s\n' \
+            "$(terminal_value "$terminal" coverage_iterations)"
+        printf 'max_host_spd_element=%s\nillegal_host_spd_attempts=%s\n' \
             "$(terminal_value "$terminal" max_host_spd_element)" \
-            "$(terminal_value "$terminal" out_of_range_spd_ids)"
+            "$(terminal_value "$terminal" illegal_host_spd_attempts)"
         printf 'soa_jit_instructions=%s\n' \
             "$(stat_sum "$stats" IND_SoaJitInstructions)"
         printf 'soa_jit_terminals=%s\n' \
@@ -321,24 +351,24 @@ write_result() {
     } >"$out/result.txt"
 }
 
-validate_callback() {
+manual_validate() {
     local out=$1 rc
     set +e
     validate_evidence "$out" true
     rc=$?
     set -e
     {
-        printf 'schema=dx100.sssp.old_result_hybrid.full.callback.v1\n'
+        printf 'schema=dx100.sssp.old_result_hybrid.full.manual_validation.v1\n'
         printf 'validation_exit=%s\n' "$rc"
         printf 'validated_at=%s\n' "$(date -Ins)"
-    } >"$out/callback.validation.status.tmp"
-    mv "$out/callback.validation.status.tmp" \
-        "$out/callback.validation.status"
+    } >"$out/manual.validation.status.tmp"
+    mv "$out/manual.validation.status.tmp" \
+        "$out/manual.validation.status"
     (( rc == 0 ))
 }
 
 if [[ $# -eq 2 && $1 == --validate ]]; then
-    validate_callback "$(realpath -m "$2")"
+    manual_validate "$(realpath -m "$2")"
     exit
 fi
 [[ $# -eq 1 ]] || usage
@@ -453,11 +483,13 @@ native_stats_sha256=$(hash_value "$native_out/stats.txt")
     printf 'value_cache_enable=true\nactive_value_owners=64\n'
     printf 'pre_a_value_lookahead=true\nactive_contexts=8\n'
     printf 'tails_and_fallbacks=exact_bounded_spd_or_ordered_cpu\n'
+    printf 'single_curr_size_16384=ordered_cpu_fallback\n'
+    printf 'hybrid_window=four_consecutive_admitted_4096_pages\n'
     printf 'native_arms=0\nfull_graph=true\ntrace=false\nwall_timeout=none\n'
 } >"$out/candidate.manifest"
 
 sha256sum "$gem5" "$frozen_ramulator" "$guest" "$graph" "$source_file" \
-    "$route_header" "$config" "$ramulator_config" "$0" \
+    "$route_header" "$replay_header" "$config" "$ramulator_config" "$0" \
     >"$out/provenance/artifacts.before.sha256"
 
 checkpoint_command=(
@@ -539,7 +571,7 @@ hash_tree "$out/checkpoint" \
 hash_value "$out/provenance/checkpoint.after.files.sha256" \
     >"$out/provenance/checkpoint.after.identity.sha256"
 sha256sum "$gem5" "$frozen_ramulator" "$guest" "$graph" "$source_file" \
-    "$route_header" "$config" "$ramulator_config" "$0" \
+    "$route_header" "$replay_header" "$config" "$ramulator_config" "$0" \
     >"$out/provenance/artifacts.after.sha256"
 cmp -s "$out/provenance/artifacts.before.sha256" \
     "$out/provenance/artifacts.after.sha256"

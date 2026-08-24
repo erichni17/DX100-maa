@@ -96,7 +96,7 @@ class SsspOldResultHybridFullContract(unittest.TestCase):
         self.assertIn("candidate_guest_sha256", self.runner)
         self.assertIn("checkpoint.before.files.sha256", self.runner)
         self.assertIn("checkpoint.after.files.sha256", self.runner)
-        self.assertIn("checkpoint.callback.files.sha256", self.runner)
+        self.assertIn("checkpoint.validation.files.sha256", self.runner)
         self.assertIn("artifacts.before.sha256", self.runner)
         self.assertIn("artifacts.after.sha256", self.runner)
         self.assertGreaterEqual(self.runner.count("cmp -s"), 3)
@@ -150,8 +150,18 @@ class SsspOldResultHybridFullContract(unittest.TestCase):
         self.assertIn("bounded_spd_words", self.runner)
         self.assertIn("exact_cpu_fallback_words", self.runner)
         self.assertIn("exact_cpu_4133_batches", self.runner)
+        for counter in (
+            "total_edge_words",
+            "produced_words",
+            "consumed_words",
+            "accelerated_words",
+            "cpu_words",
+            "scalar_cpu_words",
+            "coverage_iterations",
+        ):
+            self.assertIn(counter, self.runner)
         self.assertIn("max_host_spd_element < 4096", self.runner)
-        self.assertIn("out_of_range_spd_ids == 0", self.runner)
+        self.assertIn("illegal_host_spd_attempts == 0", self.runner)
         self.assertIn(
             "eligible_subset_routed_fallbacks_preserved", self.runner
         )
@@ -160,6 +170,17 @@ class SsspOldResultHybridFullContract(unittest.TestCase):
             "sssp_hybrid_legacy_words[tid] += curr_size", self.source
         )
         self.assertIn("routed_windows <= eligible_windows", self.source)
+        self.assertIn(
+            "produced_words == hybrid_total_expected_words", self.source
+        )
+        self.assertIn("produced_words == consumed_words", self.source)
+        self.assertIn(
+            "single_curr_size_16384=ordered_cpu_fallback", self.runner
+        )
+        self.assertIn(
+            "hybrid_window=four_consecutive_admitted_4096_pages",
+            self.runner,
+        )
 
     def test_validate_mode_fails_closed_without_wrapper_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:

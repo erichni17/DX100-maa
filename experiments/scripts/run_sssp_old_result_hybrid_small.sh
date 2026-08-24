@@ -91,6 +91,8 @@ restore_cmd=(
     printf 'logical_elements=16384\nphysical_tile_elements=4096\n'
     printf 'mem_channels=2\nindirect_units=4\nrow_table_slices=32\n'
     printf 'expected_routed_windows=4\n'
+    printf 'single_curr_size_16384=ordered_cpu_fallback\n'
+    printf 'hybrid_window=four_consecutive_admitted_4096_pages\n'
     printf 'native_arms=0\nwall_timeout=none\nfull_graph=false\n'
 } >"$out/manifest.txt"
 
@@ -106,7 +108,7 @@ restore="$out/run/restore.log"
 stats="$out/run/stats.txt"
 trace="$out/run/sssp_old_result_trace.log"
 fingerprint='SSSP_FINGERPRINT vertices=69633 reached=69633 unreachable=0 distance_sum=135168 max_distance=2 hash_a=a0531a7ddb9387df hash_b=39f1ea63bc8817e8 triangle_violations=0 missing_predecessors=0 nonpositive_weights=0 negative_distances=0 result=PASS'
-terminal='SSSP_OLD_RESULT_HYBRID_TERMINAL treatment=old_result_hybrid eligible_windows=4 routed_windows=4 index_publish_pages=16 value_publish_pages=16 old_result_words=65536 legacy_words=0 discarded_publish_pages=0 bounded_spd_batches=0 bounded_spd_words=0 exact_cpu_fallback_batches=0 exact_cpu_fallback_words=0 exact_cpu_4133_batches=0 max_host_spd_element=-1 out_of_range_spd_ids=0 logical_reorder_words=16384 physical_spd_words=4096 row_table_slices=32 predicate_span=coherent_aligned old_result_span=coherent_aligned duplicate_order=legacy_physical_pages host_spd_reads=0 hidden_result_payload_bytes=0 counts_close=1'
+terminal='SSSP_OLD_RESULT_HYBRID_TERMINAL treatment=old_result_hybrid eligible_windows=4 routed_windows=4 index_publish_pages=16 value_publish_pages=16 old_result_words=65536 legacy_words=0 discarded_publish_pages=0 bounded_spd_batches=0 bounded_spd_words=0 exact_cpu_fallback_batches=0 exact_cpu_fallback_words=0 exact_cpu_4133_batches=0 total_edge_words=69632 produced_words=69632 consumed_words=69632 accelerated_words=65536 cpu_words=4096 scalar_cpu_words=4096 coverage_iterations=3 max_host_spd_element=-1 illegal_host_spd_attempts=0 logical_reorder_words=16384 physical_spd_words=4096 row_table_slices=32 predicate_span=coherent_aligned old_result_span=coherent_aligned duplicate_order=legacy_physical_pages host_spd_reads=0 hidden_result_payload_bytes=0 counts_close=1'
 [[ $(grep -Fxc "$fingerprint" "$restore" || true) -eq 1 ]]
 [[ $(grep -Fxc "$terminal" "$restore" || true) -eq 1 ]]
 [[ $(grep -Ec '^Exiting @ tick [0-9]+ because m5_exit instruction encountered$' \
@@ -158,7 +160,10 @@ sim_ticks=$(awk '$1 == "simTicks" { print $2; exit }' "$stats")
     printf 'simTicks=%s\neligible_windows=4\nrouted_windows=4\n' "$sim_ticks"
     printf 'bounded_spd_batches=0\nexact_cpu_fallback_batches=0\n'
     printf 'exact_cpu_fallback_words=0\nexact_cpu_4133_batches=0\n'
-    printf 'out_of_range_spd_ids=0\n'
+    printf 'total_edge_words=69632\nproduced_words=69632\n'
+    printf 'consumed_words=69632\naccelerated_words=65536\n'
+    printf 'cpu_words=4096\nscalar_cpu_words=4096\ncoverage_iterations=3\n'
+    printf 'illegal_host_spd_attempts=0\n'
     printf 'old_result_captures=%s\nold_result_write_issues=%s\n' \
         "$captures" "$issues"
     printf 'old_result_write_responses=%s\n' "$responses"
