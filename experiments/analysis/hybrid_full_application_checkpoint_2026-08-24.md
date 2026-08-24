@@ -35,11 +35,12 @@ Raw CG reports:
 | NAS CG | `dx100-cg-page-product-full-baf142f7-r1` | `/data1/nier/dx100-runs/2026-08-24-cg-page-product-full-baf142f7-r1` | trace-free full checkpoint |
 | NAS IS | `dx100-is-scalar-soa-full-a44aaa60-r5` | `/data1/nier/dx100-runs/2026-08-24-is-scalar-soa-full-a44aaa60-r5` | full O3 ROI |
 | HashJoin PRH | `dx100-hashjoin-prh-full-recovery-20260824-061147` | `/data1/nier/dx100-runs/hashjoin-hybrid-prh-full-d7d29bf5-20260824-061147` | correct raw output; shifted pass is tail-only and pre-hardening evidence remains incomplete |
+| HashJoin PRO, hardened | `dx100-hashjoin-pro-hardened-20260824-r1` | `/data1/nier/dx100-runs/2026-08-24-hashjoin-pro-hardened-r1` | active candidate-only full gate with frozen mechanism-status and hash contracts |
 | HashJoin PRH, hardened | `dx100-hashjoin-prh-hardened-20260824-r1` | `/data1/nier/dx100-runs/2026-08-24-hashjoin-prh-hardened-r1` | active candidate-only full gate with frozen mechanism-status and hash contracts |
 | GAPBS SSSP S22, original | `dx100-sssp-old-result-full-e690867f-r1` | `/data1/nier/dx100-runs/2026-08-24-sssp-old-result-full-e690867f-r1` | failed closed on unvirtualized 4,133-element tail |
 | GAPBS SSSP S22, reviewed repair | `dx100-sssp-tail-repair-7b6f9c21-full-r1` | `/data1/nier/worktrees/codex-coordination/sessions/sssp-tail-repair-successor-20260824-155812-7c1e3190/evidence/sssp-tail-repair-7b6f9c21-r1` | rejected: L1 stride prefetch crossed the 4K physical SPD aperture at element 4,096 |
 
-CG, IS, and the hardened PRH recovery remain active with infinite runtime.
+CG, IS, and the hardened PRO/PRH recoveries remain active with infinite runtime.
 Both SSSP full candidates and the pre-hardening PRH recovery have exited.
 Existing `dx-runtime` watch records are stale:
 their worker PIDs are dead even where the record still says `watching`.
