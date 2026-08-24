@@ -28,16 +28,17 @@ Raw CG reports:
 - `experiments/analysis/cg_page_product_lane_removal_live_2026-08-24.md`
 - `experiments/analysis/cg_page_product_pre_a_ablation_2026-08-24.md`
 
-## Active full gates
+## Full gate status
 
 | Workload | Unit | Raw root | Phase |
 |---|---|---|---|
 | NAS CG | `dx100-cg-page-product-full-baf142f7-r1` | `/data1/nier/dx100-runs/2026-08-24-cg-page-product-full-baf142f7-r1` | trace-free full checkpoint |
 | NAS IS | `dx100-is-scalar-soa-full-a44aaa60-r5` | `/data1/nier/dx100-runs/2026-08-24-is-scalar-soa-full-a44aaa60-r5` | full O3 ROI |
-| HashJoin PRH | `dx100-hashjoin-prh-full-recovery-20260824-061147` | `/data1/nier/dx100-runs/hashjoin-hybrid-prh-full-d7d29bf5-20260824-061147` | PRH-only recovery; PRO is not rerun |
-| GAPBS SSSP S22 | `dx100-sssp-old-result-full-e690867f-r1` | `/data1/nier/dx100-runs/2026-08-24-sssp-old-result-full-e690867f-r1` | reviewed candidate O3 ROI |
+| HashJoin PRH | `dx100-hashjoin-prh-full-recovery-20260824-061147` | `/data1/nier/dx100-runs/hashjoin-hybrid-prh-full-d7d29bf5-20260824-061147` | correct terminal output; shifted-pass coverage failed |
+| GAPBS SSSP S22 | `dx100-sssp-old-result-full-e690867f-r1` | `/data1/nier/dx100-runs/2026-08-24-sssp-old-result-full-e690867f-r1` | failed closed on unvirtualized 4,133-element tail |
 
-All units have infinite runtime. Existing `dx-runtime` watch records are stale:
+CG and IS remain active with infinite runtime; PRH and SSSP have exited.
+Existing `dx-runtime` watch records are stale:
 their worker PIDs are dead even where the record still says `watching`.
 Acceptance therefore relies on each runner's internal fail-closed gate plus a
 one-shot artifact audit after exit. In particular, SSSP writes `gate.complete`
@@ -102,6 +103,13 @@ Report:
 Review:
 `experiments/analysis/hybrid_compact_write_retirement_review_2026-08-24.md`.
 
+The active-bit-free, regionless, certificate-bound successor is worker commit
+`0d88fb41`. It passes focused tests and has a certified binary, but its fresh
+SSSP/HashJoin gate was stopped in SSSP ROI for the professor-meeting pause.
+It has no admissible performance result and remains default-off outside the
+lead branch. Exact restart instructions are recorded in
+`experiments/analysis/hybrid_compact_write_retirement_2026-08-24.md`.
+
 ## HashJoin partial result
 
 The hardened one-shot classifier now recovers full PRO as a terminal-valid
@@ -114,13 +122,32 @@ nonzero shifted pass for every full kernel and exited before PRH, leaving no
 top-level gate. PRO is therefore partial evidence, not a complete HashJoin
 result. Relative to frozen native16/native4 endpoints it is 18.5442%/16.4022%
 slower and is rejected for performance. This is end-to-end context, not causal
-virtualization attribution; PRH recovery remains active.
+virtualization attribution.
+
+PRH recovery also reaches an exact terminal result: 2,000,000 matches and
+`46,706,090,681` first-ROI ticks. It routes 240/240 first-pass windows but zero
+shifted-pass windows. The runner therefore rejects its predeclared shifted-pass
+coverage requirement. The timing is measured but is not a promoted complete
+HashJoin mechanism result.
+
+## Full SSSP failure
+
+The full S22 candidate reaches tick `238,542,266,088` and then issues an SPD
+access for element 4,096 while the physical SPD range is 0-4,095. The guest's
+current frontier contains 4,133 elements, so a tail/fallback path that was not
+exercised by the small exact graph still uses logical SPD indexing directly.
+The simulator correctly aborts; no SSSP correctness or performance result is
+claimed. The next SSSP gate must virtualize this tail or route it through a
+legal bounded fallback.
 
 ## Resume order
 
-1. On each full-service exit, validate correctness before comparing first-ROI
-   `simTicks` to the frozen physical tile sweep.
-2. Combine terminal PRH recovery with the preserved full-PRO evidence before
-   classifying overall HashJoin.
-3. Update this checkpoint with accepted results or explicit rejections; do not
-   infer speedups from live, incomplete, or final-post-ROI timing alone.
+1. Validate CG and IS after their services exit; do not read timing before
+   their correctness and terminal gates close.
+2. Fix the full-SSSP 4,133-element tail/fallback before rerunning candidate
+   SSSP; native baselines remain reusable.
+3. Decide whether PRH is still useful when its full input never exercises the
+   expected shifted hybrid pass.
+4. Resume compact-retirement only from the certified `0d88fb41` fresh-root
+   instructions, and reject it unless both kernels are nonregressing with one
+   improving by at least the predeclared 0.5% threshold.
