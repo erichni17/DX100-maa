@@ -23,12 +23,21 @@ case "$MODE" in
         readonly R_SIZE=65536
         readonly S_SIZE=65536
         readonly EXPECTED_FIRST_SCATTER_4K_ACTIONS=32
+        readonly TRACE_MODE=enabled_small
+        run_debug_args=(
+            --debug-flags=MAAVirtualTrace
+            --debug-file=soa_jit_trace.log
+        )
         ;;
     full)
         readonly R_SIZE=2000000
         readonly S_SIZE=2000000
         # Two relations, four 500,000-tuple chunks, each split into 4K actions.
         readonly EXPECTED_FIRST_SCATTER_4K_ACTIONS=984
+        # Per-event tracing is deliberately excluded from the full evidence arm:
+        # its complete closure comes from guest markers and final statistics.
+        readonly TRACE_MODE=disabled_full
+        run_debug_args=()
         ;;
     *)
         echo "unsupported HASHJOIN_HYBRID_MODE: $MODE (expected small or full)" >&2
@@ -116,11 +125,25 @@ stat_sum() {
     local stats=$1
     local suffix=$2
     awk -v suffix="$suffix" '
-        /^---------- Begin Simulation Statistics/ { section++ }
-        section == 1 && $1 ~ ("_" suffix "$") { sum += $2 }
-        /^---------- End Simulation Statistics/ && section == 1 {
-            printf "%.0f\n", sum
-            exit
+        /^---------- Begin Simulation Statistics/ {
+            active = 1
+            sum = 0
+            seen = 0
+            next
+        }
+        active && $1 ~ ("_" suffix "$") {
+            sum += $2
+            seen = 1
+        }
+        /^---------- End Simulation Statistics/ && active {
+            final_sum = sum
+            final_seen = seen
+            active = 0
+        }
+        END {
+            if (!final_seen)
+                exit 1
+            printf "%.0f\n", final_sum
         }
     ' "$stats"
 }
@@ -172,7 +195,7 @@ for kernel in PRO PRH; do
     set +e
     OMP_PROC_BIND=false OMP_NUM_THREADS=$OMP_THREADS \
         "$gem5" --listener-mode=off --outdir="$run" \
-        --debug-flags=MAAVirtualTrace --debug-file=soa_jit_trace.log \
+        "${run_debug_args[@]}" \
         "$config" --cpu-type=X86O3CPU -r 1 -n 4 --mem-size=2GB \
         --checkpoint-dir="$checkpoint" \
         --sys-clock=3.2GHz --cpu-clock=3.2GHz \
@@ -207,13 +230,17 @@ for kernel in PRO PRH; do
     [[ $(grep -Eic 'panic|fatal|assert|abort|segmentation fault|error:' \
               "$run/run.log" || true) -eq 0 ]]
 
-    region=$(grep -F 'HASHJOIN_HYBRID_REGION_LAYOUT ' "$run/run.log")
+    [[ $(grep -Ec '^HASHJOIN_HYBRID_REGION_LAYOUT .+$' "$run/run.log" \
+        || true) -eq 1 ]]
+    region=$(grep -E '^HASHJOIN_HYBRID_REGION_LAYOUT .+$' "$run/run.log")
     [[ $(field "$region" backing_regions) -eq 1 ]]
     [[ $(field "$region" threads) -eq 4 ]]
     [[ $(field "$region" max_region_id) -eq 31 ]]
     [[ $(field "$region" limit) -eq 31 ]]
 
-    marker=$(grep -F 'HASHJOIN_HYBRID_SOA_JIT ' "$run/run.log")
+    [[ $(grep -Ec '^HASHJOIN_HYBRID_SOA_JIT .+$' "$run/run.log" \
+        || true) -eq 1 ]]
+    marker=$(grep -E '^HASHJOIN_HYBRID_SOA_JIT .+$' "$run/run.log")
     [[ $(field "$marker" enabled) -eq 1 ]]
     first_eligible=$(field "$marker" first_eligible)
     first_routed=$(field "$marker" first_routed)
@@ -244,21 +271,29 @@ for kernel in PRO PRH; do
     value_issues=$(stat_sum "$stats" IND_SoaJitValueReadIssues)
     value_responses=$(stat_sum "$stats" IND_SoaJitValueReadResponses)
     aliases=$(stat_sum "$stats" IND_SoaJitAliasesApplied)
+    fallbacks=$(stat_sum "$stats" IND_BoundedGlobalMergeFallbacks)
     a_reads=$(stat_sum "$stats" IND_SoaJitAReadIssues)
     a_read_responses=$(stat_sum "$stats" IND_SoaJitAReadResponses)
     writes=$(stat_sum "$stats" IND_SoaJitAWriteIssues)
     write_responses=$(stat_sum "$stats" IND_SoaJitAWriteResponses)
-    [[ $instructions -eq $routed && $terminals -eq $instructions ]]
+    [[ $instructions -gt 0 && $instructions -eq $routed && \
+       $terminals -eq $instructions ]]
     [[ $selected -eq $((routed * 16384)) && $rejected -eq 0 ]]
     [[ $predicate_issues -eq 0 && $predicate_responses -eq 0 ]]
     [[ $value_issues -eq 0 && $value_responses -eq 0 ]]
     [[ $aliases -eq $selected ]]
+    [[ $fallbacks -eq 0 ]]
     [[ $a_reads -gt 0 && $a_reads -eq $a_read_responses ]]
     [[ $a_reads -eq $writes && $writes -eq $write_responses ]]
 
-    trace=$run/soa_jit_trace.log
-    [[ $(grep -Ec 'event=soa_jit_complete .*terminal=1' "$trace" || true) \
-        -eq $instructions ]]
+    if [[ $MODE == small ]]; then
+        trace=$run/soa_jit_trace.log
+        [[ -s "$trace" ]]
+        [[ $(grep -Ec 'event=soa_jit_complete .*terminal=1' "$trace" \
+            || true) -eq $instructions ]]
+    else
+        [[ ! -e $run/soa_jit_trace.log ]]
+    fi
     sim_ticks=$(awk '$1 == "simTicks" { value=$2 } END { print value }' "$stats")
     [[ $sim_ticks =~ ^[1-9][0-9]*$ ]]
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$kernel" "$EXPECTED_RESULT" \
@@ -289,15 +324,19 @@ fi
     printf 'input=r_size:%d,s_size:%d,r_seed:%d,s_seed:%d,non_unique:0,full_range:0\n' \
         "$R_SIZE" "$S_SIZE" "$R_SEED" "$S_SEED"
     printf 'expected_cardinality=%d\n' "$EXPECTED_RESULT"
+    printf 'trace_mode=%s\n' "$TRACE_MODE"
     printf 'checkpoint_paths=PRO/checkpoint,PRH/checkpoint\n'
     printf 'geometry=memory_channels:2,row_table_slices:32,indirect_units:4,logical_elements:16384,physical_elements:4096\n'
     printf 'first_scatter_4k_actions_expected=%d\n' "$EXPECTED_FIRST_SCATTER_4K_ACTIONS"
+    printf 'fallback_basis=IND_BoundedGlobalMergeFallbacks\n'
+    printf 'fallbacks=0\n'
     printf 'terminal_marker=gate.complete\n'
     printf 'raw_hash_ledger=result_sha256.txt\n'
 } >"$out/manifest.txt"
 
-printf 'terminal=pass\nmode=%s\nsource_commit=%s\nsource_fingerprint=%s\n' \
-    "$MODE" "$SOURCE_COMMIT" "$SOURCE_FINGERPRINT" >"$out/gate.complete"
+printf 'terminal=pass\nmode=%s\ntrace_mode=%s\nsource_commit=%s\nsource_fingerprint=%s\n' \
+    "$MODE" "$TRACE_MODE" "$SOURCE_COMMIT" "$SOURCE_FINGERPRINT" \
+    >"$out/gate.complete"
 
 find "$out" -type f ! -name result_sha256.txt -print0 \
     | sort -z | xargs -0 sha256sum >"$out/result_sha256.txt"

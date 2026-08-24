@@ -271,6 +271,8 @@ def test_build_and_runner_are_candidate_only_and_close_mechanism():
     assert "R_SIZE=2000000" in runner and "S_SIZE=2000000" in runner
     assert "EXPECTED_RESULT=$S_SIZE" in runner
     assert "HASHJOIN_HYBRID_RESULT result=$EXPECTED_RESULT" in runner
+    assert "^HASHJOIN_HYBRID_REGION_LAYOUT .+$" in runner
+    assert "^HASHJOIN_HYBRID_SOA_JIT .+$" in runner
     assert 'printf("HASHJOIN_HYBRID_RESULT result=%ld\\n"' in source
     assert "fflush(stdout);" in source
     for geometry in (
@@ -293,7 +295,7 @@ def test_build_and_runner_are_candidate_only_and_close_mechanism():
         "IND_SoaJitSelected",
         "IND_SoaJitAReadResponses",
         "IND_SoaJitAWriteResponses",
-        "event=soa_jit_complete",
+        "IND_BoundedGlobalMergeFallbacks",
         "second_eligible -gt 0",
         "EXPECTED_FIRST_SCATTER_4K_ACTIONS",
         "result_sha256.txt",
@@ -301,6 +303,8 @@ def test_build_and_runner_are_candidate_only_and_close_mechanism():
         "gate.complete",
     ):
         assert closure in runner
+    assert "$instructions -gt 0" in runner
+    assert "$fallbacks -eq 0" in runner
 
 
 def test_full_runner_contract_is_pinned_and_fails_closed():
@@ -336,6 +340,22 @@ def test_full_runner_contract_is_pinned_and_fails_closed():
     assert "native_rerun=0" in runner and "wall_timeout=none" in runner
     assert "for kernel in PRO PRH; do" in runner
     assert "EXPECTED_FIRST_SCATTER_4K_ACTIONS=984" in runner
+    assert "TRACE_MODE=disabled_full" in runner
+    assert "trace_mode=%s" in runner
+    assert "fallback_basis=IND_BoundedGlobalMergeFallbacks" in runner
+
+
+def test_trace_creation_and_trace_assertions_are_small_only():
+    runner = RUNNER.read_text(encoding="utf-8")
+    small = runner.index("readonly TRACE_MODE=enabled_small")
+    full = runner.index("readonly TRACE_MODE=disabled_full")
+    run = runner.index('"${run_debug_args[@]}"')
+    trace = runner.index("if [[ $MODE == small ]]; then", run)
+    assert small < full < run < trace
+    assert "--debug-flags=MAAVirtualTrace" in runner[small:full]
+    assert "--debug-flags=MAAVirtualTrace" not in runner[full:run]
+    assert "event=soa_jit_complete" in runner[trace:]
+    assert "[[ ! -e $run/soa_jit_trace.log ]]" in runner[trace:]
 
 
 def test_terminal_evidence_is_written_then_frozen_as_raw_evidence():
@@ -350,6 +370,7 @@ def test_terminal_evidence_is_written_then_frozen_as_raw_evidence():
     assert "! -name manifest.txt" not in runner
     assert "terminal_marker=gate.complete" in runner
     assert "terminal=pass" in runner
+    assert "trace_mode=%s" in runner
 
 
 def test_pro_and_prh_probe_and_collision_functions_remain_legacy():
@@ -387,6 +408,9 @@ class HashJoinHybridSoaJitCandidateGate(unittest.TestCase):
 
     def test_full_runner_contract(self):
         test_full_runner_contract_is_pinned_and_fails_closed()
+
+    def test_trace_contract(self):
+        test_trace_creation_and_trace_assertions_are_small_only()
 
     def test_terminal_evidence_contract(self):
         test_terminal_evidence_is_written_then_frozen_as_raw_evidence()
