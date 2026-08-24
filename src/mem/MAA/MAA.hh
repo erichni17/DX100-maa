@@ -1231,6 +1231,7 @@ public:
         std::vector<statistics::Scalar *> IND_SoaJitOldResultStalls;
         std::vector<statistics::Scalar *> IND_SoaJitContextHighWater;
         std::vector<statistics::Scalar *> IND_SoaJitContextStalls;
+        std::vector<statistics::Scalar *> IND_SoaJitEpochDrains;
         std::vector<statistics::Scalar *> IND_SoaJitTerminalCompletions;
         std::vector<statistics::Scalar *> IND_BoundedSummaryLineReads;
         std::vector<statistics::Scalar *> IND_BoundedSummaryWords;

@@ -76,18 +76,16 @@ def test_fixed_bounded_overlap_and_predicate_storage():
     assert "4096" not in soa_state
 
 
-def test_full_window_and_timed_jit_protocol_have_exact_drain():
+def test_bounded_epoch_and_timed_jit_protocol_have_exact_drain():
     source = read("src/mem/MAA/IndirectAccess.cc")
-    assert "my_max > offset_table->capacity()" in source
-    epoch_bound = (
-        "my_max > static_cast<int>(\n"
-        "                                          "
-        "maa->num_offset_table_epoch_entries)"
-    )
-    assert epoch_bound in source
-    assert "SoA/JIT RMW requires one full logical" in source
+    assert "my_max > offset_table->capacity()" not in source
+    assert "SoA/JIT RMW requires one full logical" not in source
     assert "SoA/JIT RMW does not admit range passes" in source
-    assert "panic_if(isSoaJitRmw() && needDrain" in source
+    assert "rememberSoaJitPressureRetry(logical_itr" in source
+    assert "commitSoaJitSourceOrdinal(logical_itr, condition_taken)" in source
+    assert "soa_jit_epoch_drained = true" in source
+    assert "soa_jit_all_rows_claimed = true" in source
+    assert "IND_SoaJitEpochDrains" in source
     assert "!descriptor_spool_operation && !isSoaJitRmw()" in source
     assert "descriptor_spool_operation || isSoaJitRmw()" in source
     assert "createDirectIndexReadPacket" in source
@@ -104,6 +102,9 @@ def test_full_window_and_timed_jit_protocol_have_exact_drain():
     ]
     for invariant in (
         "soaJitContextsEmpty",
+        "soa_jit_epoch_drained",
+        "soa_jit_retry_valid",
+        "soa_jit_next_source_ordinal",
         "offset_table->occupancy() != 0",
         "soa_jit_selected + soa_jit_predicate_rejected",
         "soa_jit_value_read_issues !=\n"
@@ -117,6 +118,80 @@ def test_full_window_and_timed_jit_protocol_have_exact_drain():
         "soa_jit_predicate_feeder_high_water >",
     ):
         assert invariant in terminal
+
+
+def test_pressure_epoch_refills_same_cursor_without_closing_old_result():
+    source = read("src/mem/MAA/IndirectAccess.cc")
+    build = source[
+        source.index(
+            "bool IndirectAccessUnit::serviceSoaJitBuild()"
+        ) : source.index("IndirectAccessUnit::issueSoaJitScalar")
+    ]
+    assert "!my_fill_finished" not in build[: build.index("auto context")]
+    final = build.index("if (my_fill_finished)")
+    all_rows = build.index("soa_jit_all_rows_claimed = true", final)
+    epoch = build.index("soa_jit_epoch_drained = true", all_rows)
+    assert final < all_rows < epoch
+
+    request = source[
+        source.index("case Status::Request:") : source.index(
+            "if (usesBoundedSourceResponses())",
+            source.index("case Status::Request:"),
+        )
+    ]
+    contexts = request.index("if (!soaJitContextsEmpty())")
+    boundary = request.index("if (soa_jit_epoch_drained)", contexts)
+    reset = request.index("resetSoaJitEpochTables()", boundary)
+    close_reorder = request.index("closeReorderSurvivalEpoch(false)", reset)
+    refill = request.index('"soa_epoch_refill"', close_reorder)
+    old_result = request.index("closeSelection", refill)
+    assert contexts < boundary < reset < close_reorder < refill < old_result
+    epoch_reset = source[
+        source.index(
+            "void\nIndirectAccessUnit::resetSoaJitEpochTables()"
+        ) : source.index("bool IndirectAccessUnit::serviceSoaJitBuild()")
+    ]
+    assert "soa_jit_epoch_resume_i != my_i" in epoch_reset
+    assert "offset_table->occupancy() != 0" in epoch_reset
+    assert "offset_table->check_reset()" in epoch_reset
+    assert "RT[my_RT_config][slice].check_reset()" in epoch_reset
+    assert "soa_jit_old_result_selection_closed" in request[boundary:refill]
+
+
+def test_multiple_pressure_epochs_preserve_exact_source_ordinals():
+    logical = 37
+    epoch_capacity = 5
+    cursor = 0
+    next_source = 0
+    drains = 0
+    committed = []
+    old_results = []
+    values = list(range(logical))
+    while cursor < logical:
+        epoch_end = min(cursor + epoch_capacity, logical)
+        while cursor < epoch_end:
+            assert cursor == next_source
+            committed.append(cursor)
+            old_results.append(values[cursor])
+            values[cursor] += 1
+            cursor += 1
+            next_source += 1
+        if cursor != logical:
+            resume = cursor
+            drains += 1
+            assert cursor == resume == next_source
+    assert drains > 1
+    assert committed == list(range(logical))
+    assert old_results == list(range(logical))
+
+
+def test_scalar_no_result_keeps_epoch_path_and_no_old_result_closure():
+    source = read("src/mem/MAA/IndirectAccess.cc")
+    assert "isSoaJitScalarRmw()" in source
+    assert "if (!isSoaJitOldResultRmw())\n        return false;" in source
+    summary = source[source.index("event=soa_jit_epoch_summary") :]
+    assert "scalar=%d" in summary
+    assert "isSoaJitScalarRmw()" in summary
 
 
 def test_old_result_selection_closes_after_context_drain_before_partial_publish():
