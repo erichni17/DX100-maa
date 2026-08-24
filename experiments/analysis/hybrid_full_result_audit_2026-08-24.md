@@ -5,16 +5,20 @@ starts a native, full, or recovery simulation.
 
 ## Current CG and IS roots
 
-The process snapshot contained no matching CG, IS, or gem5 owner.  Neither
-absence of that process nor a partial checkpoint is success evidence.
+The worker's sandbox-local process snapshot contained no matching CG, IS, or
+gem5 owner, but that view was not authoritative for host user-systemd units.
+A lead-side systemd check after integration confirmed both services remain
+active: CG MainPID 1856183 and IS MainPID 1753022. Process absence in a worker
+PID namespace must not be used to classify host service liveness.
 
 | Root | One-shot phase/classification | Why it is fail-closed |
 | --- | --- | --- |
 | `/data1/nier/dx100-runs/2026-08-24-cg-page-product-full-baf142f7-r1` | checkpoint phase; `incomplete` | only `checkpoint.log`/manifest are present; no restore log or zero restore exit, terminal certificate, gate, final config/stats, or hash ledger. |
 | `/data1/nier/dx100-runs/2026-08-24-is-scalar-soa-full-a44aaa60-r5` | restore reached ROI end; `incomplete` | checkpoint exit is zero, but the restore has neither one `m5_exit`, explicit zero restore exit, terminal status, NAS verification, nor the required full row. |
 
-Those roots are dead in the snapshot, not terminal-valid, and contribute no
-performance result.
+Those roots are live but not terminal-valid and contribute no performance
+result. Their artifact classification remains `incomplete`; liveness does not
+relax any terminal or correctness requirement.
 
 ## HashJoin PRH full root
 
