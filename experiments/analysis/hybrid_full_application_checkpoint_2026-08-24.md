@@ -76,13 +76,17 @@ Report:
 
 ## HashJoin partial result
 
-Full PRO is terminal and correct at `28,586,786,731` first-ROI ticks with
+The hardened one-shot classifier now recovers full PRO as a terminal-valid
+arm directly from its raw log, config, and first-window ledgers even though
+the failed two-kernel wrapper never appended its TSV row. PRO is correct at
+`28,586,786,731` first-ROI ticks with
 2,000,000 matches, 240/240 first-pass windows, zero shifted-pass windows,
 240/240 SoA terminals, and closed A ledgers. The runner incorrectly required a
 nonzero shifted pass for every full kernel and exited before PRH, leaving no
 top-level gate. PRO is therefore partial evidence, not a complete HashJoin
 result. Relative to frozen native16/native4 endpoints it is 18.5442%/16.4022%
-slower; this is end-to-end context, not causal virtualization attribution.
+slower and is rejected for performance. This is end-to-end context, not causal
+virtualization attribution; PRH recovery remains active.
 
 ## Resume order
 
