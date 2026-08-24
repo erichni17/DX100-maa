@@ -47,6 +47,13 @@ success.
 
 ## Active optimization probes
 
+The unified lead binary built from source commit `382f4fef` is archived at
+`/data1/nier/dx100-binaries/gem5-39e1b45ec73521b2575b4f9674a7036f47de5d6f6c0923078ce1a1290f1c7d93.opt`.
+It contains the currently integrated generic mechanisms, but is not yet a
+performance result. Future candidate-only gates must set and verify the frozen
+Ramulator SHA-256 `76ea3a9c...a15753`; the binary's default loader resolution
+still points at the lead worktree library.
+
 - Generic old-result write coalescing commits `f153dfaa`, `c0cb4414`, and
   `21e1a7ac` retain the existing eight-line, 1,128-byte per-unit buffer. The
   exact binary is archived as SHA-256 `36ed7d5c...a3ec9f`.
