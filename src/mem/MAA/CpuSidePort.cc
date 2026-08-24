@@ -252,6 +252,21 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                         logical_header.src2LogicalID;
                     current_instruction->dst1LogicalID =
                         logical_header.dst1LogicalID;
+                } else if (
+                    logical_header.kind == maa::LogicalSPDCacheABI::
+                                               HeaderKind::LogicalALUVector) {
+                    panic_if(
+                        current_instruction->opcode !=
+                            Instruction::OpcodeType::ALU_VECTOR,
+                        "Logical high-byte operands are only supported for "
+                        "ALU_SCALAR or ALU_VECTOR, got opcode %d\n",
+                        static_cast<int>(current_instruction->opcode));
+                    current_instruction->src1LogicalID =
+                        logical_header.src1LogicalID;
+                    current_instruction->src2LogicalID =
+                        logical_header.src2LogicalID;
+                    current_instruction->dst1LogicalID =
+                        logical_header.dst1LogicalID;
                 }
                 if (current_instruction->opcode ==
                         Instruction::OpcodeType::STREAM_LD ||
@@ -315,10 +330,11 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                 current_instruction->state = Instruction::Status::Idle;
                 current_instruction->CID = pkt->req->contextId();
                 current_instruction->PC = pkt->req->getPC();
-                if (current_instruction->isLogicalALUScalar()) {
+                if (current_instruction->isLogicalALUScalar() ||
+                    current_instruction->isLogicalALUVector()) {
                     panic_if(
                         data != maa::LogicalSPDCacheABI::NoAddress,
-                        "Logical ALU_SCALAR word 2 must use the no-address "
+                        "Logical ALU operand word 2 must use the no-address "
                         "sentinel, got 0x%016lx\n", data);
                     break;
                 }
@@ -392,7 +408,8 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                         current_instruction->opcode !=
                             Instruction::OpcodeType::VIRTUAL_TILE_ALU_SCALAR &&
                         !current_instruction->isSoaJitRmw() &&
-                        !current_instruction->isLogicalALUScalar(),
+                        !current_instruction->isLogicalALUScalar() &&
+                        !current_instruction->isLogicalALUVector(),
                     "Backing address is only valid for virtual or fused "
                     "indirect loads or logical ALU_SCALAR!\n");
                 if (current_instruction->isLogicalALUScalar()) {
@@ -406,6 +423,12 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                         current_instruction->backingAddrRangeID].first;
                     current_instruction->backingMaxAddr = addrRegions[
                         current_instruction->backingAddrRangeID].second;
+                    break;
+                }
+                if (current_instruction->isLogicalALUVector()) {
+                    // Staged only: this incomplete instruction is never
+                    // admitted or dispatched until word five validates it.
+                    current_instruction->logicalDestinationBackingAddr = data;
                     break;
                 }
                 current_instruction->backingAddr = data;
@@ -443,7 +466,8 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                         current_instruction->opcode !=
                             Instruction::OpcodeType::INDIR_LD_INDEX &&
                         !current_instruction->isSoaJitRmw() &&
-                        !current_instruction->isLogicalALUScalar(),
+                        !current_instruction->isLogicalALUScalar() &&
+                        !current_instruction->isLogicalALUVector(),
                     "Instruction word four is only valid for direct-index "
                     "loads or logical ALU_SCALAR source backing!\n");
                 if (current_instruction->isLogicalALUScalar()) {
@@ -521,6 +545,10 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                     scheduleDispatchInstructionEvent();
                     break;
                 }
+                if (current_instruction->isLogicalALUVector()) {
+                    current_instruction->logicalSourceBackingAddr = data;
+                    break;
+                }
                 current_instruction->indexAddr = data;
                 current_instruction->indexAddrRangeID = getAddrRegion(data);
                 panic_if(current_instruction->indexAddrRangeID < 0,
@@ -546,6 +574,96 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                 panic_if(instruction_id == -1,
                          "Received predicate address before instruction "
                          "header!\n");
+                if (current_instruction->isLogicalALUVector()) {
+                    current_instruction->logicalSource2BackingAddr = data;
+                    maa::LogicalSPDCacheABI::VectorOperandShape shape;
+                    shape.datatype = static_cast<uint8_t>(
+                        current_instruction->datatype);
+                    shape.optype = static_cast<uint8_t>(
+                        current_instruction->optype);
+                    shape.src1LogicalID = current_instruction->src1LogicalID;
+                    shape.src2LogicalID = current_instruction->src2LogicalID;
+                    shape.dst1LogicalID = current_instruction->dst1LogicalID;
+                    shape.src1SpdID = current_instruction->src1SpdID;
+                    shape.src2SpdID = current_instruction->src2SpdID;
+                    shape.dst1SpdID = current_instruction->dst1SpdID;
+                    shape.dst2SpdID = current_instruction->dst2SpdID;
+                    shape.src1RegID = current_instruction->src1RegID;
+                    shape.src2RegID = current_instruction->src2RegID;
+                    shape.src3RegID = current_instruction->src3RegID;
+                    shape.dst1RegID = current_instruction->dst1RegID;
+                    shape.dst2RegID = current_instruction->dst2RegID;
+                    shape.condSpdID = current_instruction->condSpdID;
+                    shape.baseAddr = current_instruction->baseAddr;
+                    shape.source1BackingAddr =
+                        current_instruction->logicalSourceBackingAddr;
+                    shape.source2BackingAddr = data;
+                    shape.destinationBackingAddr =
+                        current_instruction->logicalDestinationBackingAddr;
+                    const auto validation =
+                        maa::LogicalSPDCacheABI::validateLogicalALUVector(
+                            shape, static_cast<uint8_t>(
+                                       current_instruction->opcode));
+                    panic_if(validation != maa::LogicalSPDCacheABI::
+                                               VectorValidation::Valid,
+                             "Rejected logical ALU_VECTOR ABI shape (%d) "
+                             "before controller state mutation\n",
+                             static_cast<int>(validation));
+                    const int source1_range = getAddrRegion(
+                        shape.source1BackingAddr);
+                    const int source2_range = getAddrRegion(
+                        shape.source2BackingAddr);
+                    const int destination_range = getAddrRegion(
+                        shape.destinationBackingAddr);
+                    panic_if(source1_range < 0 || source2_range < 0 ||
+                                 destination_range < 0,
+                             "Rejected logical ALU_VECTOR unregistered "
+                             "backing span before controller state "
+                             "mutation\n");
+                    const auto source1_validation =
+                        maa::LogicalSPDCacheABI::validateSourceSpan(
+                            shape.source1BackingAddr, shape.datatype,
+                            addrRegions[source1_range].first,
+                            addrRegions[source1_range].second);
+                    const auto source2_validation =
+                        maa::LogicalSPDCacheABI::validateSourceSpan(
+                            shape.source2BackingAddr, shape.datatype,
+                            addrRegions[source2_range].first,
+                            addrRegions[source2_range].second);
+                    const auto destination_validation =
+                        maa::LogicalSPDCacheABI::validateDestinationSpan(
+                            shape.destinationBackingAddr, shape.datatype,
+                            addrRegions[destination_range].first,
+                            addrRegions[destination_range].second);
+                    const auto valid_span = maa::LogicalSPDCacheABI::
+                        DestinationValidation::Valid;
+                    panic_if(source1_validation != valid_span ||
+                                 source2_validation != valid_span ||
+                                 destination_validation != valid_span,
+                             "Rejected logical ALU_VECTOR backing span "
+                             "before controller state mutation\n");
+                    const bool sources_must_be_disjoint =
+                        shape.src1LogicalID != shape.src2LogicalID;
+                    panic_if(
+                        maa::LogicalSPDCacheABI::backingSpansOverlap(
+                            shape.destinationBackingAddr,
+                            shape.source1BackingAddr, shape.datatype) ||
+                        maa::LogicalSPDCacheABI::backingSpansOverlap(
+                            shape.destinationBackingAddr,
+                            shape.source2BackingAddr, shape.datatype) ||
+                        (sources_must_be_disjoint &&
+                         maa::LogicalSPDCacheABI::backingSpansOverlap(
+                             shape.source1BackingAddr,
+                             shape.source2BackingAddr, shape.datatype)),
+                        "Rejected logical ALU_VECTOR overlapping backing "
+                        "spans before controller state mutation\n");
+                    // Intentionally fail closed: the decoder contract is
+                    // complete, but no live logical-vector controller exists.
+                    panic_if(true,
+                             "Logical ALU_VECTOR ABI decoded and validated, "
+                             "but live execution is unsupported until the "
+                             "logical controller is integrated\n");
+                }
                 panic_if(!current_instruction->isSoaJitRmw(),
                          "Instruction word five is only valid for the "
                          "guarded SoA/JIT RMW shape\n");

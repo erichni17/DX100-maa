@@ -51,6 +51,19 @@ validShape()
     return shape;
 }
 
+ABI::VectorOperandShape
+validVectorShape()
+{
+    ABI::VectorOperandShape shape;
+    shape.src1LogicalID = 0;
+    shape.src2LogicalID = 0;
+    shape.dst1LogicalID = 1;
+    shape.source1BackingAddr = 0x10000;
+    shape.source2BackingAddr = 0x10000;
+    shape.destinationBackingAddr = 0x20000;
+    return shape;
+}
+
 void
 testHeaderDecodeMatrix()
 {
@@ -78,6 +91,20 @@ testHeaderDecodeMatrix()
             CHECK(((word >> 32) & 0xff) == ABI::ALUScalarOpcode);
         }
     }
+    for (uint8_t src1 = 0; src1 < ABI::LogicalDescriptorCount; ++src1) {
+        for (uint8_t src2 = 0; src2 < ABI::LogicalDescriptorCount; ++src2) {
+            for (uint8_t dst = 0; dst < ABI::LogicalDescriptorCount; ++dst) {
+                const uint64_t word = ABI::encodeLogicalALUVectorHeader(
+                    src1, src2, dst, 2, 4);
+                const auto header = ABI::decodeWord0(word);
+                CHECK(header.kind == ABI::HeaderKind::LogicalALUVector);
+                CHECK(header.src1LogicalID == src1);
+                CHECK(header.src2LogicalID == src2);
+                CHECK(header.dst1LogicalID == dst);
+                CHECK(((word >> 32) & 0xff) == ABI::ALUVectorOpcode);
+            }
+        }
+    }
 
     // Every high-byte shape outside legacy physical or the tagged logical
     // subset is rejected.  This includes the plan's incompatible all-ff
@@ -103,9 +130,18 @@ testHeaderDecodeMatrix()
                     dst == ABI::LegacyPhysicalHighByte) {
                     continue;
                 }
-                if (mid == ABI::NoOperand &&
-                    src < ABI::LogicalDescriptorCount &&
-                    dst < ABI::LogicalDescriptorCount) {
+                if ((mid == ABI::NoOperand &&
+                     src < ABI::LogicalDescriptorCount &&
+                     dst < ABI::LogicalDescriptorCount) ||
+                    (src >= ABI::LogicalVectorIDBias &&
+                     src < ABI::LogicalVectorIDBias +
+                               ABI::LogicalDescriptorCount &&
+                     mid >= ABI::LogicalVectorIDBias &&
+                     mid < ABI::LogicalVectorIDBias +
+                               ABI::LogicalDescriptorCount &&
+                     dst >= ABI::LogicalVectorIDBias &&
+                     dst < ABI::LogicalVectorIDBias +
+                               ABI::LogicalDescriptorCount)) {
                     continue;
                 }
                 const uint64_t word = (static_cast<uint64_t>(src) << 56) |
@@ -116,6 +152,79 @@ testHeaderDecodeMatrix()
             }
         }
     }
+}
+
+void
+testLogicalVectorValidationMatrix()
+{
+    const auto valid = validVectorShape();
+    CHECK(ABI::validateLogicalALUVector(valid, ABI::ALUVectorOpcode) ==
+          ABI::VectorValidation::Valid);
+    for (uint8_t datatype = 0; datatype < ABI::DataTypeCount; ++datatype) {
+        for (uint8_t optype = 0; optype < ABI::ScalarOperationCount;
+             ++optype) {
+            auto accepted = valid;
+            accepted.datatype = datatype;
+            accepted.optype = optype;
+            CHECK(ABI::validateLogicalALUVector(
+                      accepted, ABI::ALUVectorOpcode) ==
+                  ABI::VectorValidation::Valid);
+        }
+    }
+    auto shape = valid;
+    CHECK(ABI::validateLogicalALUVector(shape, ABI::ALUScalarOpcode) ==
+          ABI::VectorValidation::WrongOpcode);
+    shape = valid;
+    shape.datatype = ABI::DataTypeCount;
+    CHECK(ABI::validateLogicalALUVector(shape, ABI::ALUVectorOpcode) ==
+          ABI::VectorValidation::UnsupportedDataType);
+    shape = valid;
+    shape.optype = ABI::ScalarOperationCount;
+    CHECK(ABI::validateLogicalALUVector(shape, ABI::ALUVectorOpcode) ==
+          ABI::VectorValidation::UnsupportedOperation);
+    shape = valid;
+    shape.src2LogicalID = 2;
+    CHECK(ABI::validateLogicalALUVector(shape, ABI::ALUVectorOpcode) ==
+          ABI::VectorValidation::InvalidLogicalID);
+    shape = valid;
+    shape.dst1LogicalID = 0;
+    CHECK(ABI::validateLogicalALUVector(shape, ABI::ALUVectorOpcode) ==
+          ABI::VectorValidation::AliasedLogicalDestination);
+    shape = valid;
+    shape.src1SpdID = 0;
+    CHECK(ABI::validateLogicalALUVector(shape, ABI::ALUVectorOpcode) ==
+          ABI::VectorValidation::MixedPhysicalOperands);
+    shape = valid;
+    shape.src1RegID = 0;
+    CHECK(ABI::validateLogicalALUVector(shape, ABI::ALUVectorOpcode) ==
+          ABI::VectorValidation::RegisterOperandPresent);
+    shape = valid;
+    shape.condSpdID = 0;
+    CHECK(ABI::validateLogicalALUVector(shape, ABI::ALUVectorOpcode) ==
+          ABI::VectorValidation::Conditional);
+    shape = valid;
+    shape.baseAddr = 0;
+    CHECK(ABI::validateLogicalALUVector(shape, ABI::ALUVectorOpcode) ==
+          ABI::VectorValidation::UnexpectedBaseAddress);
+    shape = valid;
+    shape.source1BackingAddr = ABI::NoAddress;
+    CHECK(ABI::validateLogicalALUVector(shape, ABI::ALUVectorOpcode) ==
+          ABI::VectorValidation::MissingSource1Backing);
+    shape = valid;
+    shape.source2BackingAddr = 0;
+    CHECK(ABI::validateLogicalALUVector(shape, ABI::ALUVectorOpcode) ==
+          ABI::VectorValidation::NullSource2Backing);
+    shape = valid;
+    shape.destinationBackingAddr = ABI::NoAddress;
+    CHECK(ABI::validateLogicalALUVector(shape, ABI::ALUVectorOpcode) ==
+          ABI::VectorValidation::MissingDestinationBacking);
+    shape = valid;
+    shape.source2BackingAddr = 0x30000;
+    CHECK(ABI::validateLogicalALUVector(shape, ABI::ALUVectorOpcode) ==
+          ABI::VectorValidation::RepeatedLogicalSourceHasDifferentBacking);
+
+    CHECK(ABI::backingSpansOverlap(0x10000, 0x10000, 2));
+    CHECK(!ABI::backingSpansOverlap(0x10000, 0x20000, 2));
 }
 
 void
@@ -290,6 +399,7 @@ testGuestAPIWritesTheSharedWireImage()
     uint64_t word2 = 0;
     uint64_t word3 = 0;
     uint64_t word4 = 0;
+    uint64_t word5 = 0;
     auto *source = reinterpret_cast<uint32_t *>(0x10000);
     auto *destination = reinterpret_cast<uint32_t *>(0x20000);
     INSTR_opcode_datatype_optype_tdst1_tdst2 = &word0;
@@ -297,6 +407,7 @@ testGuestAPIWritesTheSharedWireImage()
     INSTR_baseaddr = &word2;
     INSTR_backingaddr = &word3;
     INSTR_indexaddr = &word4;
+    INSTR_predicateaddr = &word5;
 
     maa_alu_scalar_logical<uint32_t>(0, 1, source, destination, 3,
                                      Operation_t::MIN_OP);
@@ -319,6 +430,17 @@ testGuestAPIWritesTheSharedWireImage()
     CHECK((word0 >> 40) == 0);
     CHECK(((word0 >> 32) & 0xff) == ABI::ALUScalarOpcode);
     CHECK(ABI::decodeWord0(word0).kind == ABI::HeaderKind::Physical);
+
+    maa_alu_vector_logical<uint32_t>(0, 0, 1, source, source, destination,
+                                     Operation_t::ADD_OP);
+    CHECK(word0 == ABI::encodeLogicalALUVectorHeader(
+                       0, 0, 1, static_cast<uint8_t>(DataType::UINT32_TYPE),
+                       static_cast<uint8_t>(Operation_t::ADD_OP)));
+    CHECK(word1 == UINT64_MAX);
+    CHECK(word2 == ABI::NoAddress);
+    CHECK(word3 == reinterpret_cast<uint64_t>(destination));
+    CHECK(word4 == reinterpret_cast<uint64_t>(source));
+    CHECK(word5 == reinterpret_cast<uint64_t>(source));
 }
 
 } // anonymous namespace
@@ -328,6 +450,7 @@ main()
 {
     testHeaderDecodeMatrix();
     testLogicalScalarValidationMatrix();
+    testLogicalVectorValidationMatrix();
     testDestinationBackingValidation();
     testGuestAPIWritesTheSharedWireImage();
     std::cout << "logical_spd_cache_abi_test: PASS" << std::endl;

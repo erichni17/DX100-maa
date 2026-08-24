@@ -166,12 +166,16 @@ public:
     Addr baseAddr, backingAddr, indexAddr, predicateAddr;
     bool soaJitMaskedIndex;
     Addr logicalSourceBackingAddr;
+    Addr logicalSource2BackingAddr, logicalDestinationBackingAddr;
     Addr minAddr, maxAddr, backingMinAddr, backingMaxAddr;
     Addr indexMinAddr, indexMaxAddr, predicateMinAddr, predicateMaxAddr;
     Addr logicalSourceMinAddr, logicalSourceMaxAddr;
+    Addr logicalSource2MinAddr, logicalSource2MaxAddr;
+    Addr logicalDestinationMinAddr, logicalDestinationMaxAddr;
     int8_t addrRangeID, backingAddrRangeID, indexAddrRangeID;
     int8_t predicateAddrRangeID;
     int8_t logicalSourceAddrRangeID;
+    int8_t logicalSource2AddrRangeID, logicalDestinationAddrRangeID;
     int16_t src1RegID, src2RegID, src3RegID, dst1RegID, dst2RegID;
     int16_t src1SpdID, src2SpdID;
     TileStatus src1Status, src2Status;
@@ -183,7 +187,8 @@ public:
     // Software-visible logical descriptor IDs.  Generation and controller
     // lifecycle fields remain inert until the logical controller is wired.
     int16_t src1LogicalID, src2LogicalID, dst1LogicalID;
-    uint64_t src1LogicalGeneration, dst1LogicalGeneration;
+    uint64_t src1LogicalGeneration, src2LogicalGeneration,
+        dst1LogicalGeneration;
     // {STREAM_LD, INDIR_LD, INDIR_ST, INDIR_RMW, RANGE_LOOP, CONDITION}
     OpcodeType opcode;
     // {ADD, SUB, MUL, DIV, MIN, MAX, GT, GTE, LT, LTE, EQ}
@@ -224,6 +229,10 @@ public:
     bool isLogicalALUScalar() const {
         return opcode == OpcodeType::ALU_SCALAR && src1LogicalID != -1 &&
                src2LogicalID == -1 && dst1LogicalID != -1;
+    }
+    bool isLogicalALUVector() const {
+        return opcode == OpcodeType::ALU_VECTOR && src1LogicalID != -1 &&
+               src2LogicalID != -1 && dst1LogicalID != -1;
     }
     /**
      * Guarded no-old-result SoA/JIT form of ordinary vector RMW.

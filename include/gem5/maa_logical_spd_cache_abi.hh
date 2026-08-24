@@ -22,7 +22,11 @@ class LogicalSPDCacheABI
     static constexpr uint8_t LogicalDescriptorCount = 2;
     static constexpr uint8_t NoOperand = 0xff;
     static constexpr uint8_t LegacyPhysicalHighByte = 0x00;
+    // Vector IDs are biased so logical (0,0,0) cannot collide with the
+    // required legacy physical all-zero high-byte image.
+    static constexpr uint8_t LogicalVectorIDBias = 1;
     static constexpr uint8_t ALUScalarOpcode = 8;
+    static constexpr uint8_t ALUVectorOpcode = 9;
     static constexpr uint8_t DataTypeCount = 6;
     static constexpr uint8_t ScalarOperationCount = 16;
     static constexpr uint32_t LogicalElements = 16384;
@@ -32,6 +36,7 @@ class LogicalSPDCacheABI
     {
         Physical,
         LogicalALUScalar,
+        LogicalALUVector,
         Unsupported,
     };
 
@@ -72,6 +77,27 @@ class LogicalSPDCacheABI
         NullSourceBacking,
         MissingDestinationBacking,
         NullDestinationBacking,
+    };
+
+    enum class VectorValidation : uint8_t
+    {
+        Valid,
+        WrongOpcode,
+        UnsupportedDataType,
+        UnsupportedOperation,
+        InvalidLogicalID,
+        AliasedLogicalDestination,
+        MixedPhysicalOperands,
+        RegisterOperandPresent,
+        Conditional,
+        UnexpectedBaseAddress,
+        MissingSource1Backing,
+        NullSource1Backing,
+        MissingSource2Backing,
+        NullSource2Backing,
+        MissingDestinationBacking,
+        NullDestinationBacking,
+        RepeatedLogicalSourceHasDifferentBacking,
     };
 
     enum class DestinationValidation : uint8_t
@@ -119,6 +145,41 @@ class LogicalSPDCacheABI
         }
     };
 
+    struct VectorOperandShape
+    {
+        uint8_t datatype;
+        uint8_t optype;
+        int16_t src1LogicalID;
+        int16_t src2LogicalID;
+        int16_t dst1LogicalID;
+        int16_t src1SpdID;
+        int16_t src2SpdID;
+        int16_t dst1SpdID;
+        int16_t dst2SpdID;
+        int16_t src1RegID;
+        int16_t src2RegID;
+        int16_t src3RegID;
+        int16_t dst1RegID;
+        int16_t dst2RegID;
+        int16_t condSpdID;
+        uint64_t baseAddr;
+        uint64_t source1BackingAddr;
+        uint64_t source2BackingAddr;
+        uint64_t destinationBackingAddr;
+
+        VectorOperandShape()
+            : datatype(0), optype(0), src1LogicalID(-1),
+              src2LogicalID(-1), dst1LogicalID(-1), src1SpdID(-1),
+              src2SpdID(-1), dst1SpdID(-1), dst2SpdID(-1),
+              src1RegID(-1), src2RegID(-1), src3RegID(-1),
+              dst1RegID(-1), dst2RegID(-1), condSpdID(-1),
+              baseAddr(NoAddress), source1BackingAddr(NoAddress),
+              source2BackingAddr(NoAddress),
+              destinationBackingAddr(NoAddress)
+        {
+        }
+    };
+
     static constexpr bool
     validLogicalID(int16_t logicalID)
     {
@@ -160,6 +221,17 @@ class LogicalSPDCacheABI
                           static_cast<int16_t>(src1), -1,
                           static_cast<int16_t>(dst1));
         }
+        if (src1 >= LogicalVectorIDBias &&
+            src1 < LogicalVectorIDBias + LogicalDescriptorCount &&
+            src2 >= LogicalVectorIDBias &&
+            src2 < LogicalVectorIDBias + LogicalDescriptorCount &&
+            dst1 >= LogicalVectorIDBias &&
+            dst1 < LogicalVectorIDBias + LogicalDescriptorCount) {
+            return Header(HeaderKind::LogicalALUVector,
+                          static_cast<int16_t>(src1 - LogicalVectorIDBias),
+                          static_cast<int16_t>(src2 - LogicalVectorIDBias),
+                          static_cast<int16_t>(dst1 - LogicalVectorIDBias));
+        }
         return Header();
     }
 
@@ -171,6 +243,24 @@ class LogicalSPDCacheABI
                (static_cast<uint64_t>(NoOperand) << 48) |
                (static_cast<uint64_t>(logicalDst1) << 40) |
                (static_cast<uint64_t>(ALUScalarOpcode) << 32) |
+               (static_cast<uint64_t>(datatype) << 24) |
+               (static_cast<uint64_t>(optype) << 16) |
+               (static_cast<uint64_t>(NoOperand) << 8) |
+               static_cast<uint64_t>(NoOperand);
+    }
+
+    static constexpr uint64_t
+    encodeLogicalALUVectorHeader(uint8_t logicalSrc1, uint8_t logicalSrc2,
+                                 uint8_t logicalDst1, uint8_t datatype,
+                                 uint8_t optype)
+    {
+        return (static_cast<uint64_t>(logicalSrc1 + LogicalVectorIDBias)
+                << 56) |
+               (static_cast<uint64_t>(logicalSrc2 + LogicalVectorIDBias)
+                << 48) |
+               (static_cast<uint64_t>(logicalDst1 + LogicalVectorIDBias)
+                << 40) |
+               (static_cast<uint64_t>(ALUVectorOpcode) << 32) |
                (static_cast<uint64_t>(datatype) << 24) |
                (static_cast<uint64_t>(optype) << 16) |
                (static_cast<uint64_t>(NoOperand) << 8) |
@@ -229,6 +319,53 @@ class LogicalSPDCacheABI
         return ScalarValidation::Valid;
     }
 
+    static VectorValidation
+    validateLogicalALUVector(const VectorOperandShape &shape, uint8_t opcode)
+    {
+        if (opcode != ALUVectorOpcode)
+            return VectorValidation::WrongOpcode;
+        if (shape.datatype >= DataTypeCount)
+            return VectorValidation::UnsupportedDataType;
+        if (shape.optype >= ScalarOperationCount)
+            return VectorValidation::UnsupportedOperation;
+        if (!validLogicalID(shape.src1LogicalID) ||
+            !validLogicalID(shape.src2LogicalID) ||
+            !validLogicalID(shape.dst1LogicalID))
+            return VectorValidation::InvalidLogicalID;
+        // A binary operation may intentionally use its first source twice,
+        // but neither source may alias the logical destination.
+        if (shape.src1LogicalID == shape.dst1LogicalID ||
+            shape.src2LogicalID == shape.dst1LogicalID)
+            return VectorValidation::AliasedLogicalDestination;
+        if (shape.src1SpdID != -1 || shape.src2SpdID != -1 ||
+            shape.dst1SpdID != -1 || shape.dst2SpdID != -1)
+            return VectorValidation::MixedPhysicalOperands;
+        if (shape.src1RegID != -1 || shape.src2RegID != -1 ||
+            shape.src3RegID != -1 || shape.dst1RegID != -1 ||
+            shape.dst2RegID != -1)
+            return VectorValidation::RegisterOperandPresent;
+        if (shape.condSpdID != -1)
+            return VectorValidation::Conditional;
+        if (shape.baseAddr != NoAddress)
+            return VectorValidation::UnexpectedBaseAddress;
+        if (shape.source1BackingAddr == NoAddress)
+            return VectorValidation::MissingSource1Backing;
+        if (shape.source1BackingAddr == 0)
+            return VectorValidation::NullSource1Backing;
+        if (shape.source2BackingAddr == NoAddress)
+            return VectorValidation::MissingSource2Backing;
+        if (shape.source2BackingAddr == 0)
+            return VectorValidation::NullSource2Backing;
+        if (shape.destinationBackingAddr == NoAddress)
+            return VectorValidation::MissingDestinationBacking;
+        if (shape.destinationBackingAddr == 0)
+            return VectorValidation::NullDestinationBacking;
+        if (shape.src1LogicalID == shape.src2LogicalID &&
+            shape.source1BackingAddr != shape.source2BackingAddr)
+            return VectorValidation::RepeatedLogicalSourceHasDifferentBacking;
+        return VectorValidation::Valid;
+    }
+
     /**
      * Validate the complete 16K-element destination in the registered range.
      * The range end is exclusive, matching MAA's registered address regions.
@@ -273,6 +410,15 @@ class LogicalSPDCacheABI
     {
         return validateBackingSpan(sourceBackingAddr, datatype, rangeBegin,
                                    rangeEnd);
+    }
+
+    static bool
+    backingSpansOverlap(uint64_t first, uint64_t second, uint8_t datatype)
+    {
+        const uint64_t bytes =
+            static_cast<uint64_t>(LogicalElements) * dataTypeBytes(datatype);
+        return first <= second ? second - first < bytes :
+                                 first - second < bytes;
     }
 };
 

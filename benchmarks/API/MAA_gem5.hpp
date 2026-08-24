@@ -308,6 +308,58 @@ inline void maa_alu_vector(int src1_tile, int src2_tile, int dst_tile, Operation
     *INSTR_baseaddr = NA_UINT64;                                                                                // baseaddr
     __asm__ __volatile__("mfence;");
 }
+/**
+ * Encode the decoder-only logical form of ordinary ALU_VECTOR.  Logical
+ * descriptor IDs occupy word zero's high bytes; word three names the
+ * destination backing and words four/five name the two source backings.
+ * This form is deliberately fail-closed until a controller execution path is
+ * integrated.
+ */
+template <class T1>
+inline void maa_alu_vector_logical(int src1_logical, int src2_logical,
+                                   int dst_logical,
+                                   const T1 *source1_backing,
+                                   const T1 *source2_backing,
+                                   T1 *destination_backing, Operation_t op) {
+    assert(src1_logical >= 0 && src1_logical < LOGICAL_DESCRIPTOR_COUNT);
+    assert(src2_logical >= 0 && src2_logical < LOGICAL_DESCRIPTOR_COUNT);
+    assert(dst_logical >= 0 && dst_logical < LOGICAL_DESCRIPTOR_COUNT);
+    assert(src1_logical != dst_logical);
+    assert(src2_logical != dst_logical);
+    assert(source1_backing != nullptr);
+    assert(source2_backing != nullptr);
+    assert(destination_backing != nullptr);
+    if (src1_logical == src2_logical)
+        assert(source1_backing == source2_backing);
+    const DataType data_type = get_data_type<T1>();
+    assert(data_type != DataType::MAX);
+    const uintptr_t logical_backing_bytes =
+        gem5::maa::LogicalSPDCacheABI::LogicalElements * sizeof(T1);
+    assert(reinterpret_cast<uintptr_t>(source1_backing) %
+               logical_backing_bytes == 0);
+    assert(reinterpret_cast<uintptr_t>(source2_backing) %
+               logical_backing_bytes == 0);
+    assert(reinterpret_cast<uintptr_t>(destination_backing) %
+               logical_backing_bytes == 0);
+    assert(static_cast<uint8_t>(op) <
+           gem5::maa::LogicalSPDCacheABI::ScalarOperationCount);
+    *INSTR_opcode_datatype_optype_tdst1_tdst2 =
+        gem5::maa::LogicalSPDCacheABI::encodeLogicalALUVectorHeader(
+            static_cast<uint8_t>(src1_logical),
+            static_cast<uint8_t>(src2_logical),
+            static_cast<uint8_t>(dst_logical), static_cast<uint8_t>(data_type),
+            static_cast<uint8_t>(op));
+    *INSTR_tsrc1_tsrc2_rdst1_rdst2_rsrc1_rsrc2_rsrc3_csrc =
+        ((uint64_t)NA_UINT8 << 56) | ((uint64_t)NA_UINT8 << 48) |
+        ((uint64_t)NA_UINT8 << 40) | ((uint64_t)NA_UINT8 << 32) |
+        ((uint64_t)NA_UINT8 << 24) | ((uint64_t)NA_UINT8 << 16) |
+        ((uint64_t)NA_UINT8 << 8) | (uint64_t)NA_UINT8;
+    *INSTR_baseaddr = NA_UINT64;
+    *INSTR_backingaddr = (uint64_t)destination_backing;
+    *INSTR_indexaddr = (uint64_t)source1_backing;
+    *INSTR_predicateaddr = (uint64_t)source2_backing;
+    __asm__ __volatile__("mfence;");
+}
 template <class T1>
 inline void maa_alu_reduce(int src1_tile, int dst_reg, Operation_t op, int cond_tile = -1) {
     DataType data_type = get_data_type<T1>();

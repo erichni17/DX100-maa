@@ -39,6 +39,7 @@ class LogicalSpdCacheAbiContractTest(unittest.TestCase):
             "NoOperand = 0xff",
             "src2 == NoOperand",
             "src1 < LogicalDescriptorCount",
+            "LogicalVectorIDBias",
             "dst1 < LogicalDescriptorCount",
         ):
             self.assertIn(evidence, self.abi)
@@ -50,10 +51,12 @@ class LogicalSpdCacheAbiContractTest(unittest.TestCase):
     ) -> None:
         for field in (
             "src1LogicalID, src2LogicalID, dst1LogicalID",
-            "src1LogicalGeneration, dst1LogicalGeneration",
+            "src1LogicalGeneration, src2LogicalGeneration",
+            "src2LogicalGeneration",
             "controllerTransactionID",
             "controllerSrcSlot, controllerDstSlot",
             "isLogicalALUScalar() const",
+            "isLogicalALUVector() const",
         ):
             self.assertIn(field, self.if_header)
         for initializer in (
@@ -61,6 +64,7 @@ class LogicalSpdCacheAbiContractTest(unittest.TestCase):
             "src2LogicalID(-1)",
             "dst1LogicalID(-1)",
             "src1LogicalGeneration(0)",
+            "src2LogicalGeneration(0)",
             "dst1LogicalGeneration(0)",
         ):
             self.assertIn(initializer, self.if_source)
@@ -79,8 +83,9 @@ class LogicalSpdCacheAbiContractTest(unittest.TestCase):
             "LogicalSPDCacheABI::decodeWord0(data)",
             "HeaderKind::Unsupported",
             "HeaderKind::LogicalALUScalar",
+            "HeaderKind::LogicalALUVector",
             "Logical high-byte operands are only supported for ",
-            "ALU_SCALAR, got opcode %d",
+            "ALU_SCALAR or ALU_VECTOR, got opcode %d",
             "LogicalSPDCacheABI::NoAddress",
             "LogicalSPDCacheABI::ScalarOperandShape shape",
             "validateLogicalALUScalar",
@@ -92,6 +97,10 @@ class LogicalSpdCacheAbiContractTest(unittest.TestCase):
             "Rejected logical ALU_SCALAR source backing",
             "Rejected logical ALU_SCALAR destination ",
             "controller state mutation",
+            "VectorOperandShape shape",
+            "validateLogicalALUVector",
+            "Logical ALU_VECTOR ABI decoded and validated",
+            "live execution is unsupported until the ",
         ):
             self.assertIn(evidence, self.cpu_port)
 
@@ -164,6 +173,52 @@ class LogicalSpdCacheAbiContractTest(unittest.TestCase):
             self.assertIn(validation, self.abi)
         self.assertNotIn("std::vector", self.abi)
         self.assertNotIn("new ", self.abi)
+
+    def test_vector_shape_requires_two_logical_sources_and_fail_closed_gate(
+        self,
+    ) -> None:
+        for evidence in (
+            "ALUVectorOpcode = 9",
+            "encodeLogicalALUVectorHeader",
+            "VectorValidation",
+            "AliasedLogicalDestination",
+            "RepeatedLogicalSourceHasDifferentBacking",
+            "backingSpansOverlap",
+            "logicalSource2BackingAddr",
+            "logicalDestinationBackingAddr",
+            "Rejected logical ALU_VECTOR overlapping backing",
+        ):
+            self.assertIn(
+                evidence, self.abi if evidence in self.abi else self.cpu_port
+            )
+        vector = self.cpu_port.index(
+            "if (current_instruction->isLogicalALUVector())"
+        )
+        validation = self.cpu_port.index("validateLogicalALUVector", vector)
+        unsupported = self.cpu_port.index(
+            "live execution is unsupported", validation
+        )
+        self.assertLess(vector, validation)
+        self.assertLess(validation, unsupported)
+        self.assertNotIn(
+            "my_instruction_recvs[instruction_id] = true",
+            self.cpu_port[validation:unsupported],
+        )
+
+    def test_api_emits_ordinary_vector_opcode_with_three_backing_words(
+        self,
+    ) -> None:
+        begin = self.api.index("inline void maa_alu_vector_logical")
+        end = self.api.index("template <class T1>", begin + 1)
+        helper = self.api[begin:end]
+        for evidence in (
+            "encodeLogicalALUVectorHeader",
+            "*INSTR_baseaddr = NA_UINT64",
+            "*INSTR_backingaddr = (uint64_t)destination_backing",
+            "*INSTR_indexaddr = (uint64_t)source1_backing",
+            "*INSTR_predicateaddr = (uint64_t)source2_backing",
+        ):
+            self.assertIn(evidence, helper)
 
     def test_api_emits_ordinary_scalar_opcode_without_logical_wait_alias(
         self,
