@@ -275,7 +275,9 @@ for field, expected in (
         raise SystemExit(
             f"strict summary {field}={fields.get(field)} != {expected}"
         )
-if int(fields["A_FIRST_ISSUE"]) < int(fields["ROW_OFFSET_LAST_INSERT"]):
+if int(fields["a_first_issue_tick"]) < int(
+    fields["row_offset_last_insert_tick"]
+):
     raise SystemExit("A_FIRST_ISSUE < ROW_OFFSET_LAST_INSERT")
 if int(fields["a_issues"]) != int(fields["a_responses"]):
     raise SystemExit("strict A issue/response ledger did not close")

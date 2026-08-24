@@ -79,8 +79,9 @@ class HybridStrictRowTableCapacityContract(unittest.TestCase):
         self,
     ) -> None:
         for token in (
-            '"A_FIRST_ISSUE"',
-            '"ROW_OFFSET_LAST_INSERT"',
+            '"a_first_issue_tick"',
+            '"row_offset_last_insert_tick"',
+            "A_FIRST_ISSUE < ROW_OFFSET_LAST_INSERT",
             '"b_words", "16384"',
             '"descriptor_inserts", "16384"',
             '"consumer_event", "hybrid_consumer_macro"',
