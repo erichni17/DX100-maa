@@ -630,10 +630,28 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
             for name in names:
                 self.assertIn(name, source, relative)
             general = source.split("MAA_GENERAL_VIRTUAL_CONSUMER", 1)[1]
-            self.assertNotIn("maa_const<int>(0, page_min_reg)", general)
             self.assertNotIn(
                 "maa_const<int>(page_size, page_max_reg)", general
             )
+            if relative == "benchmarks/UME/gradzatp.cpp":
+                publication = general.split(
+                    "Restore the page-relative consumer", 1
+                )[1].split("maa_virtual_consumer_load_page", 1)[0]
+                self.assertIn(
+                    "maa_const<int>(0, page_min_reg)", publication
+                )
+                self.assertIn(
+                    "maa_const<int>(MAA_CONSUMER_TILE_SIZE, "
+                    "page_max_reg)",
+                    publication,
+                )
+                self.assertIn(
+                    "maa_const<int>(1, page_stride_reg)", publication
+                )
+            else:
+                self.assertNotIn(
+                    "maa_const<int>(0, page_min_reg)", general
+                )
 
     def test_cg_general_consumer_shares_immutable_page_bounds(self) -> None:
         source = (ROOT / "benchmarks/NAS/cg/cg.cpp").read_text(
@@ -702,7 +720,12 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
         prearm, producer = guest.split("if (token_stream_ld_page0_prearm)", 1)[
             1
         ].split('if (mode == "paged_staged"', 1)
-        self.assertIn("maa_stream_load_virtual_page_prearm<double>", prearm)
+        self.assertIn("maa_stream_load_virtual_page_prearm<Value>", prearm)
+        self.assertIn(
+            "backing, completion_tile, page_min_reg, page_max_reg,\n"
+            "                page_stride_reg, page_tile",
+            prearm,
+        )
         self.assertIn("maa_indirect_load_virtual", producer)
 
     def test_batched_materializer_wakeup_is_opt_in_and_exact(self) -> None:
