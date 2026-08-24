@@ -3260,8 +3260,27 @@ bool IndirectAccessUnit::checkElementReady() {
     if (idx_ready && descriptor_spool_replay_active) {
         operand_itr = currentDirectIndexWord(my_i).logical_itr;
     }
+    // A row/offset pressure retry has already consumed this predicate.  Its
+    // exact source identity must still be at the cursor before it can bypass
+    // the feeder: a different direct-index replay word must never inherit the
+    // latched condition or evade a normal predicate lookup/accounting.
+    bool soa_jit_latched_retry = false;
+    if (isSoaJitRmw() && soa_jit_retry_valid) {
+        panic_if(!soa_jit_retry_condition ||
+                     soa_jit_retry_ordinal < 0 ||
+                     soa_jit_retry_ordinal >= my_max ||
+                     my_i != soa_jit_retry_ordinal ||
+                     operand_itr != soa_jit_retry_ordinal ||
+                     operand_itr != my_i,
+                 "I[%d] SoA/JIT latched pressure retry identity changed "
+                 "cursor=%d operand=%d retry=%d\\n",
+                 my_indirect_id, my_i, operand_itr,
+                 soa_jit_retry_ordinal);
+        soa_jit_latched_retry = true;
+    }
     bool cond_ready = isSoaJitRmw()
-        ? (!idx_ready || ensureSoaPredicate(operand_itr))
+        ? (!idx_ready || soa_jit_latched_retry ||
+           ensureSoaPredicate(operand_itr))
         : (my_cond_tile == -1 || !idx_ready ||
            maa->spd->getElementFinished(
                my_cond_tile, operand_itr, 4,
