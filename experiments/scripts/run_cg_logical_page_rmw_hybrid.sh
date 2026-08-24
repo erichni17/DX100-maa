@@ -44,7 +44,10 @@ accepted_result="$accepted_root/result.txt"
 [[ -x $gem5 ]] || { echo "missing gem5 binary: $gem5" >&2; exit 2; }
 [[ -f $reference ]] || { echo "missing frozen CG reference: $reference" >&2; exit 2; }
 [[ -f $accepted_result ]] || { echo "missing accepted CG evidence: $accepted_result" >&2; exit 2; }
-[[ ! -e $out ]] || { echo "refusing existing output: $out" >&2; exit 2; }
+if [[ -e $out ]] && [[ -n $(find "$out" -mindepth 1 -print -quit) ]]; then
+    echo "refusing nonempty output: $out" >&2
+    exit 2
+fi
 [[ $(sha256sum "$reference" | awk '{print $1}') == "$reference_sha" ]] || {
     echo "frozen CG reference hash mismatch" >&2
     exit 1
