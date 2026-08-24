@@ -3893,22 +3893,25 @@ MAA::submitLogicalSPDDescriptor(
     panic_if(num_tile_elements != LogicalElements ||
                  physical_tile_elements != Slice::SerialPageElements,
              "Logical SPD live slice requires 16K logical and 4K visible "
-             "FP64 elements, got %u/%u\n", num_tile_elements,
+             "elements, got %u/%u\n", num_tile_elements,
              physical_tile_elements);
-    panic_if(instruction->datatype != Instruction::DataType::FLOAT64_TYPE,
-             "Logical SPD live slice supports FP64 only: %s\n",
-             instruction->print());
+    const uint8_t dataType = static_cast<uint8_t>(instruction->datatype);
+    const std::size_t wordBytes = Slice::wordBytes(dataType);
+    const std::size_t backingBytes = Slice::backingBytes(dataType);
+    panic_if(wordBytes == 0 || backingBytes == 0,
+             "Logical SPD live slice does not support datatype %u: %s\n",
+             dataType, instruction->print());
     const Addr sourceBase = instruction->logicalSourceBackingAddr;
     const Addr destinationBase = instruction->backingAddr;
-    panic_if(sourceBase % Slice::BackingBytes != 0 ||
-                 destinationBase % Slice::BackingBytes != 0,
-             "Logical SPD backing must be aligned to the 16K FP64 span "
+    panic_if(sourceBase % backingBytes != 0 ||
+                 destinationBase % backingBytes != 0,
+             "Logical SPD backing must be aligned to the 16K-element span "
              "(%zu bytes): source=0x%lx destination=0x%lx\n",
-             Slice::BackingBytes, sourceBase, destinationBase);
+             backingBytes, sourceBase, destinationBase);
     const bool backingOverlap =
         sourceBase <= destinationBase
-            ? destinationBase - sourceBase < Slice::BackingBytes
-            : sourceBase - destinationBase < Slice::BackingBytes;
+            ? destinationBase - sourceBase < backingBytes
+            : sourceBase - destinationBase < backingBytes;
     panic_if(backingOverlap && sourceBase != destinationBase,
              "Logical SPD source and destination backing spans partially "
              "overlap: "
@@ -3946,10 +3949,12 @@ MAA::submitLogicalSPDDescriptor(
              "Logical SPD callback admission failed with status %d\n",
              static_cast<int>(claim.status));
     const Slice::BackingSpan source = {
-        instruction->logicalSourceBackingAddr, Slice::BackingBytes};
+        instruction->logicalSourceBackingAddr,
+        static_cast<uint32_t>(backingBytes)};
     panic_if(logicalSpdBridge->registerSource(
                  claim.token, static_cast<uint8_t>(
-                                  instruction->src1LogicalID), source) !=
+                                  instruction->src1LogicalID), source,
+                 dataType) !=
                  Slice::Status::Accepted,
              "Logical SPD source registration failed after ABI validation\n");
     Slice::Admission admission;
@@ -3958,10 +3963,18 @@ MAA::submitLogicalSPDDescriptor(
     admission.destinationLogical =
         static_cast<uint8_t>(instruction->dst1LogicalID);
     admission.destination = {
-        instruction->backingAddr, Slice::BackingBytes};
+        instruction->backingAddr, static_cast<uint32_t>(backingBytes)};
+    admission.dataType = dataType;
     admission.operation = operation;
-    const double scalar = rf->getData<double>(instruction->src1RegID);
-    std::memcpy(&admission.scalarBits, &scalar, sizeof(scalar));
+    if (wordBytes == sizeof(uint32_t)) {
+        const uint32_t scalar =
+            rf->getData<uint32_t>(instruction->src1RegID);
+        std::memcpy(&admission.scalarBits, &scalar, sizeof(scalar));
+    } else {
+        const uint64_t scalar =
+            rf->getData<uint64_t>(instruction->src1RegID);
+        std::memcpy(&admission.scalarBits, &scalar, sizeof(scalar));
+    }
     panic_if(logicalSpdBridge->admit(claim.token, admission) !=
                  Slice::Status::Accepted,
              "Logical SPD operation admission failed after source "
@@ -3980,12 +3993,15 @@ MAA::submitLogicalSPDDescriptor(
     execution.pc = instruction->PC;
     DPRINTF(MAAVirtualTrace,
             "event=logical_spd_admit maa=%d generation=%lu incarnation=%lu "
-            "operation=%lu source=0x%lx destination=0x%lx elements=%lu "
+            "callback=%lu operation=%u datatype=%u word_bytes=%zu "
+            "source=0x%lx "
+            "destination=0x%lx elements=%lu "
             "mode=%u page_elements=%lu pages=%lu slots=%lu "
             "payload_bytes=%lu packed_metadata_bytes=%lu "
             "source_contract=pre_materialized_backing\n",
             instruction->maa_id, claim.token.generation,
             claim.token.runtimeIdentity, claim.token.identity,
+            static_cast<unsigned>(instruction->optype), dataType, wordBytes,
             instruction->logicalSourceBackingAddr,
             instruction->backingAddr,
             static_cast<unsigned long>(LogicalElements),
