@@ -12,6 +12,7 @@ out=$(realpath -m "$2")
 config="$root/configs/deprecated/example/se.py"
 ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
 source_file="$root/benchmarks/gapbs/src/sssp.cc"
+helper_file="$root/benchmarks/gapbs/src/sssp_coherent_fallback.hh"
 frozen_ramulator=/data1/nier/dx100-runs/2026-08-12-hybrid-line-handoff-8a5c7712/input/libramulator.so
 frozen_ramulator_sha256=76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753
 
@@ -40,6 +41,12 @@ stat_sum() {
             exit
         }
     ' "$stats"
+}
+
+terminal_value() {
+    local line=$1 key=$2
+    tr ' ' '\n' <<<"$line" | awk -F= -v key="$key" \
+        '$1 == key {print substr($0, length(key) + 2)}'
 }
 
 [[ -x $gem5 ]] || { echo "missing gem5 binary: $gem5" >&2; exit 2; }
@@ -140,8 +147,9 @@ restore_cmd=(
 
 {
     printf 'schema=dx100.sssp.old_result_hybrid.small.v1\n'
-    printf 'source_commit=%s\nsource_sha256=%s\n' \
-        "$(git -C "$root" rev-parse HEAD)" "$(hash_value "$source_file")"
+    printf 'source_commit=%s\nsource_sha256=%s\nhelper_sha256=%s\n' \
+        "$(git -C "$root" rev-parse HEAD)" "$(hash_value "$source_file")" \
+        "$(hash_value "$helper_file")"
     printf 'gem5_path=%s\ngem5_sha256=%s\n' "$gem5" "$(hash_value "$gem5")"
     printf 'ramulator_library_path=%s\nramulator_library_sha256=%s\n' \
         "$frozen_ramulator" "$frozen_ramulator_sha256"
@@ -155,8 +163,9 @@ restore_cmd=(
     printf 'cpu_spd_out_of_range_rejections=0_required\n'
 } >"$out/manifest.txt"
 
-sha256sum "$gem5" "$frozen_ramulator" "$guest" "$graph" "$source_file" "$config" \
-    "$ramulator" "$0" >"$out/artifacts.before.sha256"
+sha256sum "$gem5" "$frozen_ramulator" "$guest" "$graph" "$source_file" \
+    "$helper_file" "$config" "$ramulator" "$0" \
+    >"$out/artifacts.before.sha256"
 
 OMP_PROC_BIND=false OMP_NUM_THREADS=4 "${checkpoint_cmd[@]}" \
     >"$out/checkpoint.log" 2>&1
@@ -169,9 +178,28 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 "${restore_cmd[@]}" \
 restore="$out/run/restore.log"
 stats="$out/run/stats.txt"
 fingerprint='SSSP_FINGERPRINT vertices=69633 reached=69633 unreachable=0 distance_sum=135168 max_distance=2 hash_a=a0531a7ddb9387df hash_b=39f1ea63bc8817e8 triangle_violations=0 missing_predecessors=0 nonpositive_weights=0 negative_distances=0 result=PASS'
-terminal='SSSP_OLD_RESULT_HYBRID_TERMINAL treatment=old_result_hybrid eligible_windows=4 routed_windows=4 index_publish_pages=16 value_publish_pages=16 old_result_words=65536 legacy_words=0 logical_reorder_words=16384 physical_spd_words=4096 row_table_slices=32 predicate_span=coherent_aligned old_result_span=coherent_aligned duplicate_order=legacy_physical_pages host_spd_reads=0 hidden_result_payload_bytes=0 counts_close=1'
 [[ $(grep -Fxc "$fingerprint" "$restore" || true) -eq 1 ]]
-[[ $(grep -Fxc "$terminal" "$restore" || true) -eq 1 ]]
+[[ $(grep -Ec '^SSSP_OLD_RESULT_HYBRID_TERMINAL ' "$restore" || true) -eq 1 ]]
+terminal=$(grep '^SSSP_OLD_RESULT_HYBRID_TERMINAL ' "$restore")
+for expected in \
+    treatment=old_result_hybrid eligible_windows=4 routed_windows=4 \
+    index_publish_pages=16 value_publish_pages=16 old_result_words=65536 \
+    legacy_words=0 fallback_pages=0 \
+    fallback_publication_issue_pages=0 \
+    fallback_publication_response_pages=0 fallback_publication_words=0 \
+    fallback_publication_bytes=0 fallback_consumed_words=0 \
+    predicate_restore_words=0 coherent_tail_batches=0 \
+    coherent_tail_words=0 logical_reorder_words=16384 \
+    physical_spd_words=4096 row_table_slices=32 \
+    predicate_span=coherent_aligned old_result_span=coherent_aligned \
+    duplicate_order=legacy_physical_pages host_spd_reads=0 \
+    max_host_spd_element=-1 illegal_host_spd_line_starts=0 \
+    new_dedicated_payload_bytes=0 hidden_logical_spd_bytes=0 \
+    hidden_result_payload_bytes=0 response_closure=1 counts_close=1; do
+    key=${expected%%=*}
+    value=${expected#*=}
+    [[ $(terminal_value "$terminal" "$key") == "$value" ]]
+done
 [[ $(grep -Ec '^Exiting @ tick [0-9]+ because m5_exit instruction encountered$' \
           "$restore" || true) -eq 1 ]]
 [[ $(grep -Eic 'panic|fatal|assert|abort|segmentation fault|error:' \
@@ -200,8 +228,9 @@ aperture_rejections=$(stat_sum cpu_spd_out_of_range_rejections)
 [[ $boundary_drops =~ ^[0-9]+$ && $aperture_rejections =~ ^[0-9]+$ ]]
 [[ $aperture_rejections -eq 0 ]]
 
-sha256sum "$gem5" "$frozen_ramulator" "$guest" "$graph" "$source_file" "$config" \
-    "$ramulator" "$0" >"$out/artifacts.after.sha256"
+sha256sum "$gem5" "$frozen_ramulator" "$guest" "$graph" "$source_file" \
+    "$helper_file" "$config" "$ramulator" "$0" \
+    >"$out/artifacts.after.sha256"
 cmp -s "$out/artifacts.before.sha256" "$out/artifacts.after.sha256"
 
 sim_ticks=$(awk '$1 == "simTicks" { print $2; exit }' "$stats")

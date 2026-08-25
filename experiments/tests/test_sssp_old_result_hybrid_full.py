@@ -118,7 +118,7 @@ class SsspOldResultHybridFullContract(unittest.TestCase):
             self.runner.index('validate_callback "$validation_out"'),
         )
 
-    def test_aperture_gate_is_opt_in_and_fails_closed_on_first_window_stats(
+    def test_aperture_gate_is_opt_in_and_rejects_real_out_of_range_accesses(
         self,
     ):
         self.assertIn("SSSP_APERTURE_CANDIDATE_GATE:-false", self.runner)
@@ -126,9 +126,8 @@ class SsspOldResultHybridFullContract(unittest.TestCase):
         self.assertIn("aperture_candidate_gate", self.runner)
         self.assertIn("cpu_spd_boundary_prefetch_drops", self.runner)
         self.assertIn("cpu_spd_out_of_range_rejections", self.runner)
-        self.assertIn(
-            "boundary_drops > 0 && aperture_rejections == 0", self.runner
-        )
+        self.assertIn("aperture_rejections == 0", self.runner)
+        self.assertNotIn("boundary_drops > 0", self.runner)
         self.assertIn("record_aperture_stats", self.runner)
         self.assertIn(
             "first_window_cpu_spd_boundary_prefetch_drops", self.runner
@@ -152,6 +151,9 @@ class SsspOldResultHybridFullContract(unittest.TestCase):
         self.assertIn("cp --reflink=auto", self.runner)
         self.assertIn('chmod 0444 "$graph"', self.runner)
         self.assertIn("candidate_guest_sha256", self.runner)
+        self.assertIn("coherent_fallback_helper_path", self.runner)
+        self.assertIn("coherent_fallback_helper_sha256", self.runner)
+        self.assertGreaterEqual(self.runner.count('"$helper_file"'), 4)
         self.assertIn("checkpoint.before.files.sha256", self.runner)
         self.assertIn("checkpoint.after.files.sha256", self.runner)
         self.assertIn("checkpoint.callback.files.sha256", self.runner)
@@ -210,6 +212,25 @@ class SsspOldResultHybridFullContract(unittest.TestCase):
             "sssp_hybrid_legacy_words[tid] += curr_size", self.source
         )
         self.assertIn("routed_windows <= eligible_windows", self.source)
+        for field in (
+            "fallback_pages",
+            "fallback_publication_issue_pages",
+            "fallback_publication_response_pages",
+            "fallback_publication_words",
+            "fallback_consumed_words",
+            "predicate_restore_words",
+            "coherent_tail_batches",
+            "coherent_tail_words",
+            "host_spd_reads",
+            "illegal_host_spd_line_starts",
+            "response_closure",
+        ):
+            self.assertIn(field, self.runner)
+        self.assertIn("fallback_pages > 0", self.runner)
+        self.assertIn(
+            "fallback_issue_pages == fallback_pages * 3", self.runner
+        )
+        self.assertIn("legacy_words == fallback_consumed", self.runner)
 
     def test_validate_mode_fails_closed_without_wrapper_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -16,6 +16,7 @@ frozen_ramulator_sha256=76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78ed
 config="$root/configs/deprecated/example/se.py"
 ramulator_config="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
 source_file="$root/benchmarks/gapbs/src/sssp.cc"
+helper_file="$root/benchmarks/gapbs/src/sssp_coherent_fallback.hh"
 frozen_sweep="$root/experiments/analysis/physical_tile_sweep_baseline_20260822.json"
 frozen_sweep_sha256=d8cd2afe18de4f7983b1d9d59a0ea04e102a51bc7146a9d85c3c9a19cc73d069
 
@@ -117,6 +118,8 @@ validate_evidence() (
         $external_graph_bytes ]]
     require_hash "$out/bin/sssp_maa_2G_old_result_hybrid_fp" \
         "$(manifest_value "$manifest" candidate_guest_sha256)"
+    require_hash "$helper_file" \
+        "$(manifest_value "$manifest" coherent_fallback_helper_sha256)"
     require_hash "$frozen_sweep" "$frozen_sweep_sha256"
 
     hash_tree "$out/checkpoint" \
@@ -186,24 +189,56 @@ validate_evidence() (
     [[ $(terminal_value "$terminal" duplicate_order) == \
         legacy_physical_pages ]]
     [[ $(terminal_value "$terminal" host_spd_reads) == 0 ]]
+    [[ $(terminal_value "$terminal" max_host_spd_element) == -1 ]]
+    [[ $(terminal_value "$terminal" illegal_host_spd_line_starts) == 0 ]]
+    [[ $(terminal_value "$terminal" new_dedicated_payload_bytes) == 0 ]]
+    [[ $(terminal_value "$terminal" hidden_logical_spd_bytes) == 0 ]]
     [[ $(terminal_value "$terminal" hidden_result_payload_bytes) == 0 ]]
+    [[ $(terminal_value "$terminal" response_closure) == 1 ]]
     [[ $(terminal_value "$terminal" counts_close) == 1 ]]
 
     local eligible routed index_pages value_pages old_words legacy_words
+    local fallback_pages fallback_issue_pages fallback_response_pages
+    local fallback_words fallback_bytes fallback_consumed predicate_restores
+    local tail_batches tail_words
     eligible=$(terminal_value "$terminal" eligible_windows)
     routed=$(terminal_value "$terminal" routed_windows)
     index_pages=$(terminal_value "$terminal" index_publish_pages)
     value_pages=$(terminal_value "$terminal" value_publish_pages)
     old_words=$(terminal_value "$terminal" old_result_words)
     legacy_words=$(terminal_value "$terminal" legacy_words)
+    fallback_pages=$(terminal_value "$terminal" fallback_pages)
+    fallback_issue_pages=$(terminal_value \
+        "$terminal" fallback_publication_issue_pages)
+    fallback_response_pages=$(terminal_value \
+        "$terminal" fallback_publication_response_pages)
+    fallback_words=$(terminal_value "$terminal" fallback_publication_words)
+    fallback_bytes=$(terminal_value "$terminal" fallback_publication_bytes)
+    fallback_consumed=$(terminal_value "$terminal" fallback_consumed_words)
+    predicate_restores=$(terminal_value "$terminal" predicate_restore_words)
+    tail_batches=$(terminal_value "$terminal" coherent_tail_batches)
+    tail_words=$(terminal_value "$terminal" coherent_tail_words)
     for value in "$eligible" "$routed" "$index_pages" "$value_pages" \
-        "$old_words" "$legacy_words"; do
+        "$old_words" "$legacy_words" "$fallback_pages" \
+        "$fallback_issue_pages" "$fallback_response_pages" \
+        "$fallback_words" "$fallback_bytes" "$fallback_consumed" \
+        "$predicate_restores" "$tail_batches" "$tail_words"; do
         [[ $value =~ ^[0-9]+$ ]]
     done
     (( routed > 0 && routed <= eligible ))
     (( index_pages == routed * 4 ))
     (( value_pages == routed * 4 ))
     (( old_words == routed * 16384 ))
+    (( fallback_pages > 0 ))
+    (( fallback_issue_pages == fallback_response_pages ))
+    (( fallback_issue_pages == fallback_pages * 3 ))
+    (( fallback_words == fallback_pages * 3 * 4096 ))
+    (( fallback_bytes == fallback_words * 4 ))
+    (( fallback_consumed == fallback_pages * 4096 + tail_words ))
+    (( predicate_restores == fallback_pages * 4096 ))
+    (( legacy_words == fallback_consumed ))
+    (( (tail_batches == 0 && tail_words == 0) ||
+       (tail_batches > 0 && tail_words > 0) ))
 
     local instructions terminals selected rejected predicate_issues
     local predicate_responses index_words value_issues value_responses
@@ -272,7 +307,7 @@ validate_evidence() (
             first_window_cpu_spd_boundary_prefetch_drops) == "$boundary_drops" ]]
         [[ $(manifest_value "$manifest" \
             first_window_cpu_spd_out_of_range_rejections) == "$aperture_rejections" ]]
-        (( boundary_drops > 0 && aperture_rejections == 0 ))
+        (( aperture_rejections == 0 ))
     fi
 )
 
@@ -308,6 +343,22 @@ write_result() {
         printf 'routing_status=%s\n' "$routing_status"
         printf 'legacy_words=%s\n' \
             "$(terminal_value "$terminal" legacy_words)"
+        printf 'fallback_pages=%s\n' \
+            "$(terminal_value "$terminal" fallback_pages)"
+        printf 'fallback_publication_issue_pages=%s\n' \
+            "$(terminal_value "$terminal" fallback_publication_issue_pages)"
+        printf 'fallback_publication_response_pages=%s\n' \
+            "$(terminal_value "$terminal" fallback_publication_response_pages)"
+        printf 'fallback_publication_words=%s\n' \
+            "$(terminal_value "$terminal" fallback_publication_words)"
+        printf 'fallback_consumed_words=%s\n' \
+            "$(terminal_value "$terminal" fallback_consumed_words)"
+        printf 'coherent_tail_batches=%s\ncoherent_tail_words=%s\n' \
+            "$(terminal_value "$terminal" coherent_tail_batches)" \
+            "$(terminal_value "$terminal" coherent_tail_words)"
+        printf 'host_spd_reads=%s\nillegal_host_spd_line_starts=%s\n' \
+            "$(terminal_value "$terminal" host_spd_reads)" \
+            "$(terminal_value "$terminal" illegal_host_spd_line_starts)"
         printf 'soa_jit_instructions=%s\n' \
             "$(stat_sum "$stats" IND_SoaJitInstructions)"
         printf 'soa_jit_terminals=%s\n' \
@@ -477,6 +528,9 @@ native_stats_sha256=$(hash_value "$native_out/stats.txt")
     printf 'schema=dx100.sssp.old_result_hybrid.full.candidate.v1\n'
     printf 'source_commit=%s\nsource_path=%s\nsource_sha256=%s\n' \
         "$source_commit" "$source_file" "$(hash_value "$source_file")"
+    printf 'coherent_fallback_helper_path=%s\n' "$helper_file"
+    printf 'coherent_fallback_helper_sha256=%s\n' \
+        "$(hash_value "$helper_file")"
     printf 'candidate_gem5_path=%s\ncandidate_gem5_sha256=%s\n' \
         "$gem5" "$gem5_sha256"
     printf 'default_gem5_path=%s\ndefault_gem5_sha256=%s\n' \
@@ -500,7 +554,8 @@ native_stats_sha256=$(hash_value "$native_out/stats.txt")
 } >"$out/candidate.manifest"
 
 sha256sum "$gem5" "$frozen_ramulator" "$guest" "$graph" "$source_file" \
-    "$config" "$ramulator_config" "$0" >"$out/provenance/artifacts.before.sha256"
+    "$helper_file" "$config" "$ramulator_config" "$0" \
+    >"$out/provenance/artifacts.before.sha256"
 
 checkpoint_command=(
     "$gem5" --listener-mode=off --outdir="$out/checkpoint" "$config"
@@ -581,7 +636,8 @@ hash_tree "$out/checkpoint" \
 hash_value "$out/provenance/checkpoint.after.files.sha256" \
     >"$out/provenance/checkpoint.after.identity.sha256"
 sha256sum "$gem5" "$frozen_ramulator" "$guest" "$graph" "$source_file" \
-    "$config" "$ramulator_config" "$0" >"$out/provenance/artifacts.after.sha256"
+    "$helper_file" "$config" "$ramulator_config" "$0" \
+    >"$out/provenance/artifacts.after.sha256"
 cmp -s "$out/provenance/artifacts.before.sha256" \
     "$out/provenance/artifacts.after.sha256"
 

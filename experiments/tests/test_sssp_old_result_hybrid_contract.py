@@ -149,6 +149,25 @@ class SsspOldResultHybridContract(unittest.TestCase):
         self.assertIn('#include "sssp_coherent_fallback.hh"', self.source)
         self.assertIn("PublishAndConsumeSsspFallbackPage(", self.source)
 
+    def test_small_gate_proves_routed_path_has_no_fallback_or_host_spd_reads(
+        self,
+    ):
+        for exact in (
+            "fallback_pages=0",
+            "fallback_publication_issue_pages=0",
+            "fallback_publication_response_pages=0",
+            "fallback_consumed_words=0",
+            "coherent_tail_words=0",
+            "host_spd_reads=0",
+            "max_host_spd_element=-1",
+            "illegal_host_spd_line_starts=0",
+            "response_closure=1",
+            "counts_close=1",
+        ):
+            self.assertIn(exact, self.runner)
+        self.assertIn("terminal_value", self.runner)
+        self.assertIn("helper_sha256", self.runner)
+
 
 if __name__ == "__main__":
     unittest.main()

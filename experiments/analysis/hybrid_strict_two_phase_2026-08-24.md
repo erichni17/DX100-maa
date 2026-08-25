@@ -13,6 +13,13 @@ This result rejects both promotion and the rejected workaround family. The
 strict mode never enables range passes, descriptor spooling, global merge,
 backing descriptor replay, or repeated B scans.
 
+This capacity result is specific to the diagnostic's explicit **16-slice**
+RowTable: `16 slices x 64 rows/slice x 8 lines/row = 8,192` unique-line
+slots. It must not be generalized to the current full-application runners,
+which select **32 slices** and therefore expose 16,384 gross unique-line slots.
+In both cases, the logical tile and OffsetTable contain 16,384 descriptors;
+RowTable slots represent unique cache lines and may link multiple descriptors.
+
 ## Implementation boundary
 
 Source checkpoint `f84b11353e54431211bf2beb6d730caa4a543e07` adds
