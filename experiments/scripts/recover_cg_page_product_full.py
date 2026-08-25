@@ -565,11 +565,18 @@ def recover(
     return result, initial_snapshot
 
 
-def validate_seal(root: Path, repo: Path) -> dict[str, object]:
+def validate_seal(
+    root: Path, repo: Path, *, require_gate: bool = True
+) -> dict[str, object]:
     gate = root / "RECOVERED_GATE.complete"
     result_path = root / "recovered_result.json"
     ledger = root / "recovered_result_sha256.txt"
-    require(gate.read_text(encoding="utf-8") == "PASS\n", "bad recovered gate")
+    if require_gate:
+        require(
+            gate.read_text(encoding="utf-8") == "PASS\n", "bad recovered gate"
+        )
+    else:
+        require(not gate.exists(), "PASS gate exists before final validation")
     verify_ledger(ledger, root)
     result = json.loads(result_path.read_text(encoding="utf-8"))
     require(
@@ -585,6 +592,20 @@ def validate_seal(root: Path, repo: Path) -> dict[str, object]:
     require(result == regenerated, "sealed result disagrees with pinned raw evidence")
     verify_snapshot(raw_snapshot)
     return result
+
+
+def publish_gate_after_validation(root: Path, repo: Path) -> None:
+    gate = root / "RECOVERED_GATE.complete"
+    validate_seal(root, repo, require_gate=False)
+    atomic_write(gate, "PASS\n")
+    try:
+        validate_seal(root, repo, require_gate=True)
+    except Exception:
+        try:
+            gate.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def main() -> None:
@@ -603,7 +624,6 @@ def main() -> None:
     result, initial_snapshot = recover(root, repo)
     result_path = root / "recovered_result.json"
     ledger_path = root / "recovered_result_sha256.txt"
-    gate_path = root / "RECOVERED_GATE.complete"
     result_contents = json.dumps(result, indent=2, sort_keys=True) + "\n"
     raw_ledger_paths = (
         root / "manifest.txt",
@@ -634,8 +654,7 @@ def main() -> None:
     os.replace(ledger_temporary, ledger_path)
     verify_snapshot(initial_snapshot)
     verify_ledger(ledger_path, root)
-    atomic_write(gate_path, "PASS\n")
-    validate_seal(root, repo)
+    publish_gate_after_validation(root, repo)
     print(json.dumps(result, indent=2, sort_keys=True))
 
 

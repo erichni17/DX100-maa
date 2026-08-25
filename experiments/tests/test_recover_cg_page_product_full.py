@@ -92,8 +92,9 @@ simTicks 999
             "verify_snapshot(initial_snapshot)",
             "write_temporary(result_path",
             "os.replace(result_temporary, result_path)",
-            "atomic_write(gate_path, \"PASS\\n\")",
-            "validate_seal(root, repo)",
+            "publish_gate_after_validation(root, repo)",
+            "validate_seal(root, repo, require_gate=False)",
+            "gate.unlink()",
         ):
             self.assertIn(required, source)
 
@@ -123,6 +124,25 @@ simTicks 999
                     MODULE.validate_seal(root, ROOT)
             recover.assert_called_once_with(
                 root, ROOT, allow_existing_seal=True
+            )
+
+    def test_failed_post_publication_validation_removes_pass_gate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            with mock.patch.object(
+                MODULE,
+                "validate_seal",
+                side_effect=[{}, MODULE.RecoveryError("injected post-gate failure")],
+            ) as validate:
+                with self.assertRaises(MODULE.RecoveryError):
+                    MODULE.publish_gate_after_validation(root, ROOT)
+            self.assertFalse((root / "RECOVERED_GATE.complete").exists())
+            self.assertEqual(
+                validate.call_args_list,
+                [
+                    mock.call(root, ROOT, require_gate=False),
+                    mock.call(root, ROOT, require_gate=True),
+                ],
             )
 
     def test_incomplete_root_fails_without_creating_recovery_gate(self):
