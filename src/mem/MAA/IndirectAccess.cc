@@ -5440,6 +5440,8 @@ void IndirectAccessUnit::checkSoaJitTerminal()
              gem5::maa::PageFedSoaJitABI::LogicalElements &&
          soa_jit_page_fed_row_writes ==
              gem5::maa::PageFedSoaJitABI::LogicalElements &&
+         soa_jit_page_fed_coherent_index_read_lines == 0 &&
+         soa_jit_page_fed_coherent_index_write_lines == 0 &&
          soa_jit_epoch_drains == 0 && my_index_addr_range_id == -1 &&
          my_predicate_addr_range_id == -1 &&
          my_index_addr ==
@@ -5958,6 +5960,8 @@ void IndirectAccessUnit::executeInstruction() {
         soa_jit_page_fed_spd_index_reads = 0;
         soa_jit_page_fed_row_writes = 0;
         soa_jit_page_fed_admission_cycles = 0;
+        soa_jit_page_fed_coherent_index_read_lines = 0;
+        soa_jit_page_fed_coherent_index_write_lines = 0;
         panic_if(soa_jit_operation_active,
                  "I[%d] retained a live SoA/JIT operation at decode\n",
                  my_indirect_id);
@@ -7340,7 +7344,13 @@ void IndirectAccessUnit::executeInstruction() {
                     my_indirect_id]) += soa_jit_page_fed_row_writes;
                 (*maa->stats.IND_SoaJitPageFedAdmissionCycles[
                     my_indirect_id]) += soa_jit_page_fed_admission_cycles;
-                (*maa->stats.IND_SoaJitPageFedStateBytes[
+                (*maa->stats.IND_SoaJitPageFedCoherentIndexReadLines[
+                    my_indirect_id]) +=
+                    soa_jit_page_fed_coherent_index_read_lines;
+                (*maa->stats.IND_SoaJitPageFedCoherentIndexWriteLines[
+                    my_indirect_id]) +=
+                    soa_jit_page_fed_coherent_index_write_lines;
+                (*maa->stats.IND_SoaJitPageFedStateByteOperations[
                     my_indirect_id]) +=
                     gem5::maa::PageFedSoaJitState::HardwareBytes;
             }
@@ -7754,8 +7764,8 @@ void IndirectAccessUnit::executeInstruction() {
                         "command_responses=%lu total_abi_responses=6 "
                         "pages=4 admitted_words=%lu spd_index_reads=%lu "
                         "row_writes=%lu admission_cycles=%lu "
-                        "coherent_index_read_lines=0 "
-                        "coherent_index_write_lines=0 "
+                        "coherent_index_read_lines=%lu "
+                        "coherent_index_write_lines=%lu "
                         "index_payload_bytes=0 descriptor_payload_bytes=0 "
                         "persistent_state_bytes=%lu value_read_lines=%lu "
                         "value_read_responses=%lu a_read_lines=%lu "
@@ -7772,6 +7782,8 @@ void IndirectAccessUnit::executeInstruction() {
                         soa_jit_page_fed_spd_index_reads,
                         soa_jit_page_fed_row_writes,
                         soa_jit_page_fed_admission_cycles,
+                        soa_jit_page_fed_coherent_index_read_lines,
+                        soa_jit_page_fed_coherent_index_write_lines,
                         gem5::maa::PageFedSoaJitState::HardwareBytes,
                         soa_jit_value_read_issues,
                         soa_jit_value_read_responses,
@@ -8353,6 +8365,12 @@ void IndirectAccessUnit::createReadPacket(Addr addr, int latency) {
             my_indirect_id, __func__, read_pkt->print());
 }
 void IndirectAccessUnit::createDirectIndexReadPacket(Addr addr, int latency) {
+    if (isSoaJitPageFedRmw()) {
+        soa_jit_page_fed_coherent_index_read_lines++;
+        panic("I[%d] page-fed mode attempted coherent index read line "
+              "0x%lx\n",
+              my_indirect_id, addr);
+    }
     if (isVirtualLoad()) {
         if (macro_b_first_issue_tick == 0)
             macro_b_first_issue_tick = curTick();

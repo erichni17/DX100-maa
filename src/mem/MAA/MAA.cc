@@ -7653,10 +7653,28 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             MAKE_INDIRECT_STAT_NAME("IND_SoaJitPageFedAdmissionCycles"),
             statistics::units::Cycle::get(),
             "port-charged page-fed admission cycles"));
-        IND_SoaJitPageFedStateBytes.push_back(new statistics::Scalar(
-            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitPageFedStateBytes"),
-            statistics::units::Byte::get(),
-            "persistent bounded page/generation/count/closure bytes"));
+        IND_SoaJitPageFedCoherentIndexReadLines.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_SoaJitPageFedCoherentIndexReadLines"),
+                statistics::units::Count::get(),
+                "candidate coherent index cache-line read issues"));
+        IND_SoaJitPageFedCoherentIndexWriteLines.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_SoaJitPageFedCoherentIndexWriteLines"),
+                statistics::units::Count::get(),
+                "candidate coherent index publication line issues"));
+        IND_SoaJitPageFedStateByteOperations.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_SoaJitPageFedStateByteOperations"),
+                statistics::units::Byte::get(),
+                "sum of 16-byte page-fed state capacity observations "
+                "across completed operations"));
         IND_BoundedSummaryLineReads.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_BoundedSummaryLineReads"),
             statistics::units::Count::get(),

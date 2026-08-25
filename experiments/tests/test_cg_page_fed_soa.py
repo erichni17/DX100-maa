@@ -72,6 +72,9 @@ class CgPageFedSoaContract(unittest.TestCase):
             self.assertIn(token, self.abi)
         self.assertIn("requires a forbidden", self.indirect_cc)
         self.assertIn("no-drain 16K Offset epoch", self.indirect_cc)
+        self.assertIn(
+            "page-fed mode attempted coherent index read", self.indirect_cc
+        )
 
     def test_descriptor_has_no_index_address_or_index_memory_hazard(self):
         helper = self.api[
@@ -143,6 +146,8 @@ class CgPageFedSoaContract(unittest.TestCase):
             "IND_SoaJitPageFedAdmitCommands') -eq 4",
             "IND_SoaJitPageFedCommandResponses') -eq 5",
             "IND_SoaJitPageFedAdmittedWords') -eq 16384",
+            "IND_SoaJitPageFedCoherentIndexReadLines') -eq 0",
+            "IND_SoaJitPageFedCoherentIndexWriteLines') -eq 0",
             "STR_PublishIssues') -eq 1024",
             "value_read_lines=16384",
             "full_cg_index_write_lines_eliminated=11223040",

@@ -668,6 +668,8 @@ protected:
     uint64_t soa_jit_page_fed_spd_index_reads = 0;
     uint64_t soa_jit_page_fed_row_writes = 0;
     uint64_t soa_jit_page_fed_admission_cycles = 0;
+    uint64_t soa_jit_page_fed_coherent_index_read_lines = 0;
+    uint64_t soa_jit_page_fed_coherent_index_write_lines = 0;
     int my_dst_tile, my_src_tile, my_src_reg, my_cond_tile, my_max;
     int my_idx_tile;
     bool my_cond_tile_ready, my_idx_tile_ready, my_src_tile_ready;
