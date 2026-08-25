@@ -124,6 +124,7 @@ runThreeWayCollisionProbe()
     maa_indirect_rmw_vector_soa_jit_page_fed_open<float>(
         pageFedDestination.data(), productBacking.data(),
         pageFedCompletionTile, Operation_t::ADD_OP, Generation);
+    std::cout << "CG_PAGE_FED_SOA_PROGRESS open_response=1" << std::endl;
 
     uint32_t publishGeneration = 0;
     for (std::size_t page = 0; page < Pages; ++page) {
@@ -146,6 +147,8 @@ runThreeWayCollisionProbe()
             ordinaryDestination.data(), indexTile, productTile,
             Operation_t::ADD_OP, -1, ordinaryCompletionTile);
         wait_ready(ordinaryCompletionTile);
+        std::cout << "CG_PAGE_FED_SOA_PROGRESS ordinary_page=" << page
+                  << std::endl;
 
         // Publication and direct index admission use disjoint stream/SPD and
         // Row/Offset resources.  The admission response is timed while the
@@ -154,10 +157,16 @@ runThreeWayCollisionProbe()
                            pageReg, offsetReg, publishGenerationReg,
                            publishGeneration);
         maa_soa_jit_page_fed_admit(Generation, page, indexTile);
+        std::cout << "CG_PAGE_FED_SOA_PROGRESS admitted_page=" << page
+                  << std::endl;
         wait_ready(publishCompletionTile);
+        std::cout << "CG_PAGE_FED_SOA_PROGRESS published_page=" << page
+                  << std::endl;
     }
     maa_soa_jit_page_fed_close(Generation);
     wait_ready(pageFedCompletionTile);
+    std::cout << "CG_PAGE_FED_SOA_PROGRESS page_fed_complete=1"
+              << std::endl;
 
     // This is the existing one-pass SoA comparator.  It alone names the
     // coherent comparatorIndexBacking; the candidate already completed with
@@ -167,6 +176,8 @@ runThreeWayCollisionProbe()
         productBacking.data(), nullptr, logicalMinReg, logicalMaxReg,
         logicalStrideReg, existingSoaCompletionTile, Operation_t::ADD_OP);
     wait_ready(existingSoaCompletionTile);
+    std::cout << "CG_PAGE_FED_SOA_PROGRESS existing_soa_complete=1"
+              << std::endl;
 }
 
 std::size_t
