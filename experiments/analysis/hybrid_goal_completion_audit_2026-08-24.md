@@ -61,8 +61,10 @@ mechanism, artifact, and response-ledger gates.
 1. CG correctness is complete against the frozen native16 oracle: exact
    quantized fingerprint/tolerances, all logical windows routed, zero
    fallbacks/open contexts, and closed publisher/A ledgers. The current
-   page-product implementation remains rejected for 13.893x native16 latency;
-   profile and remove that full-application overhead before promotion.
+   page-product implementation remains rejected for 13.893x native16 latency.
+   The selected successor directly feeds four physical index pages into one
+   persistent 16K Row/Offset operation, eliminating index backing/publication
+   and the second descriptor-build pass before another full run.
 2. SSSP: exact S22 fingerprint, nonzero coherent fallback-page coverage, zero
    host-SPD reads and architectural aperture rejections, closed fallback
    publication responses, and closed predicate/value/A/old-result ledgers.
