@@ -67,8 +67,10 @@ mechanism, artifact, and response-ledger gates.
    and the second descriptor-build pass. Its focused exact gate passes with
    zero coherent index lines, four/1,024 product pages/lines, one
    open/four-admit/one-close operation, and 16 bytes persistent control. A
-   small/full CG application gate is still required before performance
-   promotion.
+   small-CG application gate also passes exact output at `5,269,125,258`
+   versus `6,348,682,603 simTicks` (`1.204883599x`, 17.0% lower latency) while
+   halving publisher traffic. A full-CG gate is still required before broad
+   performance promotion.
 2. SSSP: exact S22 fingerprint, nonzero coherent fallback-page coverage, zero
    host-SPD reads and architectural aperture rejections, closed fallback
    publication responses, and closed predicate/value/A/old-result ledgers.

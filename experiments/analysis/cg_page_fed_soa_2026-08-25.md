@@ -197,3 +197,18 @@ Accepted result hashes:
 - result: `e9a06b00cf5d8303b04c5f9ad468aedb29fe05926d5d1e5f317bff6be6947ed5`.
 
 No full CG or native run was performed.
+
+## Small-CG application follow-up
+
+The candidate-only application gate at
+`/data1/nier/dx100-runs/2026-08-25-cg-page-fed-application-small-final-r4`
+passes exact output and mechanism closure. Relative to the existing accepted
+physical-page-product hybrid, page-fed admission reduces latency from
+`6,348,682,603` to `5,269,125,258 simTicks` (`1.204883599x`, 17.0% lower) and
+halves publisher traffic from 133,120 to 66,560 lines. It executes 65 useful
+16K windows with 260 admissions, zero coherent index lines/pages, zero
+fallbacks/open contexts, and the same exact CG fingerprint. See
+`cg_page_fed_application_small_2026-08-25.md`.
+
+This is sufficient to select a candidate-only full-CG gate. It is not itself a
+full-application or native16 performance claim.

@@ -23,3 +23,32 @@ closure counts.
 The raw result records candidate `simTicks`, predecessor/candidate ratio, and
 the response-bearing publisher traffic delta.  Checkpoint and artifact hashes
 are compared before and after the run; `gate.complete` is written last.
+
+## Accepted r4 result
+
+Accepted root:
+`/data1/nier/dx100-runs/2026-08-25-cg-page-fed-application-small-final-r4`.
+The runner source is commit `73d7415a`; archived gem5 SHA-256 is
+`606eb920...f0427`. The run exits zero, `gate.complete` exists, all result
+hashes revalidate, and before/after checkpoint, artifact, and source ledgers
+match.
+
+- Exact candidate and frozen-reference raw/quantized fingerprints match; every
+  scalar relative delta is zero.
+- Candidate `simTicks=5,269,125,258`; accepted predecessor
+  `simTicks=6,348,682,603`.
+- Predecessor/candidate ratio is `1.204883599x`, or 17.0% lower latency.
+- All 65 windows close through 260 admissions and 65 closes; total ABI
+  responses are 390.
+- Publisher issues/accepts/responses close at 66,560, exactly half the prior
+  133,120 lines; 260 pages and 66,560 lines are eliminated.
+- Coherent index reads/writes and index publication pages are zero.
+- Product reads, matched A read/write lines, and SoA terminals close at
+  1,064,960 / 375 / 65.
+- Fallbacks and open contexts are zero.
+- `state_byte_operations=1,040` is 65 observations of the fixed 16-byte
+  persistent capacity; it is not 1,040 bytes of hardware.
+
+This promotes the page-fed mechanism for small-CG application correctness and
+performance relative to its immediate hybrid predecessor. It does not yet
+establish full-CG performance or closeness to native16.
