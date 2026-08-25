@@ -33,7 +33,7 @@ Raw CG reports:
 | Workload | Unit | Raw root | Phase |
 |---|---|---|---|
 | NAS CG | `dx100-cg-page-product-full-baf142f7-r1` | `/data1/nier/dx100-runs/2026-08-24-cg-page-product-full-baf142f7-r1` | trace-free full checkpoint |
-| NAS IS | `dx100-is-scalar-soa-full-a44aaa60-r5` | `/data1/nier/dx100-runs/2026-08-24-is-scalar-soa-full-a44aaa60-r5` | full O3 ROI |
+| NAS IS | `dx100-is-scalar-soa-full-a44aaa60-r5` | `/data1/nier/dx100-runs/2026-08-24-is-scalar-soa-full-a44aaa60-r5` | terminal-valid: NAS verification 6, 2,048 full windows, closed A ledgers |
 | HashJoin PRH | `dx100-hashjoin-prh-full-recovery-20260824-061147` | `/data1/nier/dx100-runs/hashjoin-hybrid-prh-full-d7d29bf5-20260824-061147` | correct raw output; shifted pass is tail-only and pre-hardening evidence remains incomplete |
 | HashJoin PRO, hardened | `dx100-hashjoin-pro-hardened-20260824-r1` | `/data1/nier/dx100-runs/2026-08-24-hashjoin-pro-hardened-r1` | terminal-valid: exact 2M result, 240/240 first-pass coverage, shifted not applicable |
 | HashJoin PRH, hardened | `dx100-hashjoin-prh-hardened-20260824-r1` | `/data1/nier/dx100-runs/2026-08-24-hashjoin-prh-hardened-r1` | terminal-valid: exact 2M result, 240/240 first-pass coverage, shifted tail-only |
@@ -43,8 +43,8 @@ Raw CG reports:
 | GAPBS SSSP small, fixed aperture | `dx100-sssp-aperture-small-fullcache-20260824-r3` | `/data1/nier/dx100-runs/2026-08-24-sssp-aperture-small-fullcache-r3` | passed exact matched-cache gate; four routed windows and zero rejections |
 | GAPBS SSSP S22, fixed aperture | `dx100-sssp-aperture-full-s22-20260824-r1` | `/data1/nier/dx100-runs/2026-08-24-sssp-aperture-full-s22-r1` | active original-guest full candidate; no native rerun |
 
-CG, IS, the SSSP prefetch ablation, and the fixed-aperture full S22 candidate
-remain active with infinite runtime. Hardened HashJoin PRO and PRH are
+CG, the SSSP prefetch ablation, and the fixed-aperture full S22 candidate
+remain active with infinite runtime. NAS IS and hardened HashJoin PRO/PRH are
 terminal-valid.
 Existing `dx-runtime` watch records are stale:
 their worker PIDs are dead even where the record still says `watching`.
@@ -215,8 +215,7 @@ and is causal evidence only; it cannot promote the tail series.
 
 ## Resume order
 
-1. Validate CG and IS after their services exit; do not read timing before
-   their correctness and terminal gates close.
+1. Validate CG after its service exits. IS is complete and terminal-valid.
 2. Allow the fixed-aperture full S22 candidate to exit, then require exact
    output, nonzero prefetch drops, zero aperture rejections, and closed ledgers.
 3. Hardened HashJoin PRO and PRH are terminal-valid; retain PRH's shifted phase
