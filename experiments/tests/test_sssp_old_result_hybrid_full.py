@@ -270,6 +270,12 @@ class SsspOldResultHybridFullContract(unittest.TestCase):
             self.assertEqual(self.small_runner.count(flag), 1)
         self.assertIn("artifacts.before.sha256", self.small_runner)
         self.assertIn("artifacts.after.sha256", self.small_runner)
+        self.assertIn("frozen_ramulator_sha256", self.small_runner)
+        self.assertIn("resolved_ramulator", self.small_runner)
+        self.assertIn("ramulator_library_sha256", self.small_runner)
+        self.assertEqual(
+            self.small_runner.count('"$frozen_ramulator" "$guest"'), 2
+        )
         self.assertIn(
             "cpu_spd_boundary_prefetch_drops=reported_not_forced",
             self.small_runner,

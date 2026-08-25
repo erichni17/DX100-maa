@@ -12,9 +12,16 @@ out=$(realpath -m "$2")
 config="$root/configs/deprecated/example/se.py"
 ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
 source_file="$root/benchmarks/gapbs/src/sssp.cc"
+frozen_ramulator=/data1/nier/dx100-runs/2026-08-12-hybrid-line-handoff-8a5c7712/input/libramulator.so
+frozen_ramulator_sha256=76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753
 
 hash_value() {
     sha256sum "$1" | awk '{print $1}'
+}
+
+require_hash() {
+    local path=$1 expected=$2
+    [[ -f $path && $(hash_value "$path") == "$expected" ]]
 }
 
 stat_sum() {
@@ -32,6 +39,17 @@ stat_sum() {
 }
 
 [[ -x $gem5 ]] || { echo "missing gem5 binary: $gem5" >&2; exit 2; }
+require_hash "$frozen_ramulator" "$frozen_ramulator_sha256" || {
+    echo "missing or mismatched frozen Ramulator library" >&2
+    exit 2
+}
+export LD_LIBRARY_PATH="$(dirname "$frozen_ramulator"):${LD_LIBRARY_PATH:-}"
+resolved_ramulator=$(ldd "$gem5" | awk '$1 == "libramulator.so" {print $3}')
+[[ -n $resolved_ramulator &&
+   $(realpath "$resolved_ramulator") == $(realpath "$frozen_ramulator") ]] || {
+    echo "candidate gem5 does not resolve the frozen Ramulator library" >&2
+    exit 2
+}
 [[ ! -e $out ]] || { echo "refusing existing output: $out" >&2; exit 2; }
 [[ -z $(git -C "$root" status --short) ]] || {
     echo "refusing evidence run from a dirty source tree" >&2
@@ -121,6 +139,8 @@ restore_cmd=(
     printf 'source_commit=%s\nsource_sha256=%s\n' \
         "$(git -C "$root" rev-parse HEAD)" "$(hash_value "$source_file")"
     printf 'gem5_path=%s\ngem5_sha256=%s\n' "$gem5" "$(hash_value "$gem5")"
+    printf 'ramulator_library_path=%s\nramulator_library_sha256=%s\n' \
+        "$frozen_ramulator" "$frozen_ramulator_sha256"
     printf 'guest_sha256=%s\ngraph_sha256=%s\n' \
         "$(hash_value "$guest")" "$(hash_value "$graph")"
     printf 'logical_elements=16384\nphysical_tile_elements=4096\n'
@@ -131,7 +151,7 @@ restore_cmd=(
     printf 'cpu_spd_out_of_range_rejections=0_required\n'
 } >"$out/manifest.txt"
 
-sha256sum "$gem5" "$guest" "$graph" "$source_file" "$config" \
+sha256sum "$gem5" "$frozen_ramulator" "$guest" "$graph" "$source_file" "$config" \
     "$ramulator" "$0" >"$out/artifacts.before.sha256"
 
 OMP_PROC_BIND=false OMP_NUM_THREADS=4 "${checkpoint_cmd[@]}" \
@@ -176,7 +196,7 @@ aperture_rejections=$(stat_sum cpu_spd_out_of_range_rejections)
 [[ $boundary_drops =~ ^[0-9]+$ && $aperture_rejections =~ ^[0-9]+$ ]]
 [[ $aperture_rejections -eq 0 ]]
 
-sha256sum "$gem5" "$guest" "$graph" "$source_file" "$config" \
+sha256sum "$gem5" "$frozen_ramulator" "$guest" "$graph" "$source_file" "$config" \
     "$ramulator" "$0" >"$out/artifacts.after.sha256"
 cmp -s "$out/artifacts.before.sha256" "$out/artifacts.after.sha256"
 
