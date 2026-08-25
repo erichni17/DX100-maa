@@ -91,3 +91,22 @@ enforce only same-destination source order, rather than serializing four 4K
 sets. The next oracle must pin an externally trusted golden authority, bind
 candidate vectors to one immutable gem5 root, and use a mixed
 `abs <= A || rel <= R` element criterion.
+
+## Cleared microarchitectural boundaries
+
+Lead commit `94891b27` proves from source and an adversarial FP32 model that a
+single SoA/JIT descriptor already applies repeated updates to each destination
+word in source order through RowTable claims, lookahead, pressure epochs, and
+writeback. No ordering hardware is added.
+
+The focused live probe at
+`/data1/nier/dx100-runs/2026-08-25-cg-product-handoff-55c9ab71-r1` then passes
+exact bitwise evidence: all 16,384 physical MUL words match their coherent
+published copies, and one useful 16K SoA/JIT descriptor matches four ordinary
+page-local RMWs for 4,096 deliberately order-sensitive cross-page collision
+chains. Publication closes at 2,048 issues/accepts/responses and eight
+terminals. See `cg_product_handoff_probe_2026-08-25.md`.
+
+Therefore do not add page masks or per-destination ordering state. The next
+full-CG diagnosis must test workload/reference comparability and later
+algorithm-stage scheduling, not the product handoff or alias-chain order.

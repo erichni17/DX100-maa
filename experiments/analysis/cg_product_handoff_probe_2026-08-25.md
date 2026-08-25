@@ -67,17 +67,25 @@ and trace hashes.  It refuses a dirty source tree and records
 ## Execution status
 
 The source contract passes 9 focused tests, `bash -n`, `git diff --check`, and
-the GEM5 guest compilation.  No full application or native result was used.
+the GEM5 guest compilation. No full application or native result was used.
 
-At the execution check, no pre-existing gem5 process was found and the host
-reported 285 GiB available memory, so a small probe would otherwise have been
-feasible.  The live launch was intentionally not made because the runner
-refuses a dirty source tree and the required `codex-coord checkpoint` could
-not commit the validated files: the repository commit-message hook crashes
-while loading an absent `MAINTAINERS.yaml`.  This is a repository hook/input
-failure, not a benchmark result.  Do not infer pass, performance, or a
-physical-to-published bitwise conclusion from the source validation.
+Accepted raw evidence is
+`/data1/nier/dx100-runs/2026-08-25-cg-product-handoff-55c9ab71-r1`, launched
+from clean lead commit `dfd0dcdf`. The runner uses archived gem5 SHA-256
+`ef070d16...af483` and frozen Ramulator SHA-256 `76ea3a9c...a15753`.
+Checkpoint and restore exit zero, the restore contains one `m5_exit`, and
+before/after source and checkpoint ledgers match. The final result ledger
+revalidates and `gate.complete` is exact `PASS`.
 
-A live result, if accepted after that commit blocker is repaired, must add the
-checkpoint/restore terminal markers, exact guest line, final stats, frozen
-artifact hashes, and all response-count closures here.
+All 16,384 pre-publication product words match their response-published words
+bit-for-bit at hash `2849837644626199427`. Index publication matches at hash
+`14754458253095254915`. Four ordinary page-local RMWs and one useful 16K
+SoA/JIT descriptor both leave all 4,096 collision destinations at exact FP32
+`1.0`, hash `17263589712773219203`. Publisher issues, accepts, and responses
+close at 2,048 each with eight terminals. There are no masked passes or host
+SPD reads.
+
+`77,615,549 simTicks` is correctness-probe provenance only. The experiment
+clears the physical-MUL-to-coherent-publication bridge and the one-pass
+same-destination order as causes of the full application mismatch; it does
+not promote full CG or make a performance claim.
