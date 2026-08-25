@@ -199,6 +199,15 @@ outside the physical payload may be dropped/responded without touching SPD,
 but a real demand outside 0--4,095 must remain fail-closed. That policy needs a
 stride-prefetch reproduction before a fresh small and full SSSP gate.
 
+The wider tail-replay series `94cafc7c..7b6f9c21` is also not selected for the
+next candidate. It adds 561 lines around an assumed 4K+ range result, but the
+simulator already allocates RangeFuser, ALU, and stream units at the 4,096-word
+physical capacity. The lead `sssp.cc` remains byte-identical to the original
+`e690867f` full guest (SHA-256 `71cef23d...f1`). The simpler and better-isolated
+next experiment is therefore that original guest plus the general CPU-aperture
+fix. The active no-L1D-prefetch ablation still uses the frozen `7b6f9c21` guest
+and is causal evidence only; it cannot promote the tail series.
+
 ## Resume order
 
 1. Validate CG and IS after their services exit; do not read timing before
