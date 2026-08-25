@@ -141,11 +141,11 @@ target traffic remains data dependent and is not projected from the probe.
 ## Focused evidence
 
 Accepted evidence root:
-`/tmp/2026-08-25-cg-page-fed-soa-f67cb2da-r4`.
+`/tmp/2026-08-25-cg-page-fed-soa-f4dda232-r5`.
 
-- source commit: `f67cb2da1c5b54b05fb37b83feec3e5991664d6c`;
+- source commit: `f4dda232fb7e17d5a6a944d2eaa795cf9954fe97`;
 - source-built gem5 SHA-256:
-  `c82c3c4adb40d8a3826fb0770c8ea0b887c902538a6ac61e234b7a3c0b5ff219`;
+  `606eb920d2e33d1ad3948ae026057b2b74a12f2f5a94e202165c57dbf15f0427`;
 - guest SHA-256:
   `ed5b34f9eea7e47e18e6fcea3347128069a5988b12dc4e321780c11c682eb007`;
 - frozen Ramulator SHA-256:
@@ -174,6 +174,24 @@ Result/trace/stats SHA-256 values are recorded in
 `result_sha256.txt` under the accepted evidence root.  Earlier r1/r2 runs were
 interrupted after exposing the product-publication hazard; r3 was terminal and
 correct but intentionally rejected by the then-wrong 1,024-read expectation.
-They are not accepted evidence.
+r4 passed that corrected gate but was superseded after independent review
+required dedicated candidate index-traffic stats and unambiguous state-byte
+operation naming.  They are not accepted evidence.
+
+The r5 candidate counters
+`IND_SoaJitPageFedCoherentIndexReadLines` and
+`IND_SoaJitPageFedCoherentIndexWriteLines` are independently present for all
+four indirect units and sum to zero.  The direct-index cache-line issue path
+also poisons any page-fed use before issuing a request.  The cumulative
+`IND_SoaJitPageFedStateByteOperations` stat is 16 for this one operation; it
+is not presented as a capacity gauge.
+
+Accepted result hashes:
+
+- restore log: `d1abfae98a54dc953aba16087aee64a5324c7178be79a06a616cedbe6b894e6f`;
+- final stats: `1d1fa590fa4115f0b07708af246ca84942dc66a5491ddd6cdb4c49c005a8638b`;
+- config: `3574018c5dc730dd351cfaa360863c88daef7e92d5a66f3b76ff151c8e26118a`;
+- trace: `0be358fcb769e2167ed0a79b945ed2d9bfa884882288a3b5764cca2843edbaa6`;
+- result: `e9a06b00cf5d8303b04c5f9ad468aedb29fe05926d5d1e5f317bff6be6947ed5`.
 
 No full CG or native run was performed.
