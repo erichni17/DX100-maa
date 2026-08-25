@@ -129,5 +129,40 @@ target traffic remains data dependent and is not projected from the probe.
 
 ## Focused evidence
 
-Pending source-built gem5 completion and the exact probe manifest/result
-hashes.  No full CG or native run is authorized by this report.
+Accepted evidence root:
+`/tmp/2026-08-25-cg-page-fed-soa-f67cb2da-r4`.
+
+- source commit: `f67cb2da1c5b54b05fb37b83feec3e5991664d6c`;
+- source-built gem5 SHA-256:
+  `c82c3c4adb40d8a3826fb0770c8ea0b887c902538a6ac61e234b7a3c0b5ff219`;
+- guest SHA-256:
+  `ed5b34f9eea7e47e18e6fcea3347128069a5988b12dc4e321780c11c682eb007`;
+- frozen Ramulator SHA-256:
+  `76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753`;
+- restore return code 0, exact `m5_exit`, nonempty final stats, checkpoint
+  immutability, and artifact immutability all pass;
+- `simTicks = 402,865,430` is recorded for provenance only, not compared as
+  a performance result.
+
+The exact output hashes for ordinary four-page RMW, existing one-pass SoA,
+and page-fed SoA are all `17263589712773219203`; all 16,384 product words
+match hash `2849837644626199427`, with `errors=0`.  The mechanism ledger is:
+
+- opens/admissions/closes = 1/4/1;
+- open/command/total ABI responses = 1/5/6;
+- admitted/SPD-read/Row-written index words = 16,384/16,384/16,384;
+- index publication pages and coherent index read/write lines = 0/0/0;
+- product publication pages/lines = 4/1,024;
+- product read issues/responses = 16,384/16,384;
+- target A read/write lines = 256/256;
+- admission port charge = 1,028 cycles;
+- capacity drains, missing/duplicate ordinals, stale generations, and early
+  execution = zero.
+
+Result/trace/stats SHA-256 values are recorded in
+`result_sha256.txt` under the accepted evidence root.  Earlier r1/r2 runs were
+interrupted after exposing the product-publication hazard; r3 was terminal and
+correct but intentionally rejected by the then-wrong 1,024-read expectation.
+They are not accepted evidence.
+
+No full CG or native run was performed.
