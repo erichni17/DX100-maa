@@ -8,6 +8,12 @@ the existing RowTable mechanism while limiting each host-visible SPD tile to
 524,288 bytes versus 2,097,152 bytes for native 16K: a 1,572,864-byte (75%)
 payload reduction. Row/Offset storage is not claimed as virtualized.
 
+Current full-application runners select 32 RowTable slices, 64 rows/slice, and
+8 unique-line slots/row: 16,384 gross cache-line slots. This is distinct from
+the 16,384 logical descriptors in the OffsetTable. Multiple descriptors may
+share one line slot, while row-distribution pressure can still force a drain;
+the geometry is not by itself a proof of one uninterrupted 16K reorder epoch.
+
 Logical page data lives in ordinary coherent backing, not hidden SPD. CG
 explicitly charges 786,432 backing bytes for its three 16K x 4-core arrays.
 This is shared cache/memory capacity, not dedicated DX100 SRAM, and may evict
@@ -32,7 +38,8 @@ Every current full runner is candidate-only. HashJoin manifests record
 | HashJoin PRH | `2026-08-24-hashjoin-prh-hardened-r1` | terminal-valid; exact 2M result; shifted tail-only |
 | NAS IS | `2026-08-24-is-scalar-soa-full-a44aaa60-r5` | terminal-valid; verification 6 |
 | NAS CG | `2026-08-24-cg-page-product-full-precomputed-5d51743b-r2` | active O3 candidate |
-| GAPBS SSSP | `2026-08-24-sssp-aperture-full-s22-r1` | rejected host-SPD fallback; successor required |
+| GAPBS SSSP small | `2026-08-25-sssp-coherent-small-fullcache-r2` | terminal-valid routed-path gate; exact fingerprint, zero fallback/host-SPD reads |
+| GAPBS SSSP S22 | `2026-08-25-sssp-coherent-full-s22-r2` | active coherent-fallback successor |
 
 The goal is incomplete until CG and an SSSP successor become terminal and pass their exact
 correctness, mechanism, artifact, and response-ledger gates.
@@ -52,8 +59,8 @@ correctness, mechanism, artifact, and response-ledger gates.
 
 1. CG: exact quantized fingerprint/tolerances, all logical windows routed,
    zero fallbacks/open contexts, publisher and A response ledgers closed.
-2. SSSP: exact S22 fingerprint, nonzero task-tagged aperture drops, zero
-   architectural aperture rejections, routed/fallback accounting, and closed
-   predicate/value/A/old-result ledgers.
+2. SSSP: exact S22 fingerprint, nonzero coherent fallback-page coverage, zero
+   host-SPD reads and architectural aperture rejections, closed fallback
+   publication responses, and closed predicate/value/A/old-result ledgers.
 3. Verify each final raw hash ledger and commit the terminal classification.
 4. Only then perform the requirement-by-requirement goal completion audit.

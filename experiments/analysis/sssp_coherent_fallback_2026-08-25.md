@@ -100,3 +100,36 @@ Both `cpu_spd_boundary_prefetch_drops` and
 `cpu_spd_out_of_range_rejections` are zero. `simTicks=616849132` is retained
 as provenance for this small correctness reproducer only; it is not a
 performance or full-S22 claim.
+
+## Full-cache routed-path successor
+
+The corrected full-cache small gate is
+`/data1/nier/dx100-runs/2026-08-25-sssp-coherent-small-fullcache-r2`, launched
+from lead commit `e152d692`. It uses the same cache/prefetch and MAA geometry as
+the full S22 runner, the archived aperture-capable gem5 SHA-256
+`1e079112...a9863`, and the frozen Ramulator SHA-256 above. The runner exits
+zero and writes `gate.complete` after matching its before/after artifact
+ledgers.
+
+The exact graph fingerprint passes with 69,633 reached vertices, distance sum
+135,168, maximum distance 2, and hashes `a0531a7ddb9387df` and
+`39f1ea63bc8817e8`. All four eligible logical windows route through the 16K
+path; 16 index and 16 value pages publish, 65,536 old-result words close, and
+the coherent fallback remains dormant. The terminal reports zero fallback
+pages/tails, zero host-SPD reads, maximum host-SPD element `-1`, zero illegal
+line starts, response closure, and count closure. Hardware counters report
+65,536 captures and 18,173 balanced old-result write issues/responses. Both
+aperture counters are measured as zero. `simTicks=8,102,572,469` is routed-path
+correctness provenance, not a promoted performance result.
+
+The preceding `r1` simulation produced the same exact fingerprint and terminal
+mechanism record, but its shell gate exited 2 because gem5 omitted two
+zero-valued aperture counters from `stats.txt`. Commit `e152d692` makes only
+those optional zero-valued instrumentation counters default to measured zero;
+all functional and traffic counters remain mandatory. The successful `r2`
+fresh run validates that correction rather than retroactively promoting `r1`.
+
+The candidate-only full S22 successor is active at
+`/data1/nier/dx100-runs/2026-08-25-sssp-coherent-full-s22-r2`. No full-S22
+correctness or timing claim is made until its independent exact fingerprint,
+fallback-publication closure, artifact ledger, and wrapper gate pass.
