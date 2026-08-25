@@ -68,3 +68,26 @@ gated successors:
    predeclare per-element absolute/relative and residual bounds, and add
    max/count error statistics before another full candidate run. This is an
    oracle construction step, not a native gem5 baseline rerun.
+
+## First successor reviews
+
+Neither first proposal is integrated:
+
+- Worker commit `92a27857` implements four serialized 16K descriptors whose
+  predicates select one 4K page each. It is valid as a page-order diagnostic,
+  but independent review classifies it diagnostic-only: each pass has only 4K
+  useful admissions, so it gives up useful 16K reordering while adding four
+  descriptor scans, 49,152 rejected predicates/window, and 1,048,576 bytes of
+  coherent predicate backing. No gem5 run is justified.
+- Worker commit `7c40575b` builds host BASE vectors, but independent adversarial
+  review rejects its verifier. A caller can provide a fabricated internally
+  consistent golden/candidate pair; the builder is not sealed to compiler/API
+  inputs; candidate vectors are not bound to one gem5 execution; and requiring
+  separate zero absolute- and relative-error violations is ill-conditioned
+  near zero. The rejected full run remains rejected.
+
+The next order experiment must preserve a single useful 16K selected set and
+enforce only same-destination source order, rather than serializing four 4K
+sets. The next oracle must pin an externally trusted golden authority, bind
+candidate vectors to one immutable gem5 root, and use a mixed
+`abs <= A || rel <= R` element criterion.
