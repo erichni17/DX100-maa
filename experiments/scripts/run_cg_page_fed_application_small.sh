@@ -201,7 +201,7 @@ stat_sum() {
     awk -v suffix="$1" '
         /^---------- Begin Simulation Statistics/ {section++}
         section == 1 && $1 ~ ("_" suffix "$") {sum += $2; found++}
-        /^---------- End Simulation Statistics/ && section == 1 {if (!found) exit 2; printf "%.0f\\n", sum; exit}' "$stats"
+        /^---------- End Simulation Statistics/ && section == 1 {if (!found) exit 2; printf "%.0f\n", sum; exit}' "$stats"
 }
 soa_instructions=$(stat_sum IND_SoaJitInstructions); soa_terminals=$(stat_sum IND_SoaJitTerminalCompletions)
 page_ops=$(stat_sum IND_SoaJitPageFedOperations); admits=$(stat_sum IND_SoaJitPageFedAdmitCommands); closes=$(stat_sum IND_SoaJitPageFedCloseCommands); command_responses=$(stat_sum IND_SoaJitPageFedCommandResponses)
@@ -244,7 +244,7 @@ page_fed_trace_closure=$(awk '
             exit 2
         a_lines += values["a_read_lines"]
     }
-    END { if (count != expected) exit 3; printf "%d\\n", a_lines }
+    END { if (count != expected) exit 3; printf "%d\n", a_lines }
 ' expected="$windows" "$trace")
 [[ $page_fed_trace_closure =~ ^[1-9][0-9]*$ ]]
 [[ $(grep -Eic 'event=[^ ]*fallback|capacity_drains=[1-9]|missing=[1-9]|duplicates=[1-9]|stale=[1-9]|early_execution=[1-9]' "$trace" || true) -eq 0 ]]

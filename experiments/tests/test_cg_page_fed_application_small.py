@@ -68,6 +68,8 @@ class CgPageFedApplicationSmallContract(unittest.TestCase):
             'values["value_read_lines"] != 16384',
             'values["a_read_lines"] != values["a_write_lines"]',
             "page_fed_trace_closure",
+            r'printf "%.0f\n", sum',
+            r'printf "%d\n", a_lines',
             'values["persistent_state_bytes"] != 16',
             "publisher_issue_accept_response=",
         ):
