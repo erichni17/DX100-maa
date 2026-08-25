@@ -32,9 +32,9 @@ Every current full runner is candidate-only. HashJoin manifests record
 | HashJoin PRH | `2026-08-24-hashjoin-prh-hardened-r1` | terminal-valid; exact 2M result; shifted tail-only |
 | NAS IS | `2026-08-24-is-scalar-soa-full-a44aaa60-r5` | terminal-valid; verification 6 |
 | NAS CG | `2026-08-24-cg-page-product-full-precomputed-5d51743b-r2` | active O3 candidate |
-| GAPBS SSSP | `2026-08-24-sssp-aperture-full-s22-r1` | active O3 candidate |
+| GAPBS SSSP | `2026-08-24-sssp-aperture-full-s22-r1` | rejected host-SPD fallback; successor required |
 
-The goal is incomplete until CG and SSSP become terminal and pass their exact
+The goal is incomplete until CG and an SSSP successor become terminal and pass their exact
 correctness, mechanism, artifact, and response-ledger gates.
 
 ## Optimization decisions

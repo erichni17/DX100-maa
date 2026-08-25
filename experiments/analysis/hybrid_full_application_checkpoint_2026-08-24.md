@@ -42,10 +42,9 @@ Raw CG reports:
 | GAPBS SSSP S22, reviewed repair | `dx100-sssp-tail-repair-7b6f9c21-full-r1` | `/data1/nier/worktrees/codex-coordination/sessions/sssp-tail-repair-successor-20260824-155812-7c1e3190/evidence/sssp-tail-repair-7b6f9c21-r1` | rejected: cache-origin line request crossed the 4K physical SPD aperture at element 4,096 |
 | GAPBS SSSP S22, L1D ablation | `dx100-sssp-l1d-prefetch-ablation-20260824-r1` | `/data1/nier/dx100-runs/2026-08-24-sssp-l1d-prefetch-ablation-r1` | rejected causal hypothesis: same element-4,096 panic with L2 prefetch still enabled |
 | GAPBS SSSP small, fixed aperture | `dx100-sssp-aperture-small-fullcache-20260824-r3` | `/data1/nier/dx100-runs/2026-08-24-sssp-aperture-small-fullcache-r3` | passed exact matched-cache gate; four routed windows and zero rejections |
-| GAPBS SSSP S22, fixed aperture | `dx100-sssp-aperture-full-s22-20260824-r1` | `/data1/nier/dx100-runs/2026-08-24-sssp-aperture-full-s22-r1` | active original-guest full candidate; no native rerun |
+| GAPBS SSSP S22, fixed aperture | `dx100-sssp-aperture-full-s22-20260824-r1` | `/data1/nier/dx100-runs/2026-08-24-sssp-aperture-full-s22-r1` | rejected: real host load from thread-3 `tilei` reached element 4,096 |
 
-CG and the fixed-aperture full S22 candidate remain active with infinite
-runtime. NAS IS and hardened HashJoin PRO/PRH are
+CG remains active with infinite runtime. NAS IS and hardened HashJoin PRO/PRH are
 terminal-valid.
 Existing `dx-runtime` watch records are stale:
 their worker PIDs are dead even where the record still says `watching`.
@@ -216,8 +215,8 @@ series.
 ## Resume order
 
 1. Validate CG after its service exits. IS is complete and terminal-valid.
-2. Allow the fixed-aperture full S22 candidate to exit, then require exact
-   output, nonzero prefetch drops, zero aperture rejections, and closed ledgers.
+2. Replace SSSP fallback host-SPD reads with coherent publication, pass the
+   full-page reproducer, then relaunch candidate-only full S22.
 3. Hardened HashJoin PRO and PRH are terminal-valid; retain PRH's shifted phase
    as tail-only rather than misreporting it as routed coverage.
 4. Keep compact retirement, context64, expanded RowTable, strict sequencing,
