@@ -15,6 +15,9 @@ config="$root/configs/deprecated/example/se.py"
 ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
 source_file="$root/benchmarks/NAS/cg/cg.cpp"
 cxx=${CXX:-g++}
+frozen_full_data=/data1/nier/dx100-runs/2026-08-11-cg-bounded-789cc703-full-v8/input/cg_data_4C.h
+frozen_full_data_sha=f2b18716e4a2356c597c95ee3583549def72700f2cb3294b0fcaacca46dbe131
+frozen_full_data_bytes=992830458
 
 case $size in
   small)
@@ -26,6 +29,7 @@ case $size in
     default_accepted_ticks=6348682603
     comparison_contract=accepted_predecessor
     trace_mode=enabled_small
+    use_precomputed_data=false
     ;;
   full)
     cg_na=150000
@@ -33,6 +37,7 @@ case $size in
     default_reference_sha=0fe931685c37695bc51c74288c67f1494a0c91a723f8e831efa0ac2a7515441c
     comparison_contract=correctness_only
     trace_mode=disabled_full
+    use_precomputed_data=true
     ;;
   *)
     echo "size must be small or full" >&2
@@ -50,6 +55,14 @@ fi
 
 [[ -x $gem5 ]] || { echo "missing gem5 binary: $gem5" >&2; exit 2; }
 [[ -f $reference ]] || { echo "missing frozen CG reference: $reference" >&2; exit 2; }
+if [[ $use_precomputed_data == true ]]; then
+    [[ -f $frozen_full_data &&
+       $(stat -Lc %s "$frozen_full_data") -eq $frozen_full_data_bytes &&
+       $(sha256sum "$frozen_full_data" | awk '{print $1}') == "$frozen_full_data_sha" ]] || {
+        echo "missing or mismatched frozen full CG data header" >&2
+        exit 2
+    }
+fi
 if [[ $comparison_contract == accepted_predecessor ]]; then
     [[ -f $accepted_result ]] || {
         echo "missing accepted CG evidence: $accepted_result" >&2
@@ -89,6 +102,13 @@ mv /tmp/cg-logical-page-status-before.$$ "$out/input/source_status.before"
 selector="$out/input/physical_page_product_soa_jit.selector"
 printf '%s\n' 'token_stream_ld physical_page_product_soa_jit' > "$selector"
 chmod 0444 "$selector"
+precomputed_compile_args=()
+if [[ $use_precomputed_data == true ]]; then
+    precomputed_header="$out/input/cg_data_4C.h"
+    cp -- "$frozen_full_data" "$precomputed_header"
+    chmod 0444 "$precomputed_header"
+    precomputed_compile_args=(-DUSE_DATA_FROM_FILE -I"$out/input")
+fi
 
 guest="$out/bin/cg_physical_page_product"
 "$cxx" -I"$root/benchmarks/API" -I"$root/include" \
@@ -98,6 +118,7 @@ guest="$out/bin/cg_physical_page_product"
     -DMAA_CONSUMER_TILE_SIZE=4096 -DCG_LOGICAL16_RMW \
     -DCG_LOGICAL_PAGE_RMW -DCG_PHYSICAL_PAGE_PRODUCT_ONLY \
     -DCG_FP_ENABLE -DCG_NA="$cg_na" \
+    "${precomputed_compile_args[@]}" \
     -DNUM_CORES=4 -DNUM_TILES_PER_CORE=8 -DTILE_SIZE=16384 \
     -DMAA_MEM_SIZE=0x80000000 "$root/util/m5/src/abi/x86/m5op.S" \
     "$source_file" -o "$guest"
@@ -155,6 +176,13 @@ reference_line=$(grep -E \
         "$reference" "$reference_sha"
     printf 'comparison_contract=%s\n' "$comparison_contract"
     printf 'trace_mode=%s\n' "$trace_mode"
+    printf 'input_construction=%s\n' \
+        "$([[ $use_precomputed_data == true ]] && echo frozen_header || echo runtime_makea)"
+    if [[ $use_precomputed_data == true ]]; then
+        printf 'precomputed_data_path=%s\nprecomputed_data_sha256=%s\n' \
+            "$precomputed_header" "$frozen_full_data_sha"
+        printf 'precomputed_data_bytes=%s\n' "$frozen_full_data_bytes"
+    fi
     if [[ $comparison_contract == accepted_predecessor ]]; then
         printf 'accepted_root=%s\naccepted_result_sha256=%s\naccepted_simTicks=%s\n' \
             "$accepted_root" "$accepted_result_sha" "$accepted_ticks"
@@ -182,6 +210,9 @@ artifact_paths=(
     "$gem5" "$guest" "$selector" "$source_file" "$config"
     "$ramulator" "$0" "$reference"
 )
+if [[ $use_precomputed_data == true ]]; then
+    artifact_paths+=("$precomputed_header")
+fi
 if [[ $comparison_contract == accepted_predecessor ]]; then
     artifact_paths+=("$accepted_result")
 fi
@@ -198,6 +229,10 @@ printf '%s\n' "$checkpoint_rc" > "$out/checkpoint.exit"
 [[ $checkpoint_rc -eq 0 ]]
 [[ $(grep -Ec '^Exiting @ tick [0-9]+ because checkpoint$' \
           "$out/checkpoint.log" || true) -eq 1 ]]
+if [[ $use_precomputed_data == true ]]; then
+    [[ $(grep -Fxc 'Using data from file!' "$out/checkpoint.log" || true) -eq 1 ]]
+    ! grep -Eq 'makea started!|makea finished!' "$out/checkpoint.log"
+fi
 ! grep -Eq 'CG_LOGICAL16_RMW_SELECTION|CG_FINGERPRINT|ROI End!!!' \
     "$out/checkpoint.log"
 (

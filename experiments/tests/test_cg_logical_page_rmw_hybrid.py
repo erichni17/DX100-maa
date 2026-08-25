@@ -182,6 +182,7 @@ class CGLogicalPageRmwHybridContract(unittest.TestCase):
             "default_accepted_ticks=6348682603",
             "comparison_contract=accepted_predecessor",
             "trace_mode=enabled_small",
+            "use_precomputed_data=false",
         ):
             self.assertIn(token, small_case)
 
@@ -195,12 +196,31 @@ class CGLogicalPageRmwHybridContract(unittest.TestCase):
             "0fe931685c37695bc51c74288c67f1494a0c91a723f8e831efa0ac2a7515441c",
             "comparison_contract=correctness_only",
             "trace_mode=disabled_full",
+            "use_precomputed_data=true",
         ):
             self.assertIn(token, full_case)
         self.assertNotIn("accepted", full_case)
         self.assertIn(
             "if [[ $comparison_contract == accepted_predecessor ]]", runner
         )
+
+    def test_full_mode_uses_frozen_precomputed_nas_input(self):
+        runner = RUNNER_PATH.read_text()
+        for token in (
+            "/data1/nier/dx100-runs/2026-08-11-cg-bounded-789cc703-full-v8/input/cg_data_4C.h",
+            "f2b18716e4a2356c597c95ee3583549def72700f2cb3294b0fcaacca46dbe131",
+            "frozen_full_data_bytes=992830458",
+            "-DUSE_DATA_FROM_FILE",
+            'precomputed_compile_args=(-DUSE_DATA_FROM_FILE -I"$out/input")',
+            'artifact_paths+=("$precomputed_header")',
+            "input_construction=%s",
+            "precomputed_data_sha256=%s",
+            "precomputed_data_bytes=%s",
+            "Using data from file!",
+            "makea started!|makea finished!",
+        ):
+            self.assertIn(token, runner)
+        self.assertIn("runtime_makea", runner)
 
     def test_full_trace_is_disabled_and_optional_hashing_is_exact(self):
         runner = RUNNER_PATH.read_text()
