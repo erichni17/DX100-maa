@@ -26,6 +26,11 @@ four must be `UINT64_MAX`, the no-index-backing sentinel; predicate word five
 must be zero.  The descriptor's memory-hazard set therefore contains A write
 and product read only.
 
+The mode bit and generation reuse the existing 64-byte instruction-file slot
+(word zero's guarded tag and word six).  The C++ `Instruction` fields that
+mirror those decoded words are simulator representation, not incremental
+modeled SRAM or an additional descriptor.
+
 Instruction-aperture word seven is a non-queued 64-bit command doorbell:
 
 - admit: magic, generation, page 0..3, and one completed physical tile ID;
@@ -97,7 +102,10 @@ for the product completion tile that it must reuse.
 
 The exact admission/response/traffic counters are simulator instrumentation,
 like the pre-existing SoA/JIT counters; they are not synthesized control or
-payload storage and are excluded from the hardware-byte total.
+payload storage and are excluded from the hardware-byte total.  The
+`IND_SoaJitPageFedStateByteOperations` stat is explicitly cumulative
+byte-operation instrumentation; the persistent capacity is the 16-byte
+`static_assert` and terminal ledger, not that cumulative stat.
 
 For four CG cores, candidate coherent backing is 524,288 B: 262,144 B of
 existing virtual-gather backing plus 262,144 B of product backing.  The prior
@@ -114,16 +122,19 @@ eliminates exactly:
 - 1,024 coherent index publication WriteReq/WriteResp lines per window;
 - 1,024 coherent index reread/fill lines per window.
 
-For the profiled 10,960 full windows this is 11,223,040 index publication
-lines plus 11,223,040 index reread lines, or 22,446,080 issue-level coherent
-index line operations.  Product traffic remains useful and explicit: 1,024
+Applying the prior profile's 10,960-window population gives 11,223,040 index
+publication lines plus 11,223,040 index reread lines, or 22,446,080
+issue-level coherent index line operations.  These are calculations from the
+prior population, not candidate full-CG measurements.  Product traffic
+remains useful and explicit: 1,024
 response-bearing product publication lines and the JIT product reads.  With
 the default value cache disabled, the collision probe measures 16,384 product
 line read issues/responses: one line fetch per retained ordinal, or 16 reads
 per unique product line.  If that exact mechanism count held for the profiled
 full-CG window population, it would be 179,568,640 product read issues; this is
-an extrapolation, not full-CG evidence.  The exact remaining product
-publication work is 11,223,040 lines.  The probe's 4,096-destination target
+an extrapolation, not full-CG evidence.  Product publication would calculate
+to 11,223,040 lines under that same prior window count.  The probe's
+4,096-destination target
 contributes 256 A read lines and 256 response-bearing A write lines; full-CG
 target traffic remains data dependent and is not projected from the probe.
 

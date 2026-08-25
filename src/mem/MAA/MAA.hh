@@ -1253,7 +1253,12 @@ public:
         std::vector<statistics::Scalar *> IND_SoaJitPageFedSpdIndexReads;
         std::vector<statistics::Scalar *> IND_SoaJitPageFedRowWrites;
         std::vector<statistics::Scalar *> IND_SoaJitPageFedAdmissionCycles;
-        std::vector<statistics::Scalar *> IND_SoaJitPageFedStateBytes;
+        std::vector<statistics::Scalar *>
+            IND_SoaJitPageFedCoherentIndexReadLines;
+        std::vector<statistics::Scalar *>
+            IND_SoaJitPageFedCoherentIndexWriteLines;
+        std::vector<statistics::Scalar *>
+            IND_SoaJitPageFedStateByteOperations;
         std::vector<statistics::Scalar *> IND_BoundedSummaryLineReads;
         std::vector<statistics::Scalar *> IND_BoundedSummaryWords;
         std::vector<statistics::Scalar *> IND_BoundedSummaryRecords;
