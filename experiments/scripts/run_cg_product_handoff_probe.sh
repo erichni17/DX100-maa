@@ -8,12 +8,29 @@ fi
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 out=$(realpath -m "$1")
-gem5="$root/build/X86/gem5.opt"
+gem5=/data1/nier/dx100-binaries/gem5-ef070d16bb1b25668fe80468693dade4eeaf1776a72fbc51d7a9ce070e5af483.opt
+gem5_sha256=ef070d16bb1b25668fe80468693dade4eeaf1776a72fbc51d7a9ce070e5af483
+frozen_ramulator=/data1/nier/dx100-runs/2026-08-12-hybrid-line-handoff-8a5c7712/input/libramulator.so
+frozen_ramulator_sha256=76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753
 source_file="$root/benchmarks/API/test_cg_product_handoff.cpp"
 config="$root/configs/deprecated/example/se.py"
 ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
 
-[[ -x $gem5 ]] || { echo "missing frozen gem5.opt: $gem5" >&2; exit 2; }
+hash_value() { sha256sum "$1" | awk '{print $1}'; }
+
+[[ -x $gem5 && $(hash_value "$gem5") == "$gem5_sha256" ]] || {
+    echo "missing or mismatched archived gem5: $gem5" >&2
+    exit 2
+}
+[[ -f $frozen_ramulator && $(hash_value "$frozen_ramulator") == \
+   "$frozen_ramulator_sha256" ]] || {
+    echo "missing or mismatched frozen Ramulator library" >&2
+    exit 2
+}
+export LD_LIBRARY_PATH="$(dirname "$frozen_ramulator"):${LD_LIBRARY_PATH:-}"
+resolved_ramulator=$(ldd "$gem5" | awk '$1 == "libramulator.so" {print $3}')
+[[ -n $resolved_ramulator && \
+   $(realpath "$resolved_ramulator") == $(realpath "$frozen_ramulator") ]]
 [[ ! -e $out ]] || { echo "refusing existing output: $out" >&2; exit 2; }
 [[ -z $(git -C "$root" status --short) ]] || {
     echo "refusing evidence from a dirty source worktree" >&2
@@ -47,9 +64,13 @@ restore_cmd=(
     --l3_mshrs=256 --l3_write_buffers=128 --l3_ports=4
     --cacheline_size=64 --mem-type Ramulator2
     --ramulator-config "$ramulator" --mem-channels=1
-    --maa --maa_num_maas=1 --maa_num_tiles_per_core=8
+    --maa_ncbus_width=32 --maa --maa_num_maas=1
+    --maa_num_indirect_units_per_maa=4 --maa_num_tiles_per_core=8
     --maa_num_tile_elements=16384 --maa_physical_tile_elements=4096
+    --maa_num_offset_table_entries=16384
+    --maa_num_offset_table_epoch_entries=16384
     --maa_num_initial_row_table_slices=16
+    --maa_l2_uncacheable --maa_l3_uncacheable
     --maa_soa_jit_predicate_active_credits=16
     --maa_soa_jit_active_value_owners=32 --cmd "$binary"
 )
@@ -57,6 +78,10 @@ restore_cmd=(
 {
     printf 'schema=dx100.cg.product_handoff_probe.v1\n'
     printf 'source_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
+    printf 'gem5_path=%s\ngem5_sha256=%s\n' "$gem5" "$gem5_sha256"
+    printf 'ramulator_library_path=%s\nramulator_library_sha256=%s\n' \
+        "$frozen_ramulator" "$frozen_ramulator_sha256"
+    printf 'guest_sha256=%s\n' "$(hash_value "$binary")"
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'scope=bitwise_physical_mul_to_coherent_publish_and_one_soa_jit_add\n'
     printf 'pages=4\npage_elements=4096\nlogical_elements=16384\n'
@@ -70,8 +95,11 @@ restore_cmd=(
     printf '%q ' "${restore_cmd[@]}"
     printf '\n'
 } > "$out/manifest.txt"
-sha256sum "$source_file" "$binary" "$gem5" "$config" "$ramulator" \
-    > "$out/artifact_sha256.txt"
+artifact_paths=(
+    "$source_file" "$binary" "$gem5" "$frozen_ramulator" "$config"
+    "$ramulator" "$0"
+)
+sha256sum "${artifact_paths[@]}" > "$out/artifacts.before.sha256"
 
 set +e
 "${checkpoint_cmd[@]}" > "$out/checkpoint.log" 2>&1
@@ -88,7 +116,7 @@ printf '%s\n' "$checkpoint_rc" > "$out/checkpoint.exit"
     exit 1
 }
 find "$out/checkpoint" -type f -print0 | sort -z | \
-    xargs -0 sha256sum > "$out/checkpoint_sha256.txt"
+    xargs -0 sha256sum > "$out/checkpoint.before.sha256"
 
 set +e
 OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
@@ -125,9 +153,15 @@ trace="$out/run/cg_product_handoff_trace.log"
 }
 sum_stat() {
     local suffix=$1
-    awk -v suffix="$suffix" \
-        '$1 ~ suffix "$" { value[$1]=$2 } END { for (name in value) total += value[name]; print total+0 }' \
-        "$stats"
+    awk -v suffix="$suffix" '
+        /^---------- Begin Simulation Statistics/ { section++ }
+        section == 1 && $1 ~ ("_" suffix "$") { total += $2; found++ }
+        /^---------- End Simulation Statistics/ && section == 1 {
+            if (!found) exit 2
+            printf "%.0f\n", total
+            exit
+        }
+    ' "$stats"
 }
 # Four index pages plus four product pages, 256 exact 64B writes per page.
 [[ $(sum_stat 'STR_PublishIssues') -eq 2048 ]]
@@ -139,14 +173,24 @@ sum_stat() {
 [[ $(grep -Fc 'event=spd_publish_response ' "$trace" || true) -eq 2048 ]]
 [[ $(grep -Fc 'event=spd_publish_terminal ' "$trace" || true) -eq 8 ]]
 for resolved in \
-    'num_maas=1' 'num_tiles_per_core=8' 'num_tile_elements=16384' \
+    'num_maas=1' 'num_indirect_units_per_maa=4' 'num_tiles_per_core=8' \
+    'num_tile_elements=16384' \
     'physical_tile_elements=4096' 'num_initial_row_table_slices=16' \
+    'num_offset_table_entries=16384' \
+    'num_offset_table_epoch_entries=16384' \
     'soa_jit_predicate_active_credits=16' 'soa_jit_active_value_owners=32'; do
     grep -Fqx "$resolved" "$out/run/config.ini"
 done
 grep -Eq '^simTicks[[:space:]]+[1-9][0-9]*' "$stats"
 
-sim_ticks=$(awk '$1 == "simTicks" { value=$2 } END { print value+0 }' "$stats")
+sim_ticks=$(awk '$1 == "simTicks" { print $2; exit }' "$stats")
+[[ $sim_ticks =~ ^[1-9][0-9]*$ ]]
+
+find "$out/checkpoint" -type f -print0 | sort -z | \
+    xargs -0 sha256sum > "$out/checkpoint.after.sha256"
+cmp -s "$out/checkpoint.before.sha256" "$out/checkpoint.after.sha256"
+sha256sum "${artifact_paths[@]}" > "$out/artifacts.after.sha256"
+cmp -s "$out/artifacts.before.sha256" "$out/artifacts.after.sha256"
 {
     printf 'terminal=true\ncorrect=true\n'
     printf 'simTicks=%s\n' "$sim_ticks"
@@ -155,6 +199,8 @@ sim_ticks=$(awk '$1 == "simTicks" { value=$2 } END { print value+0 }' "$stats")
     printf 'ordinary_page_rmws=4\nsoa_jit_descriptors=1\n'
     printf 'host_spd_reads=0\nperformance_claim=0\n'
 } > "$out/result.txt"
-sha256sum "$out/checkpoint_sha256.txt" "$out/restore.log" "$stats" \
-    "$out/run/config.ini" "$trace" > "$out/result_sha256.txt"
+sha256sum "$out/checkpoint.before.sha256" "$out/restore.log" "$stats" \
+    "$out/run/config.ini" "$trace" "$out/result.txt" \
+    > "$out/result_sha256.txt"
+printf 'PASS\n' > "$out/gate.complete"
 printf 'PASS cg_product_handoff_probe simTicks=%s out=%s\n' "$sim_ticks" "$out"

@@ -130,21 +130,33 @@ class CgProductHandoffProbeContract(unittest.TestCase):
 
     def test_runner_binds_frozen_provenance_and_exact_closure(self):
         for token in (
-            'gem5="$root/build/X86/gem5.opt"',
+            "ef070d16bb1b25668fe80468693dade4eeaf1776a72fbc51d7a9ce070e5af483",
+            "76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753",
             'ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"',
-            'sha256sum "$source_file" "$binary" "$gem5" "$config" "$ramulator"',
+            "artifacts.before.sha256",
+            "artifacts.after.sha256",
+            "checkpoint.before.sha256",
+            "checkpoint.after.sha256",
             "source_commit=",
             "host_spd_reads=0",
             "performance_claim=0",
             "--maa_num_tile_elements=16384",
             "--maa_physical_tile_elements=4096",
+            "--maa_num_offset_table_entries=16384",
+            "--maa_num_offset_table_epoch_entries=16384",
+            "--maa_num_indirect_units_per_maa=4",
+            "--maa_l2_uncacheable",
+            "--maa_l3_uncacheable",
             "'STR_PublishIssues') -eq 2048",
             "'STR_PublishAccepts') -eq 2048",
             "'STR_PublishWriteResponses') -eq 2048",
             "'STR_PublishTerminals') -eq 8",
             "soa_jit_descriptors=1",
+            'section == 1 && $1 ~',
+            'printf \'PASS\\n\' > "$out/gate.complete"',
         ):
             self.assertIn(token, self.runner)
+        self.assertGreaterEqual(self.runner.count("cmp -s"), 2)
         self.assertNotIn("masked", self.runner.replace("masked_passes=0", ""))
 
     def test_runner_shell_is_valid(self):
