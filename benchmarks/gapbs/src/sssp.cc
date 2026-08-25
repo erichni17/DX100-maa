@@ -21,6 +21,7 @@
 #include "graph.h"
 #include "platform_atomics.h"
 #include "pvector.h"
+#include "sssp_coherent_fallback.hh"
 #include "timer.h"
 
 #if !defined(FUNC) && !defined(GEM5) && !defined(GEM5_MAGIC)
@@ -117,6 +118,8 @@ static uint64_t sssp_hybrid_value_publish_pages[NUM_CORES] = {};
 static uint64_t sssp_hybrid_old_result_words[NUM_CORES] = {};
 static uint64_t sssp_hybrid_legacy_words[NUM_CORES] = {};
 static uint32_t sssp_hybrid_publish_generations[NUM_CORES] = {};
+static sssp_coherent_fallback::Counters
+    sssp_hybrid_fallback_counters[NUM_CORES];
 
 static int
 SsspHybridChunkFrontierWords(int frontier_words) {
@@ -156,6 +159,123 @@ PublishSsspHybridPage(int tid, size_t logical_page, int index_tile,
         page_reg, offset_reg, generation_reg);
     wait_ready(value_completion_tile);
     sssp_hybrid_value_publish_pages[tid]++;
+}
+
+template <typename T>
+static void
+PublishSsspFallbackBackingPage(int tid, uint32_t page, T *backing,
+                               int source_tile, int completion_tile,
+                               int page_reg, int offset_reg,
+                               int generation_reg)
+{
+    const uint32_t generation = ++sssp_hybrid_publish_generations[tid];
+    if (generation == 0)
+        abort();
+    maa_const<uint32_t>(generation, generation_reg);
+    sssp_hybrid_fallback_counters[tid].recordPublicationIssue();
+    maa_publish_spd_page_logical16_response_bearing<T>(
+        backing, page, source_tile, completion_tile, page_reg, offset_reg,
+        generation_reg);
+    wait_ready(completion_tile);
+    sssp_hybrid_fallback_counters[tid].recordPublicationResponse();
+}
+
+static void
+PublishAndConsumeSsspFallbackPage(
+    int tid, size_t logical_page, int num_nodes, WeightT delta,
+    vector<vector<NodeID>> &local_bins, int index_tile, int final_value_tile,
+    int predicate_tile, int first_completion_tile,
+    int second_completion_tile, int page_reg, int offset_reg,
+    int generation_reg)
+{
+    if (logical_page >= 4)
+        abort();
+    const uint32_t page = static_cast<uint32_t>(logical_page);
+    const uint32_t offset = page * kSsspPhysicalWords;
+    maa_const<uint32_t>(page, page_reg);
+    maa_const<uint32_t>(offset, offset_reg);
+
+    // EQ and GT are dead after the final AND. Reuse their physical tiles as
+    // response-bearing completion tokens; this preserves eight tiles/core.
+    PublishSsspFallbackBackingPage(
+        tid, page, sssp_hybrid_indices[tid], index_tile,
+        first_completion_tile, page_reg, offset_reg, generation_reg);
+    PublishSsspFallbackBackingPage(
+        tid, page, sssp_hybrid_values[tid], final_value_tile,
+        second_completion_tile, page_reg, offset_reg, generation_reg);
+    PublishSsspFallbackBackingPage(
+        tid, page, sssp_hybrid_predicates[tid], predicate_tile,
+        first_completion_tile, page_reg, offset_reg, generation_reg);
+    atomic_thread_fence(memory_order_seq_cst);
+
+    const size_t begin = logical_page * kSsspPhysicalWords;
+    const size_t end = begin + kSsspPhysicalWords;
+    for (size_t lane = begin; lane < end; ++lane) {
+        const uint32_t predicate = sssp_hybrid_predicates[tid][lane];
+        const NodeID destination =
+            static_cast<NodeID>(sssp_hybrid_indices[tid][lane]);
+        const WeightT final_distance = sssp_hybrid_values[tid][lane];
+        if (predicate > 1 || destination < 0 || destination >= num_nodes ||
+            final_distance < 0 || final_distance > kDistInf)
+            abort();
+        if (predicate) {
+            const size_t dest_bin = final_distance / delta;
+            if (dest_bin >= local_bins.size())
+                local_bins.resize(dest_bin + 1);
+            local_bins[dest_bin].push_back(destination);
+        }
+    }
+
+    // A fallback predicate publication aliases the immutable all-ones SoA
+    // predicate span. Restore the page before any later logical window can
+    // consume it.
+    fill(sssp_hybrid_predicates[tid] + begin,
+         sssp_hybrid_predicates[tid] + end, 1U);
+    atomic_thread_fence(memory_order_seq_cst);
+    sssp_hybrid_fallback_counters[tid].recordFallbackPage();
+}
+
+static void
+RunSsspCoherentTail(int tid, size_t words, int idx_end,
+                    const NodeID *frontier, const SGOffset *vertex_offsets,
+                    const WGraph &g, const uint8_t *active_sources,
+                    WeightT *dist, int num_nodes, WeightT delta,
+                    vector<vector<NodeID>> &local_bins, int &cursor_pos,
+                    SGOffset &cursor_edge)
+{
+    if (words == 0 || words >= kSsspPhysicalWords)
+        abort();
+    const bool complete = sssp_coherent_fallback::ConsumeCursorWords(
+        words, idx_end, frontier, vertex_offsets, active_sources, num_nodes,
+        cursor_pos, cursor_edge,
+        [&](NodeID source, SGOffset edge, size_t lane) {
+            const WNode wn = g.out_neighbors_[edge];
+            const int64_t candidate =
+                static_cast<int64_t>(dist[source]) + wn.w;
+            if (wn.v < 0 || wn.v >= num_nodes || candidate < 0 ||
+                candidate > kDistInf)
+                abort();
+            sssp_hybrid_indices[tid][lane] =
+                static_cast<uint32_t>(wn.v);
+            sssp_hybrid_values[tid][lane] =
+                static_cast<WeightT>(candidate);
+        });
+    if (!complete)
+        abort();
+
+    sssp_coherent_fallback::OrderedMinReplay(
+        words, sssp_hybrid_indices[tid], sssp_hybrid_values[tid],
+        sssp_hybrid_old_results[tid], dist,
+        [&](uint32_t destination_word, WeightT final_distance) {
+            const NodeID destination =
+                static_cast<NodeID>(destination_word);
+            const size_t dest_bin = final_distance / delta;
+            if (dest_bin >= local_bins.size())
+                local_bins.resize(dest_bin + 1);
+            local_bins[dest_bin].push_back(destination);
+        });
+    sssp_hybrid_fallback_counters[tid].recordCoherentTail(words);
+    sssp_hybrid_legacy_words[tid] += words;
 }
 
 static void
@@ -395,9 +515,11 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
         hybrid_page_finals.reserve(kSsspPhysicalWords);
 #endif
         size_t iter = 0;
+#ifndef SSSP_OLD_RESULT_HYBRID
         int *tilev_ptr = get_cacheable_tile_pointer<int>(tilev);
         int *tile1_ptr = get_cacheable_tile_pointer<int>(tile1);
         int *tilei_ptr = get_cacheable_tile_pointer<int>(tilei);
+#endif
         while (shared_indexes[iter & 1] != kMaxBin) {
             size_t &curr_bin_index = shared_indexes[iter & 1];
             size_t &next_bin_index = shared_indexes[(iter + 1) & 1];
@@ -569,6 +691,8 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                     sssp_hybrid_eligible_windows[tid] +=
                         hybrid_chunk_words / kSsspLogicalWords;
                     size_t hybrid_observed_words = 0;
+                    int hybrid_cursor_pos = idx;
+                    SGOffset hybrid_cursor_edge = -1;
 #endif
                     maa_const<int>(idx, reg0);
                     maa_const<int>((int)min(cft, idx + tile_size), reg1);
@@ -586,7 +710,41 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                     maa_const<int>(0, last_i_reg);
                     maa_const<int>(-1, last_j_reg);
                     do {
-                        maa_range_loop<SGOffset>(last_i_reg, last_j_reg, tile_lb_d, tile_ub_d, regOne, tilei, tile1, tileCond);
+#ifdef SSSP_OLD_RESULT_HYBRID
+                        if (hybrid_observed_words > hybrid_chunk_words)
+                            abort();
+                        const size_t hybrid_remaining_words =
+                            hybrid_chunk_words - hybrid_observed_words;
+                        const sssp_coherent_fallback::RemainingRoute
+                            remaining_route =
+                                sssp_coherent_fallback::SelectRemainingRoute(
+                                    hybrid_remaining_words);
+                        if (remaining_route == sssp_coherent_fallback::
+                                                   RemainingRoute::kComplete) {
+                            curr_size = 0;
+                            break;
+                        }
+                        if (remaining_route ==
+                            sssp_coherent_fallback::RemainingRoute::
+                                kReconstructCoherentTail) {
+#pragma omp critical
+                            {
+                                RunSsspCoherentTail(
+                                    tid, hybrid_remaining_words, idx_end,
+                                    frontier.data(), VertexOffsets.data(), g,
+                                    hybrid_active_sources.data(), dist.data(),
+                                    num_nodes, delta, local_bins,
+                                    hybrid_cursor_pos, hybrid_cursor_edge);
+                                hybrid_observed_words +=
+                                    hybrid_remaining_words;
+                            }
+                            curr_size = 0;
+                            break;
+                        }
+#endif
+                        maa_range_loop<SGOffset>(
+                            last_i_reg, last_j_reg, tile_lb_d, tile_ub_d,
+                            regOne, tilei, tile1, tileCond);
                         // tile2 would be double of tile1
                         maa_alu_scalar<int>(tile1, regTwo, tile2, Operation_t::MUL_OP);
                         // load g.out_neighbors_ to node v
@@ -605,6 +763,9 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                             wait_ready(tile2);
                             wait_ready(tilei);
                             curr_size = get_tile_size(tilei);
+                            if (curr_size !=
+                                static_cast<int>(kSsspPhysicalWords))
+                                abort();
                             const bool route_page = hybrid_iteration_safe &&
                                 hybrid_observed_words < hybrid_route_words;
                             if (route_page) {
@@ -614,14 +775,13 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                                         hybrid_route_words)
                                     abort();
                                 const size_t logical_page =
-                                    (hybrid_observed_words %
-                                     kSsspLogicalWords) /
-                                    kSsspPhysicalWords;
+                                    sssp_coherent_fallback::
+                                        BackingPageForObservedWords(
+                                            hybrid_observed_words);
                                 PublishSsspHybridPage(
                                     tid, logical_page, tilev, tile2, tile1,
                                     tileu, reg0, reg1,
                                     hybrid_generation_reg);
-                                hybrid_observed_words += curr_size;
                                 if (logical_page == 3) {
                                     RunSsspHybridWindow(
                                         tid, dist.data(), num_nodes, delta,
@@ -654,6 +814,18 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                                     tile2, tileu, tilei,
                                     Operation_t::AND_OP);
                                 wait_ready(tilei);
+#ifdef SSSP_OLD_RESULT_HYBRID
+                                const size_t fallback_page =
+                                    sssp_coherent_fallback::
+                                        BackingPageForObservedWords(
+                                            hybrid_observed_words);
+                                PublishAndConsumeSsspFallbackPage(
+                                    tid, fallback_page, num_nodes, delta,
+                                    local_bins, tilev, tile1, tilei, tileu,
+                                    tile2, reg0, reg1,
+                                    hybrid_generation_reg);
+                                sssp_hybrid_legacy_words[tid] += curr_size;
+#else
                                 curr_size = get_tile_size(tilei);
                                 for (int j = 0; j < curr_size; j++) {
                                     if (tilei_ptr[j]) {
@@ -665,12 +837,18 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                                             tilev_ptr[j]);
                                     }
                                 }
-#ifdef SSSP_OLD_RESULT_HYBRID
-                                hybrid_observed_words += curr_size;
-                                sssp_hybrid_legacy_words[tid] += curr_size;
 #endif
 #ifdef SSSP_OLD_RESULT_HYBRID
                             }
+#endif
+#ifdef SSSP_OLD_RESULT_HYBRID
+                            if (!sssp_coherent_fallback::AdvanceCursorWords(
+                                    curr_size, idx_end, frontier.data(),
+                                    VertexOffsets.data(),
+                                    hybrid_active_sources.data(), num_nodes,
+                                    hybrid_cursor_pos, hybrid_cursor_edge))
+                                abort();
+                            hybrid_observed_words += curr_size;
 #endif
                         }
                     } while (curr_size > 0);
@@ -731,6 +909,18 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
     uint64_t value_publish_pages = 0;
     uint64_t old_result_words = 0;
     uint64_t legacy_words = 0;
+    uint64_t host_spd_reads = 0;
+    uint64_t illegal_host_spd_line_starts = 0;
+    int64_t max_host_spd_element = -1;
+    uint64_t fallback_pages = 0;
+    uint64_t fallback_publication_issue_pages = 0;
+    uint64_t fallback_publication_response_pages = 0;
+    uint64_t fallback_publication_words = 0;
+    uint64_t fallback_consumed_words = 0;
+    uint64_t predicate_restore_words = 0;
+    uint64_t coherent_tail_batches = 0;
+    uint64_t coherent_tail_words = 0;
+    bool fallback_thread_closure = true;
     for (int core = 0; core < NUM_CORES; ++core) {
         eligible_windows += sssp_hybrid_eligible_windows[core];
         routed_windows += sssp_hybrid_routed_windows[core];
@@ -738,11 +928,39 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
         value_publish_pages += sssp_hybrid_value_publish_pages[core];
         old_result_words += sssp_hybrid_old_result_words[core];
         legacy_words += sssp_hybrid_legacy_words[core];
+        const auto &fallback = sssp_hybrid_fallback_counters[core];
+        host_spd_reads += fallback.host_spd_reads;
+        illegal_host_spd_line_starts +=
+            fallback.illegal_host_spd_line_starts;
+        max_host_spd_element =
+            max(max_host_spd_element, fallback.max_host_spd_element);
+        fallback_pages += fallback.fallback_pages;
+        fallback_publication_issue_pages +=
+            fallback.publication_issue_pages;
+        fallback_publication_response_pages +=
+            fallback.publication_response_pages;
+        fallback_publication_words += fallback.publication_words;
+        fallback_consumed_words += fallback.fallback_consumed_words;
+        predicate_restore_words += fallback.predicate_restore_words;
+        coherent_tail_batches += fallback.coherent_tail_batches;
+        coherent_tail_words += fallback.coherent_tail_words;
+        fallback_thread_closure =
+            fallback_thread_closure && fallback.legal();
     }
     const bool counts_close = routed_windows <= eligible_windows &&
         index_publish_pages == routed_windows * 4 &&
         value_publish_pages == routed_windows * 4 &&
-        old_result_words == routed_windows * kSsspLogicalWords;
+        old_result_words == routed_windows * kSsspLogicalWords &&
+        fallback_thread_closure &&
+        fallback_publication_issue_pages ==
+            fallback_publication_response_pages &&
+        fallback_publication_issue_pages == fallback_pages * 3 &&
+        fallback_publication_words ==
+            fallback_pages * 3 * kSsspPhysicalWords &&
+        fallback_consumed_words ==
+            fallback_pages * kSsspPhysicalWords + coherent_tail_words &&
+        predicate_restore_words == fallback_pages * kSsspPhysicalWords &&
+        legacy_words == fallback_consumed_words;
     std::cout << "SSSP_OLD_RESULT_HYBRID_TERMINAL treatment=old_result_hybrid"
               << " eligible_windows=" << eligible_windows
               << " routed_windows=" << routed_windows
@@ -750,13 +968,37 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
               << " value_publish_pages=" << value_publish_pages
               << " old_result_words=" << old_result_words
               << " legacy_words=" << legacy_words
+              << " fallback_pages=" << fallback_pages
+              << " fallback_publication_issue_pages="
+              << fallback_publication_issue_pages
+              << " fallback_publication_response_pages="
+              << fallback_publication_response_pages
+              << " fallback_publication_words="
+              << fallback_publication_words
+              << " fallback_publication_bytes="
+              << fallback_publication_words * sizeof(uint32_t)
+              << " fallback_consumed_words=" << fallback_consumed_words
+              << " predicate_restore_words=" << predicate_restore_words
+              << " coherent_tail_batches=" << coherent_tail_batches
+              << " coherent_tail_words=" << coherent_tail_words
               << " logical_reorder_words=" << kSsspLogicalWords
               << " physical_spd_words=" << kSsspPhysicalWords
               << " row_table_slices=32"
               << " predicate_span=coherent_aligned"
               << " old_result_span=coherent_aligned"
               << " duplicate_order=legacy_physical_pages"
-              << " host_spd_reads=0 hidden_result_payload_bytes=0"
+              << " host_spd_reads=" << host_spd_reads
+              << " max_host_spd_element=" << max_host_spd_element
+              << " illegal_host_spd_line_starts="
+              << illegal_host_spd_line_starts
+              << " new_dedicated_payload_bytes=0"
+              << " hidden_logical_spd_bytes=0"
+              << " hidden_result_payload_bytes=0"
+              << " response_closure="
+              << (fallback_publication_issue_pages ==
+                          fallback_publication_response_pages
+                      ? 1
+                      : 0)
               << " counts_close=" << (counts_close ? 1 : 0) << std::endl;
     if (!counts_close)
         abort();
