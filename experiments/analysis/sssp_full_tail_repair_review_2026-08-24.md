@@ -74,9 +74,11 @@ neither and did not modify active evidence.
 ### Post-exit resolution
 
 The later reviewed successor `7b6f9c21` also failed its full S22 gate. At tick
-`239,082,572,292`, an L1 stride prefetch requested the cache line beginning at
-physical SPD element 4,096. The small gate omitted the L1 stride prefetcher and
-therefore did not cover this CPU-aperture behavior. RangeFuser itself was
+`239,082,572,292`, a cache-origin line request reached physical SPD element
+4,096. A stride prefetch is plausible because the small gate omitted the full
+prefetch configuration, but the log does not preserve request provenance and
+an L1D-only ablation later reproduced the failure with L2 prefetch enabled.
+RangeFuser itself was
 already capped at 4,096; the adjacent 4,132 log value was frontier cardinality,
 not an oversized range result. The full source is rejected pending a
 speculative-prefetch boundary fix that preserves fail-closed architectural

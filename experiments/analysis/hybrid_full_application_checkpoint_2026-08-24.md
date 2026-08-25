@@ -38,13 +38,13 @@ Raw CG reports:
 | HashJoin PRO, hardened | `dx100-hashjoin-pro-hardened-20260824-r1` | `/data1/nier/dx100-runs/2026-08-24-hashjoin-pro-hardened-r1` | terminal-valid: exact 2M result, 240/240 first-pass coverage, shifted not applicable |
 | HashJoin PRH, hardened | `dx100-hashjoin-prh-hardened-20260824-r1` | `/data1/nier/dx100-runs/2026-08-24-hashjoin-prh-hardened-r1` | terminal-valid: exact 2M result, 240/240 first-pass coverage, shifted tail-only |
 | GAPBS SSSP S22, original | `dx100-sssp-old-result-full-e690867f-r1` | `/data1/nier/dx100-runs/2026-08-24-sssp-old-result-full-e690867f-r1` | failed closed on unvirtualized 4,133-element tail |
-| GAPBS SSSP S22, reviewed repair | `dx100-sssp-tail-repair-7b6f9c21-full-r1` | `/data1/nier/worktrees/codex-coordination/sessions/sssp-tail-repair-successor-20260824-155812-7c1e3190/evidence/sssp-tail-repair-7b6f9c21-r1` | rejected: L1 stride prefetch crossed the 4K physical SPD aperture at element 4,096 |
-| GAPBS SSSP S22, causal ablation | `dx100-sssp-l1d-prefetch-ablation-20260824-r1` | `/data1/nier/dx100-runs/2026-08-24-sssp-l1d-prefetch-ablation-r1` | active non-promotable replay; identical frozen inputs with only L1D stride prefetch removed |
+| GAPBS SSSP S22, reviewed repair | `dx100-sssp-tail-repair-7b6f9c21-full-r1` | `/data1/nier/worktrees/codex-coordination/sessions/sssp-tail-repair-successor-20260824-155812-7c1e3190/evidence/sssp-tail-repair-7b6f9c21-r1` | rejected: cache-origin line request crossed the 4K physical SPD aperture at element 4,096 |
+| GAPBS SSSP S22, L1D ablation | `dx100-sssp-l1d-prefetch-ablation-20260824-r1` | `/data1/nier/dx100-runs/2026-08-24-sssp-l1d-prefetch-ablation-r1` | rejected causal hypothesis: same element-4,096 panic with L2 prefetch still enabled |
 | GAPBS SSSP small, fixed aperture | `dx100-sssp-aperture-small-fullcache-20260824-r3` | `/data1/nier/dx100-runs/2026-08-24-sssp-aperture-small-fullcache-r3` | passed exact matched-cache gate; four routed windows and zero rejections |
 | GAPBS SSSP S22, fixed aperture | `dx100-sssp-aperture-full-s22-20260824-r1` | `/data1/nier/dx100-runs/2026-08-24-sssp-aperture-full-s22-r1` | active original-guest full candidate; no native rerun |
 
-CG, the SSSP prefetch ablation, and the fixed-aperture full S22 candidate
-remain active with infinite runtime. NAS IS and hardened HashJoin PRO/PRH are
+CG and the fixed-aperture full S22 candidate remain active with infinite
+runtime. NAS IS and hardened HashJoin PRO/PRH are
 terminal-valid.
 Existing `dx-runtime` watch records are stale:
 their worker PIDs are dead even where the record still says `watching`.
@@ -185,16 +185,14 @@ passes total = produced = consumed = 69,632 words, 65,536 accelerated plus
 old-result responses. The full S22 gate nevertheless rejected the source at
 tick `239,082,572,292` on SPD element 4,096. The printed 4,132 is the frontier
 size, not a generated range-tile size: RangeFuser is already capped at 4,096
-physical words. The full command enables an L1 stride prefetcher, while the
-small gate does not; after a full physical-page host scan, the speculative next
-cache line begins at element 4,096 and the CPU-side aperture currently treats
-it as an architectural demand. This explains both the exact boundary and the
-small/full discrepancy. The wrapper and explicit validator both fail, so no
-SSSP full result is claimed. A frozen candidate-only causal ablation is active
-with only the L1D stride prefetcher removed. Its sole acceptance criterion is
-crossing the old failure tick without the element-4,096 panic; it cannot support
-correctness promotion or a performance comparison because its cache
-configuration differs.
+physical words. The full command enables stride prefetchers absent from the
+small gate, making a speculative next-line request the leading hypothesis, but
+the frozen backtrace does not record request provenance. Removing only the L1D
+prefetcher still produces the same boundary panic with L2 prefetch enabled, so
+L1D alone is not causal. The wrapper and explicit validator both fail, and no
+SSSP full result is claimed. The active fixed-aperture full gate requires
+nonzero task-tagged drops and zero architectural rejections to distinguish a
+remaining lower-cache prefetch from a real/stale-size demand.
 
 Worker commit `2040dfd9` is rejected. It preflights the aggregate frontier
 chunk and diverts every chunk above 4K to CPU, including valid 16K logical
@@ -210,8 +208,9 @@ simulator already allocates RangeFuser, ALU, and stream units at the 4,096-word
 physical capacity. The lead `sssp.cc` remains byte-identical to the original
 `e690867f` full guest (SHA-256 `71cef23d...f1`). The simpler and better-isolated
 next experiment is therefore that original guest plus the general CPU-aperture
-fix. The active no-L1D-prefetch ablation still uses the frozen `7b6f9c21` guest
-and is causal evidence only; it cannot promote the tail series.
+fix. The failed no-L1D-prefetch ablation still uses the frozen `7b6f9c21` guest
+and rejects only the narrow L1D-only hypothesis; it cannot promote the tail
+series.
 
 ## Resume order
 

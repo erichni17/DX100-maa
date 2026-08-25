@@ -110,3 +110,11 @@ Full S22 candidate root
 the original pre-tail-replay guest, the archived aperture binary, full cache
 configuration, `aperture_candidate_gate=true`, no native arm, and no wall
 timeout.
+
+The separate L1D-only prefetch ablation is a negative causal result. It left
+the L2 stride prefetcher enabled and still panicked at SPD element 4,096 after
+frontier 4,133, at tick `243,738,525,542`. Therefore L1D prefetch alone is not
+the cause. The remaining possibilities include a lower-cache task-tagged
+prefetch or a real/stale-size demand. The fixed full gate's required nonzero
+drop count and zero architectural-rejection count are now the authoritative
+discriminator.

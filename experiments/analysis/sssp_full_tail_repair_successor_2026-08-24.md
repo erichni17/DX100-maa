@@ -95,12 +95,11 @@ At tick `239,082,572,292`, the O3 CPU issued a cacheable SPD line request whose
 first element was 4,096, immediately beyond the physical range 0--4,095. The
 printed `Starting DeltaStepMAA: 4132 elements` is the frontier size, not the
 range-tile size: RangeFuser is already allocated with the 4,096-element
-physical capacity. The accepted small runner has no L1 stride prefetcher; the
-full runner enables one. A full-page host scan therefore allows a speculative
-next-line request to cross the physical aperture, and `CpuSidePort` currently
-passes that request to `SPD::getDataPtr()` as though it were an architectural
-demand. This exact small/full configuration difference explains why the small
-gate did not expose the failure.
+physical capacity. The accepted small runner omits the full prefetch surface.
+A speculative next-line request is plausible, but the log does not preserve
+provenance; an L1D-only ablation later reproduces the same panic with L2
+prefetch still enabled. The fixed-aperture full successor must use task-tagged
+drop and architectural-rejection counters to distinguish prefetch from demand.
 
 No fingerprint, terminal coverage record, final stats window, or performance
 result was produced. The frozen graph, guest, checkpoint, and binary remain
