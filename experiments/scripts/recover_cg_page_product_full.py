@@ -245,7 +245,7 @@ def branch_ahead(line: str) -> tuple[str, int]:
 
 
 def recover(
-    root: Path, repo: Path
+    root: Path, repo: Path, *, allow_existing_seal: bool = False
 ) -> tuple[dict[str, object], dict[Path, str]]:
     manifest_path = root / "manifest.txt"
     restore_path = root / "run/restore.log"
@@ -255,12 +255,16 @@ def recover(
     require(root.name == EXPECTED_ROOT_NAME, "recovery root is not the pinned CG run")
     for path in (manifest_path, restore_path, stats_path, config_path):
         require(path.is_file() and path.stat().st_size > 0, f"missing {path}")
-    for path in (
+    seal_paths = (
         root / "recovered_result.json",
         root / "recovered_result_sha256.txt",
         root / "RECOVERED_GATE.complete",
-    ):
-        require(not path.exists(), f"refusing to overwrite {path}")
+    )
+    for path in seal_paths:
+        if allow_existing_seal:
+            require(path.is_file(), f"missing sealed output: {path}")
+        else:
+            require(not path.exists(), f"refusing to overwrite {path}")
 
     running_status = root / "RUNNING.status"
     if running_status.exists():
@@ -561,7 +565,7 @@ def recover(
     return result, initial_snapshot
 
 
-def validate_seal(root: Path) -> dict[str, object]:
+def validate_seal(root: Path, repo: Path) -> dict[str, object]:
     gate = root / "RECOVERED_GATE.complete"
     result_path = root / "recovered_result.json"
     ledger = root / "recovered_result_sha256.txt"
@@ -575,6 +579,11 @@ def validate_seal(root: Path) -> dict[str, object]:
         and result.get("native_reruns") == 0,
         "recovered result certificate is invalid",
     )
+    regenerated, raw_snapshot = recover(
+        root, repo, allow_existing_seal=True
+    )
+    require(result == regenerated, "sealed result disagrees with pinned raw evidence")
+    verify_snapshot(raw_snapshot)
     return result
 
 
@@ -589,7 +598,7 @@ def main() -> None:
     root = args.root.resolve()
     repo = args.repo_root.resolve()
     if args.validate:
-        print(json.dumps(validate_seal(root), indent=2, sort_keys=True))
+        print(json.dumps(validate_seal(root, repo), indent=2, sort_keys=True))
         return
     result, initial_snapshot = recover(root, repo)
     result_path = root / "recovered_result.json"
@@ -626,7 +635,7 @@ def main() -> None:
     verify_snapshot(initial_snapshot)
     verify_ledger(ledger_path, root)
     atomic_write(gate_path, "PASS\n")
-    validate_seal(root)
+    validate_seal(root, repo)
     print(json.dumps(result, indent=2, sort_keys=True))
 
 

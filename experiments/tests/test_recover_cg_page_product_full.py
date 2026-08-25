@@ -1,7 +1,9 @@
 import importlib.util
+import json
 import pathlib
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "experiments/scripts/recover_cg_page_product_full.py"
@@ -91,9 +93,37 @@ simTicks 999
             "write_temporary(result_path",
             "os.replace(result_temporary, result_path)",
             "atomic_write(gate_path, \"PASS\\n\")",
-            "validate_seal(root)",
+            "validate_seal(root, repo)",
         ):
             self.assertIn(required, source)
+
+    def test_validate_reopens_raw_contract_and_rejects_forged_result(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            result = {
+                "schema": "dx100.cg.physical_page_product_soa_jit.recovered.v1",
+                "validation": "PASS",
+                "performance_status": "correctness_only_unpromoted",
+                "native_reruns": 0,
+                "simTicks": 1,
+            }
+            result_path = root / "recovered_result.json"
+            result_path.write_text(json.dumps(result) + "\n")
+            ledger = root / "recovered_result_sha256.txt"
+            ledger.write_text(f"{MODULE.sha256(result_path)}  {result_path}\n")
+            (root / "RECOVERED_GATE.complete").write_text("PASS\n")
+            regenerated = dict(result)
+            regenerated["simTicks"] = 2
+            with mock.patch.object(
+                MODULE,
+                "recover",
+                return_value=(regenerated, {result_path: MODULE.sha256(result_path)}),
+            ) as recover:
+                with self.assertRaises(MODULE.RecoveryError):
+                    MODULE.validate_seal(root, ROOT)
+            recover.assert_called_once_with(
+                root, ROOT, allow_existing_seal=True
+            )
 
     def test_incomplete_root_fails_without_creating_recovery_gate(self):
         with tempfile.TemporaryDirectory() as directory:
