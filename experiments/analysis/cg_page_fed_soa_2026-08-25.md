@@ -141,7 +141,7 @@ target traffic remains data dependent and is not projected from the probe.
 ## Focused evidence
 
 Accepted evidence root:
-`/tmp/2026-08-25-cg-page-fed-soa-f4dda232-r5`.
+`/data1/nier/dx100-runs/2026-08-25-cg-page-fed-soa-f4dda232-r5`.
 
 - source commit: `f4dda232fb7e17d5a6a944d2eaa795cf9954fe97`;
 - source-built gem5 SHA-256:
@@ -171,7 +171,9 @@ match hash `2849837644626199427`, with `errors=0`.  The mechanism ledger is:
   execution = zero.
 
 Result/trace/stats SHA-256 values are recorded in
-`result_sha256.txt` under the accepted evidence root.  Earlier r1/r2 runs were
+`result_sha256.durable.txt` under the accepted evidence root. Durable
+checkpoint and artifact before/after ledgers also match and revalidate.
+Earlier r1/r2 runs were
 interrupted after exposing the product-publication hazard; r3 was terminal and
 correct but intentionally rejected by the then-wrong 1,024-read expectation.
 r4 passed that corrected gate but was superseded after independent review
