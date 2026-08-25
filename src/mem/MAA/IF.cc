@@ -263,11 +263,23 @@ Instruction::hasMemoryHazard(const Instruction &other) const
     std::array<MemoryAccess, MaxMemoryAccesses> theirs;
     const size_t mine_count = getMemoryAccesses(mine);
     const size_t their_count = other.getMemoryAccesses(theirs);
+    const auto admitted_product_publication =
+        [this, &other](int8_t region) {
+            return (isSoaJitPageFedRmw() &&
+                    other.isGuestResponseBearingPublish() &&
+                    region == backingAddrRangeID &&
+                    region == other.addrRangeID) ||
+                (other.isSoaJitPageFedRmw() &&
+                 isGuestResponseBearingPublish() &&
+                 region == other.backingAddrRangeID &&
+                 region == addrRangeID);
+        };
     for (size_t lhs = 0; lhs < mine_count; ++lhs) {
         for (size_t rhs = 0; rhs < their_count; ++rhs) {
             if (mine[lhs].regionID == theirs[rhs].regionID &&
                 (mine[lhs].type == AccessType::WRITE ||
-                 theirs[rhs].type == AccessType::WRITE))
+                 theirs[rhs].type == AccessType::WRITE) &&
+                !admitted_product_publication(mine[lhs].regionID))
                 return true;
         }
     }
@@ -666,6 +678,22 @@ IF::hasLiveSoaJitRmw() const
                 instructions[maa_id][slot].isSoaJitRmw())
                 return true;
         }
+    }
+    return false;
+}
+
+bool
+IF::hasLiveResponseBearingPublish(int maa_id, int region_id) const
+{
+    panic_if(maa_id < 0 || maa_id >= static_cast<int>(num_maas) ||
+                 region_id < 0,
+             "Invalid response-bearing publication lookup %d/%d\n",
+             maa_id, region_id);
+    for (unsigned int slot = 0; slot < num_instructions_per_maa; ++slot) {
+        if (valids[maa_id][slot] &&
+            instructions[maa_id][slot].isGuestResponseBearingPublish() &&
+            instructions[maa_id][slot].addrRangeID == region_id)
+            return true;
     }
     return false;
 }
