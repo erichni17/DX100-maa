@@ -3517,6 +3517,10 @@ IndirectAccessUnit::closePageFedSoaJit(uint64_t generation)
                  state != Status::Fill,
              "I[%d] page-fed close reached a non-Fill context\n",
              my_indirect_id);
+    panic_if(maa->ifile->hasLiveResponseBearingPublish(
+                 my_instruction->maa_id, my_backing_addr_range_id),
+             "I[%d] page-fed close observed live product publication\n",
+             my_indirect_id);
     const auto closed = soa_jit_page_fed_state.close(generation);
     panic_if(closed != gem5::maa::PageFedSoaJitState::Result::Accepted,
              "I[%d] page-fed close failed: %s\n", my_indirect_id,

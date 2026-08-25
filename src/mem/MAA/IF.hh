@@ -289,6 +289,11 @@ public:
     bool isSoaJitPageFedRmw() const {
         return isSoaJitVectorRmw() && soaJitPageFed;
     }
+    bool isGuestResponseBearingPublish() const {
+        return opcode == OpcodeType::STREAM_ST && !controllerManaged &&
+               !logicalPageManaged && controllerTransactionID != 0 &&
+               controllerDstSlot != -1 && dst1SpdID == -1;
+    }
     bool hasValidSoaJitRmwOperands() const {
         return hasValidSoaJitRmwShape() &&
                (isSoaJitPageFedRmw()
@@ -357,6 +362,7 @@ public:
     bool hasTileReference(int maa_id, int tile_id);
     bool isCompletionOnlyTile(int maa_id, int tile_id) const;
     bool hasLiveSoaJitRmw() const;
+    bool hasLiveResponseBearingPublish(int maa_id, int region_id) const;
     Instruction *getReady(FuncUnitType funcUniType, int maa_id = -1);
     void finishInstructionCompute(Instruction *instruction);
     void finishInstructionInvalidate(Instruction *instruction, int tile_id, uint8_t tile_status);
