@@ -32,7 +32,8 @@ Raw CG reports:
 
 | Workload | Unit | Raw root | Phase |
 |---|---|---|---|
-| NAS CG | `dx100-cg-page-product-full-baf142f7-r1` | `/data1/nier/dx100-runs/2026-08-24-cg-page-product-full-baf142f7-r1` | trace-free full checkpoint |
+| NAS CG, dynamic input | `dx100-cg-page-product-full-baf142f7-r1` | `/data1/nier/dx100-runs/2026-08-24-cg-page-product-full-baf142f7-r1` | superseded before checkpoint after 18h in redundant `makea` |
+| NAS CG, frozen input | `dx100-cg-page-product-full-precomputed-20260824-r2` | `/data1/nier/dx100-runs/2026-08-24-cg-page-product-full-precomputed-5d51743b-r2` | checkpoint passed in 14m; candidate-only O3 ROI active |
 | NAS IS | `dx100-is-scalar-soa-full-a44aaa60-r5` | `/data1/nier/dx100-runs/2026-08-24-is-scalar-soa-full-a44aaa60-r5` | terminal-valid: NAS verification 6, 2,048 full windows, closed A ledgers |
 | HashJoin PRH | `dx100-hashjoin-prh-full-recovery-20260824-061147` | `/data1/nier/dx100-runs/hashjoin-hybrid-prh-full-d7d29bf5-20260824-061147` | correct raw output; shifted pass is tail-only and pre-hardening evidence remains incomplete |
 | HashJoin PRO, hardened | `dx100-hashjoin-pro-hardened-20260824-r1` | `/data1/nier/dx100-runs/2026-08-24-hashjoin-pro-hardened-r1` | terminal-valid: exact 2M result, 240/240 first-pass coverage, shifted not applicable |
