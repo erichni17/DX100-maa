@@ -1010,6 +1010,8 @@ public:
         statistics::Scalar cpu_spd_data_read_retry_signals;
         statistics::Scalar cpu_spd_data_read_retry_attempts;
         statistics::Scalar cpu_spd_data_read_retry_acceptances;
+        statistics::Scalar cpu_spd_boundary_prefetch_drops;
+        statistics::Scalar cpu_spd_out_of_range_rejections;
         statistics::Scalar virtual_page_ready_signals;
         statistics::Scalar virtual_page_wait_reads;
         statistics::Scalar virtual_page_wait_deferrals;
