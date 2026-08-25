@@ -10,6 +10,7 @@
 #include "debug/MAACpuPort.hh"
 #include "debug/MAAVirtualTrace.hh"
 #include "mem/MAA/ALU.hh"
+#include "mem/MAA/CpuSpdAperture.hh"
 #include "mem/MAA/IF.hh"
 #include "mem/MAA/IndirectAccess.hh"
 #include "mem/MAA/Invalidator.hh"
@@ -20,6 +21,7 @@
 #include "mem/MAA/SoaJitScalarBroadcast.hh"
 #include "mem/MAA/StreamAccess.hh"
 #include "mem/packet.hh"
+#include "mem/request.hh"
 #include "params/MAA.hh"
 
 #ifndef TRACING_ON
@@ -27,6 +29,22 @@
 #endif
 
 namespace gem5 {
+
+namespace
+{
+
+bool
+isDroppableBoundaryPrefetch(PacketPtr pkt)
+{
+    // Queued hardware prefetches begin as HardPFReq packets with a zero-flag
+    // Request.  Cache::createMissPacket converts a miss to ReadSharedReq while
+    // reusing that Request, whose Prefetcher task ID is the surviving
+    // provenance.  Do not generalize this to exclusive or software prefetches.
+    return pkt->cmd == MemCmd::ReadSharedReq &&
+        pkt->req->taskId() == context_switch_task_id::Prefetcher;
+}
+
+} // anonymous namespace
 
 void MAA::recvTimingSnoopResp(PacketPtr pkt) {
     /// print the packet
@@ -1176,6 +1194,78 @@ bool MAA::CpuSidePort::recvTimingReq(PacketPtr pkt) {
         assert(!mustRetryTileRequest);
         tileRequestRetryOutstanding = false;
         maa.stats.cpu_spd_data_read_retry_attempts++;
+    }
+    if (!mustRetryTileRequest) {
+        const AddressRangeType address_range(
+            pkt->getAddr(), maa.addrRanges);
+        if (address_range.isValid() &&
+            address_range.getType() ==
+                AddressRangeType::Type::SPD_DATA_CACHEABLE_RANGE) {
+            const Addr logical_tile_bytes =
+                static_cast<Addr>(maa.num_tile_elements) * sizeof(uint32_t);
+            const int tile_id =
+                address_range.getOffset() / logical_tile_bytes;
+            panic_if(maa.logicalTileReservedLane(tile_id) ||
+                         maa.logicalCompletionLaneOwned(tile_id),
+                     "Guest cacheable access references reserved/owned SPD "
+                     "lane %d before aperture classification\n", tile_id);
+            const bool packet_prefetch = pkt->cmd.isPrefetch();
+            const bool request_prefetch = pkt->req->isPrefetch();
+            const bool task_prefetch = pkt->req->taskId() ==
+                context_switch_task_id::Prefetcher;
+            const bool droppable_prefetch =
+                isDroppableBoundaryPrefetch(pkt);
+            const auto decision = gem5::maa::CpuSpdAperture::classify(
+                address_range.getOffset(), pkt->getSize(),
+                maa.system->cacheLineSize(), maa.num_tile_elements,
+                maa.physical_tile_elements, sizeof(uint32_t),
+                droppable_prefetch);
+            if (decision.disposition ==
+                gem5::maa::CpuSpdAperture::Disposition::
+                    DropBoundaryPrefetch) {
+                if (is_retry_attempt) {
+                    maa.stats.cpu_spd_data_read_retry_acceptances++;
+                }
+                maa.stats.cpu_spd_boundary_prefetch_drops++;
+                DPRINTF(MAAVirtualTrace,
+                        "event=cpu_spd_boundary_prefetch_drop schema=1 "
+                        "addr=0x%lx tile=%lu tile_offset=%lu size=%u "
+                        "physical_payload_bytes=%lu logical_tile_bytes=%lu "
+                        "packet_prefetch=%d request_prefetch=%d "
+                        "task_prefetch=%d cmd=%s response=BadAddress "
+                        "spd_touched=0 invalidator_touched=0\n",
+                        pkt->getAddr(), decision.tile,
+                        decision.tileOffset, pkt->getSize(),
+                        decision.physicalPayloadBytes,
+                        decision.logicalTileBytes, packet_prefetch,
+                        request_prefetch, task_prefetch,
+                        pkt->cmdString());
+                // The logical aperture is address reservation, not padded
+                // SPD storage.  Elements at and beyond physical capacity are
+                // permanently invalid host-SPD addresses; virtual pages live
+                // in coherent backing memory.  An error response therefore
+                // prevents cache installation, and any coalesced demand also
+                // fails closed instead of observing fabricated padding.
+                pkt->makeTimingResponse();
+                pkt->setBadAddress();
+                const Tick old_header_delay = pkt->headerDelay;
+                pkt->headerDelay = pkt->payloadDelay = 0;
+                schedTimingResp(
+                    pkt, maa.getClockEdge(Cycles(1)) + old_header_delay);
+                return true;
+            }
+            if (decision.disposition !=
+                gem5::maa::CpuSpdAperture::Disposition::Valid) {
+                maa.stats.cpu_spd_out_of_range_rejections++;
+                panic("CPU SPD aperture rejected %s access: addr=0x%lx "
+                      "tile=%lu tile_offset=%lu size=%u physical_bytes=%lu "
+                      "logical_bytes=%lu speculative=%d\n",
+                      gem5::maa::CpuSpdAperture::name(decision.disposition),
+                      pkt->getAddr(), decision.tile, decision.tileOffset,
+                      pkt->getSize(), decision.physicalPayloadBytes,
+                      decision.logicalTileBytes, droppable_prefetch);
+            }
+        }
     }
     if (tryTiming(pkt)) {
         if (is_retry_attempt) {
