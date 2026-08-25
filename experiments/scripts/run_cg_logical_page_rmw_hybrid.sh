@@ -121,7 +121,9 @@ if [[ $use_precomputed_data == true ]]; then
     precomputed_header="$out/input/cg_data_4C.h"
     cp -- "$frozen_full_data" "$precomputed_header"
     chmod 0444 "$precomputed_header"
-    precomputed_compile_args=(-DUSE_DATA_FROM_FILE -I"$out/input")
+    precomputed_compile_args=(
+        -DUSE_DATA_FROM_FILE -Wno-unused-function -I"$out/input"
+    )
 fi
 
 guest="$out/bin/cg_physical_page_product"

@@ -215,7 +215,7 @@ class CGLogicalPageRmwHybridContract(unittest.TestCase):
             "f2b18716e4a2356c597c95ee3583549def72700f2cb3294b0fcaacca46dbe131",
             "frozen_full_data_bytes=992830458",
             "-DUSE_DATA_FROM_FILE",
-            'precomputed_compile_args=(-DUSE_DATA_FROM_FILE -I"$out/input")',
+            "-Wno-unused-function",
             'artifact_paths+=("$precomputed_header")',
             "input_construction=%s",
             "precomputed_data_sha256=%s",
