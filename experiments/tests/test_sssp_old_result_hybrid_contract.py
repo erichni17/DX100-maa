@@ -1,5 +1,6 @@
 import pathlib
 import struct
+import subprocess
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -42,9 +43,9 @@ class SsspOldResultHybridContract(unittest.TestCase):
 
     def test_four_physical_pages_precede_ordered_old_result(self):
         chunk = self.source[
-            self.source.index("SsspHybridChunkFrontierWords(") : self.source.index(
-                "PublishSsspHybridPage("
-            )
+            self.source.index(
+                "SsspHybridChunkFrontierWords("
+            ) : self.source.index("PublishSsspHybridPage(")
         ]
         self.assertIn("NUM_CORES * 4096", chunk)
         self.assertNotIn("NUM_CORES * 8192", chunk)
@@ -137,6 +138,16 @@ class SsspOldResultHybridContract(unittest.TestCase):
         self.assertIn("hash_b=39f1ea63bc8817e8", self.runner)
         self.assertIn("result=PASS", self.runner)
         self.assertNotIn("sssp_maa_1K", self.runner)
+
+    def test_runner_is_bound_to_the_pre_tail_replay_sssp_source(self):
+        # Evidence plumbing must not silently import 94cafc7c..7b6f9c21.
+        baseline = subprocess.run(
+            ["git", "show", "e690867f:benchmarks/gapbs/src/sssp.cc"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+        ).stdout
+        self.assertEqual(self.source.encode(), baseline)
 
 
 if __name__ == "__main__":

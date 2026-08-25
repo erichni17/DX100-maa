@@ -51,6 +51,12 @@ class SsspOldResultHybridFullContract(unittest.TestCase):
             "1e079112469892681d661925db09ccfbc845d1a2ce45c79e1d9a4902c19a9863"
         )
         self.assertGreaterEqual(self.runner.count(expected_sha), 2)
+        self.assertIn("SSSP_CANDIDATE_GEM5", self.runner)
+        self.assertIn("SSSP_CANDIDATE_GEM5_SHA256", self.runner)
+        self.assertIn("default_gem5", self.runner)
+        self.assertIn("default_gem5_sha256", self.runner)
+        self.assertIn("candidate_gem5_path", self.runner)
+        self.assertIn("candidate_gem5_sha256", self.runner)
         for flag in (
             "--maa_num_tile_elements=16384",
             "--maa_physical_tile_elements=4096",
@@ -78,6 +84,39 @@ class SsspOldResultHybridFullContract(unittest.TestCase):
             "soa_jit_pre_a_value_lookahead=true",
         ):
             self.assertIn(resolved, self.runner)
+
+    def test_candidate_override_is_frozen_in_manifest_and_ledgers(self):
+        self.assertIn('gem5=$(realpath -m "$gem5")', self.runner)
+        self.assertIn(
+            '$(manifest_value "$manifest" candidate_gem5_path) == "$gem5"',
+            self.runner,
+        )
+        self.assertIn(
+            '$(manifest_value "$manifest" candidate_gem5_sha256) == "$gem5_sha256"',
+            self.runner,
+        )
+        self.assertGreaterEqual(
+            self.runner.count('grep -Fqx "$gem5_sha256  $gem5"'), 2
+        )
+
+    def test_aperture_gate_is_opt_in_and_fails_closed_on_first_window_stats(
+        self,
+    ):
+        self.assertIn("SSSP_APERTURE_CANDIDATE_GATE:-false", self.runner)
+        self.assertIn("require_boolean", self.runner)
+        self.assertIn("aperture_candidate_gate", self.runner)
+        self.assertIn("cpu_spd_boundary_prefetch_drops", self.runner)
+        self.assertIn("cpu_spd_out_of_range_rejections", self.runner)
+        self.assertIn(
+            "boundary_drops > 0 && aperture_rejections == 0", self.runner
+        )
+        self.assertIn("record_aperture_stats", self.runner)
+        self.assertIn(
+            "first_window_cpu_spd_boundary_prefetch_drops", self.runner
+        )
+        self.assertIn(
+            "first_window_cpu_spd_out_of_range_rejections", self.runner
+        )
 
     def test_is_trace_free_unbounded_and_records_exact_statuses(self):
         self.assertIn("trace=false", self.runner)
@@ -170,6 +209,57 @@ class SsspOldResultHybridFullContract(unittest.TestCase):
         joined = "\n".join(executable_assignments)
         self.assertNotIn("native_out", joined)
         self.assertNotIn("sssp_maa_16K", joined)
+
+    def test_small_runner_has_exact_full_restore_cache_and_maa_surface(self):
+        # The small graph changes coverage only; it must not dilute the cache,
+        # memory, aperture, or old-result configuration under test.
+        exact_flags = (
+            "--l1d_size=32kB",
+            "--l1d_assoc=8",
+            "--l1d-hwp-type=StridePrefetcher",
+            "--l1d_mshrs=16",
+            "--l1d_write_buffers=8",
+            "--l1i_size=32kB",
+            "--l1i_assoc=8",
+            "--l1i-hwp-type=StridePrefetcher",
+            "--l1i_mshrs=16",
+            "--l1i_write_buffers=8",
+            "--l2_size=256kB",
+            "--l2_assoc=4",
+            "--l2-hwp-type=StridePrefetcher",
+            "--l2_mshrs=32",
+            "--l2_write_buffers=16",
+            "--l3_size=8MB",
+            "--l3_assoc=16",
+            "--l3_mshrs=256",
+            "--l3_write_buffers=128",
+            "--l3_ports=4",
+            "--maa_l2_uncacheable",
+            "--maa_l3_uncacheable",
+            "--maa_num_tile_elements=16384",
+            "--maa_physical_tile_elements=4096",
+            "--maa_soa_jit_old_result_pressure_policy=densest",
+            "--maa_soa_jit_old_result_partial_credits=4",
+            "--maa_soa_jit_active_contexts=8",
+            "--maa_soa_jit_active_value_owners=64",
+            "--mem-type Ramulator2",
+            "--mem-channels=2",
+            "--maa_ncbus_width=32",
+        )
+        for flag in exact_flags:
+            self.assertEqual(self.runner.count(flag), 1)
+            self.assertEqual(self.small_runner.count(flag), 1)
+        self.assertIn("artifacts.before.sha256", self.small_runner)
+        self.assertIn("artifacts.after.sha256", self.small_runner)
+        self.assertIn(
+            "cpu_spd_boundary_prefetch_drops=reported_not_forced",
+            self.small_runner,
+        )
+        self.assertIn(
+            "cpu_spd_out_of_range_rejections=0_required", self.small_runner
+        )
+        self.assertIn("aperture_rejections -eq 0", self.small_runner)
+        self.assertNotIn("run_native", self.small_runner)
 
 
 if __name__ == "__main__":

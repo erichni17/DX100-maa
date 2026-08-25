@@ -3,8 +3,14 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-gem5=/data1/nier/dx100-binaries/gem5-1e079112469892681d661925db09ccfbc845d1a2ce45c79e1d9a4902c19a9863.opt
-gem5_sha256=1e079112469892681d661925db09ccfbc845d1a2ce45c79e1d9a4902c19a9863
+# These are deliberately named overrides: a physical-SPD aperture candidate
+# must be identified by both its executable and immutable digest.
+default_gem5=/data1/nier/dx100-binaries/gem5-1e079112469892681d661925db09ccfbc845d1a2ce45c79e1d9a4902c19a9863.opt
+default_gem5_sha256=1e079112469892681d661925db09ccfbc845d1a2ce45c79e1d9a4902c19a9863
+gem5=${SSSP_CANDIDATE_GEM5:-$default_gem5}
+gem5_sha256=${SSSP_CANDIDATE_GEM5_SHA256:-$default_gem5_sha256}
+aperture_candidate_gate=${SSSP_APERTURE_CANDIDATE_GATE:-false}
+gem5=$(realpath -m "$gem5")
 frozen_ramulator=/data1/nier/dx100-runs/2026-08-12-hybrid-line-handoff-8a5c7712/input/libramulator.so
 frozen_ramulator_sha256=76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753
 config="$root/configs/deprecated/example/se.py"
@@ -33,6 +39,10 @@ hash_value() {
 require_hash() {
     local path=$1 expected=$2
     [[ -f $path && $(hash_value "$path") == "$expected" ]]
+}
+
+require_boolean() {
+    [[ $1 == true || $1 == false ]]
 }
 
 manifest_value() {
@@ -92,6 +102,14 @@ validate_evidence() (
     fi
 
     require_hash "$gem5" "$gem5_sha256"
+    [[ $(manifest_value "$manifest" candidate_gem5_path) == "$gem5" ]]
+    [[ $(manifest_value "$manifest" candidate_gem5_sha256) == "$gem5_sha256" ]]
+    [[ $(manifest_value "$manifest" aperture_candidate_gate) == \
+        "$aperture_candidate_gate" ]]
+    grep -Fqx "$gem5_sha256  $gem5" \
+        "$out/provenance/artifacts.before.sha256"
+    grep -Fqx "$gem5_sha256  $gem5" \
+        "$out/provenance/artifacts.after.sha256"
     require_hash "$out/input/serialized_graph_22.wsg" \
         "$external_graph_sha256"
     [[ $(stat -Lc %s "$out/input/serialized_graph_22.wsg") -eq \
@@ -243,11 +261,23 @@ validate_evidence() (
     (( apply_lanes == instructions ))
     (( partial_limits == instructions * 4 ))
     (( dense_policy == instructions ))
+
+    if [[ $aperture_candidate_gate == true ]]; then
+        local boundary_drops aperture_rejections
+        boundary_drops=$(stat_sum "$stats" cpu_spd_boundary_prefetch_drops)
+        aperture_rejections=$(stat_sum "$stats" cpu_spd_out_of_range_rejections)
+        [[ $boundary_drops =~ ^[0-9]+$ && $aperture_rejections =~ ^[0-9]+$ ]]
+        [[ $(manifest_value "$manifest" \
+            first_window_cpu_spd_boundary_prefetch_drops) == "$boundary_drops" ]]
+        [[ $(manifest_value "$manifest" \
+            first_window_cpu_spd_out_of_range_rejections) == "$aperture_rejections" ]]
+        (( boundary_drops > 0 && aperture_rejections == 0 ))
+    fi
 )
 
 write_result() {
     local out=$1 restore="$1/run/restore.log" stats="$1/run/stats.txt"
-    local terminal eligible routed routing_status
+    local terminal eligible routed routing_status boundary_drops aperture_rejections
     terminal=$(grep '^SSSP_OLD_RESULT_HYBRID_TERMINAL ' "$restore")
     eligible=$(terminal_value "$terminal" eligible_windows)
     routed=$(terminal_value "$terminal" routed_windows)
@@ -255,6 +285,13 @@ write_result() {
         routing_status=all_eligible_windows_routed
     else
         routing_status=eligible_subset_routed_fallbacks_preserved
+    fi
+    if [[ $aperture_candidate_gate == true ]]; then
+        boundary_drops=$(stat_sum "$stats" cpu_spd_boundary_prefetch_drops)
+        aperture_rejections=$(stat_sum "$stats" cpu_spd_out_of_range_rejections)
+    else
+        boundary_drops=not_checked
+        aperture_rejections=not_checked
     fi
     {
         printf 'schema=dx100.sssp.old_result_hybrid.full.result.v1\n'
@@ -283,7 +320,27 @@ write_result() {
         printf 'candidate_guest_sha256=%s\n' \
             "$(manifest_value "$out/candidate.manifest" candidate_guest_sha256)"
         printf 'input_sha256=%s\n' "$external_graph_sha256"
+        printf 'aperture_candidate_gate=%s\n' "$aperture_candidate_gate"
+        printf 'cpu_spd_boundary_prefetch_drops=%s\n' "$boundary_drops"
+        printf 'cpu_spd_out_of_range_rejections=%s\n' "$aperture_rejections"
     } >"$out/result.txt"
+}
+
+record_aperture_stats() {
+    local out=$1 stats="$1/run/stats.txt" boundary_drops aperture_rejections
+    if [[ $aperture_candidate_gate == true ]]; then
+        boundary_drops=$(stat_sum "$stats" cpu_spd_boundary_prefetch_drops)
+        aperture_rejections=$(stat_sum "$stats" cpu_spd_out_of_range_rejections)
+    else
+        boundary_drops=not_checked
+        aperture_rejections=not_checked
+    fi
+    {
+        printf 'first_window_cpu_spd_boundary_prefetch_drops=%s\n' \
+            "$boundary_drops"
+        printf 'first_window_cpu_spd_out_of_range_rejections=%s\n' \
+            "$aperture_rejections"
+    } >>"$out/candidate.manifest"
 }
 
 validate_callback() {
@@ -302,6 +359,11 @@ validate_callback() {
     (( rc == 0 ))
 }
 
+require_boolean "$aperture_candidate_gate" || {
+    echo "SSSP_APERTURE_CANDIDATE_GATE must be true or false" >&2
+    exit 2
+}
+
 if [[ $# -eq 2 && $1 == --validate ]]; then
     validate_callback "$(realpath -m "$2")"
     exit
@@ -318,7 +380,7 @@ out=$(realpath -m "$1")
     git -C "$root" status --short >&2
     exit 1
 }
-[[ -x $gem5 ]] || { echo "missing archived gem5: $gem5" >&2; exit 2; }
+[[ -x $gem5 ]] || { echo "missing candidate gem5: $gem5" >&2; exit 2; }
 require_hash "$gem5" "$gem5_sha256"
 require_hash "$frozen_ramulator" "$frozen_ramulator_sha256"
 require_hash "$frozen_sweep" "$frozen_sweep_sha256"
@@ -392,7 +454,10 @@ native_stats_sha256=$(hash_value "$native_out/stats.txt")
     printf 'schema=dx100.sssp.old_result_hybrid.full.candidate.v1\n'
     printf 'source_commit=%s\nsource_path=%s\nsource_sha256=%s\n' \
         "$source_commit" "$source_file" "$(hash_value "$source_file")"
-    printf 'gem5_path=%s\ngem5_sha256=%s\n' "$gem5" "$gem5_sha256"
+    printf 'candidate_gem5_path=%s\ncandidate_gem5_sha256=%s\n' \
+        "$gem5" "$gem5_sha256"
+    printf 'default_gem5_path=%s\ndefault_gem5_sha256=%s\n' \
+        "$default_gem5" "$default_gem5_sha256"
     printf 'ramulator_library_path=%s\nramulator_library_sha256=%s\n' \
         "$frozen_ramulator" "$frozen_ramulator_sha256"
     printf 'candidate_guest_path=%s\ncandidate_guest_sha256=%s\n' \
@@ -407,6 +472,7 @@ native_stats_sha256=$(hash_value "$native_out/stats.txt")
     printf 'value_cache_enable=true\nactive_value_owners=64\n'
     printf 'pre_a_value_lookahead=true\nactive_contexts=8\n'
     printf 'tails_and_fallbacks=preserved\n'
+    printf 'aperture_candidate_gate=%s\n' "$aperture_candidate_gate"
     printf 'native_arms=0\nfull_graph=true\ntrace=false\nwall_timeout=none\n'
 } >"$out/candidate.manifest"
 
@@ -496,6 +562,7 @@ sha256sum "$gem5" "$frozen_ramulator" "$guest" "$graph" "$source_file" \
 cmp -s "$out/provenance/artifacts.before.sha256" \
     "$out/provenance/artifacts.after.sha256"
 
+record_aperture_stats "$out"
 validate_evidence "$out" false
 write_result "$out"
 printf 'PASS\n' >"$out/gate.complete"
