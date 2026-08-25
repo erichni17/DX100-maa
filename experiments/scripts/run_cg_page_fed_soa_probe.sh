@@ -157,7 +157,7 @@ sum_stat() {
 [[ $(sum_stat 'STR_PublishTerminals') -eq 4 ]]
 [[ $(grep -Fc 'event=soa_jit_page_fed_admit ' "$trace" || true) -eq 4 ]]
 [[ $(grep -Fc 'event=soa_jit_page_fed_open_response ' "$trace" || true) -eq 1 ]]
-[[ $(grep -Ec 'event=soa_jit_page_fed_complete .*opens=1 open_responses=1 admissions=4 closes=1 command_responses=5 total_abi_responses=6 .*coherent_index_read_lines=0 coherent_index_write_lines=0 index_payload_bytes=0 descriptor_payload_bytes=0 persistent_state_bytes=16 value_read_lines=1024 value_read_responses=1024 a_read_lines=256 a_write_lines=256 .*terminal=1$' "$trace" || true) -eq 1 ]]
+[[ $(grep -Ec 'event=soa_jit_page_fed_complete .*opens=1 open_responses=1 admissions=4 closes=1 command_responses=5 total_abi_responses=6 .*coherent_index_read_lines=0 coherent_index_write_lines=0 index_payload_bytes=0 descriptor_payload_bytes=0 persistent_state_bytes=16 value_read_lines=16384 value_read_responses=16384 a_read_lines=256 a_write_lines=256 .*terminal=1$' "$trace" || true) -eq 1 ]]
 for resolved in \
     'page_fed_soa_jit=true' 'num_maas=1' \
     'num_indirect_units_per_maa=4' 'num_tiles_per_core=8' \
@@ -180,7 +180,7 @@ cmp -s "$out/artifacts.before.sha256" "$out/artifacts.after.sha256"
     printf 'open_responses=1\ncommand_responses=5\ntotal_abi_responses=6\n'
     printf 'index_publish_pages=0\ncoherent_index_lines=0\n'
     printf 'product_publish_pages=4\nproduct_publish_lines=1024\n'
-    printf 'product_value_read_lines=1024\npersistent_state_bytes=16\n'
+    printf 'product_value_read_lines=16384\npersistent_state_bytes=16\n'
     printf 'performance_claim=0\n'
 } > "$out/result.txt"
 sha256sum "$out/checkpoint.before.sha256" "$out/restore.log" "$stats" \

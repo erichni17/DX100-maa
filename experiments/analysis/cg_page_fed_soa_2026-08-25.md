@@ -117,11 +117,15 @@ eliminates exactly:
 For the profiled 10,960 full windows this is 11,223,040 index publication
 lines plus 11,223,040 index reread lines, or 22,446,080 issue-level coherent
 index line operations.  Product traffic remains useful and explicit: 1,024
-response-bearing product publication lines and the JIT product reads.  The
-collision probe requires exactly 1,024 product read issues/responses.  Its
-4,096-destination target contributes 256 A read lines and 256 response-bearing
-A write lines; full-CG target traffic remains data dependent and is not
-projected from the probe.
+response-bearing product publication lines and the JIT product reads.  With
+the default value cache disabled, the collision probe measures 16,384 product
+line read issues/responses: one line fetch per retained ordinal, or 16 reads
+per unique product line.  If that exact mechanism count held for the profiled
+full-CG window population, it would be 179,568,640 product read issues; this is
+an extrapolation, not full-CG evidence.  The exact remaining product
+publication work is 11,223,040 lines.  The probe's 4,096-destination target
+contributes 256 A read lines and 256 response-bearing A write lines; full-CG
+target traffic remains data dependent and is not projected from the probe.
 
 ## Focused evidence
 

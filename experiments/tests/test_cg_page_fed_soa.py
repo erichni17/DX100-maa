@@ -144,7 +144,7 @@ class CgPageFedSoaContract(unittest.TestCase):
             "IND_SoaJitPageFedCommandResponses') -eq 5",
             "IND_SoaJitPageFedAdmittedWords') -eq 16384",
             "STR_PublishIssues') -eq 1024",
-            "value_read_lines=1024",
+            "value_read_lines=16384",
             "full_cg_index_write_lines_eliminated=11223040",
             "--maa_page_fed_soa_jit",
         ):
