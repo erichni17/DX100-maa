@@ -39,6 +39,12 @@ the frozen reference. The candidate is rejected under its predeclared
 correctness gate; see
 `experiments/analysis/cg_full_page_product_rejection_2026-08-25.md`.
 
+A subsequent pinned classifier identifies that reference as bounded4 and
+compares the same immutable candidate against the existing native16 arm. All
+four quantized hashes and scalar tolerances pass that architecture-appropriate
+oracle. Correctness is accepted, but candidate latency is 13.893x native16 and
+is rejected for performance. No native simulation was rerun.
+
 The preceding precomputed `r1` launched no simulator; compilation failed only
 because `-Werror` promoted expected unused generator helpers. Runner commit
 `5d51743b` adds the narrow full-only warning exception.

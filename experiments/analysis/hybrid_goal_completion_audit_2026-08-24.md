@@ -37,13 +37,13 @@ Every current full runner is candidate-only. HashJoin manifests record
 | HashJoin PRO | `2026-08-24-hashjoin-pro-hardened-r1` | terminal-valid; exact 2M result |
 | HashJoin PRH | `2026-08-24-hashjoin-prh-hardened-r1` | terminal-valid; exact 2M result; shifted tail-only |
 | NAS IS | `2026-08-24-is-scalar-soa-full-a44aaa60-r5` | terminal-valid; verification 6 |
-| NAS CG | `2026-08-24-cg-page-product-full-precomputed-5d51743b-r2` | rejected: mechanism closes but all four exact quantized fingerprints mismatch |
+| NAS CG | `2026-08-24-cg-page-product-full-precomputed-5d51743b-r2` | terminal-valid against frozen native16 oracle; performance rejected at 13.893x native16 latency |
 | GAPBS SSSP small | `2026-08-25-sssp-coherent-small-fullcache-r2` | terminal-valid routed-path gate; exact fingerprint, zero fallback/host-SPD reads |
 | GAPBS SSSP S22 | `2026-08-25-sssp-coherent-full-s22-r2` | active coherent-fallback successor |
 
-The goal is incomplete until a corrected CG successor and the active SSSP
-successor pass their exact correctness, mechanism, artifact, and
-response-ledger gates.
+The goal is incomplete until CG's full-application performance overhead is
+materially reduced and the active SSSP successor passes its exact correctness,
+mechanism, artifact, and response-ledger gates.
 
 ## Optimization decisions
 
@@ -58,8 +58,11 @@ response-ledger gates.
 
 ## Remaining proof
 
-1. CG: exact quantized fingerprint/tolerances, all logical windows routed,
-   zero fallbacks/open contexts, publisher and A response ledgers closed.
+1. CG correctness is complete against the frozen native16 oracle: exact
+   quantized fingerprint/tolerances, all logical windows routed, zero
+   fallbacks/open contexts, and closed publisher/A ledgers. The current
+   page-product implementation remains rejected for 13.893x native16 latency;
+   profile and remove that full-application overhead before promotion.
 2. SSSP: exact S22 fingerprint, nonzero coherent fallback-page coverage, zero
    host-SPD reads and architectural aperture rejections, closed fallback
    publication responses, and closed predicate/value/A/old-result ledgers.

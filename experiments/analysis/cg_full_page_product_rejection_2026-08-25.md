@@ -1,11 +1,16 @@
 # Full CG page-product rejection (2026-08-25)
 
-## Decision
+## Original wrapper decision
 
 **REJECT_CORRECTNESS_GATE.** The candidate completed its full gem5 ROI and all
 mechanism/response ledgers close, but it fails the predeclared exact quantized
 fingerprint requirement. It is not correctness-promoted and its timing is not
 reported as architecture performance.
+
+This statement describes the original wrapper's bounded4 comparator and is
+preserved as raw provenance. A later independent classifier establishes the
+architecture-appropriate native16 correctness result below; it does not turn
+the bounded4 wrapper into a pass.
 
 Raw root:
 `/data1/nier/dx100-runs/2026-08-24-cg-page-product-full-precomputed-5d51743b-r2`.
@@ -110,3 +115,19 @@ terminals. See `cg_product_handoff_probe_2026-08-25.md`.
 Therefore do not add page masks or per-destination ordering state. The next
 full-CG diagnosis must test workload/reference comparability and later
 algorithm-stage scheduling, not the product handoff or alias-chain order.
+
+## Corrected native16 classification
+
+The workload/reference audit found that the candidate exactly matches the
+already frozen native16 arm for all four quantized hashes:
+`x_q5=bd71373530efa77d`, `x_q6=9a25df4701c4afa9`,
+`z_q5=973558f7c958b798`, and `z_q6=5c3a7792ee8d00f3`. The bounded4 fingerprint
+used by the wrapper represents a different legal FP schedule; native16 is the
+appropriate oracle for a mechanism intended to preserve 16K reorder behavior.
+
+The pinned one-shot classifier and reopened certificate are documented in
+`cg_full_native16_correctness_2026-08-25.md`. Its decision is
+`PASS_NATIVE16_ORACLE` for correctness and `REJECT_SLOWER` for performance.
+Candidate/native16 first-window simTicks is `13.89297367681405`. No native arm
+was rerun, and the original bounded4 rejection remains explicit in both the raw
+root and corrected certificate.
