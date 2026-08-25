@@ -43,6 +43,15 @@ simTicks 999
         self.assertAlmostEqual(MODULE.relative_delta("-9", "-10"), 0.1)
         self.assertGreater(MODULE.relative_delta("1", "0"), 1.0e299)
 
+    def test_branch_status_allows_only_ahead_count_change(self):
+        branch, ahead = MODULE.branch_ahead(
+            "## topic...origin/topic [ahead 250]"
+        )
+        self.assertEqual(branch, "## topic...origin/topic")
+        self.assertEqual(ahead, 250)
+        with self.assertRaises(MODULE.RecoveryError):
+            MODULE.branch_ahead(" M benchmarks/NAS/cg/cg.cpp")
+
     def test_hash_ledger_resolves_relative_paths_from_explicit_root(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
@@ -54,6 +63,37 @@ simTicks 999
             artifact.write_text("changed\n")
             with self.assertRaises(MODULE.RecoveryError):
                 MODULE.verify_ledger(ledger, root)
+
+    def test_self_consistent_arbitrary_artifact_ledger_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = pathlib.Path(directory)
+            root = parent / MODULE.EXPECTED_ROOT_NAME
+            repo = parent / "repo"
+            (root / "input").mkdir(parents=True)
+            repo.mkdir()
+            arbitrary = root / "arbitrary"
+            arbitrary.write_text("attacker-selected\n")
+            (root / "input/artifact_sha256.before").write_text(
+                f"{MODULE.sha256(arbitrary)}  {arbitrary}\n"
+            )
+            with self.assertRaises(MODULE.RecoveryError):
+                MODULE.verify_expected_artifact_ledger(root, repo)
+
+    def test_recovery_source_enforces_liveness_trace_and_atomic_seal(self):
+        source = SCRIPT.read_text()
+        for required in (
+            "RUNNING.status still reports running",
+            "active_root_process(root)",
+            "disabled-full run unexpectedly contains a logical-page trace",
+            "EXPECTED_CHECKPOINT_LEDGER_SHA256",
+            "artifact ledger is not the pinned full-CG set",
+            "verify_snapshot(initial_snapshot)",
+            "write_temporary(result_path",
+            "os.replace(result_temporary, result_path)",
+            "atomic_write(gate_path, \"PASS\\n\")",
+            "validate_seal(root)",
+        ):
+            self.assertIn(required, source)
 
     def test_incomplete_root_fails_without_creating_recovery_gate(self):
         with tempfile.TemporaryDirectory() as directory:
