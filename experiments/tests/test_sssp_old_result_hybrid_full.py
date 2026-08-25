@@ -285,6 +285,8 @@ class SsspOldResultHybridFullContract(unittest.TestCase):
         )
         self.assertIn("aperture_rejections -eq 0", self.small_runner)
         self.assertNotIn("run_native", self.small_runner)
+        self.assertIn('printf "%.0f\\n", sum', self.small_runner)
+        self.assertNotIn('printf "%.0f\\\\n", sum', self.small_runner)
 
 
 if __name__ == "__main__":

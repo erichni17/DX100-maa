@@ -32,7 +32,7 @@ stat_sum() {
         /^---------- End Simulation Statistics/ && section == 1 {
             if (!found)
                 exit 2
-            printf "%.0f\\n", sum
+            printf "%.0f\n", sum
             exit
         }
     ' "$stats"
