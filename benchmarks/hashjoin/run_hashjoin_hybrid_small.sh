@@ -335,7 +335,10 @@ for kernel in "${kernels[@]}"; do
     else
         [[ ! -e $run/soa_jit_trace.log ]]
     fi
-    sim_ticks=$(awk '$1 == "simTicks" { value=$2 } END { print value }' "$stats")
+    sim_ticks=$(awk '
+        /^---------- Begin Simulation Statistics/ { section++ }
+        section == 1 && $1 == "simTicks" { print $2; exit }
+    ' "$stats")
     [[ $sim_ticks =~ ^[1-9][0-9]*$ ]]
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$kernel" "$EXPECTED_RESULT" \
         "$routed" "$instructions" "$terminals" "$sim_ticks" \

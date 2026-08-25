@@ -350,6 +350,8 @@ def test_full_runner_contract_is_pinned_and_fails_closed():
     assert "TRACE_MODE=disabled_full" in runner
     assert "trace_mode=%s" in runner
     assert "fallback_basis=IND_BoundedGlobalMergeFallbacks" in runner
+    assert 'section == 1 && $1 == "simTicks" { print $2; exit }' in runner
+    assert '$1 == "simTicks" { value=$2 } END { print value }' not in runner
 
 
 def test_full_kernel_contract_distinguishes_zero_and_nonzero_prh_shifted_passes():
