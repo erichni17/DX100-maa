@@ -25,6 +25,12 @@ Intermediate cache targets propagate the error, while the originating
 `FromPrefetcher` target is deleted.  A demand coalesced behind such a request
 also fails closed; an unmerged later demand reaches the MAA and panics.
 
+The hardware delta is control-only. It adds no payload, queue slot, or
+persistent table: physical-bound comparison already exists, and the drop uses
+request prefetch provenance plus an all-byte-enable reduction. The two added
+statistics counters are simulator instrumentation and are charged as zero
+hardware bits.
+
 ## Provenance proof
 
 `Queued::DeferredPacket::createPkt` creates the physical prefetch Request with
