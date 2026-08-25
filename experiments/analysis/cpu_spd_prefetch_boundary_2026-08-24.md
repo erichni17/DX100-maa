@@ -85,3 +85,28 @@ exact binary must run with `ALLOW_DIRTY=0` into the fresh coordination root
 source paths to match `HEAD`, the positive and negative contracts above to
 pass, and the binary/library/dependency hashes to match this ledger.  No full
 S22 launch is authorized by this gate.
+
+## Terminal successor and integration
+
+Clean `r3` passed at source commit `b3c27693` with binary
+`703c1e1d...f0f1a5`: exact positive output, 128 task-tagged shared-read drops,
+zero architectural rejections, and a separate element-4,096 demand that exited
+134 before returning a value. All `artifacts.sha256` entries verify.
+
+The source was cherry-picked into the lead as `5a20fe18` and `aa655e3b`; the
+changed source-file hashes are identical to the tested worker commit. The
+binary is archived at
+`/data1/nier/dx100-binaries/gem5-703c1e1d756ada75306e7ed941f3dad967370cd4f224c092430b5b2b5fb0f1a5.opt`.
+
+The matched full-cache small SSSP gate at lead commit `7bfb5c63` passes exact
+output and four routed logical windows at `7,821,692,529 simTicks`, with 17,866
+old-result writes/responses, zero aperture rejections, and zero boundary drops.
+Zero drops are expected because this graph's four complete logical windows do
+not execute the host-SPD tail scan; the dedicated `r3` aperture smoke provides
+the boundary coverage.
+
+Full S22 candidate root
+`/data1/nier/dx100-runs/2026-08-24-sssp-aperture-full-s22-r1` is active with
+the original pre-tail-replay guest, the archived aperture binary, full cache
+configuration, `aperture_candidate_gate=true`, no native arm, and no wall
+timeout.

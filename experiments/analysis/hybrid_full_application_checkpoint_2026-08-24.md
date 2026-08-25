@@ -35,14 +35,17 @@ Raw CG reports:
 | NAS CG | `dx100-cg-page-product-full-baf142f7-r1` | `/data1/nier/dx100-runs/2026-08-24-cg-page-product-full-baf142f7-r1` | trace-free full checkpoint |
 | NAS IS | `dx100-is-scalar-soa-full-a44aaa60-r5` | `/data1/nier/dx100-runs/2026-08-24-is-scalar-soa-full-a44aaa60-r5` | full O3 ROI |
 | HashJoin PRH | `dx100-hashjoin-prh-full-recovery-20260824-061147` | `/data1/nier/dx100-runs/hashjoin-hybrid-prh-full-d7d29bf5-20260824-061147` | correct raw output; shifted pass is tail-only and pre-hardening evidence remains incomplete |
-| HashJoin PRO, hardened | `dx100-hashjoin-pro-hardened-20260824-r1` | `/data1/nier/dx100-runs/2026-08-24-hashjoin-pro-hardened-r1` | active candidate-only full gate with frozen mechanism-status and hash contracts |
-| HashJoin PRH, hardened | `dx100-hashjoin-prh-hardened-20260824-r1` | `/data1/nier/dx100-runs/2026-08-24-hashjoin-prh-hardened-r1` | active candidate-only full gate with frozen mechanism-status and hash contracts |
+| HashJoin PRO, hardened | `dx100-hashjoin-pro-hardened-20260824-r1` | `/data1/nier/dx100-runs/2026-08-24-hashjoin-pro-hardened-r1` | terminal-valid: exact 2M result, 240/240 first-pass coverage, shifted not applicable |
+| HashJoin PRH, hardened | `dx100-hashjoin-prh-hardened-20260824-r1` | `/data1/nier/dx100-runs/2026-08-24-hashjoin-prh-hardened-r1` | terminal-valid: exact 2M result, 240/240 first-pass coverage, shifted tail-only |
 | GAPBS SSSP S22, original | `dx100-sssp-old-result-full-e690867f-r1` | `/data1/nier/dx100-runs/2026-08-24-sssp-old-result-full-e690867f-r1` | failed closed on unvirtualized 4,133-element tail |
 | GAPBS SSSP S22, reviewed repair | `dx100-sssp-tail-repair-7b6f9c21-full-r1` | `/data1/nier/worktrees/codex-coordination/sessions/sssp-tail-repair-successor-20260824-155812-7c1e3190/evidence/sssp-tail-repair-7b6f9c21-r1` | rejected: L1 stride prefetch crossed the 4K physical SPD aperture at element 4,096 |
 | GAPBS SSSP S22, causal ablation | `dx100-sssp-l1d-prefetch-ablation-20260824-r1` | `/data1/nier/dx100-runs/2026-08-24-sssp-l1d-prefetch-ablation-r1` | active non-promotable replay; identical frozen inputs with only L1D stride prefetch removed |
+| GAPBS SSSP small, fixed aperture | `dx100-sssp-aperture-small-fullcache-20260824-r3` | `/data1/nier/dx100-runs/2026-08-24-sssp-aperture-small-fullcache-r3` | passed exact matched-cache gate; four routed windows and zero rejections |
+| GAPBS SSSP S22, fixed aperture | `dx100-sssp-aperture-full-s22-20260824-r1` | `/data1/nier/dx100-runs/2026-08-24-sssp-aperture-full-s22-r1` | active original-guest full candidate; no native rerun |
 
-CG, IS, and the hardened PRO/PRH recoveries remain active with infinite runtime.
-Both SSSP full candidates and the pre-hardening PRH recovery have exited.
+CG, IS, the SSSP prefetch ablation, and the fixed-aperture full S22 candidate
+remain active with infinite runtime. Hardened HashJoin PRO and PRH are
+terminal-valid.
 Existing `dx-runtime` watch records are stale:
 their worker PIDs are dead even where the record still says `watching`.
 Acceptance therefore relies on each runner's internal fail-closed gate plus a
@@ -214,11 +217,9 @@ and is causal evidence only; it cannot promote the tail series.
 
 1. Validate CG and IS after their services exit; do not read timing before
    their correctness and terminal gates close.
-2. Repair the SSSP speculative-prefetch boundary without weakening demand
-   bounds, require a stride-prefetch reproduction and fresh small exact gate,
-   then relaunch candidate-only full S22; native baselines remain reusable.
-3. Allow the hardened PRH candidate gate to exit and classify its frozen
-   mechanism-status and hash evidence. Its shifted phase is tail-only for this
-   input and must never be misreported as routed coverage.
+2. Allow the fixed-aperture full S22 candidate to exit, then require exact
+   output, nonzero prefetch drops, zero aperture rejections, and closed ledgers.
+3. Hardened HashJoin PRO and PRH are terminal-valid; retain PRH's shifted phase
+   as tail-only rather than misreporting it as routed coverage.
 4. Keep compact retirement, context64, expanded RowTable, strict sequencing,
    and page-aware source ordering rejected; do not spend full-app time on them.
