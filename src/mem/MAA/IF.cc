@@ -19,8 +19,10 @@ Instruction::Instruction() : baseAddr(0xFFFFFFFFFFFFFFFF),
                              resultAddr(0xFFFFFFFFFFFFFFFF),
                              soaJitMaskedIndex(false),
                              soaJitOldResult(false),
+                             soaJitPageFed(false),
                              soaJitPredicateWordReceived(false),
                              soaJitResultWordReceived(false),
+                             soaJitPageFedGeneration(0),
                              soaJitScalarRegID(-1),
                              logicalSourceBackingAddr(0xFFFFFFFFFFFFFFFF),
                              logicalSource2BackingAddr(0xFFFFFFFFFFFFFFFF),
@@ -242,9 +244,11 @@ Instruction::getMemoryAccesses(
         append(addrRangeID, AccessType::WRITE);
         if (isSoaJitVectorRmw())
             append(backingAddrRangeID, AccessType::READ);
-        append(indexAddrRangeID, AccessType::READ);
-        if (predicateAddr != 0)
-            append(predicateAddrRangeID, AccessType::READ);
+        if (!isSoaJitPageFedRmw()) {
+            append(indexAddrRangeID, AccessType::READ);
+            if (predicateAddr != 0)
+                append(predicateAddrRangeID, AccessType::READ);
+        }
         if (hasSoaJitOldResult())
             append(resultAddrRangeID, AccessType::WRITE);
     } else {
@@ -478,6 +482,15 @@ bool IF::pushInstruction(Instruction _instruction, int *inserted_slot,
         } else {
             if (i == ignored_hazard_slot)
                 continue;
+            if (_instruction.isSoaJitPageFedRmw() &&
+                instructions[maa_id][i].isSoaJitPageFedRmw() &&
+                _instruction.core_id == instructions[maa_id][i].core_id) {
+                DPRINTF(MAAController,
+                        "%s: core %d already owns one bounded page-fed "
+                        "context\n",
+                        __func__, _instruction.core_id);
+                return false;
+            }
             if (_instruction.controllerManaged &&
                 instructions[maa_id][i].controllerManaged) {
                 const Instruction &other = instructions[maa_id][i];

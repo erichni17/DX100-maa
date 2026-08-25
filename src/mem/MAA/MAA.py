@@ -35,6 +35,11 @@ class MAA(ClockedObject):
         "Opt in to four-page logical instructions over four reserved native "
         "4K SPD frame spans",
     )
+    page_fed_soa_jit = Param.Bool(
+        False,
+        "Opt in to bounded four-page direct SPD-index admission for one "
+        "logical-16K SoA/JIT RMW",
+    )
     num_regs_per_core = Param.Unsigned(
         8,
         "Number of 32-bit scalar registers per core attached to the DX100 instance",

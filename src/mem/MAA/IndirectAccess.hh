@@ -16,6 +16,7 @@
 #include "arch/generic/mmu.hh"
 #include "base/statistics.hh"
 #include "base/types.hh"
+#include "gem5/maa_page_fed_soa_abi.hh"
 #include "mem/MAA/BoundedDescriptorSpool.hh"
 #include "mem/MAA/BoundedFourRunMerge.hh"
 #include "mem/MAA/BoundedMetadataLedger.hh"
@@ -658,6 +659,15 @@ protected:
     bool soa_jit_old_result_finished = false;
     uint64_t soa_jit_context_stalls = 0;
     uint64_t soa_jit_context_high_water = 0;
+    gem5::maa::PageFedSoaJitState soa_jit_page_fed_state;
+    uint64_t soa_jit_page_fed_open_commands = 0;
+    uint64_t soa_jit_page_fed_admit_commands = 0;
+    uint64_t soa_jit_page_fed_close_commands = 0;
+    uint64_t soa_jit_page_fed_command_responses = 0;
+    uint64_t soa_jit_page_fed_admitted_words = 0;
+    uint64_t soa_jit_page_fed_spd_index_reads = 0;
+    uint64_t soa_jit_page_fed_row_writes = 0;
+    uint64_t soa_jit_page_fed_admission_cycles = 0;
     int my_dst_tile, my_src_tile, my_src_reg, my_cond_tile, my_max;
     int my_idx_tile;
     bool my_cond_tile_ready, my_idx_tile_ready, my_src_tile_ready;
@@ -704,6 +714,7 @@ protected:
     bool isSoaJitScalarRmw() const;
     bool isSoaJitMaskedIndexRmw() const;
     bool isSoaJitOldResultRmw() const;
+    bool isSoaJitPageFedRmw() const;
     bool usesBoundedDirectIndexPasses() const;
     bool usesBoundedSourceResponses() const;
     void fillDirectIndexWindow();
@@ -745,6 +756,7 @@ protected:
                                      bool condition_taken);
     void commitSoaJitSourceOrdinal(int logical_itr,
                                    bool condition_taken);
+    bool insertPageFedSoaJitIndex(uint32_t index, uint32_t ordinal);
     void resetSoaJitEpochTables();
     bool serviceSoaJitBuild();
     bool receiveSoaJitData(Addr addr, uint8_t *dataptr,
@@ -877,6 +889,10 @@ protected:
 
 public:
     void createReadPacket(Addr addr, int latency);
+    bool pageFedActiveForCore(int core_id) const;
+    Cycles admitPageFedSoaJitIndexPage(uint64_t generation, uint8_t page,
+                                      uint8_t index_tile);
+    Cycles closePageFedSoaJit(uint64_t generation);
 };
 
 static_assert(IndirectAccessUnit::lineHandoffMetadataBytesPerWrite() == 16);

@@ -120,6 +120,7 @@ MAA::MAA(const MAAParams &p)
       transparent_spd_mode(p.transparent_spd_mode),
       logical_spd_cache_mode(p.logical_spd_cache_mode),
       logical_tile_page_scheduler(p.logical_tile_page_scheduler),
+      page_fed_soa_jit(p.page_fed_soa_jit),
       page_materialization_wakeup_batches(
           p.page_materialization_wakeup_batches),
       page_materialization_fragment_buffers(
@@ -5473,9 +5474,23 @@ void MAA::dispatchInstruction() {
                     // micro-op and consumed by the indirect micro-op.
                     spd->setTileNotReady(instruction->dst2SpdID, 4);
                 }
-                pkt->makeTimingResponse();
-                pkt->headerDelay = pkt->payloadDelay = 0;
-                cpuSidePorts[0]->schedTimingResp(pkt, getClockEdge(Cycles(1)));
+                if (instruction->isSoaJitPageFedRmw()) {
+                    const int ready_id = num_tiles +
+                        num_tiles * MaxVirtualPages + instruction->core_id;
+                    my_ready_pkts.push_back(pkt);
+                    my_ready_tile_ids.push_back(ready_id);
+                    DPRINTF(MAAVirtualTrace,
+                            "event=soa_jit_page_fed_open_wait schema=1 "
+                            "core=%d generation=%lu ready_id=%d\n",
+                            instruction->core_id,
+                            instruction->soaJitPageFedGeneration,
+                            ready_id);
+                } else {
+                    pkt->makeTimingResponse();
+                    pkt->headerDelay = pkt->payloadDelay = 0;
+                    cpuSidePorts[0]->schedTimingResp(
+                        pkt, getClockEdge(Cycles(1)));
+                }
                 scheduleIssueInstructionEvent(1);
                 pkt_it = my_instruction_pkts.erase(pkt_it);
                 recv_it = my_instruction_recvs.erase(recv_it);
@@ -5676,6 +5691,42 @@ void MAA::setTileReady(int tileID, int wordSize) {
     for (auto *port : cpuSidePorts) {
         port->retryTileRequest();
     }
+}
+
+void
+MAA::signalPageFedSoaJitOpen(int coreID, uint64_t generation)
+{
+    panic_if(coreID < 0 || coreID >= static_cast<int>(num_cores) ||
+                 generation == 0,
+             "Invalid page-fed open response identity core=%d "
+             "generation=%lu\n",
+             coreID, generation);
+    const int ready_id = num_tiles + num_tiles * MaxVirtualPages + coreID;
+    auto packet = my_ready_pkts.begin();
+    auto ready = my_ready_tile_ids.begin();
+    int matches = 0;
+    while (packet != my_ready_pkts.end() &&
+           ready != my_ready_tile_ids.end()) {
+        if (*ready != ready_id) {
+            ++packet;
+            ++ready;
+            continue;
+        }
+        PacketPtr pkt = *packet;
+        pkt->makeTimingResponse();
+        pkt->headerDelay = pkt->payloadDelay = 0;
+        cpuSidePorts[0]->schedTimingResp(pkt, getClockEdge(Cycles(1)));
+        packet = my_ready_pkts.erase(packet);
+        ready = my_ready_tile_ids.erase(ready);
+        ++matches;
+    }
+    panic_if(matches != 1,
+             "Page-fed open core=%d generation=%lu released %d responses\n",
+             coreID, generation, matches);
+    DPRINTF(MAAVirtualTrace,
+            "event=soa_jit_page_fed_open_response schema=1 core=%d "
+            "generation=%lu ready_id=%d responses=1\n",
+            coreID, generation, ready_id);
 }
 void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
                                 int backingRangeID, int wordSize) {
@@ -7568,6 +7619,44 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitTerminalCompletions"),
             statistics::units::Count::get(),
             "SoA/JIT completions after exact scoreboard and WriteResp drain"));
+        IND_SoaJitPageFedOperations.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitPageFedOperations"),
+            statistics::units::Count::get(),
+            "bounded page-fed SoA/JIT operations completed"));
+        IND_SoaJitPageFedAdmitCommands.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitPageFedAdmitCommands"),
+            statistics::units::Count::get(),
+            "completed physical index-page admission commands"));
+        IND_SoaJitPageFedCloseCommands.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitPageFedCloseCommands"),
+            statistics::units::Count::get(),
+            "exact page-fed closure commands"));
+        IND_SoaJitPageFedCommandResponses.push_back(new statistics::Scalar(
+            this,
+            MAKE_INDIRECT_STAT_NAME("IND_SoaJitPageFedCommandResponses"),
+            statistics::units::Count::get(),
+            "timed page-admission and close command responses"));
+        IND_SoaJitPageFedAdmittedWords.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitPageFedAdmittedWords"),
+            statistics::units::Count::get(),
+            "physical index words admitted with logical ordinals"));
+        IND_SoaJitPageFedSpdIndexReads.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitPageFedSpdIndexReads"),
+            statistics::units::Count::get(),
+            "timed physical SPD index-word reads"));
+        IND_SoaJitPageFedRowWrites.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitPageFedRowWrites"),
+            statistics::units::Count::get(),
+            "timed Row/Offset admission writes"));
+        IND_SoaJitPageFedAdmissionCycles.push_back(new statistics::Scalar(
+            this,
+            MAKE_INDIRECT_STAT_NAME("IND_SoaJitPageFedAdmissionCycles"),
+            statistics::units::Cycle::get(),
+            "port-charged page-fed admission cycles"));
+        IND_SoaJitPageFedStateBytes.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitPageFedStateBytes"),
+            statistics::units::Byte::get(),
+            "persistent bounded page/generation/count/closure bytes"));
         IND_BoundedSummaryLineReads.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_BoundedSummaryLineReads"),
             statistics::units::Count::get(),

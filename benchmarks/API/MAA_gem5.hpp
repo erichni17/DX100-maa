@@ -3,6 +3,7 @@
 
 #include <gem5/m5ops.h>
 #include <gem5/maa_logical_spd_cache_abi.hh>
+#include <gem5/maa_page_fed_soa_abi.hh>
 
 #include "MAA.hpp"
 
@@ -74,6 +75,8 @@ enum class DataType : uint8_t {
 
 constexpr uint64_t MAA_SOA_JIT_MASKED_INDEX_MODE_TAG = UINT64_MAX;
 constexpr uint8_t MAA_SOA_JIT_OLD_RESULT_MODE_TAG = 0xfe;
+constexpr uint8_t MAA_SOA_JIT_PAGE_FED_MODE_TAG =
+    gem5::maa::PageFedSoaJitABI::ModeTag;
 
 volatile uint64_t *INSTR_opcode_datatype_optype_tdst1_tdst2;
 volatile uint64_t *INSTR_tsrc1_tsrc2_rdst1_rdst2_rsrc1_rsrc2_rsrc3_csrc;
@@ -82,6 +85,7 @@ volatile uint64_t *INSTR_backingaddr;
 volatile uint64_t *INSTR_indexaddr;
 volatile uint64_t *INSTR_predicateaddr;
 volatile uint64_t *INSTR_resultaddr;
+volatile uint64_t *INSTR_page_fed_command;
 volatile uint16_t *VIRTUAL_PAGE_READY_noncacheable;
 uint64_t MAA_end_addr;
 int8_t region_count;
@@ -130,7 +134,9 @@ void alloc_MAA() {
     current_addr += 8;
     INSTR_resultaddr = (volatile uint64_t *)(current_addr);
     current_addr += 8;
-    current_addr += INSTRUCTION_FILE_SIZE - 7 * sizeof(uint64_t);
+    INSTR_page_fed_command = (volatile uint64_t *)(current_addr);
+    current_addr += 8;
+    current_addr += INSTRUCTION_FILE_SIZE - 8 * sizeof(uint64_t);
     VIRTUAL_PAGE_READY_noncacheable = (volatile uint16_t *)(current_addr);
     current_addr += VIRTUAL_PAGE_READY_SIZE;
     MAA_end_addr = current_addr;
@@ -855,6 +861,65 @@ inline void maa_indirect_rmw_vector_soa_jit(
     *INSTR_backingaddr = (uint64_t)values;
     *INSTR_indexaddr = (uint64_t)indices;
     *INSTR_predicateaddr = (uint64_t)predicates;
+    __asm__ __volatile__("mfence;" ::: "memory");
+}
+
+/**
+ * Open the opt-in bounded page-fed form of one useful logical-16K SoA/JIT
+ * vector RMW.  There is deliberately no index pointer: word four carries the
+ * no-backing sentinel, and word six carries only the operation generation.
+ * Four subsequent admission doorbells name completed physical 4K index SPD
+ * pages; a close doorbell authorizes the existing Row/Offset schedule.
+ */
+template <class T1>
+inline void maa_indirect_rmw_vector_soa_jit_page_fed_open(
+    T1 *data, const T1 *values, int completion_tile, Operation_t o_type,
+    uint64_t generation) {
+    assert(data != nullptr);
+    assert(values != nullptr);
+    assert(completion_tile >= 0 && completion_tile < NUM_TILES);
+    assert(generation > 0 &&
+           generation <= gem5::maa::PageFedSoaJitABI::GenerationMask);
+    DataType data_type = get_data_type<T1>();
+    *INSTR_opcode_datatype_optype_tdst1_tdst2 =
+        ((uint64_t)OpcodeType::INDIR_RMW_VECTOR << 32) |
+        ((uint64_t)data_type << 24) | ((uint64_t)o_type << 16) |
+        ((uint64_t)MAA_SOA_JIT_PAGE_FED_MODE_TAG << 8) |
+        (uint64_t)completion_tile;
+    *INSTR_tsrc1_tsrc2_rdst1_rdst2_rsrc1_rsrc2_rsrc3_csrc =
+        ((uint64_t)NA_UINT8 << 56) | ((uint64_t)NA_UINT8 << 48) |
+        ((uint64_t)NA_UINT8 << 40) | ((uint64_t)NA_UINT8 << 32) |
+        ((uint64_t)NA_UINT8 << 24) | ((uint64_t)NA_UINT8 << 16) |
+        ((uint64_t)NA_UINT8 << 8) | (uint64_t)NA_UINT8;
+    *INSTR_baseaddr = (uint64_t)data;
+    *INSTR_backingaddr = (uint64_t)values;
+    *INSTR_indexaddr = gem5::maa::PageFedSoaJitABI::NoIndexBacking;
+    *INSTR_predicateaddr = 0;
+    *INSTR_resultaddr = generation;
+    __asm__ __volatile__("mfence;" ::: "memory");
+}
+
+/** Admit and immediately discard one completed physical 4K index page. */
+inline void maa_soa_jit_page_fed_admit(uint64_t generation,
+                                        unsigned logical_page,
+                                        int index_tile) {
+    assert(logical_page < gem5::maa::PageFedSoaJitABI::Pages);
+    assert(index_tile >= 0 && index_tile < NUM_TILES);
+    assert(generation > 0 &&
+           generation <= gem5::maa::PageFedSoaJitABI::GenerationMask);
+    *INSTR_page_fed_command =
+        gem5::maa::PageFedSoaJitABI::encodeAdmit(
+            generation, static_cast<uint8_t>(logical_page),
+            static_cast<uint8_t>(index_tile));
+    __asm__ __volatile__("mfence;" ::: "memory");
+}
+
+/** Close exact four-page admission and authorize the one 16K schedule. */
+inline void maa_soa_jit_page_fed_close(uint64_t generation) {
+    assert(generation > 0 &&
+           generation <= gem5::maa::PageFedSoaJitABI::GenerationMask);
+    *INSTR_page_fed_command =
+        gem5::maa::PageFedSoaJitABI::encodeClose(generation);
     __asm__ __volatile__("mfence;" ::: "memory");
 }
 

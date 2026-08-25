@@ -121,7 +121,7 @@ class PageFedSoaJitState
             return reject(Result::Busy);
         if (nextGeneration == 0 || nextGeneration >
                 PageFedSoaJitABI::GenerationMask ||
-            nextGeneration <= generation)
+            nextGeneration == generation)
             return reject(Result::StaleGeneration);
         if (capacity < PageFedSoaJitABI::LogicalElements)
             return reject(Result::Capacity);
