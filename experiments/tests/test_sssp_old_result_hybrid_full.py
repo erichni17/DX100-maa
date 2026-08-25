@@ -287,6 +287,9 @@ class SsspOldResultHybridFullContract(unittest.TestCase):
         self.assertNotIn("run_native", self.small_runner)
         self.assertIn('printf "%.0f\\n", sum', self.small_runner)
         self.assertNotIn('printf "%.0f\\\\n", sum', self.small_runner)
+        for runner in (self.runner, self.small_runner):
+            self.assertIn('$1 == "system.maa." suffix', runner)
+            self.assertIn('$1 ~ ("_" suffix "$")', runner)
 
 
 if __name__ == "__main__":

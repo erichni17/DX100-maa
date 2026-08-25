@@ -69,7 +69,8 @@ stat_sum() {
     local stats=$1 suffix=$2
     awk -v suffix="$suffix" '
         /^---------- Begin Simulation Statistics/ { section++ }
-        section == 1 && $1 ~ ("_" suffix "$") {
+        section == 1 &&
+            ($1 == "system.maa." suffix || $1 ~ ("_" suffix "$")) {
             sum += $2
             found++
         }
