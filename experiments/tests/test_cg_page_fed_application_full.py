@@ -48,6 +48,12 @@ class CgPageFedApplicationFullContract(unittest.TestCase):
             "page_fed_total_abi_responses",
             "ratio_predecessor_over_candidate",
             "ratio_native16_over_candidate",
+            "persistent_state_capacity_bytes=16",
+            "open_contexts_derived",
+            "open_context_basis=soa_instructions_equal_terminals_and_page_ops_equal_closes",
+            "soa_jit_predicate_active_credits=16",
+            "soa_jit_active_value_owners=32",
+            r'printf "%.0f\n", sum',
         ):
             self.assertIn(token, self.text)
 
@@ -90,6 +96,9 @@ class CgPageFedApplicationFullContract(unittest.TestCase):
             "artifact_sha256.after",
             "source_status.before",
             "source_status.after",
+            "source_commit.before",
+            "source_commit.after",
+            'cmp -s "$out/input/source_commit.before" "$out/input/source_commit.after"',
             'cmp -s "$out/input/source_status.before" "$out/input/source_status.after"',
             'touch "$out/gate.complete"',
             "refusing nonempty output",

@@ -76,6 +76,8 @@ git -C "$root" status --short --branch > "/tmp/cg-page-fed-full-status.$$.txt"
     cat "/tmp/cg-page-fed-full-status.$$.txt" >&2
     exit 1
 }
+source_commit=$(git -C "$root" rev-parse HEAD)
+printf '%s\n' "$source_commit" > "/tmp/cg-page-fed-full-commit.$$.txt"
 
 export LD_LIBRARY_PATH="$(dirname "$ramulator"):${LD_LIBRARY_PATH:-}"
 resolved_ramulator=$(ldd "$gem5" | awk '$1 == "libramulator.so" {print $3}')
@@ -86,6 +88,7 @@ resolved_ramulator=$(ldd "$gem5" | awk '$1 == "libramulator.so" {print $3}')
 
 mkdir -p "$out/input" "$out/bin" "$out/checkpoint" "$out/run"
 mv "/tmp/cg-page-fed-full-status.$$.txt" "$out/input/source_status.before"
+mv "/tmp/cg-page-fed-full-commit.$$.txt" "$out/input/source_commit.before"
 selector="$out/input/page_fed_product_soa_jit.selector"
 printf '%s\n' 'token_stream_ld page_fed_product_soa_jit' > "$selector"
 chmod 0444 "$selector"
@@ -134,7 +137,6 @@ restore_cmd=(
 
 native_line=$(grep '^CG_FINGERPRINT ' "$native_log")
 [[ $(grep -Ec '^CG_FINGERPRINT .* elements=150000 .* result=PASS$' "$native_log") -eq 1 ]]
-source_commit=$(git -C "$root" rev-parse HEAD)
 {
     printf 'schema=dx100.cg.page_fed_application_full.v1\n'
     printf 'candidate_only=true\nnative_reruns=0\npredecessor_reruns=0\nwall_timeout=none\ntrace_mode=disabled_full\n'
@@ -210,7 +212,7 @@ done
 
 [[ $(grep -Ec '^CG_LOGICAL16_RMW_SELECTION treatment=page_fed_product_soa_jit .*producer=physical_page_mul_direct_index_admit .*coherent_index_backing_bytes=0 .*host_payload_access=0 performance_promotable=0$' "$restore" || true) -eq 1 ]]
 [[ $(grep -Ec '^CG_LOGICAL16_RMW_TERMINAL treatment=page_fed_product_soa_jit .*producer=physical_page_mul_direct_index_admit .*coherent_index_backing_bytes=0 .*host_payload_access=0 performance_promotable=0 result=PASS$' "$restore" || true) -eq 1 ]]
-for resolved in page_fed_soa_jit=true num_maas=1 num_indirect_units_per_maa=4 num_tiles_per_core=8 num_tile_elements=16384 physical_tile_elements=4096 num_offset_table_entries=16384 num_offset_table_epoch_entries=16384 num_initial_row_table_slices=32; do
+for resolved in page_fed_soa_jit=true num_maas=1 num_indirect_units_per_maa=4 num_tiles_per_core=8 num_tile_elements=16384 physical_tile_elements=4096 num_offset_table_entries=16384 num_offset_table_epoch_entries=16384 num_initial_row_table_slices=32 soa_jit_predicate_active_credits=16 soa_jit_active_value_owners=32; do
     grep -Fqx "$resolved" "$out/run/config.ini"
 done
 [[ $(grep -Ec '^\[system\.mem_ctrls[01]\]$' "$out/run/config.ini" || true) -eq 2 ]]
@@ -228,17 +230,19 @@ stat_sum() {
     awk -v suffix="$1" '
         /^---------- Begin Simulation Statistics/ {section++}
         section == 1 && $1 ~ ("_" suffix "$") {sum += $2; found++}
-        /^---------- End Simulation Statistics/ && section == 1 {if (!found) exit 2; printf "%.0f\\n", sum; exit}' "$stats"
+        /^---------- End Simulation Statistics/ && section == 1 {if (!found) exit 2; printf "%.0f\n", sum; exit}' "$stats"
 }
 soa_instructions=$(stat_sum IND_SoaJitInstructions); soa_terminals=$(stat_sum IND_SoaJitTerminalCompletions); soa_selected=$(stat_sum IND_SoaJitSelected); soa_aliases=$(stat_sum IND_SoaJitAliasesApplied); soa_rejected=$(stat_sum IND_SoaJitPredicateRejected)
 page_ops=$(stat_sum IND_SoaJitPageFedOperations); admits=$(stat_sum IND_SoaJitPageFedAdmitCommands); closes=$(stat_sum IND_SoaJitPageFedCloseCommands); command_responses=$(stat_sum IND_SoaJitPageFedCommandResponses)
-admitted_words=$(stat_sum IND_SoaJitPageFedAdmittedWords); spd_reads=$(stat_sum IND_SoaJitPageFedSpdIndexReads); row_writes=$(stat_sum IND_SoaJitPageFedRowWrites); index_reads=$(stat_sum IND_SoaJitPageFedCoherentIndexReadLines); index_writes=$(stat_sum IND_SoaJitPageFedCoherentIndexWriteLines); state_bytes=$(stat_sum IND_SoaJitPageFedStateByteOperations)
+admitted_words=$(stat_sum IND_SoaJitPageFedAdmittedWords); spd_reads=$(stat_sum IND_SoaJitPageFedSpdIndexReads); row_writes=$(stat_sum IND_SoaJitPageFedRowWrites); index_reads=$(stat_sum IND_SoaJitPageFedCoherentIndexReadLines); index_writes=$(stat_sum IND_SoaJitPageFedCoherentIndexWriteLines); state_byte_operations=$(stat_sum IND_SoaJitPageFedStateByteOperations)
 value_issues=$(stat_sum IND_SoaJitValueReadIssues); value_responses=$(stat_sum IND_SoaJitValueReadResponses); a_reads=$(stat_sum IND_SoaJitAReadIssues); a_read_responses=$(stat_sum IND_SoaJitAReadResponses); a_writes=$(stat_sum IND_SoaJitAWriteIssues); a_write_responses=$(stat_sum IND_SoaJitAWriteResponses)
 fallbacks=$(stat_sum IND_BoundedGlobalMergeFallbacks); epoch_drains=$(stat_sum IND_SoaJitEpochDrains)
 publish_issues=$(stat_sum STR_PublishIssues); publish_accepts=$(stat_sum STR_PublishAccepts); publish_responses=$(stat_sum STR_PublishWriteResponses); publish_terminals=$(stat_sum STR_PublishTerminals)
 [[ $soa_instructions -eq $expected_windows && $soa_terminals -eq $expected_windows && $soa_selected -eq $expected_words && $soa_aliases -eq $expected_words && $soa_rejected -eq 0 ]]
 [[ $page_ops -eq $expected_windows && $admits -eq $expected_pages && $closes -eq $expected_windows && $command_responses -eq $((expected_pages + expected_windows)) ]]
-[[ $admitted_words -eq $expected_words && $spd_reads -eq $expected_words && $row_writes -eq $expected_words && $index_reads -eq 0 && $index_writes -eq 0 && $state_bytes -eq $((expected_windows * 16)) ]]
+open_contexts_derived=$((soa_instructions - soa_terminals))
+[[ $open_contexts_derived -eq 0 && $page_ops -eq $soa_terminals && $closes -eq $soa_terminals ]]
+[[ $admitted_words -eq $expected_words && $spd_reads -eq $expected_words && $row_writes -eq $expected_words && $index_reads -eq 0 && $index_writes -eq 0 && $state_byte_operations -eq $((expected_windows * 16)) ]]
 [[ $value_issues -eq $expected_words && $value_responses -eq $expected_words && $a_reads -gt 0 && $a_reads -eq $a_read_responses && $a_reads -eq $a_writes && $a_reads -eq $a_write_responses ]]
 [[ $fallbacks -eq 0 && $epoch_drains -eq 0 ]]
 [[ $publish_issues -eq $expected_publish_lines && $publish_accepts -eq $expected_publish_lines && $publish_responses -eq $expected_publish_lines && $publish_terminals -eq $expected_pages ]]
@@ -257,16 +261,18 @@ sha256sum "${artifact_paths[@]}" > "$out/input/artifact_sha256.after"
 cmp -s "$out/input/artifact_sha256.before" "$out/input/artifact_sha256.after"
 git -C "$root" status --short --branch > "$out/input/source_status.after"
 cmp -s "$out/input/source_status.before" "$out/input/source_status.after"
+git -C "$root" rev-parse HEAD > "$out/input/source_commit.after"
+cmp -s "$out/input/source_commit.before" "$out/input/source_commit.after"
 
 {
     printf 'terminal=true\ncorrectness=PASS_NATIVE16_ORACLE\nperformance_promotion=ELIGIBLE_AFTER_CORRECTNESS_PASS\n'
     printf 'source_commit=%s\ngem5_sha256=%s\ncheckpoint_sha256=%s\n' "$source_commit" "$gem5_sha" "$checkpoint_sha"
     printf 'simTicks=%s\npredecessor_simTicks=%s\nratio_predecessor_over_candidate=%s\nperformance_vs_predecessor=%s\nnative16_simTicks=%s\nratio_native16_over_candidate=%s\nperformance_vs_native16=%s\n' "$sim_ticks" "$predecessor_ticks" "$predecessor_ratio" "$performance_vs_predecessor" "$native_ticks" "$native_ratio" "$performance_vs_native16"
     printf 'windows=%s\npage_fed_admits=%s\npage_fed_closes=%s\npage_fed_total_abi_responses=%s\n' "$expected_windows" "$admits" "$closes" "$((expected_windows * 6))"
-    printf 'index_publish_pages=0\ncoherent_index_read_lines=0\ncoherent_index_write_lines=0\nstate_byte_operations=%s\nfallbacks=0\nopen_contexts=0\n' "$state_bytes"
+    printf 'index_publish_pages=0\ncoherent_index_read_lines=0\ncoherent_index_write_lines=0\npersistent_state_capacity_bytes=16\nstate_byte_operations=%s\nfallbacks=0\nopen_contexts_derived=%s\nopen_context_basis=soa_instructions_equal_terminals_and_page_ops_equal_closes\n' "$state_byte_operations" "$open_contexts_derived"
     printf 'product_pages=%s\npublisher_issue_accept_response=%s/%s/%s\npublisher_terminals=%s\nproduct_value_soa_abi_closure=%s/%s/%s/%s\nmatched_a_read_write=%s/%s\n' "$expected_pages" "$publish_issues" "$publish_accepts" "$publish_responses" "$value_issues" "$value_responses" "$soa_terminals" "$((expected_windows * 6))" "$a_reads" "$a_writes"
     printf 'fingerprint_relative_deltas=%s\nnative16_fingerprint=%s\ncandidate_fingerprint=%s\n' "$fingerprint_relative_deltas" "$native_line" "$candidate_line"
 } > "$out/result.txt"
-sha256sum "$out/manifest.txt" "$out/result.txt" "$restore" "$stats" "$out/run/config.ini" "$out/input/checkpoint.files.sha256.before" "$out/input/checkpoint.files.sha256.after" "$out/input/artifact_sha256.before" "$out/input/artifact_sha256.after" "$out/input/source_status.before" "$out/input/source_status.after" > "$out/result_sha256.txt"
+sha256sum "$out/manifest.txt" "$out/result.txt" "$restore" "$stats" "$out/run/config.ini" "$out/input/checkpoint.files.sha256.before" "$out/input/checkpoint.files.sha256.after" "$out/input/artifact_sha256.before" "$out/input/artifact_sha256.after" "$out/input/source_status.before" "$out/input/source_status.after" "$out/input/source_commit.before" "$out/input/source_commit.after" > "$out/result_sha256.txt"
 touch "$out/gate.complete"
 printf 'PASS trace-free candidate-only page-fed full-CG gate simTicks=%s predecessor_ratio=%s native16_ratio=%s out=%s\n' "$sim_ticks" "$predecessor_ratio" "$native_ratio" "$out"
