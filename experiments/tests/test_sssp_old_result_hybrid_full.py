@@ -126,6 +126,8 @@ class SsspOldResultHybridFullContract(unittest.TestCase):
         self.assertIn("aperture_candidate_gate", self.runner)
         self.assertIn("cpu_spd_boundary_prefetch_drops", self.runner)
         self.assertIn("cpu_spd_out_of_range_rejections", self.runner)
+        self.assertIn("stat_sum_optional_zero", self.runner)
+        self.assertIn("found ? sum : 0", self.runner)
         self.assertIn("aperture_rejections == 0", self.runner)
         self.assertNotIn("boundary_drops > 0", self.runner)
         self.assertIn("record_aperture_stats", self.runner)
@@ -305,6 +307,8 @@ class SsspOldResultHybridFullContract(unittest.TestCase):
             "cpu_spd_out_of_range_rejections=0_required", self.small_runner
         )
         self.assertIn("aperture_rejections -eq 0", self.small_runner)
+        self.assertIn("stat_sum_optional_zero", self.small_runner)
+        self.assertIn("found ? sum : 0", self.small_runner)
         self.assertNotIn("run_native", self.small_runner)
         self.assertIn('printf "%.0f\\n", sum', self.small_runner)
         self.assertNotIn('printf "%.0f\\\\n", sum', self.small_runner)

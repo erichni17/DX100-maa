@@ -43,6 +43,22 @@ stat_sum() {
     ' "$stats"
 }
 
+stat_sum_optional_zero() {
+    local suffix=$1
+    awk -v suffix="$suffix" '
+        /^---------- Begin Simulation Statistics/ { section++ }
+        section == 1 &&
+            ($1 == "system.maa." suffix || $1 ~ ("_" suffix "$")) {
+            sum += $2
+            found++
+        }
+        /^---------- End Simulation Statistics/ && section == 1 {
+            printf "%.0f\n", found ? sum : 0
+            exit
+        }
+    ' "$stats"
+}
+
 terminal_value() {
     local line=$1 key=$2
     tr ' ' '\n' <<<"$line" | awk -F= -v key="$key" \
@@ -217,8 +233,8 @@ a_read_responses=$(stat_sum IND_SoaJitAReadResponses)
 a_writes=$(stat_sum IND_SoaJitAWriteIssues)
 a_write_responses=$(stat_sum IND_SoaJitAWriteResponses)
 terminals=$(stat_sum IND_SoaJitTerminalCompletions)
-boundary_drops=$(stat_sum cpu_spd_boundary_prefetch_drops)
-aperture_rejections=$(stat_sum cpu_spd_out_of_range_rejections)
+boundary_drops=$(stat_sum_optional_zero cpu_spd_boundary_prefetch_drops)
+aperture_rejections=$(stat_sum_optional_zero cpu_spd_out_of_range_rejections)
 
 [[ $instructions -eq 4 && $terminals -eq 4 ]]
 [[ $selected -eq 65536 && $rejected -eq 0 && $captures -eq 65536 ]]

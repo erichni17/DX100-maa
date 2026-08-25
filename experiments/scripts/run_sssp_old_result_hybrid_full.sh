@@ -84,6 +84,22 @@ stat_sum() {
     ' "$stats"
 }
 
+stat_sum_optional_zero() {
+    local stats=$1 suffix=$2
+    awk -v suffix="$suffix" '
+        /^---------- Begin Simulation Statistics/ { section++ }
+        section == 1 &&
+            ($1 == "system.maa." suffix || $1 ~ ("_" suffix "$")) {
+            sum += $2
+            found++
+        }
+        /^---------- End Simulation Statistics/ && section == 1 {
+            printf "%.0f\n", found ? sum : 0
+            exit
+        }
+    ' "$stats"
+}
+
 validate_evidence() (
     set -euo pipefail
     local out=$1 require_wrapper=${2:-false}
@@ -300,8 +316,10 @@ validate_evidence() (
 
     if [[ $aperture_candidate_gate == true ]]; then
         local boundary_drops aperture_rejections
-        boundary_drops=$(stat_sum "$stats" cpu_spd_boundary_prefetch_drops)
-        aperture_rejections=$(stat_sum "$stats" cpu_spd_out_of_range_rejections)
+        boundary_drops=$(stat_sum_optional_zero \
+            "$stats" cpu_spd_boundary_prefetch_drops)
+        aperture_rejections=$(stat_sum_optional_zero \
+            "$stats" cpu_spd_out_of_range_rejections)
         [[ $boundary_drops =~ ^[0-9]+$ && $aperture_rejections =~ ^[0-9]+$ ]]
         [[ $(manifest_value "$manifest" \
             first_window_cpu_spd_boundary_prefetch_drops) == "$boundary_drops" ]]
@@ -323,8 +341,10 @@ write_result() {
         routing_status=eligible_subset_routed_fallbacks_preserved
     fi
     if [[ $aperture_candidate_gate == true ]]; then
-        boundary_drops=$(stat_sum "$stats" cpu_spd_boundary_prefetch_drops)
-        aperture_rejections=$(stat_sum "$stats" cpu_spd_out_of_range_rejections)
+        boundary_drops=$(stat_sum_optional_zero \
+            "$stats" cpu_spd_boundary_prefetch_drops)
+        aperture_rejections=$(stat_sum_optional_zero \
+            "$stats" cpu_spd_out_of_range_rejections)
     else
         boundary_drops=not_checked
         aperture_rejections=not_checked
@@ -381,8 +401,10 @@ write_result() {
 record_aperture_stats() {
     local out=$1 stats="$1/run/stats.txt" boundary_drops aperture_rejections
     if [[ $aperture_candidate_gate == true ]]; then
-        boundary_drops=$(stat_sum "$stats" cpu_spd_boundary_prefetch_drops)
-        aperture_rejections=$(stat_sum "$stats" cpu_spd_out_of_range_rejections)
+        boundary_drops=$(stat_sum_optional_zero \
+            "$stats" cpu_spd_boundary_prefetch_drops)
+        aperture_rejections=$(stat_sum_optional_zero \
+            "$stats" cpu_spd_out_of_range_rejections)
     else
         boundary_drops=not_checked
         aperture_rejections=not_checked
