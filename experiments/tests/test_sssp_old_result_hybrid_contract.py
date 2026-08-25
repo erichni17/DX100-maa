@@ -118,9 +118,8 @@ class SsspOldResultHybridContract(unittest.TestCase):
         self.assertIn("sssp_hybrid_predicates", helper)
         self.assertIn("sssp_hybrid_old_results", helper)
         self.assertNotIn("get_cacheable_tile_pointer", helper)
-        self.assertIn(
-            "host_spd_reads=0 hidden_result_payload_bytes=0", self.source
-        )
+        self.assertIn('<< " host_spd_reads=" << host_spd_reads', self.source)
+        self.assertIn('<< " hidden_result_payload_bytes=0"', self.source)
         self.assertIn("physical_spd_words=", self.source)
         self.assertIn("row_table_slices=32", self.source)
 
@@ -139,15 +138,16 @@ class SsspOldResultHybridContract(unittest.TestCase):
         self.assertIn("result=PASS", self.runner)
         self.assertNotIn("sssp_maa_1K", self.runner)
 
-    def test_runner_is_bound_to_the_pre_tail_replay_sssp_source(self):
-        # Evidence plumbing must not silently import 94cafc7c..7b6f9c21.
+    def test_successor_is_not_the_rejected_pre_fallback_consumer_source(self):
         baseline = subprocess.run(
             ["git", "show", "e690867f:benchmarks/gapbs/src/sssp.cc"],
             cwd=ROOT,
             check=True,
             capture_output=True,
         ).stdout
-        self.assertEqual(self.source.encode(), baseline)
+        self.assertNotEqual(self.source.encode(), baseline)
+        self.assertIn('#include "sssp_coherent_fallback.hh"', self.source)
+        self.assertIn("PublishAndConsumeSsspFallbackPage(", self.source)
 
 
 if __name__ == "__main__":
