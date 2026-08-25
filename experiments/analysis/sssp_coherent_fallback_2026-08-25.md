@@ -70,4 +70,33 @@ It constructs vertex 0 -> 4,096 middle vertices -> four unique leaves per
 middle vertex. At the 4,096-entry frontier, four 1,024-vertex chunks each
 produce one exact 4,096-edge non-routed fallback page.
 
-Evidence status: pending clean-tree execution.
+Accepted correctness evidence is
+`/data1/nier/worktrees/codex-coordination/sessions/sssp-coherent-fallback-consumer-20260825-011336-3b0f1952/evidence/sssp-coherent-fallback-761dd0f-r1`.
+It was run from clean source commit `761dd0f335e7b55a864819a3dc18d96f9c127a04`.
+The guest SHA-256 is
+`b000b82dc43f59a390e3a68761539a3edc5aed70c9fcf660da51f82791cabe34`;
+the graph SHA-256 is
+`2fd29eff77359d6e5297164769d9885ae176bf3ad146e309e9026f627e3b2175`.
+The before/after artifact manifests match and revalidate.
+
+The restore exited through the `m5_exit` instruction and produced nonempty
+final stats. The exact fingerprint is 20,481 reached vertices, distance sum
+36,864, maximum distance 2, hashes `145bdeed9b3787df` and
+`bc382214847f7b99`, with zero triangle, predecessor, weight, or distance
+violations. The terminal record reports:
+
+- 0 eligible/routed logical windows and 16,384 legacy fallback words;
+- 4 fallback pages and 0 coherent partial-tail batches;
+- 12 publication issue pages, 12 response-complete pages, 49,152 published
+  words, and 196,608 published bytes;
+- 16,384 consumed fallback words and 16,384 predicate restore words;
+- 0 host-SPD reads, maximum host-SPD element `-1`, and 0 illegal host-SPD line
+  starts;
+- `response_closure=1` and `counts_close=1`.
+
+Hardware statistics independently close 3,072 publisher WriteReq issues,
+3,072 cache accepts, and 3,072 WriteResps across 12 terminal publications.
+Both `cpu_spd_boundary_prefetch_drops` and
+`cpu_spd_out_of_range_rejections` are zero. `simTicks=616849132` is retained
+as provenance for this small correctness reproducer only; it is not a
+performance or full-S22 claim.
