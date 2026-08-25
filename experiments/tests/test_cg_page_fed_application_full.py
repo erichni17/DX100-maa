@@ -51,6 +51,16 @@ class CgPageFedApplicationFullContract(unittest.TestCase):
         ):
             self.assertIn(token, self.text)
 
+    def test_predecessor_json_check_accepts_pinned_pretty_printing(self):
+        self.assertIn(
+            "grep -Fq '\"candidate_simTicks\": 818687246165,'",
+            self.text,
+        )
+        self.assertNotIn(
+            "grep -Fqx '\"candidate_simTicks\": 818687246165,'",
+            self.text,
+        )
+
     def test_trace_and_timeout_are_prohibited(self):
         self.assertNotIn("--debug-flags", self.text)
         self.assertNotIn("--debug-file", self.text)

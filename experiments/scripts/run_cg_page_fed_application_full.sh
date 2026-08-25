@@ -54,9 +54,11 @@ require_hash "$predecessor_gate" "$predecessor_gate_sha" || {
     echo "missing or mismatched predecessor native16 certificate" >&2; exit 2;
 }
 grep -Fqx 'PASS_NATIVE16_ORACLE' "$predecessor_gate"
-grep -Fqx '"candidate_simTicks": 818687246165,' "$predecessor_result"
-grep -Fqx '"correctness": "PASS_NATIVE16_ORACLE",' "$predecessor_result"
-grep -Fqx '"native16_simTicks": 58928150676,' "$predecessor_result"
+# The sealed JSON is intentionally pretty-printed; pin its file digest above
+# and accept its stable field text independent of indentation.
+grep -Fq '"candidate_simTicks": 818687246165,' "$predecessor_result"
+grep -Fq '"correctness": "PASS_NATIVE16_ORACLE",' "$predecessor_result"
+grep -Fq '"native16_simTicks": 58928150676,' "$predecessor_result"
 require_hash "$native_log" "$native_log_sha" &&
 require_hash "$native_stats" "$native_stats_sha" || {
     echo "missing or mismatched frozen native16 oracle" >&2; exit 2;
