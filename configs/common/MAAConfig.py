@@ -36,6 +36,9 @@ def _get_maa_opts(options):
             options, "maa_logical_tile_page_scheduler"
         )
 
+    if hasattr(options, "maa_page_fed_soa_jit"):
+        opts["page_fed_soa_jit"] = getattr(options, "maa_page_fed_soa_jit")
+
     if hasattr(options, "maa_num_regs_per_core"):
         opts["num_regs_per_core"] = getattr(options, "maa_num_regs_per_core")
 

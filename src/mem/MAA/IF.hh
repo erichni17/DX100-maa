@@ -166,8 +166,10 @@ public:
     Addr baseAddr, backingAddr, indexAddr, predicateAddr, resultAddr;
     bool soaJitMaskedIndex;
     bool soaJitOldResult;
+    bool soaJitPageFed;
     bool soaJitPredicateWordReceived;
     bool soaJitResultWordReceived;
+    uint64_t soaJitPageFedGeneration;
     int16_t soaJitScalarRegID;
     Addr logicalSourceBackingAddr;
     Addr logicalSource2BackingAddr, logicalDestinationBackingAddr;
@@ -284,17 +286,26 @@ public:
     bool hasSoaJitOldResult() const {
         return isSoaJitVectorRmw() && soaJitOldResult;
     }
+    bool isSoaJitPageFedRmw() const {
+        return isSoaJitVectorRmw() && soaJitPageFed;
+    }
     bool hasValidSoaJitRmwOperands() const {
-        return isSoaJitRmw() && dst1SpdID == -1 && dst2SpdID != -1 &&
-               src1RegID != -1 && src2RegID != -1 && src3RegID != -1 &&
-               dst1RegID == -1 && dst2RegID == -1 &&
-               (isSoaJitScalarRmw() ? soaJitScalarRegID != -1
-                                    : soaJitScalarRegID == -1);
+        return hasValidSoaJitRmwShape() &&
+               (isSoaJitPageFedRmw()
+                    ? src1RegID == -1 && src2RegID == -1 &&
+                          src3RegID == -1 && soaJitScalarRegID == -1
+                    : src1RegID != -1 && src2RegID != -1 &&
+                          src3RegID != -1 &&
+                          (isSoaJitScalarRmw()
+                               ? soaJitScalarRegID != -1
+                               : soaJitScalarRegID == -1));
     }
     bool hasValidSoaJitRmwShape() const {
         return isSoaJitRmw() && dst1SpdID == -1 && dst2SpdID != -1 &&
-               src1RegID != -1 && src2RegID != -1 && src3RegID != -1 &&
-               dst1RegID == -1 && dst2RegID == -1;
+               dst1RegID == -1 && dst2RegID == -1 &&
+               (isSoaJitPageFedRmw() ||
+                (src1RegID != -1 && src2RegID != -1 &&
+                 src3RegID != -1));
     }
     size_t getMemoryAccesses(
         std::array<MemoryAccess, MaxMemoryAccesses> &accesses) const;

@@ -414,6 +414,7 @@ public:
     unsigned int transparent_spd_mode;
     unsigned int logical_spd_cache_mode;
     bool logical_tile_page_scheduler;
+    bool page_fed_soa_jit;
     unsigned int page_materialization_wakeup_batches;
     unsigned int page_materialization_fragment_buffers;
     bool page_materialization_direct_spd_fragments;
@@ -512,6 +513,7 @@ public:
 
     const AddrRangeList &getAddrRanges(int core_id) const { return cpuPortAddrRanges[core_id]; }
     void setTileReady(int tileID, int wordSize);
+    void signalPageFedSoaJitOpen(int coreID, uint64_t generation);
     void resetVirtualPageReady(int tokenTileID, Addr backingAddr,
                                int backingRangeID, int wordSize);
     void setVirtualPageReady(int tokenTileID, int pageID,
@@ -1243,6 +1245,15 @@ public:
         std::vector<statistics::Scalar *> IND_SoaJitContextStalls;
         std::vector<statistics::Scalar *> IND_SoaJitEpochDrains;
         std::vector<statistics::Scalar *> IND_SoaJitTerminalCompletions;
+        std::vector<statistics::Scalar *> IND_SoaJitPageFedOperations;
+        std::vector<statistics::Scalar *> IND_SoaJitPageFedAdmitCommands;
+        std::vector<statistics::Scalar *> IND_SoaJitPageFedCloseCommands;
+        std::vector<statistics::Scalar *> IND_SoaJitPageFedCommandResponses;
+        std::vector<statistics::Scalar *> IND_SoaJitPageFedAdmittedWords;
+        std::vector<statistics::Scalar *> IND_SoaJitPageFedSpdIndexReads;
+        std::vector<statistics::Scalar *> IND_SoaJitPageFedRowWrites;
+        std::vector<statistics::Scalar *> IND_SoaJitPageFedAdmissionCycles;
+        std::vector<statistics::Scalar *> IND_SoaJitPageFedStateBytes;
         std::vector<statistics::Scalar *> IND_BoundedSummaryLineReads;
         std::vector<statistics::Scalar *> IND_BoundedSummaryWords;
         std::vector<statistics::Scalar *> IND_BoundedSummaryRecords;

@@ -3,6 +3,7 @@
 #include <limits>
 
 #include "../../../include/gem5/maa_logical_spd_cache_abi.hh"
+#include "../../../include/gem5/maa_page_fed_soa_abi.hh"
 #include "base/addr_range.hh"
 #include "base/logging.hh"
 #include "base/trace.hh"
@@ -225,6 +226,49 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
             element_id /= sizeof(uint64_t);
             uint64_t data = pkt->getPtr<uint64_t>()[0];
             DPRINTF(MAACpuPort, "%s: IF[%d] = %ld\n", __func__, element_id, data);
+            if (element_id == 7) {
+                panic_if(!page_fed_soa_jit,
+                         "Page-fed command doorbell is disabled\n");
+                maa::PageFedSoaJitABI::Command command;
+                panic_if(!maa::PageFedSoaJitABI::decode(data, command),
+                         "Malformed page-fed command word 0x%016lx\n",
+                         data);
+                const auto core = my_RID_to_core_id.find(
+                    pkt->requestorId());
+                panic_if(core == my_RID_to_core_id.end(),
+                         "Page-fed command arrived before its descriptor "
+                         "established requestor identity\n");
+                IndirectAccessUnit *owner = nullptr;
+                for (unsigned int unit = 0;
+                     unit < num_indirect_units_total; ++unit) {
+                    if (!indirectAccessUnits[unit].pageFedActiveForCore(
+                            core->second))
+                        continue;
+                    panic_if(owner != nullptr,
+                             "Core %d owns duplicate page-fed contexts\n",
+                             core->second);
+                    owner = &indirectAccessUnits[unit];
+                }
+                panic_if(owner == nullptr,
+                         "Core %d page-fed command has no active context; "
+                         "open must reach Fill before page admission\n",
+                         core->second);
+                const Cycles latency =
+                    command.action ==
+                            maa::PageFedSoaJitABI::Action::Admit
+                        ? owner->admitPageFedSoaJitIndexPage(
+                              command.generation, command.page,
+                              command.tile)
+                        : owner->closePageFedSoaJit(
+                              command.generation);
+                pkt->makeTimingResponse();
+                const Tick old_header_delay = pkt->headerDelay;
+                pkt->headerDelay = pkt->payloadDelay = 0;
+                cpuSidePorts[core_id]->schedTimingResp(
+                    pkt, getClockEdge(latency) + old_header_delay);
+                respond_immediately = false;
+                break;
+            }
             InstructionPtr current_instruction;
             int instruction_id = -1;
             for (int i = 0; i < my_instruction_RIDs.size(); i++) {
@@ -268,9 +312,12 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                 const uint8_t raw_dst1 = data & NA_UINT8;
                 current_instruction->soaJitOldResult =
                     raw_dst1 == SoaJitSafety::OldResultModeTag;
+                current_instruction->soaJitPageFed =
+                    raw_dst1 == maa::PageFedSoaJitABI::ModeTag;
                 current_instruction->dst1SpdID =
                     (raw_dst1 == NA_UINT8 ||
-                     current_instruction->soaJitOldResult) ? -1 : raw_dst1;
+                     current_instruction->soaJitOldResult ||
+                     current_instruction->soaJitPageFed) ? -1 : raw_dst1;
                 data = data >> 8;
                 current_instruction->optype = (data & NA_UINT8) == NA_UINT8 ? Instruction::OPType::MAX : static_cast<Instruction::OPType>(data & NA_UINT8);
                 data = data >> 8;
@@ -283,6 +330,11 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                              current_instruction->opcode !=
                                  Instruction::OpcodeType::INDIR_RMW_VECTOR,
                          "Old-result mode tag is only valid for guarded "
+                         "INDIR_RMW_VECTOR\n");
+                panic_if(current_instruction->soaJitPageFed &&
+                             current_instruction->opcode !=
+                                 Instruction::OpcodeType::INDIR_RMW_VECTOR,
+                         "Page-fed mode tag is only valid for guarded "
                          "INDIR_RMW_VECTOR\n");
                 if (logical_header.kind ==
                     maa::LogicalSPDCacheABI::HeaderKind::LogicalALUScalar) {
@@ -497,13 +549,14 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                         !current_instruction->hasValidSoaJitRmwShape(),
                         "Rejected SoA/JIT RMW ABI shape: dst1 must be the "
                         "no-result sentinel or old-result mode tag, "
-                        "dst2(completion) and all three "
-                        "range registers must be present, and register "
-                        "destinations must be absent\n");
+                        "dst2(completion) must be present, register "
+                        "destinations must be absent, and ordinary modes "
+                        "must carry all three range registers\n");
                     panic_if(
-                        current_instruction->src1RegID >= num_regs ||
-                            current_instruction->src2RegID >= num_regs ||
-                            current_instruction->src3RegID >= num_regs ||
+                        (!current_instruction->isSoaJitPageFedRmw() &&
+                         (current_instruction->src1RegID >= num_regs ||
+                          current_instruction->src2RegID >= num_regs ||
+                          current_instruction->src3RegID >= num_regs)) ||
                             current_instruction->dst2SpdID < 0 ||
                             current_instruction->dst2SpdID >=
                                 static_cast<int>(num_tiles),
@@ -517,6 +570,13 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                             current_instruction->optype !=
                                 Instruction::OPType::MAX_OP,
                         "SoA/JIT RMW supports only ADD/MIN/MAX\n");
+                    panic_if(
+                        current_instruction->isSoaJitPageFedRmw() &&
+                            (!page_fed_soa_jit ||
+                             current_instruction->datatype !=
+                                 Instruction::DataType::FLOAT32_TYPE),
+                        "Page-fed SoA/JIT requires the default-off enable "
+                        "and FP32 vector operands\n");
                 }
                 if (current_instruction->accessType !=
                     Instruction::AccessType::COMPUTE) {
@@ -742,6 +802,15 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                     current_instruction->logicalSourceBackingAddr = data;
                     break;
                 }
+                if (current_instruction->isSoaJitPageFedRmw()) {
+                    panic_if(
+                        data != maa::PageFedSoaJitABI::NoIndexBacking,
+                        "Page-fed SoA/JIT word four must carry the zero-"
+                        "backing sentinel, got 0x%lx\n", data);
+                    current_instruction->indexAddr =
+                        maa::PageFedSoaJitABI::NoIndexBacking;
+                    break;
+                }
                 current_instruction->indexAddr = data;
                 current_instruction->indexAddrRangeID = getAddrRegion(data);
                 panic_if(current_instruction->indexAddrRangeID < 0,
@@ -901,7 +970,13 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                 current_instruction->soaJitPredicateWordReceived = true;
                 const int soa_word_size = current_instruction->WordSize();
                 const bool operands_aligned =
-                    current_instruction->isSoaJitScalarRmw()
+                    current_instruction->isSoaJitPageFedRmw()
+                        ? current_instruction->baseAddr % soa_word_size == 0 &&
+                              current_instruction->backingAddr %
+                                      soa_word_size ==
+                                  0 &&
+                              data == 0
+                        : current_instruction->isSoaJitScalarRmw()
                         ? SoaJitSafety::scalarOperandsAligned(
                               current_instruction->baseAddr,
                               current_instruction->indexAddr,
@@ -929,7 +1004,8 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                     current_instruction->predicateMaxAddr = addrRegions[
                         current_instruction->predicateAddrRangeID].second;
                 }
-                if (current_instruction->hasSoaJitOldResult())
+                if (current_instruction->hasSoaJitOldResult() ||
+                    current_instruction->isSoaJitPageFedRmw())
                     break;
                 my_instruction_recvs[instruction_id] = true;
                 DPRINTF(MAAController,
@@ -946,8 +1022,35 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
             }
             case 6: {
                 panic_if(instruction_id == -1,
-                         "Received old-result backing before instruction "
+                         "Received SoA/JIT extension word before instruction "
                          "header!\n");
+                if (current_instruction->isSoaJitPageFedRmw()) {
+                    panic_if(
+                        !current_instruction->
+                             hasValidSoaJitRmwOperands() ||
+                            !current_instruction->
+                                 soaJitPredicateWordReceived ||
+                            current_instruction->soaJitResultWordReceived ||
+                            current_instruction->addrRangeID < 0 ||
+                            current_instruction->backingAddrRangeID < 0 ||
+                            current_instruction->indexAddrRangeID != -1 ||
+                            current_instruction->predicateAddrRangeID != -1 ||
+                            data == 0 ||
+                            data >
+                                maa::PageFedSoaJitABI::GenerationMask,
+                        "Malformed page-fed SoA/JIT generation/operand "
+                        "closure\n");
+                    current_instruction->soaJitPageFedGeneration = data;
+                    current_instruction->soaJitResultWordReceived = true;
+                    my_instruction_recvs[instruction_id] = true;
+                    DPRINTF(MAAController,
+                            "%s: %s received for page-fed generation=%lu "
+                            "with no index backing\n",
+                            __func__, current_instruction->print(), data);
+                    respond_immediately = false;
+                    scheduleDispatchInstructionEvent();
+                    break;
+                }
                 panic_if(!current_instruction->hasSoaJitOldResult() ||
                              !current_instruction->
                                   hasValidSoaJitRmwOperands(),

@@ -258,6 +258,14 @@ def addNoISAOptions(parser):
         ),
     )
     parser.add_argument(
+        "--maa_page_fed_soa_jit",
+        action="store_true",
+        help=(
+            "Opt in to bounded direct admission of four completed physical "
+            "index pages into one logical-16K SoA/JIT RMW"
+        ),
+    )
+    parser.add_argument(
         "--maa_num_regs_per_core",
         type=int,
         default=8,

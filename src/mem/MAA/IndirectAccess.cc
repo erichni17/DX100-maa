@@ -729,6 +729,10 @@ void IndirectAccessUnit::check_reset() {
                  !soa_jit_old_result_buffer.empty(),
              "I[%d] SoA/JIT old-result publisher is not empty at reset\n",
              my_indirect_id);
+    panic_if(soa_jit_page_fed_state.active() ||
+                 soa_jit_page_fed_state.failed(),
+             "I[%d] page-fed state is active or failed at reset\n",
+             my_indirect_id);
     panic_if(descriptor_spool_bucket_active ||
                  descriptor_spool_bucket_scan_complete ||
                  descriptor_spool_replay_active ||
@@ -869,6 +873,10 @@ bool IndirectAccessUnit::isSoaJitMaskedIndexRmw() const {
 bool IndirectAccessUnit::isSoaJitOldResultRmw() const {
     return my_instruction != nullptr &&
            my_instruction->hasSoaJitOldResult();
+}
+bool IndirectAccessUnit::isSoaJitPageFedRmw() const {
+    return my_instruction != nullptr &&
+           my_instruction->isSoaJitPageFedRmw();
 }
 bool IndirectAccessUnit::usesBoundedDirectIndexPasses() const {
     return isDirectIndexLoad() && !isSoaJitRmw() &&
@@ -1316,7 +1324,13 @@ IndirectAccessUnit::validateSoaJitAddressSpans()
     panic_if(!isSoaJitRmw(),
              "I[%d] SoA/JIT span validation used by another shape\n",
              my_indirect_id);
-    const bool operands_aligned = isSoaJitScalarRmw()
+    const bool operands_aligned = isSoaJitPageFedRmw()
+        ? my_base_addr % my_word_size == 0 &&
+              my_backing_addr % my_word_size == 0 &&
+              my_index_addr ==
+                  gem5::maa::PageFedSoaJitABI::NoIndexBacking &&
+              my_predicate_addr == 0
+        : isSoaJitScalarRmw()
         ? SoaJitSafety::scalarOperandsAligned(
               my_base_addr, my_index_addr, my_predicate_addr,
               my_word_size)
@@ -1371,11 +1385,14 @@ IndirectAccessUnit::validateSoaJitAddressSpans()
             checkedEnd(my_backing_addr, source_elements, my_word_size,
                        "values")};
     }
-    const size_t index_span = span_count;
-    spans[span_count++] = {
-        "indices", my_index_addr,
-        checkedEnd(my_index_addr, source_elements, sizeof(uint32_t),
-                   "indices")};
+    size_t index_span = spans.size();
+    if (!isSoaJitPageFedRmw()) {
+        index_span = span_count;
+        spans[span_count++] = {
+            "indices", my_index_addr,
+            checkedEnd(my_index_addr, source_elements, sizeof(uint32_t),
+                       "indices")};
+    }
     size_t predicate_span = spans.size();
     if (my_predicate_addr != 0) {
         predicate_span = span_count;
@@ -1387,7 +1404,8 @@ IndirectAccessUnit::validateSoaJitAddressSpans()
     inside(spans[0], my_min_addr, my_max_addr);
     if (!isSoaJitScalarRmw())
         inside(spans[1], my_backing_min_addr, my_backing_max_addr);
-    inside(spans[index_span], my_index_min_addr, my_index_max_addr);
+    if (index_span != spans.size())
+        inside(spans[index_span], my_index_min_addr, my_index_max_addr);
     if (predicate_span != spans.size())
         inside(spans[predicate_span], my_predicate_min_addr,
                my_predicate_max_addr);
@@ -3322,24 +3340,200 @@ bool IndirectAccessUnit::checkElementReady() {
     return true;
 }
 bool IndirectAccessUnit::checkReadyForFinish() {
-    if (my_cond_tile_ready == false) {
-        DPRINTF(MAAIndirect, "I[%d] %s: cond tile[%d] not ready, returning!\n", my_indirect_id, __func__, my_cond_tile);
+    if (isSoaJitPageFedRmw())
+        return soa_jit_page_fed_state.closed();
+    if (!my_cond_tile_ready) {
+        DPRINTF(MAAIndirect,
+                "I[%d] %s: cond tile[%d] not ready, returning!\n",
+                my_indirect_id, __func__, my_cond_tile);
         // Just a fake access to callback INDIRECT when the condition is ready
         maa->spd->getElementFinished(my_cond_tile, my_i, 4, (uint8_t)FuncUnitType::INDIRECT, my_indirect_id);
         return false;
-    } else if (my_idx_tile_ready == false) {
-        DPRINTF(MAAIndirect, "I[%d] %s: idx tile[%d] not ready, returning!\n", my_indirect_id, __func__, my_idx_tile);
+    } else if (!my_idx_tile_ready) {
+        DPRINTF(MAAIndirect,
+                "I[%d] %s: idx tile[%d] not ready, returning!\n",
+                my_indirect_id, __func__, my_idx_tile);
         // Just a fake access to callback INDIRECT when the idx is ready
         maa->spd->getElementFinished(my_idx_tile, my_i, 4, (uint8_t)FuncUnitType::INDIRECT, my_indirect_id);
         return false;
-    } else if (my_src_tile_ready == false) {
-        DPRINTF(MAAIndirect, "I[%d] %s: src tile[%d] not ready, returning!\n", my_indirect_id, __func__, my_src_tile);
+    } else if (!my_src_tile_ready) {
+        DPRINTF(MAAIndirect,
+                "I[%d] %s: src tile[%d] not ready, returning!\n",
+                my_indirect_id, __func__, my_src_tile);
         // Just a fake access to callback INDIRECT when the src is ready
         maa->spd->getElementFinished(my_src_tile, my_i, my_word_size, (uint8_t)FuncUnitType::INDIRECT, my_indirect_id);
         return false;
     }
     return true;
 }
+
+bool
+IndirectAccessUnit::insertPageFedSoaJitIndex(uint32_t index,
+                                             uint32_t ordinal)
+{
+    panic_if(!isSoaJitPageFedRmw() || state != Status::Fill ||
+                 ordinal != static_cast<uint32_t>(my_i) ||
+                 ordinal >= gem5::maa::PageFedSoaJitABI::LogicalElements,
+             "I[%d] invalid page-fed Row/Offset insertion ordinal=%u "
+             "cursor=%d state=%s\n", my_indirect_id, ordinal, my_i,
+             status_names[static_cast<int>(state)]);
+    if (offset_table->occupancy() >=
+            static_cast<int>(maa->num_offset_table_epoch_entries) ||
+        offset_table->is_full())
+        return false;
+
+    const Addr available = my_max_addr - my_min_addr;
+    panic_if(my_base_addr < my_min_addr || my_base_addr >= my_max_addr ||
+                 available < static_cast<Addr>(my_word_size) ||
+                 my_max_addr - my_base_addr <
+                     static_cast<Addr>(my_word_size) ||
+                 static_cast<Addr>(index) >
+                     (my_max_addr - my_base_addr - my_word_size) /
+                         my_word_size,
+             "I[%d] page-fed A word %u exceeds registered range "
+             "[0x%lx,0x%lx)\n", my_indirect_id, index, my_min_addr,
+             my_max_addr);
+    const Addr vaddr = my_base_addr + my_word_size * index;
+    const Addr block_vaddr = addrBlockAligner(vaddr, block_size);
+    const Addr block_paddr = addrBlockAligner(
+        translatePacket(block_vaddr), block_size);
+    const uint16_t wid = (vaddr - block_vaddr) / my_word_size;
+    const std::vector<int> addr_vec = maa->map_addr(block_paddr);
+    const int rt_idx = getRowTableIdx(
+        my_RT_config, addr_vec[ADDR_CHANNEL_LEVEL],
+        addr_vec[ADDR_RANK_LEVEL], addr_vec[ADDR_BANKGROUP_LEVEL],
+        addr_vec[ADDR_BANK_LEVEL]);
+    const Addr grow_addr = getGrowAddr(
+        my_RT_config, addr_vec[ADDR_BANKGROUP_LEVEL],
+        addr_vec[ADDR_BANK_LEVEL], addr_vec[ADDR_ROW_LEVEL]);
+    bool first_cl_access = false;
+    attribution_row_insert_attempts++;
+    if (!RT[my_RT_config][rt_idx].insert(
+            grow_addr, block_paddr, ordinal, wid, first_cl_access)) {
+        attribution_row_pressure_events++;
+        return false;
+    }
+    attribution_row_insert_successes++;
+    commitSoaJitSourceOrdinal(ordinal, true);
+    ++my_i;
+    return true;
+}
+
+bool
+IndirectAccessUnit::pageFedActiveForCore(int core_id) const
+{
+    return my_instruction != nullptr && isSoaJitPageFedRmw() &&
+        my_instruction->core_id == core_id &&
+        soa_jit_page_fed_state.active();
+}
+
+Cycles
+IndirectAccessUnit::admitPageFedSoaJitIndexPage(
+    uint64_t generation, uint8_t page, uint8_t index_tile)
+{
+    panic_if(!pageFedActiveForCore(my_instruction->core_id) ||
+                 state != Status::Fill,
+             "I[%d] page-fed admission reached a non-Fill context\n",
+             my_indirect_id);
+    const auto begin = soa_jit_page_fed_state.beginPage(generation, page);
+    panic_if(begin != gem5::maa::PageFedSoaJitState::Result::Accepted,
+             "I[%d] page-fed page %u begin failed: %s\n",
+             my_indirect_id, page,
+             gem5::maa::PageFedSoaJitState::resultName(begin));
+    panic_if(index_tile >= maa->num_tiles ||
+                 maa->ifile->hasTileReference(
+                     my_instruction->maa_id, index_tile) ||
+                 maa->spd->getTileStatus(index_tile) !=
+                     SPD::TileStatus::Finished ||
+                 maa->spd->getSize(index_tile) !=
+                     static_cast<int>(
+                         gem5::maa::PageFedSoaJitABI::PageElements),
+             "I[%d] page-fed page %u tile %u is not one unowned, "
+             "completed physical-4K index page\n",
+             my_indirect_id, page, index_tile);
+
+    for (uint32_t lane = 0;
+         lane < gem5::maa::PageFedSoaJitABI::PageElements; ++lane) {
+        const uint32_t ordinal =
+            page * gem5::maa::PageFedSoaJitABI::PageElements + lane;
+        const uint32_t index =
+            maa->spd->getData<uint32_t>(index_tile, lane);
+        if (!insertPageFedSoaJitIndex(index, ordinal)) {
+            soa_jit_page_fed_state.failCapacity();
+            panic("I[%d] page-fed page %u requires a forbidden "
+                  "Row/Offset drain at ordinal %u\n",
+                  my_indirect_id, page, ordinal);
+        }
+        const auto admitted = soa_jit_page_fed_state.admitOrdinal(
+            generation, page, ordinal);
+        panic_if(admitted !=
+                     gem5::maa::PageFedSoaJitState::Result::Accepted,
+                 "I[%d] page-fed ordinal %u failed: %s\n",
+                 my_indirect_id, ordinal,
+                 gem5::maa::PageFedSoaJitState::resultName(admitted));
+    }
+    const auto finished = soa_jit_page_fed_state.finishPage(
+        generation, page);
+    panic_if(finished !=
+                 gem5::maa::PageFedSoaJitState::Result::Accepted,
+             "I[%d] page-fed page %u closure failed: %s\n",
+             my_indirect_id, page,
+             gem5::maa::PageFedSoaJitState::resultName(finished));
+    soa_jit_page_fed_admit_commands++;
+    soa_jit_page_fed_command_responses++;
+    soa_jit_page_fed_admitted_words +=
+        gem5::maa::PageFedSoaJitABI::PageElements;
+    soa_jit_page_fed_spd_index_reads +=
+        gem5::maa::PageFedSoaJitABI::PageElements;
+    soa_jit_page_fed_row_writes +=
+        gem5::maa::PageFedSoaJitABI::PageElements;
+    const Cycles latency = updateLatency(
+        0, gem5::maa::PageFedSoaJitABI::PageElements, 0, 0,
+        gem5::maa::PageFedSoaJitABI::PageElements,
+        total_num_RT_subslices);
+    soa_jit_page_fed_admission_cycles += static_cast<uint64_t>(latency);
+    DPRINTF(MAAVirtualTrace,
+            "event=soa_jit_page_fed_admit schema=1 unit=%d "
+            "operation_tick=%lu generation=%lu page=%u tile=%u "
+            "ordinal_begin=%u ordinal_end=%u admitted=%u "
+            "spd_index_reads=%u row_writes=%u latency_cycles=%lu "
+            "index_payload_retained_bytes=0 coherent_index_lines=0\n",
+            my_indirect_id, my_decode_start_tick, generation, page,
+            index_tile,
+            page * gem5::maa::PageFedSoaJitABI::PageElements,
+            (page + 1) * gem5::maa::PageFedSoaJitABI::PageElements,
+            soa_jit_page_fed_state.admitted(),
+            gem5::maa::PageFedSoaJitABI::PageElements,
+            gem5::maa::PageFedSoaJitABI::PageElements,
+            static_cast<uint64_t>(latency));
+    scheduleNextExecution(true);
+    return latency;
+}
+
+Cycles
+IndirectAccessUnit::closePageFedSoaJit(uint64_t generation)
+{
+    panic_if(!pageFedActiveForCore(my_instruction->core_id) ||
+                 state != Status::Fill,
+             "I[%d] page-fed close reached a non-Fill context\n",
+             my_indirect_id);
+    const auto closed = soa_jit_page_fed_state.close(generation);
+    panic_if(closed != gem5::maa::PageFedSoaJitState::Result::Accepted,
+             "I[%d] page-fed close failed: %s\n", my_indirect_id,
+             gem5::maa::PageFedSoaJitState::resultName(closed));
+    soa_jit_page_fed_close_commands++;
+    soa_jit_page_fed_command_responses++;
+    DPRINTF(MAAVirtualTrace,
+            "event=soa_jit_page_fed_close schema=1 unit=%d "
+            "operation_tick=%lu generation=%lu pages=%u admitted=%u "
+            "missing=0 duplicates=0 early_execution=0\n",
+            my_indirect_id, my_decode_start_tick, generation,
+            soa_jit_page_fed_state.expectedPage(),
+            soa_jit_page_fed_state.admitted());
+    scheduleExecuteInstructionEvent(1);
+    return Cycles(1);
+}
+
 void IndirectAccessUnit::fillRowTable(
     bool &finished, bool &waitForFinish, bool &waitForElement,
     bool &needDrain, int &num_spd_read_condidx_accesses,
@@ -3351,6 +3545,32 @@ void IndirectAccessUnit::fillRowTable(
     num_spd_read_condidx_accesses = 0;
     num_rowtable_accesses = 0;
     num_direct_index_filter_words = 0;
+    if (isSoaJitPageFedRmw()) {
+        panic_if(!soa_jit_page_fed_state.active() ||
+                     soa_jit_page_fed_state.failed(),
+                 "I[%d] page-fed Fill observed inactive/failed control\n",
+                 my_indirect_id);
+        if (!soa_jit_page_fed_state.closed()) {
+            waitForElement = true;
+            return;
+        }
+        const auto authorized = soa_jit_page_fed_state.beginExecution(
+            soa_jit_generation);
+        panic_if(authorized !=
+                     gem5::maa::PageFedSoaJitState::Result::Accepted,
+                 "I[%d] page-fed early execution rejected: %s\n",
+                 my_indirect_id,
+                 gem5::maa::PageFedSoaJitState::resultName(authorized));
+        panic_if(my_i != static_cast<int>(
+                             gem5::maa::PageFedSoaJitABI::LogicalElements) ||
+                     soa_jit_next_source_ordinal !=
+                         gem5::maa::PageFedSoaJitABI::LogicalElements,
+                 "I[%d] page-fed closure has missing/duplicate ordinals "
+                 "%d/%lu\n", my_indirect_id, my_i,
+                 soa_jit_next_source_ordinal);
+        finished = true;
+        return;
+    }
     if (offset_table_drain) {
         if (offset_table->occupancy() != 0) {
             needDrain = true;
@@ -5195,7 +5415,33 @@ void IndirectAccessUnit::checkSoaJitTerminal()
 {
     const uint64_t expected_predicate_uses =
         my_predicate_addr == 0 ? 0 : static_cast<uint64_t>(my_max);
+    const bool page_fed_terminal = !isSoaJitPageFedRmw() ||
+        (soa_jit_page_fed_state.active() &&
+         soa_jit_page_fed_state.closed() &&
+         soa_jit_page_fed_state.executing() &&
+         !soa_jit_page_fed_state.failed() &&
+         soa_jit_page_fed_state.currentGeneration() ==
+             soa_jit_generation &&
+         soa_jit_page_fed_state.expectedPage() ==
+             gem5::maa::PageFedSoaJitABI::Pages &&
+         soa_jit_page_fed_state.admitted() ==
+             gem5::maa::PageFedSoaJitABI::LogicalElements &&
+         soa_jit_page_fed_open_commands == 1 &&
+         soa_jit_page_fed_admit_commands == 4 &&
+         soa_jit_page_fed_close_commands == 1 &&
+         soa_jit_page_fed_command_responses == 5 &&
+         soa_jit_page_fed_admitted_words ==
+             gem5::maa::PageFedSoaJitABI::LogicalElements &&
+         soa_jit_page_fed_spd_index_reads ==
+             gem5::maa::PageFedSoaJitABI::LogicalElements &&
+         soa_jit_page_fed_row_writes ==
+             gem5::maa::PageFedSoaJitABI::LogicalElements &&
+         soa_jit_epoch_drains == 0 && my_index_addr_range_id == -1 &&
+         my_predicate_addr_range_id == -1 &&
+         my_index_addr ==
+             gem5::maa::PageFedSoaJitABI::NoIndexBacking);
     panic_if(!isSoaJitRmw() || soa_jit_generation == 0 ||
+                 !page_fed_terminal ||
                  !soa_jit_all_rows_claimed || !soaJitContextsEmpty() ||
                  soa_jit_epoch_drained || soa_jit_retry_valid ||
                  soa_jit_retry_condition || soa_jit_retry_ordinal != -1 ||
@@ -5697,6 +5943,17 @@ void IndirectAccessUnit::executeInstruction() {
                  my_indirect_id);
         soa_jit_context_stalls = 0;
         soa_jit_context_high_water = 0;
+        panic_if(soa_jit_page_fed_state.active(),
+                 "I[%d] retained active page-fed state at decode\n",
+                 my_indirect_id);
+        soa_jit_page_fed_open_commands = 0;
+        soa_jit_page_fed_admit_commands = 0;
+        soa_jit_page_fed_close_commands = 0;
+        soa_jit_page_fed_command_responses = 0;
+        soa_jit_page_fed_admitted_words = 0;
+        soa_jit_page_fed_spd_index_reads = 0;
+        soa_jit_page_fed_row_writes = 0;
+        soa_jit_page_fed_admission_cycles = 0;
         panic_if(soa_jit_operation_active,
                  "I[%d] retained a live SoA/JIT operation at decode\n",
                  my_indirect_id);
@@ -5710,12 +5967,14 @@ void IndirectAccessUnit::executeInstruction() {
                      "I[%d] direct-index load does not yet support "
                      "condition tiles\n",
                      my_indirect_id);
-            my_index_min =
-                maa->rf->getData<int>(my_instruction->src1RegID);
-            const int index_max =
-                maa->rf->getData<int>(my_instruction->src2RegID);
-            my_index_stride =
-                maa->rf->getData<int>(my_instruction->src3RegID);
+            my_index_min = isSoaJitPageFedRmw()
+                ? 0 : maa->rf->getData<int>(my_instruction->src1RegID);
+            const int index_max = isSoaJitPageFedRmw()
+                ? static_cast<int>(
+                      gem5::maa::PageFedSoaJitABI::LogicalElements)
+                : maa->rf->getData<int>(my_instruction->src2RegID);
+            my_index_stride = isSoaJitPageFedRmw()
+                ? 1 : maa->rf->getData<int>(my_instruction->src3RegID);
             panic_if(my_index_stride <= 0 || index_max < my_index_min,
                      "I[%d] invalid streamed-index range %d:%d:%d\n",
                      my_indirect_id, my_index_min, index_max,
@@ -5771,6 +6030,38 @@ void IndirectAccessUnit::executeInstruction() {
                          "capacity=%d epoch=%u\n",
                          my_indirect_id, offset_table->capacity(),
                          maa->num_offset_table_epoch_entries);
+                if (isSoaJitPageFedRmw()) {
+                    panic_if(
+                        my_index_min != 0 ||
+                            my_index_stride != 1 ||
+                            my_max != static_cast<int>(
+                                gem5::maa::PageFedSoaJitABI::
+                                    LogicalElements) ||
+                            maa->physical_tile_elements !=
+                                gem5::maa::PageFedSoaJitABI::PageElements ||
+                            maa->num_offset_table_epoch_entries <
+                                gem5::maa::PageFedSoaJitABI::LogicalElements,
+                        "I[%d] page-fed SoA/JIT requires exact 0:16384:1, "
+                        "physical-4K pages, and a no-drain 16K Offset epoch\n",
+                        my_indirect_id);
+                    const auto opened = soa_jit_page_fed_state.open(
+                        maa->page_fed_soa_jit,
+                        my_instruction->soaJitPageFedGeneration,
+                        std::min<uint32_t>(
+                            offset_table->capacity(),
+                            maa->num_offset_table_epoch_entries));
+                    panic_if(
+                        opened !=
+                            gem5::maa::PageFedSoaJitState::Result::Accepted,
+                        "I[%d] page-fed open generation=%lu failed: %s\n",
+                        my_indirect_id,
+                        my_instruction->soaJitPageFedGeneration,
+                        gem5::maa::PageFedSoaJitState::resultName(opened));
+                    soa_jit_page_fed_open_commands = 1;
+                    maa->signalPageFedSoaJitOpen(
+                        my_instruction->core_id,
+                        my_instruction->soaJitPageFedGeneration);
+                }
             }
             my_idx_tile_ready = true;
             if (maa->virtual_index_range_passes && !isSoaJitRmw()) {
@@ -5892,7 +6183,7 @@ void IndirectAccessUnit::executeInstruction() {
                      my_indirect_id, my_backing_addr, my_backing_min_addr,
                      my_backing_max_addr);
         }
-        if (isDirectIndexLoad()) {
+        if (isDirectIndexLoad() && !isSoaJitPageFedRmw()) {
             panic_if(my_index_addr_range_id < 0,
                      "I[%d] direct index has no registered region\n",
                      my_indirect_id);
@@ -5916,8 +6207,8 @@ void IndirectAccessUnit::executeInstruction() {
                 panic_if(last_source < 0,
                          "I[%d] SoA/JIT range begins below zero\n",
                          my_indirect_id);
-                const Addr index_span =
-                    my_index_max_addr - my_index_addr;
+                const Addr index_span = isSoaJitPageFedRmw()
+                    ? 0 : my_index_max_addr - my_index_addr;
                 const uint64_t last_index_offset =
                     static_cast<uint64_t>(last_source) * sizeof(uint32_t);
                 panic_if((!isSoaJitScalarRmw() &&
@@ -5927,9 +6218,10 @@ void IndirectAccessUnit::executeInstruction() {
                                    my_word_size >
                                my_backing_max_addr - my_backing_addr -
                                    my_word_size)) ||
-                             index_span < sizeof(uint32_t) ||
-                             last_index_offset >
-                                 index_span - sizeof(uint32_t),
+                             (!isSoaJitPageFedRmw() &&
+                              (index_span < sizeof(uint32_t) ||
+                               last_index_offset >
+                                   index_span - sizeof(uint32_t))),
                          "I[%d] SoA/JIT values or indices span exceeds its "
                          "registered range\n",
                          my_indirect_id);
@@ -5958,12 +6250,23 @@ void IndirectAccessUnit::executeInstruction() {
                      "in [0x%lx,0x%lx) from base 0x%lx\n",
                      my_indirect_id, my_min_addr, my_max_addr,
                      my_base_addr);
-            panic_if(soa_jit_next_generation == 0 ||
-                         soa_jit_next_generation ==
-                             std::numeric_limits<uint64_t>::max(),
-                     "I[%d] SoA/JIT generation exhausted\n",
-                     my_indirect_id);
-            soa_jit_generation = soa_jit_next_generation++;
+            if (isSoaJitPageFedRmw()) {
+                panic_if(
+                    my_instruction->soaJitPageFedGeneration == 0 ||
+                        my_instruction->soaJitPageFedGeneration !=
+                            soa_jit_page_fed_state.currentGeneration(),
+                    "I[%d] page-fed generation did not survive decode\n",
+                    my_indirect_id);
+                soa_jit_generation =
+                    my_instruction->soaJitPageFedGeneration;
+            } else {
+                panic_if(soa_jit_next_generation == 0 ||
+                             soa_jit_next_generation ==
+                                 std::numeric_limits<uint64_t>::max(),
+                         "I[%d] SoA/JIT generation exhausted\n",
+                         my_indirect_id);
+                soa_jit_generation = soa_jit_next_generation++;
+            }
             if (isSoaJitOldResultRmw()) {
                 panic_if(my_word_size != sizeof(float) ||
                              my_instruction->datatype !=
@@ -7016,6 +7319,27 @@ void IndirectAccessUnit::executeInstruction() {
             (*maa->stats.IND_SoaJitEpochDrains[my_indirect_id]) +=
                 soa_jit_epoch_drains;
             (*maa->stats.IND_SoaJitTerminalCompletions[my_indirect_id])++;
+            if (isSoaJitPageFedRmw()) {
+                (*maa->stats.IND_SoaJitPageFedOperations[
+                    my_indirect_id])++;
+                (*maa->stats.IND_SoaJitPageFedAdmitCommands[
+                    my_indirect_id]) += soa_jit_page_fed_admit_commands;
+                (*maa->stats.IND_SoaJitPageFedCloseCommands[
+                    my_indirect_id]) += soa_jit_page_fed_close_commands;
+                (*maa->stats.IND_SoaJitPageFedCommandResponses[
+                    my_indirect_id]) += soa_jit_page_fed_command_responses;
+                (*maa->stats.IND_SoaJitPageFedAdmittedWords[
+                    my_indirect_id]) += soa_jit_page_fed_admitted_words;
+                (*maa->stats.IND_SoaJitPageFedSpdIndexReads[
+                    my_indirect_id]) += soa_jit_page_fed_spd_index_reads;
+                (*maa->stats.IND_SoaJitPageFedRowWrites[
+                    my_indirect_id]) += soa_jit_page_fed_row_writes;
+                (*maa->stats.IND_SoaJitPageFedAdmissionCycles[
+                    my_indirect_id]) += soa_jit_page_fed_admission_cycles;
+                (*maa->stats.IND_SoaJitPageFedStateBytes[
+                    my_indirect_id]) +=
+                    gem5::maa::PageFedSoaJitState::HardwareBytes;
+            }
             DPRINTF(MAAVirtualTrace,
                     "event=soa_jit_epoch_summary schema=1 unit=%d "
                     "operation_tick=%lu generation=%lu logical=%d "
@@ -7418,6 +7742,47 @@ void IndirectAccessUnit::executeInstruction() {
                     fixed_prefetch_credit_bytes,
                     soa_jit_value_prefetch_credits,
                     fixed_prefetch_cursor_bytes);
+            if (isSoaJitPageFedRmw()) {
+                DPRINTF(MAAVirtualTrace,
+                        "event=soa_jit_page_fed_complete schema=1 unit=%d "
+                        "operation_tick=%lu generation=%lu opens=%lu "
+                        "open_responses=1 admissions=%lu closes=%lu "
+                        "command_responses=%lu total_abi_responses=6 "
+                        "pages=4 admitted_words=%lu spd_index_reads=%lu "
+                        "row_writes=%lu admission_cycles=%lu "
+                        "coherent_index_read_lines=0 "
+                        "coherent_index_write_lines=0 "
+                        "index_payload_bytes=0 descriptor_payload_bytes=0 "
+                        "persistent_state_bytes=%lu value_read_lines=%lu "
+                        "value_read_responses=%lu a_read_lines=%lu "
+                        "a_write_lines=%lu capacity_drains=0 missing=0 "
+                        "duplicates=0 stale=0 early_execution=0 "
+                        "terminal=1\n",
+                        my_indirect_id, my_decode_start_tick,
+                        soa_jit_generation,
+                        soa_jit_page_fed_open_commands,
+                        soa_jit_page_fed_admit_commands,
+                        soa_jit_page_fed_close_commands,
+                        soa_jit_page_fed_command_responses,
+                        soa_jit_page_fed_admitted_words,
+                        soa_jit_page_fed_spd_index_reads,
+                        soa_jit_page_fed_row_writes,
+                        soa_jit_page_fed_admission_cycles,
+                        gem5::maa::PageFedSoaJitState::HardwareBytes,
+                        soa_jit_value_read_issues,
+                        soa_jit_value_read_responses,
+                        soa_jit_a_read_issues,
+                        soa_jit_a_write_issues);
+                const auto retired =
+                    soa_jit_page_fed_state.finishExecution(
+                        soa_jit_generation);
+                panic_if(
+                    retired !=
+                        gem5::maa::PageFedSoaJitState::Result::Accepted,
+                    "I[%d] page-fed terminal retirement failed: %s\n",
+                    my_indirect_id,
+                    gem5::maa::PageFedSoaJitState::resultName(retired));
+            }
         }
         if (maa->virtual_bounded_global_merge) {
             const bool read_slots_empty = std::none_of(
