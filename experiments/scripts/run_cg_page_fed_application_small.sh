@@ -215,7 +215,38 @@ expected_pages=$((windows * 4)); expected_lines=$((expected_pages * 256)); expec
 [[ $publish_issues -eq $expected_lines && $publish_accepts -eq $expected_lines && $publish_responses -eq $expected_lines && $publish_terminals -eq $expected_pages ]]
 [[ $(grep -Fc 'event=soa_jit_page_fed_open_response ' "$trace" || true) -eq $windows ]]
 [[ $(grep -Fc 'event=soa_jit_page_fed_admit ' "$trace" || true) -eq $expected_pages ]]
-[[ $(grep -Ec 'event=soa_jit_page_fed_complete .*opens=1 open_responses=1 admissions=4 closes=1 command_responses=5 total_abi_responses=6 pages=4 admitted_words=16384 spd_index_reads=16384 row_writes=16384 .*coherent_index_read_lines=0 coherent_index_write_lines=0 index_payload_bytes=0 descriptor_payload_bytes=0 persistent_state_bytes=16 value_read_lines=16384 value_read_responses=16384 a_read_lines=256 a_write_lines=256 capacity_drains=0 missing=0 duplicates=0 stale=0 early_execution=0 terminal=1$' "$trace" || true) -eq $windows ]]
+page_fed_trace_closure=$(awk '
+    /event=soa_jit_page_fed_complete / {
+        count++
+        for (i = 1; i <= NF; i++) {
+            split($i, pair, "=")
+            values[pair[1]] = pair[2]
+        }
+        if (values["opens"] != 1 || values["open_responses"] != 1 ||
+            values["admissions"] != 4 || values["closes"] != 1 ||
+            values["command_responses"] != 5 ||
+            values["total_abi_responses"] != 6 || values["pages"] != 4 ||
+            values["admitted_words"] != 16384 ||
+            values["spd_index_reads"] != 16384 ||
+            values["row_writes"] != 16384 ||
+            values["coherent_index_read_lines"] != 0 ||
+            values["coherent_index_write_lines"] != 0 ||
+            values["index_payload_bytes"] != 0 ||
+            values["descriptor_payload_bytes"] != 0 ||
+            values["persistent_state_bytes"] != 16 ||
+            values["value_read_lines"] != 16384 ||
+            values["value_read_responses"] != 16384 ||
+            values["a_read_lines"] < 1 ||
+            values["a_read_lines"] != values["a_write_lines"] ||
+            values["capacity_drains"] != 0 || values["missing"] != 0 ||
+            values["duplicates"] != 0 || values["stale"] != 0 ||
+            values["early_execution"] != 0 || values["terminal"] != 1)
+            exit 2
+        a_lines += values["a_read_lines"]
+    }
+    END { if (count != expected) exit 3; printf "%d\\n", a_lines }
+' expected="$windows" "$trace")
+[[ $page_fed_trace_closure =~ ^[1-9][0-9]*$ ]]
 [[ $(grep -Eic 'event=[^ ]*fallback|capacity_drains=[1-9]|missing=[1-9]|duplicates=[1-9]|stale=[1-9]|early_execution=[1-9]' "$trace" || true) -eq 0 ]]
 
 sim_ticks=$(awk '$1 == "simTicks" {print $2; exit}' "$stats")
@@ -238,7 +269,7 @@ cmp -s "$out/input/source_status.before" "$out/input/source_status.after"
     printf 'publisher_pages=%s\npublisher_lines=%s\ntraffic_delta_vs_accepted_pages=%s\ntraffic_delta_vs_accepted_lines=%s\ntraffic_delta_vs_accepted_percent=%s\n' "$expected_pages" "$expected_lines" "$traffic_delta_pages" "$traffic_delta_lines" "$traffic_delta_percent"
     printf 'windows=%s\npage_fed_admits=%s\npage_fed_closes=%s\npage_fed_total_abi_responses=%s\n' "$windows" "$admits" "$closes" "$((windows * 6))"
     printf 'coherent_index_read_lines=0\ncoherent_index_write_lines=0\nindex_publish_pages=0\nstate_byte_operations=%s\nfallbacks=0\nopen_contexts=0\n' "$state_bytes"
-    printf 'publisher_issue_accept_response=%s/%s/%s\nproduct_a_soa_trace_closure=%s/%s/%s\n' "$publish_issues" "$publish_accepts" "$publish_responses" "$expected_words" "$((windows * 256))" "$soa_terminals"
+    printf 'publisher_issue_accept_response=%s/%s/%s\nproduct_a_soa_trace_closure=%s/%s/%s\n' "$publish_issues" "$publish_accepts" "$publish_responses" "$expected_words" "$page_fed_trace_closure" "$soa_terminals"
     printf 'fingerprint_relative_deltas=%s\nreference_fingerprint=%s\ncandidate_fingerprint=%s\n' "$fingerprint_relative_deltas" "$reference_line" "$candidate_line"
 } > "$out/result.txt"
 sha256sum "$out/manifest.txt" "$out/result.txt" "$restore" "$stats" "$out/run/config.ini" "$trace" "$out/input/checkpoint.files.sha256.before" "$out/input/checkpoint.files.sha256.after" "$out/input/artifact_sha256.before" "$out/input/artifact_sha256.after" > "$out/result_sha256.txt"

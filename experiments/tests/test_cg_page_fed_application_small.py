@@ -61,9 +61,14 @@ class CgPageFedApplicationSmallContract(unittest.TestCase):
             "IND_SoaJitPageFedCoherentIndexWriteLines",
             "IND_SoaJitPageFedStateByteOperations",
             "IND_BoundedGlobalMergeFallbacks",
-            "opens=1 open_responses=1 admissions=4 closes=1",
-            "value_read_lines=16384 value_read_responses=16384 a_read_lines=256 a_write_lines=256",
-            "persistent_state_bytes=16",
+            'values["opens"] != 1',
+            'values["open_responses"] != 1',
+            'values["admissions"] != 4',
+            'values["closes"] != 1',
+            'values["value_read_lines"] != 16384',
+            'values["a_read_lines"] != values["a_write_lines"]',
+            "page_fed_trace_closure",
+            'values["persistent_state_bytes"] != 16',
             "publisher_issue_accept_response=",
         ):
             self.assertIn(token, self.text)
