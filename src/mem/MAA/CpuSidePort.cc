@@ -39,9 +39,13 @@ isDroppableBoundaryPrefetch(PacketPtr pkt)
     // Queued hardware prefetches begin as HardPFReq packets with a zero-flag
     // Request.  Cache::createMissPacket converts a miss to ReadSharedReq while
     // reusing that Request, whose Prefetcher task ID is the surviving
-    // provenance.  Do not generalize this to exclusive or software prefetches.
+    // provenance.  Only a complete cache-line byte-enable mask may take the
+    // harmless error-response path.  Do not generalize this to exclusive or
+    // software prefetches.
     return pkt->cmd == MemCmd::ReadSharedReq &&
-        pkt->req->taskId() == context_switch_task_id::Prefetcher;
+        pkt->req->taskId() == context_switch_task_id::Prefetcher &&
+        maa::CpuSpdAperture::allBytesEnabled(
+            pkt->req->getByteEnable(), pkt->getSize());
 }
 
 } // anonymous namespace
@@ -1213,6 +1217,9 @@ bool MAA::CpuSidePort::recvTimingReq(PacketPtr pkt) {
             const bool request_prefetch = pkt->req->isPrefetch();
             const bool task_prefetch = pkt->req->taskId() ==
                 context_switch_task_id::Prefetcher;
+            const bool all_bytes_enabled =
+                gem5::maa::CpuSpdAperture::allBytesEnabled(
+                    pkt->req->getByteEnable(), pkt->getSize());
             const bool droppable_prefetch =
                 isDroppableBoundaryPrefetch(pkt);
             const auto decision = gem5::maa::CpuSpdAperture::classify(
@@ -1232,13 +1239,15 @@ bool MAA::CpuSidePort::recvTimingReq(PacketPtr pkt) {
                         "addr=0x%lx tile=%lu tile_offset=%lu size=%u "
                         "physical_payload_bytes=%lu logical_tile_bytes=%lu "
                         "packet_prefetch=%d request_prefetch=%d "
-                        "task_prefetch=%d cmd=%s response=BadAddress "
+                        "task_prefetch=%d all_bytes_enabled=%d cmd=%s "
+                        "response=BadAddress "
                         "spd_touched=0 invalidator_touched=0\n",
                         pkt->getAddr(), decision.tile,
                         decision.tileOffset, pkt->getSize(),
                         decision.physicalPayloadBytes,
                         decision.logicalTileBytes, packet_prefetch,
                         request_prefetch, task_prefetch,
+                        all_bytes_enabled,
                         pkt->cmdString());
                 // The logical aperture is address reservation, not padded
                 // SPD storage.  Elements at and beyond physical capacity are

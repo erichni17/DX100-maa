@@ -1,3 +1,4 @@
+#include <array>
 #include <cstdlib>
 #include <iostream>
 
@@ -63,6 +64,33 @@ testElement4096Policy()
 }
 
 void
+testByteEnablePolicy()
+{
+    std::array<bool, LineBytes> enabled{};
+    enabled.fill(true);
+    CHECK(Aperture::allBytesEnabled(enabled, LineBytes));
+    CHECK(classify(
+              PhysicalBytes,
+              Aperture::allBytesEnabled(enabled, LineBytes)).disposition ==
+          Disposition::DropBoundaryPrefetch);
+
+    enabled[LineBytes - 1] = false;
+    CHECK(!Aperture::allBytesEnabled(enabled, LineBytes));
+    CHECK(classify(
+              PhysicalBytes,
+              Aperture::allBytesEnabled(enabled, LineBytes)).disposition ==
+          Disposition::PhysicalOutOfRange);
+
+    std::array<bool, LineBytes - 1> short_mask{};
+    short_mask.fill(true);
+    CHECK(!Aperture::allBytesEnabled(short_mask, LineBytes));
+    CHECK(classify(
+              PhysicalBytes,
+              Aperture::allBytesEnabled(short_mask, LineBytes)).disposition ==
+          Disposition::PhysicalOutOfRange);
+}
+
+void
 testCrossingAndInvalidGeometryFailClosed()
 {
     CHECK(classify(PhysicalBytes - 32, true, LineBytes, 32).disposition ==
@@ -101,6 +129,7 @@ main()
 {
     testValidLastPhysicalLine();
     testElement4096Policy();
+    testByteEnablePolicy();
     testCrossingAndInvalidGeometryFailClosed();
     std::cout << "CPU_SPD_APERTURE_UNIT_PASS\n";
     return 0;

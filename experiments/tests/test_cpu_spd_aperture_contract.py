@@ -61,8 +61,21 @@ class CpuSpdApertureContractTest(unittest.TestCase):
         ]
         self.assertIn("pkt->cmd == MemCmd::ReadSharedReq", helper)
         self.assertIn("context_switch_task_id::Prefetcher", helper)
+        self.assertIn("CpuSpdAperture::allBytesEnabled", helper)
+        self.assertIn("pkt->req->getByteEnable()", helper)
+        self.assertIn("pkt->getSize()", helper)
         self.assertNotIn("pkt->cmd.isPrefetch() ||", helper)
         self.assertNotIn("pkt->req->isPrefetch() ||", helper)
+
+    def test_byte_enable_gate_is_executable_and_fail_closed(self):
+        self.assertIn("byte_enable.size() != packet_bytes", HELPER)
+        self.assertIn("if (!byte_enable[byte])", HELPER)
+        self.assertIn("testByteEnablePolicy", UNIT)
+        self.assertIn("Aperture::allBytesEnabled(enabled, LineBytes)", UNIT)
+        self.assertIn("enabled[LineBytes - 1] = false", UNIT)
+        self.assertIn(
+            "!Aperture::allBytesEnabled(short_mask, LineBytes)", UNIT
+        )
 
     def test_queued_prefetch_task_tag_survives_shared_miss_conversion(self):
         create = QUEUED[
@@ -164,11 +177,12 @@ class CpuSpdApertureContractTest(unittest.TestCase):
             "--l1d-hwp-type=StridePrefetcher",
             "--maa_num_tile_elements=16384",
             "--maa_physical_tile_elements=4096",
+            "drop_requires_full_byte_enable=true",
             "[[ $drops =~ ^[1-9][0-9]*$ ]]",
             "[[ $rejections == 0 ]]",
             'grep -Fxc "$expected"',
             " event=cpu_spd_boundary_prefetch_drop ",
-            "task_prefetch=1 cmd=ReadSharedReq response=BadAddress",
+            "task_prefetch=1 all_bytes_enabled=1 cmd=ReadSharedReq ",
             "CPU SPD aperture rejected physical_out_of_range access:",
             "CPU_SPD_PREFETCH_BOUNDARY_NEGATIVE_OBSERVED",
             "CPU_SPD_PREFETCH_BOUNDARY_SMOKE_PASS",

@@ -10,10 +10,12 @@ this cacheable SPD aperture architectural.
 
 The CPU-side policy therefore drops only the observed downstream hardware
 prefetch form: `ReadSharedReq` with
-`taskId == context_switch_task_id::Prefetcher`.  Reserved or completion-owned
-lanes are rejected before this classification.  Valid physical addresses keep
-the existing readiness retry path.  Every other physical-boundary packet,
-including demands, writes, exclusive reads, and software-prefetch forms, panics
+`taskId == context_switch_task_id::Prefetcher` and a byte-enable vector whose
+length equals the packet size and whose every bit is enabled.  Reserved or
+completion-owned lanes are rejected before this classification.  Valid
+physical addresses keep the existing readiness retry path.  Every other
+physical-boundary packet, including demands, writes, exclusive reads,
+software-prefetch forms, partial masks, and malformed mask lengths, panics
 before SPD or invalidator mutation.
 
 The drop uses `makeTimingResponse()` followed by `setBadAddress()`.  gem5's
@@ -62,22 +64,23 @@ without modifying that worktree.  Directory ledger construction excluded
 | spdlog directory ledger | `cdee3e06be297278b8efc03637c9f3da0bfaf55dc75ff7dfdcb788cb4f2a7eeb` |
 | yaml-cpp directory ledger | `225552afd0d4e6b6472161be1390443e106219a9ee1dff689fa3007a0b1a3219` |
 | `libramulator.so` | `76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753` |
-| exact `build/X86/gem5.opt` | `b6ca82a3ca95cc60e8701ccdfc31b18adb821d24adc7c3d0f9d959eed999eda7` |
+| exact successor `build/X86/gem5.opt` | `703c1e1d756ada75306e7ed941f3dad967370cd4f224c092430b5b2b5fb0f1a5` |
 
 The build used only extra include/link search flags for those read-only
 dependencies.  No dependency trees or build products are tracked.
 
 ## Evidence policy
 
-Dirty evidence root
-`evidence/cpu-spd-prefetch-boundary-r1` is diagnostic only.  It observed exact
-positive output, 128 drops, zero architectural rejections, and a negative
-element-4096 panic after 61 drops, but its manifest records `allow_dirty=1` and
-base commit `598bb116`; it is not integration evidence.
+Dirty evidence root `evidence/cpu-spd-prefetch-boundary-r1` is diagnostic only.
+Clean root `evidence/cpu-spd-prefetch-boundary-r2` at commit `fb842f75` closed
+the provenance, non-installation, ready-page, and negative-demand contracts,
+but final review found that its drop predicate did not bind the full
+byte-enable mask.  Both r1 and r2 are superseded near-final evidence and are
+not integration evidence for the successor.
 
 After this report and all implementation/test paths are committed, the same
 exact binary must run with `ALLOW_DIRTY=0` into the fresh coordination root
-`evidence/cpu-spd-prefetch-boundary-r2`.  Acceptance requires its manifest
+`evidence/cpu-spd-prefetch-boundary-r3`.  Acceptance requires its manifest
 `source_commit` to equal the final repository commit, all runner-registered
 source paths to match `HEAD`, the positive and negative contracts above to
 pass, and the binary/library/dependency hashes to match this ledger.  No full
