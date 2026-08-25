@@ -14,6 +14,12 @@ SPEC.loader.exec_module(MODULE)
 
 
 class Native16ClassifierAdversarialTest(unittest.TestCase):
+    def test_liveness_guard_checks_gem5_and_runner_cmdlines(self):
+        source = SCRIPT.read_text()
+        self.assertIn('b"gem5" in command', source)
+        self.assertIn('b"run_cg_logical_page_rmw_hybrid.sh" in command', source)
+        self.assertNotIn('"gem5" in executable', source)
+
     def test_wrong_roots_are_rejected_before_evidence_is_read(self):
         with self.assertRaises(MODULE.ClassificationError):
             MODULE.assert_root(

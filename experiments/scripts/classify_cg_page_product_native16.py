@@ -171,10 +171,12 @@ def live_process(root: Path) -> str | None:
             continue
         try:
             command = (proc / "cmdline").read_bytes()
-            executable = (proc / "comm").read_text().strip().lower()
         except OSError:
             continue
-        if needle in command and "gem5" in executable:
+        if needle in command and (
+            b"gem5" in command
+            or b"run_cg_logical_page_rmw_hybrid.sh" in command
+        ):
             return f"pid={proc.name} cmdline={command.replace(bytes([0]), b' ').decode(errors='replace')}"
     return None
 
