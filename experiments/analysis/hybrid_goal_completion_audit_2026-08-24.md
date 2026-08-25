@@ -37,12 +37,13 @@ Every current full runner is candidate-only. HashJoin manifests record
 | HashJoin PRO | `2026-08-24-hashjoin-pro-hardened-r1` | terminal-valid; exact 2M result |
 | HashJoin PRH | `2026-08-24-hashjoin-prh-hardened-r1` | terminal-valid; exact 2M result; shifted tail-only |
 | NAS IS | `2026-08-24-is-scalar-soa-full-a44aaa60-r5` | terminal-valid; verification 6 |
-| NAS CG | `2026-08-24-cg-page-product-full-precomputed-5d51743b-r2` | active O3 candidate |
+| NAS CG | `2026-08-24-cg-page-product-full-precomputed-5d51743b-r2` | rejected: mechanism closes but all four exact quantized fingerprints mismatch |
 | GAPBS SSSP small | `2026-08-25-sssp-coherent-small-fullcache-r2` | terminal-valid routed-path gate; exact fingerprint, zero fallback/host-SPD reads |
 | GAPBS SSSP S22 | `2026-08-25-sssp-coherent-full-s22-r2` | active coherent-fallback successor |
 
-The goal is incomplete until CG and an SSSP successor become terminal and pass their exact
-correctness, mechanism, artifact, and response-ledger gates.
+The goal is incomplete until a corrected CG successor and the active SSSP
+successor pass their exact correctness, mechanism, artifact, and
+response-ledger gates.
 
 ## Optimization decisions
 
