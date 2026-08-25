@@ -15,6 +15,8 @@ config="$root/configs/deprecated/example/se.py"
 ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
 source_file="$root/benchmarks/NAS/cg/cg.cpp"
 cxx=${CXX:-g++}
+frozen_ramulator=/data1/nier/dx100-runs/2026-08-12-hybrid-line-handoff-8a5c7712/input/libramulator.so
+frozen_ramulator_sha=76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753
 frozen_full_data=/data1/nier/dx100-runs/2026-08-11-cg-bounded-789cc703-full-v8/input/cg_data_4C.h
 frozen_full_data_sha=f2b18716e4a2356c597c95ee3583549def72700f2cb3294b0fcaacca46dbe131
 frozen_full_data_bytes=992830458
@@ -55,6 +57,18 @@ fi
 
 [[ -x $gem5 ]] || { echo "missing gem5 binary: $gem5" >&2; exit 2; }
 [[ -f $reference ]] || { echo "missing frozen CG reference: $reference" >&2; exit 2; }
+[[ -f $frozen_ramulator &&
+   $(sha256sum "$frozen_ramulator" | awk '{print $1}') == "$frozen_ramulator_sha" ]] || {
+    echo "missing or mismatched frozen Ramulator library" >&2
+    exit 2
+}
+export LD_LIBRARY_PATH="$(dirname "$frozen_ramulator"):${LD_LIBRARY_PATH:-}"
+resolved_ramulator=$(ldd "$gem5" | awk '$1 == "libramulator.so" {print $3}')
+[[ -n $resolved_ramulator &&
+   $(realpath "$resolved_ramulator") == $(realpath "$frozen_ramulator") ]] || {
+    echo "candidate gem5 does not resolve the frozen Ramulator library" >&2
+    exit 2
+}
 if [[ $use_precomputed_data == true ]]; then
     [[ -f $frozen_full_data &&
        $(stat -Lc %s "$frozen_full_data") -eq $frozen_full_data_bytes &&
@@ -193,6 +207,8 @@ reference_line=$(grep -E \
     printf 'logical_elements=16384\nphysical_tile_elements=4096\n'
     printf 'num_initial_row_table_slices=32\n'
     printf 'memory_channels=2\n'
+    printf 'ramulator_library_path=%s\nramulator_library_sha256=%s\n' \
+        "$frozen_ramulator" "$frozen_ramulator_sha"
     printf 'num_tiles_per_core=8\nguest_lanes=32\n'
     printf 'logical_tile_page_scheduler=false\n'
     printf 'logical_scheduler_reserved_lanes=0\n'
@@ -207,7 +223,7 @@ reference_line=$(grep -E \
     printf 'restore_command='; printf '%q ' "${restore_cmd[@]}"; printf '\n'
 } > "$out/manifest.txt"
 artifact_paths=(
-    "$gem5" "$guest" "$selector" "$source_file" "$config"
+    "$gem5" "$frozen_ramulator" "$guest" "$selector" "$source_file" "$config"
     "$ramulator" "$0" "$reference"
 )
 if [[ $use_precomputed_data == true ]]; then

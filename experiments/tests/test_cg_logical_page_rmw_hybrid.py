@@ -51,6 +51,10 @@ class CGLogicalPageRmwHybridContract(unittest.TestCase):
         self.assertIn("--mem-channels=2", runner)
         self.assertIn("memory_channels=2", runner)
         self.assertIn("system\\.mem_ctrls[01]", runner)
+        self.assertIn("frozen_ramulator_sha", runner)
+        self.assertIn("resolved_ramulator", runner)
+        self.assertIn("ramulator_library_sha256", runner)
+        self.assertIn('"$gem5" "$frozen_ramulator" "$guest"', runner)
 
     def test_intermediates_are_coherent_aligned_backings(self):
         self.assertIn("constexpr size_t cg_logical_backing_bytes", SOURCE)
