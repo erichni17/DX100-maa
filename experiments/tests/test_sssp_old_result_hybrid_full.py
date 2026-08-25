@@ -99,6 +99,25 @@ class SsspOldResultHybridFullContract(unittest.TestCase):
             self.runner.count('grep -Fqx "$gem5_sha256  $gem5"'), 2
         )
 
+    def test_post_exit_validation_adopts_frozen_candidate_without_env(self):
+        self.assertIn("adopt_validation_manifest", self.runner)
+        self.assertIn("-z ${SSSP_CANDIDATE_GEM5+x}", self.runner)
+        self.assertIn("-z ${SSSP_CANDIDATE_GEM5_SHA256+x}", self.runner)
+        self.assertIn("-z ${SSSP_APERTURE_CANDIDATE_GATE+x}", self.runner)
+        self.assertIn(
+            'gem5=$(manifest_value "$manifest" candidate_gem5_path)',
+            self.runner,
+        )
+        self.assertIn(
+            'gem5_sha256=$(manifest_value "$manifest" candidate_gem5_sha256)',
+            self.runner,
+        )
+        self.assertIn('"$manifest" aperture_candidate_gate', self.runner)
+        self.assertLess(
+            self.runner.index('adopt_validation_manifest "$validation_out"'),
+            self.runner.index('validate_callback "$validation_out"'),
+        )
+
     def test_aperture_gate_is_opt_in_and_fails_closed_on_first_window_stats(
         self,
     ):

@@ -359,15 +359,37 @@ validate_callback() {
     (( rc == 0 ))
 }
 
+adopt_validation_manifest() {
+    local out=$1 manifest="$1/candidate.manifest"
+    [[ -s $manifest ]]
+    if [[ -z ${SSSP_CANDIDATE_GEM5+x} ]]; then
+        gem5=$(manifest_value "$manifest" candidate_gem5_path)
+    fi
+    if [[ -z ${SSSP_CANDIDATE_GEM5_SHA256+x} ]]; then
+        gem5_sha256=$(manifest_value "$manifest" candidate_gem5_sha256)
+    fi
+    if [[ -z ${SSSP_APERTURE_CANDIDATE_GATE+x} ]]; then
+        aperture_candidate_gate=$(manifest_value \
+            "$manifest" aperture_candidate_gate)
+    fi
+    gem5=$(realpath -m "$gem5")
+}
+
+if [[ $# -eq 2 && $1 == --validate ]]; then
+    validation_out=$(realpath -m "$2")
+    adopt_validation_manifest "$validation_out"
+    require_boolean "$aperture_candidate_gate" || {
+        echo "frozen aperture_candidate_gate must be true or false" >&2
+        exit 2
+    }
+    validate_callback "$validation_out"
+    exit
+fi
+
 require_boolean "$aperture_candidate_gate" || {
     echo "SSSP_APERTURE_CANDIDATE_GATE must be true or false" >&2
     exit 2
 }
-
-if [[ $# -eq 2 && $1 == --validate ]]; then
-    validate_callback "$(realpath -m "$2")"
-    exit
-fi
 [[ $# -eq 1 ]] || usage
 
 out=$(realpath -m "$1")
