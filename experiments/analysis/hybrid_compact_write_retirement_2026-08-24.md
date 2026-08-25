@@ -100,3 +100,13 @@ systemd-run --user --unit=dx100-hybrid-compact-write-retirement-0d88fb41-r2 --co
 Accept only if both kernels are correct/accounting-closed and nonregressing,
 with at least one improving first `simTicks` by the predeclared 0.5% threshold.
 Otherwise retain default-off and commit an explicit rejection.
+
+## Terminal recovery
+
+The fresh `r2` simulations completed, but the wrapper exited 127 because `rg`
+was unavailable in user-systemd after all four gem5 arms. Direct frozen-artifact
+recovery establishes exact correctness and rejects the mechanism: SSSP ties at
+`9,976,182,331` ticks, while HashJoin PRO improves only 0.012326154%, below the
+0.5% threshold. See
+`experiments/analysis/hybrid_compact_write_retirement_recovery_2026-08-24.md`.
+Do not restart the A/B or promote `0d88fb41`.

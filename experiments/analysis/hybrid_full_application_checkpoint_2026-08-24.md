@@ -108,12 +108,14 @@ Report:
 Review:
 `experiments/analysis/hybrid_compact_write_retirement_review_2026-08-24.md`.
 
-The active-bit-free, regionless, certificate-bound successor is worker commit
-`0d88fb41`. It passes focused tests and has a certified binary, but its fresh
-SSSP/HashJoin gate was stopped in SSSP ROI for the professor-meeting pause.
-It has no admissible performance result and remains default-off outside the
-lead branch. Exact restart instructions are recorded in
-`experiments/analysis/hybrid_compact_write_retirement_2026-08-24.md`.
+The active-bit-free, regionless, certificate-bound successor at `0d88fb41` is
+also rejected. Its recovered exact A/B ties SSSP at `9,976,182,331` ticks and
+improves HashJoin PRO only 0.012326154%, below the predeclared 0.5% threshold.
+The mechanism adds 584 persistent bytes across four units and raises SSSP
+old-result writes 11.614715%. It remains default-off. The systemd wrapper exited
+127 only because `rg` was unavailable after all four simulations; raw evidence
+was recovered without reruns. See
+`experiments/analysis/hybrid_compact_write_retirement_recovery_2026-08-24.md`.
 
 ### Rejected strict sequencing and page-aware ordering
 
@@ -218,6 +220,5 @@ and is causal evidence only; it cannot promote the tail series.
 3. Allow the hardened PRH candidate gate to exit and classify its frozen
    mechanism-status and hash evidence. Its shifted phase is tail-only for this
    input and must never be misreported as routed coverage.
-4. Resume compact-retirement only from the certified `0d88fb41` fresh-root
-   instructions, and reject it unless both kernels are nonregressing with one
-   improving by at least the predeclared 0.5% threshold.
+4. Keep compact retirement, context64, expanded RowTable, strict sequencing,
+   and page-aware source ordering rejected; do not spend full-app time on them.
