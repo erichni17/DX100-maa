@@ -29,6 +29,19 @@ class CpuSpdAperture
         uint64_t physicalPayloadBytes = 0;
     };
 
+    template <typename ByteEnable>
+    static bool
+    allBytesEnabled(const ByteEnable &byte_enable, uint64_t packet_bytes)
+    {
+        if (byte_enable.size() != packet_bytes)
+            return false;
+        for (uint64_t byte = 0; byte < packet_bytes; ++byte) {
+            if (!byte_enable[byte])
+                return false;
+        }
+        return true;
+    }
+
     static constexpr Decision
     classify(uint64_t range_offset, uint64_t packet_bytes,
              uint64_t cache_line_bytes, uint64_t logical_elements,

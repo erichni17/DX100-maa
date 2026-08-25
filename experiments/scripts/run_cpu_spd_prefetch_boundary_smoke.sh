@@ -75,11 +75,12 @@ ramulator_lib=$(realpath "$ramulator_lib")
 export LD_LIBRARY_PATH="$(dirname "$ramulator_lib"):${LD_LIBRARY_PATH:-}"
 
 {
-    printf 'schema=dx100.cpu_spd_prefetch_boundary.v2\n'
+    printf 'schema=dx100.cpu_spd_prefetch_boundary.v3\n'
     printf 'source_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
     printf 'allow_dirty=%s\n' "$allow_dirty"
     printf 'logical_elements=16384\nphysical_elements=4096\n'
     printf 'cache_line_bytes=64\nprefetcher=StridePrefetcher\n'
+    printf 'drop_requires_full_byte_enable=true\n'
     printf 'producer=bounded_stream_load_4096_then_wait_ready\n'
     printf 'expected_guest_output=%s\n' "$expected"
     printf 'negative_contract=element4096_must_panic_without_value\n'
@@ -192,7 +193,7 @@ trace_drops=$(grep -c ' event=cpu_spd_boundary_prefetch_drop ' \
 [[ $trace_drops -eq $drops ]] ||
     die "positive trace/stat mismatch: trace=$trace_drops stats=$drops"
 tagged_drops=$(grep -Ec \
-    ' event=cpu_spd_boundary_prefetch_drop .*packet_prefetch=0 request_prefetch=0 task_prefetch=1 cmd=ReadSharedReq response=BadAddress spd_touched=0 invalidator_touched=0$' \
+    ' event=cpu_spd_boundary_prefetch_drop .*packet_prefetch=0 request_prefetch=0 task_prefetch=1 all_bytes_enabled=1 cmd=ReadSharedReq response=BadAddress spd_touched=0 invalidator_touched=0$' \
     "$positive_trace" || true)
 [[ $tagged_drops -eq $drops ]] || die "positive provenance trace mismatch"
 
