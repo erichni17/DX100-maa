@@ -6,19 +6,17 @@
 intentionally loses p-side 16K reordering and must not be described as full
 16K reorder preservation for both stages.**
 
-The static implementation is accepted at the end of this report, but the one
-permitted `CG_NA=1024` matched live pair is **rejected for architecture or
+The first `CG_NA=1024` matched pair is **rejected for architecture or
 performance evidence**. The serial page-fed control passed every correctness
-and mechanism gate. The first treatment restore aborted during q-index page 1
-admission before a fingerprint or terminal record. Consequently, no treatment
-correctness claim, no paired `simTicks`, no speedup, and no promotion claim are
-reported.
+and mechanism gate, but the first treatment restore aborted during q-index
+page 1 admission before a fingerprint or terminal record.
 
 The live failure identified one missing dependency wait in the new post-product
-q16 admission loop. The current source adds `wait_ready(t0)` between each
-`maa_range_loop` and page admission in both SpMV sites. Focused tests and the
-exact eight-tile syntax build pass after that correction. Per the single-pair
-launch limit, the corrected source was not silently rerun.
+q16 admission loop. Commit `46f48fe7` adds `wait_ready(t0)` between each
+`maa_range_loop` and page admission in both SpMV sites. A fresh corrected `r2`
+pair is accepted below: it closes exact correctness and reduces latency by
+28.86% (`1.405585308x`) while preserving the explicitly narrower q16-only
+reorder contract.
 
 ## Architectural slice
 
@@ -147,7 +145,7 @@ payload and preserves exact page/lane ordinal order.
 
 ## Validation
 
-Post-correction validation:
+Pre-rerun post-correction validation:
 
 - focused direct4/q16 contract: 7/7 pass;
 - inherited page-fed SoA contract: 9/9 pass;
@@ -159,12 +157,41 @@ Post-correction validation:
   `-fsyntax-only`;
 - `git diff --check`: pass.
 
+## Corrected live evidence: accepted `r2`
+
+Raw root:
+`/data1/nier/dx100-runs/2026-08-26-cg-direct4-product-page-fed-q16-na1024-r2`.
+The run uses source `46f48fe7a8311edb1782d7f1ecc80a4dc6163f5f`.
+Checkpoint and both restores exit zero, the completion gate reports
+`correctness=EXACT_MATCH`, and all 56 raw-ledger entries revalidate. The
+control and treatment have byte-identical raw/quantized fingerprints and all
+11 deterministic FP32/FP64 reduction records.
+
+Both arms independently close 65 full windows (52 q and 13 residual),
+1,064,960 selected aliases/value deliveries, 375 A-line reads and writes, 260
+product pages, 66,560 publisher issues/WriteResps, 260 q-index admissions, 65
+page-fed closes, zero epoch drains, and zero global-merge fallbacks. Both use
+exactly eight tiles/core and 524,288 B of physical SPD payload.
+
+The treatment-specific mechanism changes are exact:
+
+- control: 65 virtual-p gathers, 262,144 B virtual-p backing, p16 reorder
+  preserved, and no physical-p gather pages;
+- direct4/q16: zero virtual-p gathers/backing, 260 physical 4K p-gather pages,
+  p16 reorder not preserved, and q16 reorder preserved;
+- both: no coherent q-index backing and no host SPD payload reads.
+
+The control takes `5,298,227,998 simTicks`; direct4/q16 takes
+`3,769,410,485 simTicks`. The exact ratio is `1.405585308x`, or 28.8553% lower
+simulated latency (`1,528,817,513` ticks saved). This is accepted small-CG
+application evidence only. It is not a medium/full result, a native speedup,
+or evidence that discarding p16 reordering is beneficial for every workload.
+
 ## Conclusion
 
-The narrow direct4-product/q16 architecture is implemented and statically
-closed at eight tiles. Its intended tradeoff is explicit: p uses four serial
-physical gathers and loses p-side 16K reorder, while q retains one 16K
-Row/Offset reorder. The only live treatment observation was rejected before
-correctness, the identified readiness defect is corrected, and no performance
-claim is authorized without a future explicitly approved matched rerun of the
-corrected source.
+The narrow direct4-product/q16 architecture is implemented and live-validated
+at eight tiles. Its intended tradeoff is explicit: p uses four physical gathers
+and loses p-side 16K reorder, while q retains one 16K Row/Offset reorder. The
+corrected small pair shows a substantial benefit from eliminating virtual-p
+materialization; the next required experiment is the same matched comparison
+at a larger bounded CG size before considering any full run.
