@@ -2152,7 +2152,7 @@ if (!cg_uses_page_fed_product_soa_jit())
                             const int next_group =
                                 alternate_group ? t4 : t0;
                             if (page_offset >= MAA_CONSUMER_TILE_SIZE)
-                                wait_ready(next_group);
+                                wait_ready(next_group + 2);
                             // Put the next group's colidx stream ahead of this
                             // publisher on the sole stream unit. Its indirect
                             // p gather can then overlap the current WriteReqs.
@@ -2166,8 +2166,11 @@ if (!cg_uses_page_fed_product_soa_jit())
                             alternate_group ? r7 : r5;
                         const int generation_reg =
                             alternate_group ? r3 : r2;
+                        const int publisher_completion =
+                            pingpong ? coefficient_tile : group;
                         cg_direct4_publish_product_page(
-                            tid, page_offset, product_tile, group,
+                            tid, page_offset, product_tile,
+                            publisher_completion,
                             logical_page_reg, logical_offset_reg,
                             generation_reg);
                         if (!pingpong)
@@ -2253,15 +2256,19 @@ if (!cg_uses_page_fed_product_soa_jit())
                         // Only now open one q-side page-fed RMW and regenerate
                         // its four destination pages in cursor/page order.
                         if (cg_uses_direct4_product_page_fed_q16_pingpong()) {
-                            wait_ready(t4);
-                            wait_ready(t0);
+                            wait_ready(t6);
+                            wait_ready(t2);
                             // The alternate publisher identity used r6/r7;
                             // restore the q16 Row/Offset cursor only after its
                             // exact publisher terminal releases both regs.
                             maa_const<int>(0, r6);
                             maa_const<int>(-1, r7);
                         }
-                        cg_page_fed_q16_open(tid, curr_q, t6);
+                        const int q_completion =
+                            cg_uses_direct4_product_page_fed_q16_pingpong()
+                                ? t4
+                                : t6;
+                        cg_page_fed_q16_open(tid, curr_q, q_completion);
                         for (int page_offset = 0; page_offset < TILE_SIZE;
                              page_offset += MAA_CONSUMER_TILE_SIZE) {
                             maa_range_loop<int>(r6, r7, t2, t3, r1, t0, t1);
@@ -2269,7 +2276,7 @@ if (!cg_uses_page_fed_product_soa_jit())
                             cg_page_fed_admit_q_index_page(
                                 tid, page_offset, t0);
                         }
-                        cg_page_fed_q16_close(tid, t6);
+                        cg_page_fed_q16_close(tid, q_completion);
                     } else if (cg_uses_page_fed_product_soa_jit())
                         cg_page_fed_product_close(tid, t6);
                     else if (cg_uses_physical_page_product_soa_jit())
@@ -2664,7 +2671,7 @@ if (!cg_uses_page_fed_product_soa_jit())
                             page_base + MAA_CONSUMER_TILE_SIZE;
                         const int next_group = alternate_group ? t4 : t0;
                         if (page_offset >= MAA_CONSUMER_TILE_SIZE)
-                            wait_ready(next_group);
+                            wait_ready(next_group + 2);
                         maa_stream_load<int>(
                             &colidx[next_page_base], page_min_reg,
                             page_max_reg, page_stride_reg, next_group);
@@ -2672,8 +2679,10 @@ if (!cg_uses_page_fed_product_soa_jit())
                     const int logical_page_reg = alternate_group ? r6 : r4;
                     const int logical_offset_reg = alternate_group ? r7 : r5;
                     const int generation_reg = alternate_group ? r3 : r2;
+                    const int publisher_completion =
+                        pingpong ? coefficient_tile : group;
                     cg_direct4_publish_product_page(
-                        tid, page_offset, product_tile, group,
+                        tid, page_offset, product_tile, publisher_completion,
                         logical_page_reg, logical_offset_reg,
                         generation_reg);
                     if (!pingpong)
@@ -2791,19 +2800,23 @@ if (!cg_uses_page_fed_product_soa_jit())
                 cg_residual_spmv_routed_windows[tid]++;
                 if (cg_uses_direct4_product_page_fed_q16()) {
                     if (cg_uses_direct4_product_page_fed_q16_pingpong()) {
-                        wait_ready(t4);
-                        wait_ready(t0);
+                        wait_ready(t6);
+                        wait_ready(t2);
                         maa_const<int>(0, r6);
                         maa_const<int>(-1, r7);
                     }
-                    cg_page_fed_q16_open(tid, curr_r, t6);
+                    const int q_completion =
+                        cg_uses_direct4_product_page_fed_q16_pingpong()
+                            ? t4
+                            : t6;
+                    cg_page_fed_q16_open(tid, curr_r, q_completion);
                     for (int page_offset = 0; page_offset < TILE_SIZE;
                          page_offset += MAA_CONSUMER_TILE_SIZE) {
                         maa_range_loop<int>(r6, r7, t2, t3, r1, t0, t1);
                         wait_ready(t0);
                         cg_page_fed_admit_q_index_page(tid, page_offset, t0);
                     }
-                    cg_page_fed_q16_close(tid, t6);
+                    cg_page_fed_q16_close(tid, q_completion);
                 } else if (cg_uses_page_fed_product_soa_jit())
                     cg_page_fed_product_close(tid, t6);
                 else if (cg_uses_physical_page_product_soa_jit())

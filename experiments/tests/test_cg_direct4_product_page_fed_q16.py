@@ -143,10 +143,10 @@ def test_product_responses_close_before_q16_open_and_ordered_admits() -> None:
     assert publish < open_q16 < admit_loop < ready < admit < close
     assert q_path[open_q16:close].count("wait_ready(t0);") >= 1
     residual_start = SOURCE.index(
-        "cg_page_fed_q16_open(tid, curr_r, t6)", q_end
+        "cg_page_fed_q16_open(tid, curr_r, q_completion)", q_end
     )
     residual_end = SOURCE.index(
-        "cg_page_fed_q16_close(tid, t6)", residual_start
+        "cg_page_fed_q16_close(tid, q_completion)", residual_start
     )
     residual_q16 = SOURCE[residual_start:residual_end]
     assert (
@@ -189,7 +189,7 @@ def test_pingpong_source_and_completion_ownership_are_exact() -> None:
     for start in starts:
         end = SOURCE.index("maa_range_loop<int>", start)
         producer = SOURCE[start:end]
-        reuse_wait = producer.index("wait_ready(next_group);")
+        reuse_wait = producer.index("wait_ready(next_group + 2);")
         next_preload = producer.index("&colidx[next_page_base]", reuse_wait)
         issue = producer.index("cg_direct4_publish_product_page(")
         serial_wait = producer.index("if (!pingpong)", issue)
@@ -197,17 +197,19 @@ def test_pingpong_source_and_completion_ownership_are_exact() -> None:
         assert "alternate_group ? r6 : r4" in producer
         assert "alternate_group ? r7 : r5" in producer
         assert "alternate_group ? r3 : r2" in producer
+        assert "pingpong ? coefficient_tile : group" in producer
 
     for destination in ("curr_q", "curr_r"):
-        open_text = f"cg_page_fed_q16_open(tid, {destination}, t6)"
+        open_text = f"cg_page_fed_q16_open(tid, {destination}, q_completion)"
         open_pos = SOURCE.index(open_text)
-        prefix = SOURCE[max(0, open_pos - 500) : open_pos]
-        assert prefix.rfind("wait_ready(t4);") < prefix.rfind(
-            "wait_ready(t0);"
+        prefix = SOURCE[max(0, open_pos - 900) : open_pos]
+        assert prefix.rfind("wait_ready(t6);") < prefix.rfind(
+            "wait_ready(t2);"
         )
-        assert prefix.rfind("wait_ready(t0);") < prefix.rfind(
+        assert prefix.rfind("wait_ready(t2);") < prefix.rfind(
             "maa_const<int>(0, r6);"
         )
+        assert "? t4" in prefix
 
 
 def test_terminal_gate_records_the_tradeoff_and_exact_payload() -> None:
