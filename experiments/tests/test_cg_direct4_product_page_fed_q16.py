@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 import tempfile
 import unittest
@@ -185,12 +186,42 @@ def test_cg_na_default_and_explicit_4096_are_selected() -> None:
     )
     assert page_fed_cache_pair.cg_na == 256
     assert page_fed_cache_pair.page_fed_value_cache_pair
+    apply_sweep = runner.parse_args(
+        ["/tmp/cg-apply-sweep", "--cg-na", "256", "--apply-lane-sweep"]
+    )
+    assert apply_sweep.apply_lane_sweep
+    apply_confirm = runner.parse_args(
+        [
+            "/tmp/cg-apply-confirm",
+            "--cg-na",
+            "1024",
+            "--apply-lane-confirm",
+            "2",
+            "--confirm-from",
+            "/tmp/cg-apply-sweep",
+        ]
+    )
+    assert apply_confirm.apply_lane_confirm == 2
     with unittest.TestCase().assertRaises(SystemExit):
         runner.parse_args(
             [
                 "/tmp/cg-conflicting-cache",
                 "--value-cache-pair",
                 "--page-fed-value-cache-pair",
+            ]
+        )
+    with unittest.TestCase().assertRaises(SystemExit):
+        runner.parse_args(
+            ["/tmp/cg-wrong-first", "--cg-na", "1024", "--apply-lane-sweep"]
+        )
+    with unittest.TestCase().assertRaises(SystemExit):
+        runner.parse_args(
+            [
+                "/tmp/cg-ungated-confirm",
+                "--cg-na",
+                "1024",
+                "--apply-lane-confirm",
+                "4",
             ]
         )
 
@@ -402,6 +433,148 @@ def test_value_cache_config_gate_and_normalization_fail_closed() -> None:
         assert runner.normalized_cache_pair_config(off) != (
             runner.normalized_cache_pair_config(on)
         )
+
+
+def test_apply_lane_sweep_is_sole_delta_with_fixed_four_lane_cost() -> None:
+    assert runner.APPLY_LANE_SWEEP_TREATMENTS == (
+        ("lane_1", "direct4_product_page_fed_q16", True, 1),
+        ("lane_2", "direct4_product_page_fed_q16", True, 2),
+        ("lane_4", "direct4_product_page_fed_q16", True, 4),
+    )
+    commands = {}
+    for name, _, cache, lanes in runner.APPLY_LANE_SWEEP_TREATMENTS:
+        commands[name] = runner.restore_args(
+            Path("guest"),
+            Path("selector"),
+            Path("checkpoint"),
+            Path(name),
+            value_cache=cache,
+            apply_lanes=lanes,
+        )
+        assert commands[name].count("--maa_soa_jit_value_cache_enable") == 1
+        assert commands[name].count(f"--maa_soa_jit_apply_lanes={lanes}") == 1
+    normalized = {
+        tuple(runner.normalized_apply_lane_command(command))
+        for command in commands.values()
+    }
+    assert len(normalized) == 1
+
+    common = [
+        "page_fed_soa_jit=true",
+        "num_maas=1",
+        "num_indirect_units_per_maa=4",
+        "num_tiles_per_core=8",
+        "num_tile_elements=16384",
+        "physical_tile_elements=4096",
+        "num_offset_table_entries=16384",
+        "num_offset_table_epoch_entries=16384",
+        "num_initial_row_table_slices=32",
+        "soa_jit_predicate_active_credits=16",
+        "soa_jit_active_value_owners=32",
+        "soa_jit_value_cache_enable=true",
+        "[system.mem_ctrls0]",
+        "[system.mem_ctrls1]",
+    ]
+    with tempfile.TemporaryDirectory() as directory:
+        configs = []
+        for lanes in (1, 2, 4):
+            config = Path(directory) / f"lane_{lanes}.ini"
+            config.write_text(
+                "\n".join(
+                    common
+                    + [
+                        f"soa_jit_apply_lanes={lanes}",
+                        f"host_paths=/tmp/lane_{lanes}/fs/proc",
+                    ]
+                )
+                + "\n"
+            )
+            try:
+                runner._expected_value_cache = True
+                runner._expected_apply_lanes = lanes
+                runner.require_config_8(config, True)
+            finally:
+                runner._expected_value_cache = None
+                runner._expected_apply_lanes = None
+            configs.append(runner.normalized_apply_lane_config(config))
+        assert len(set(configs)) == 1
+
+    assert runner.FIXED_APPLY_LANES_PER_UNIT == 4
+    assert runner.FIXED_APPLY_LANE_OWNER_BYTES == 32
+    assert runner.FIXED_APPLY_LANE_POOL_BYTES_PER_UNIT == 144
+    assert runner.INDIRECT_UNITS_PER_MAA == 4
+    assert "static constexpr size_t MaxLanes = 4;" in OVERLAP_STATE
+    assert "std::array<Owner, MaxLanes> owners{};" in OVERLAP_STATE
+    assert '"incremental_apply_lane_pool_bytes_across_arms": 0' in RUNNER_TEXT
+
+
+def test_apply_lane_high_water_must_prove_same_cycle_parallelism() -> None:
+    windows = 3
+    extras = {
+        "IND_SoaJitValueEvictions": 1,
+        "IND_SoaJitValueStalls": 0,
+        "IND_SoaJitValueCacheHighWater": 3,
+        "IND_SoaJitLookaheadStalls": 0,
+        "IND_SoaJitContextStalls": 0,
+        "IND_SoaJitActiveApplyLanes": windows * 2,
+        "IND_SoaJitApplyLaneHighWater": windows + 1,
+        "IND_SoaJitPageFedCommandResponses": windows * 5,
+        "IND_SoaJitPageFedAdmittedWords": windows * 16384,
+        "IND_SoaJitPageFedSpdIndexReads": windows * 16384,
+        "IND_SoaJitPageFedRowWrites": windows * 16384,
+        "IND_SoaJitPageFedCoherentIndexReadLines": 0,
+        "IND_SoaJitPageFedCoherentIndexWriteLines": 0,
+        "IND_SoaJitPageFedStateByteOperations": windows * 16,
+    }
+    original_hardened = runner.HARDENED_REQUIRE_STATS
+    original_stat_sum = runner.base.stat_sum
+    original_first_exact = runner.first_stat_exact
+    try:
+        runner.HARDENED_REQUIRE_STATS = lambda *_: {
+            "IND_SoaJitInstructions": windows
+        }
+        runner.base.stat_sum = lambda _path, name: extras[name]
+        runner.first_stat_exact = lambda _path, _name: 1
+        runner._expected_apply_lanes = 2
+        values = runner.require_stats_8(Path("stats"), windows, True)
+        assert values["IND_SoaJitApplyLaneHighWater"] == windows + 1
+        extras["IND_SoaJitApplyLaneHighWater"] = windows
+        with unittest.TestCase().assertRaisesRegex(
+            RuntimeError, "parallelism closure failed"
+        ):
+            runner.require_stats_8(Path("stats"), windows, True)
+    finally:
+        runner._expected_apply_lanes = None
+        runner.HARDENED_REQUIRE_STATS = original_hardened
+        runner.base.stat_sum = original_stat_sum
+        runner.first_stat_exact = original_first_exact
+
+
+def test_na1024_confirmation_requires_frozen_exact_faster_na256_root() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        result = {
+            "schema": "dx100.cg.direct4_q16_apply_lanes.v1",
+            "terminal": True,
+            "cg_na": 256,
+            "decision": "ACCEPT_EXACT_FASTER_ARM",
+            "performance": {"exact_faster_arms": ["lane_2"]},
+        }
+        (root / "result.json").write_text(json.dumps(result) + "\n")
+        result_sha = runner.base.sha256_file(root / "result.json")
+        (root / "raw_root.sha256").write_text(f"{result_sha}  result.json\n")
+        ledger_sha = runner.base.sha256_file(root / "raw_root.sha256")
+        (root / "gate.complete").write_text(
+            "COMPLETE_CG_DIRECT4_PRODUCT_PAGE_FED_Q16\n"
+            "correctness=EXACT_MATCH\n"
+            "decision=ACCEPT_EXACT_FASTER_ARM\n"
+            f"raw_root_sha256={ledger_sha}\n"
+        )
+        assert runner.validate_confirmation_source(root, 2) == ledger_sha
+        with unittest.TestCase().assertRaisesRegex(
+            RuntimeError, "not authorized for lane_4"
+        ):
+            runner.validate_confirmation_source(root, 4)
 
 
 def test_value_cache_classification_requires_traffic_and_ticks() -> None:
