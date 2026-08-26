@@ -545,6 +545,23 @@ def test_publisher_pingpong_classification_is_fail_closed() -> None:
         runner.classify_publisher_pingpong_pair(serial, pingpong)
 
 
+def test_known_nozero_publisher_stats_decode_absence_as_zero() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        stats = Path(directory) / "stats.txt"
+        stats.write_text(
+            "---------- Begin Simulation Statistics ----------\n"
+            "system.maa.S0_STR_PublishRetries 3\n"
+            "---------- End Simulation Statistics   ----------\n"
+        )
+        assert (
+            runner.optional_nozero_stat_sum(stats, "STR_PublishRetries") == 3
+        )
+        assert (
+            runner.optional_nozero_stat_sum(stats, "STR_PublishOverlapIssues")
+            == 0
+        )
+
+
 def test_frozen_artifacts_and_correctness_before_performance() -> None:
     assert runner.base.GEM5_SHA256 == (
         "606eb920d2e33d1ad3948ae026057b2b74a12f2f5a94e202165c57dbf15f0427"

@@ -243,11 +243,20 @@ def require_stats_8(
         "IND_SoaJitPageFedCoherentIndexReadLines",
         "IND_SoaJitPageFedCoherentIndexWriteLines",
         "IND_SoaJitPageFedStateByteOperations",
-        "STR_PublishRetries",
         "STR_PublishCreditStalls",
-        "STR_PublishOverlapIssues",
     )
     values.update({name: base.stat_sum(stats, name) for name in extra_names})
+    # These two simulator stats use nozero and are therefore absent, rather
+    # than printed as zero, in the expected serial/no-retry case.
+    values.update(
+        {
+            name: optional_nozero_stat_sum(stats, name)
+            for name in (
+                "STR_PublishRetries",
+                "STR_PublishOverlapIssues",
+            )
+        }
+    )
     words = windows * 16384
     closed = (
         values["IND_SoaJitPageFedCommandResponses"] == windows * 5
@@ -273,6 +282,16 @@ def require_stats_8(
         {name: first_stat_exact(stats, name) for name in exact_names}
     )
     return values
+
+
+def optional_nozero_stat_sum(stats: Path, name: str) -> int:
+    """Decode an explicitly known nozero stat without weakening other gates."""
+    try:
+        return base.stat_sum(stats, name)
+    except RuntimeError as error:
+        if f"missing first-window stat {name} in {stats}" != str(error):
+            raise
+        return 0
 
 
 def first_stat_exact(stats: Path, name: str) -> int:
