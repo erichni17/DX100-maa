@@ -593,10 +593,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     pair.add_argument(
         "--apply-lane-confirm",
         type=int,
+        nargs="+",
         choices=(2, 4),
         help=(
-            "at CG_NA=1024, compare lane 1 with one exact faster lane from "
-            "a validated CG_NA=256 sweep"
+            "at CG_NA=1024, compare lane 1 with only the listed exact faster "
+            "lanes from one validated CG_NA=256 sweep"
         ),
     )
     parser.add_argument(
@@ -614,6 +615,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             parser.error("apply-lane confirmation must use CG_NA=1024")
         if args.confirm_from is None:
             parser.error("--apply-lane-confirm requires --confirm-from")
+        if len(set(args.apply_lane_confirm)) != len(args.apply_lane_confirm):
+            parser.error("apply-lane confirmation contains a duplicate lane")
     elif args.confirm_from is not None:
         parser.error("--confirm-from requires --apply-lane-confirm")
     return args
@@ -640,9 +643,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     confirmation_source_ledger = None
     if args.apply_lane_confirm is not None:
-        confirmation_source_ledger = validate_confirmation_source(
-            args.confirm_from, args.apply_lane_confirm
-        )
+        confirmation_ledgers = {
+            validate_confirmation_source(args.confirm_from, lane)
+            for lane in args.apply_lane_confirm
+        }
+        if len(confirmation_ledgers) != 1:
+            raise RuntimeError(
+                "confirmation lanes did not share one NA=256 root"
+            )
+        confirmation_source_ledger = confirmation_ledgers.pop()
 
     input_dir = out / "input"
     checkpoint = out / "checkpoint"
@@ -777,13 +786,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.apply_lane_sweep:
         arm_specs = APPLY_LANE_SWEEP_TREATMENTS
     elif args.apply_lane_confirm is not None:
-        arm_specs = (
-            APPLY_LANE_SWEEP_TREATMENTS[0],
+        arm_specs = (APPLY_LANE_SWEEP_TREATMENTS[0],) + tuple(
             next(
-                spec
-                for spec in APPLY_LANE_SWEEP_TREATMENTS
-                if spec[3] == args.apply_lane_confirm
-            ),
+                spec for spec in APPLY_LANE_SWEEP_TREATMENTS if spec[3] == lane
+            )
+            for lane in args.apply_lane_confirm
         )
     elif args.value_cache_pair:
         arm_specs = tuple((*spec, None) for spec in VALUE_CACHE_TREATMENTS)
@@ -965,11 +972,21 @@ def main(argv: list[str] | None = None) -> int:
             for name, arm in parsed.items()
             if name != "lane_1" and arm["stats"]["simTicks"] < control_ticks
         ]
-        apply_lane_decision = (
-            "ACCEPT_EXACT_FASTER_ARM"
-            if exact_faster_arms
-            else "REJECT_NO_EXACT_FASTER_ARM"
-        )
+        if args.apply_lane_confirm is not None:
+            requested_arms = {
+                f"lane_{lane}" for lane in args.apply_lane_confirm
+            }
+            apply_lane_decision = (
+                "ACCEPT_ALL_EXACT_FASTER_ARMS_CONFIRMED"
+                if set(exact_faster_arms) == requested_arms
+                else "REJECT_UNCONFIRMED_ARM"
+            )
+        else:
+            apply_lane_decision = (
+                "ACCEPT_EXACT_FASTER_ARM"
+                if exact_faster_arms
+                else "REJECT_NO_EXACT_FASTER_ARM"
+            )
     selected_treatment = arm_specs[0][1]
     page_fed_cache_pair = args.page_fed_value_cache_pair
     result = {
@@ -1058,7 +1075,8 @@ def main(argv: list[str] | None = None) -> int:
         result["confirmation"] = {
             "authorized_by_na256_root": str(args.confirm_from.resolve()),
             "authorized_raw_root_sha256": confirmation_source_ledger,
-            "confirmed_lane": args.apply_lane_confirm,
+            "requested_lanes": args.apply_lane_confirm,
+            "one_guest_and_checkpoint": True,
         }
     result["hardware_accounting"] = {
         "physical_spd_payload_bytes": 524288,
