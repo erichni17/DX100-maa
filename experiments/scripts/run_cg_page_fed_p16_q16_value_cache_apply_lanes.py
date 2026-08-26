@@ -279,6 +279,12 @@ def parse_arm(arm: Path, cg_na: int, lanes: int) -> dict[str, object]:
         arm, cg_na, TREATMENT, value_cache=True, apply_lanes=lanes
     )
     stats = parsed["stats"]
+    # The inherited bounded parser closes the primary work ledger.  Read the
+    # remaining cache/value predicate counters explicitly before the A/B
+    # comparison so a missing ledger can never degrade into an implicit skip.
+    for name in CONSERVE_STATS:
+        if name not in stats:
+            stats[name] = base.base.stat_sum(arm / "stats.txt", name)
     instructions = stats["IND_SoaJitInstructions"]
     require(
         stats["IND_SoaJitActiveApplyLanes"] == instructions * lanes
