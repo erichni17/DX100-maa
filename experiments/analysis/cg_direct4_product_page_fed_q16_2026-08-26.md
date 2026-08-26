@@ -46,17 +46,18 @@ array; the control additionally retains 262,144 B of virtual-p backing.
 
 ## Candidate-only runner
 
-`experiments/scripts/run_cg_direct4_product_page_fed_q16.py` hard-codes the
-following fail-closed experiment:
+`experiments/scripts/run_cg_direct4_product_page_fed_q16.py` provides the
+following fail-closed bounded experiment:
 
-- one `CG_NA=1024`, four-thread deterministic-reduction guest;
+- one four-thread deterministic-reduction guest at explicit --cg-na
+  (default 1024; permitted range 1..32768; full CG is rejected);
 - one shared checkpoint created before the deferred selector is read;
 - frozen page-fed gem5 SHA-256
   `606eb920d2e33d1ad3948ae026057b2b74a12f2f5a94e202165c57dbf15f0427`;
 - frozen Ramulator SHA-256
   `76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753`;
 - serial page-fed control followed by the direct4/q16 treatment;
-- no native, medium, or full run, no timeout, and no per-access trace;
+- no native or full run, no timeout, and no per-access trace;
 - exact raw and quantized fingerprint equality, all 11 deterministic FP
   reduction records, terminal/mechanism closure, and immutable source,
   checkpoint, and artifact ledgers before any `simTicks` result is emitted.
@@ -187,11 +188,54 @@ simulated latency (`1,528,817,513` ticks saved). This is accepted small-CG
 application evidence only. It is not a medium/full result, a native speedup,
 or evidence that discarding p16 reordering is beneficial for every workload.
 
+## Accepted medium evidence: CG_NA=4096 r1
+
+Raw root:
+/data1/nier/dx100-runs/2026-08-26-cg-direct4-product-page-fed-q16-na4096-r1.
+This is the one permitted fresh medium matched pair, from source
+19223ae642d602751a301843742ebb5c4d025406. It has no native or full arm and
+no timeout. Checkpoint, control restore, and direct4/q16 restore each exit
+zero; both restore logs have the required m5 exit and nonempty final stats.
+
+The completion gate records correctness=EXACT_MATCH; all 56 raw-ledger entries
+revalidate against raw_root.sha256
+437418a46a0299a2761ebf031737f17b53f2969127b3fedd0f42af8b29f632f6.
+The two arms have byte-identical raw and quantized fingerprints:
+
+```text
+elements=4096 x_raw=225873f272124c14 z_raw=36e3b0c8d5f3c391
+x_q5=e03cba68dff80802 x_q6=8458d6396eee1e7c
+z_q5=91cfe451e93d2650 z_q6=c99085e428243502
+```
+
+All 11 deterministic reduction records, including the outer FP64 record, are
+byte-identical. Both arms close 290 q16 windows, 1,160 product publisher pages
+and q-index admissions, and 290 page-fed closes. Each resolved configuration
+has exactly eight tiles/core and 524,288 B physical SPD payload.
+
+The treatment change is exact: the control has 290 virtual-p gathers and
+262,144 B virtual-p backing, while direct4/q16 has zero virtual-p backing and
+1,160 physical 4K p-gathers. The treatment therefore gives up p-side 16K
+reordering (p16_reorder_preserved=0) while retaining q16 Row/Offset reordering
+(q16_reorder_preserved=1); the control retains both. Neither arm uses coherent
+q-index backing or host SPD payload access.
+
+After those correctness, identity, allocation, and mechanism gates passed,
+the control measured 25,030,950,544 simTicks and direct4/q16 measured
+18,032,971,351 simTicks. The exact control/direct4 ratio is
+1.388065785543x; direct4/q16 is 27.957305% lower simulated latency, saving
+6,997,979,193 ticks.
+
+This is accepted medium-CG application evidence for this matched
+one-guest/shared-checkpoint configuration only. It is not full-CG evidence,
+does not include a native comparison, and does not establish that losing p16
+reordering is beneficial outside this bounded input.
+
 ## Conclusion
 
 The narrow direct4-product/q16 architecture is implemented and live-validated
 at eight tiles. Its intended tradeoff is explicit: p uses four physical gathers
 and loses p-side 16K reorder, while q retains one 16K Row/Offset reorder. The
-corrected small pair shows a substantial benefit from eliminating virtual-p
-materialization; the next required experiment is the same matched comparison
-at a larger bounded CG size before considering any full run.
+accepted small and medium pairs show a substantial benefit from eliminating
+virtual-p materialization within their matched bounded inputs. They do not
+authorize native or full work.
