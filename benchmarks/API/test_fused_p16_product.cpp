@@ -151,11 +151,17 @@ verify(uint64_t &referenceHash, uint64_t &productHash, uint64_t &qHash)
     if (referenceHash != productHash || productHash != qHash ||
         sentinels != 0)
         ++errors;
-    std::cout << "FUSED_P16_PRODUCT_DUMP";
-    for (const float product : products)
-        std::cout << ' ' << std::hex << std::setw(8) << std::setfill('0')
-                  << bits(product);
-    std::cout << std::dec << std::setfill(' ') << std::endl;
+    constexpr std::size_t DumpWords = 64;
+    for (std::size_t begin = 0; begin < LogicalElements;
+         begin += DumpWords) {
+        std::cout << "FUSED_P16_PRODUCT_DUMP offset=" << begin;
+        for (std::size_t ordinal = begin; ordinal < begin + DumpWords;
+             ++ordinal) {
+            std::cout << ' ' << std::hex << std::setw(8)
+                      << std::setfill('0') << bits(products[ordinal]);
+        }
+        std::cout << std::dec << std::setfill(' ') << std::endl;
+    }
     std::cout << "FUSED_P16_PRODUCT_SENTINELS count=" << sentinels
               << std::endl;
     return errors;

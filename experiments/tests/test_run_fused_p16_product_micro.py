@@ -14,6 +14,7 @@ class FusedP16ProductMicroContract(unittest.TestCase):
             "all_same,same_line,cross_page,pseudorandom",
             "maa_indirect_load_virtual_index_product_fp32",
             "FUSED_P16_PRODUCT_DUMP",
+            "DumpWords = 64",
             "referenceProducts[ordinal]",
             "product != expected || q != expected",
             "FUSED_P16_PRODUCT_SENTINELS count=",
@@ -68,6 +69,7 @@ class FusedP16ProductMicroContract(unittest.TestCase):
             self.assertIn(stat, RUNNER)
         self.assertIn("p_issue == p_response", RUNNER)
         self.assertIn("c_issue == c_response", RUNNER)
+        self.assertIn("expected 256 dump records", RUNNER)
 
 
 if __name__ == "__main__":

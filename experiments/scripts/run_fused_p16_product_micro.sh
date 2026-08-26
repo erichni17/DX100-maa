@@ -99,8 +99,24 @@ result=$(grep '^FUSED_P16_PRODUCT_RESULT ' "$restore")
 field() { sed -n "s/.* $1=\([^ ]*\).*/\1/p" <<<"$result"; }
 [[ $(field reference_hash) == $(field product_hash) ]]
 [[ $(field product_hash) == $(field q_hash) ]]
-dump=$(grep '^FUSED_P16_PRODUCT_DUMP ' "$restore")
-[[ $(wc -w <<<"$dump") -eq 16385 ]]
+python3 - "$restore" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+records = [
+    line for line in Path(sys.argv[1]).read_text().splitlines()
+    if line.startswith("FUSED_P16_PRODUCT_DUMP ")
+]
+if len(records) != 256:
+    raise SystemExit(f"expected 256 dump records, saw {len(records)}")
+for record, expected in zip(records, range(0, 16384, 64)):
+    fields = record.split()
+    if fields[1] != f"offset={expected}" or len(fields) != 66:
+        raise SystemExit(f"malformed dump record at offset {expected}")
+    if any(re.fullmatch(r"[0-9a-f]{8}", word) is None for word in fields[2:]):
+        raise SystemExit(f"malformed product word at offset {expected}")
+PY
 
 stat_sum() {
     awk -v suffix="$1" '
