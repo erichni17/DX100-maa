@@ -175,6 +175,24 @@ def test_cg_na_default_and_explicit_4096_are_selected() -> None:
     )
     assert cache_pair.cg_na == 256
     assert cache_pair.value_cache_pair
+    page_fed_cache_pair = runner.parse_args(
+        [
+            "/tmp/cg-page-fed-cache",
+            "--cg-na",
+            "256",
+            "--page-fed-value-cache-pair",
+        ]
+    )
+    assert page_fed_cache_pair.cg_na == 256
+    assert page_fed_cache_pair.page_fed_value_cache_pair
+    with unittest.TestCase().assertRaises(SystemExit):
+        runner.parse_args(
+            [
+                "/tmp/cg-conflicting-cache",
+                "--value-cache-pair",
+                "--page-fed-value-cache-pair",
+            ]
+        )
 
     captured: dict[str, object] = {}
     original_parse_arm = runner.base.parse_arm
@@ -275,21 +293,38 @@ def test_hardened_delivery_gate_uses_eight_tiles() -> None:
     assert '+ values["IND_SoaJitValueMergedWaiters"]' in base_text
 
 
-def test_value_cache_pair_is_one_bounded_general_treatment() -> None:
+def test_value_cache_pairs_hold_one_bounded_guest_treatment() -> None:
     assert runner.VALUE_CACHE_TREATMENTS == (
         ("cache_off", "direct4_product_page_fed_q16", False),
         ("cache_on", "direct4_product_page_fed_q16", True),
     )
+    assert runner.PAGE_FED_VALUE_CACHE_TREATMENTS == (
+        ("cache_off", "page_fed_product_soa_jit", False),
+        ("cache_on", "page_fed_product_soa_jit", True),
+    )
     off = runner.restore_args(
-        Path("guest"), Path("selector"), Path("cpt"), Path("arm"), False
+        Path("guest"), Path("selector"), Path("cpt"), Path("cache_off"), False
     )
     on = runner.restore_args(
-        Path("guest"), Path("selector"), Path("cpt"), Path("arm"), True
+        Path("guest"), Path("selector"), Path("cpt"), Path("cache_on"), True
     )
     option = "--maa_soa_jit_value_cache_enable"
     assert option not in off
     assert on.count(option) == 1
-    assert [value for value in on if value != option] == off
+    assert runner.normalized_cache_pair_command(off) == (
+        runner.normalized_cache_pair_command(on)
+    )
+
+    page_fed = terminal_fields("page_fed_product_soa_jit")
+    assert page_fed["p16_reorder_preserved"] == "1"
+    assert page_fed["q16_reorder_preserved"] == "1"
+    assert page_fed["external_coherent_backing_bytes"] == "524288"
+    assert page_fed["virtual_p_backing_bytes"] == "262144"
+    assert page_fed["coherent_index_backing_bytes"] == "0"
+    assert (
+        runner.require_terminal_8(page_fed, "page_fed_product_soa_jit", 256)
+        == 3
+    )
 
     assert runner.FIXED_VALUE_OWNER_LINES == 128
     assert runner.ACTIVE_VALUE_OWNER_LINES == 32
@@ -303,6 +338,11 @@ def test_value_cache_pair_is_one_bounded_general_treatment() -> None:
     assert '"new_control_bytes": 0' in RUNNER_TEXT
     assert '"new_ports": 0' in RUNNER_TEXT
     assert '"physical_spd_payload_bytes": 524288' in RUNNER_TEXT
+    assert '"external_coherent_backing_bytes"' in RUNNER_TEXT
+    assert '"coherent_q_index_backing_bytes"' in RUNNER_TEXT
+    assert '"dx100.cg.page_fed_p16_q16_value_cache.v1"' in RUNNER_TEXT
+    assert '"same_guest_treatment"' in RUNNER_TEXT
+    assert '"sole_knob_delta"' in RUNNER_TEXT
 
 
 def test_value_cache_config_gate_and_normalization_fail_closed() -> None:

@@ -4,9 +4,9 @@
 One deterministic-reduction guest and one deferred checkpoint feed the matched
 serial page-fed control and direct4-product/q16 treatment.  The default is
 CG_NA=1024; bounded explicit sizes are supported through --cg-na.  There is no
-native or full run, no timeout, and no per-access trace.  The optional
---value-cache-pair instead holds direct4/q16 fixed and isolates retention in
-the already provisioned bounded SoA/JIT value-owner pool.
+native or full run, no timeout, and no per-access trace.  The optional cache
+pair modes hold either direct4/q16 or page-fed p16/q16 fixed and isolate
+retention in the already provisioned bounded SoA/JIT value-owner pool.
 """
 
 from __future__ import annotations
@@ -44,6 +44,10 @@ SELECTED_TREATMENTS = (
 VALUE_CACHE_TREATMENTS = (
     ("cache_off", "direct4_product_page_fed_q16", False),
     ("cache_on", "direct4_product_page_fed_q16", True),
+)
+PAGE_FED_VALUE_CACHE_TREATMENTS = (
+    ("cache_off", "page_fed_product_soa_jit", False),
+    ("cache_on", "page_fed_product_soa_jit", True),
 )
 FIXED_VALUE_OWNER_LINES = 128
 ACTIVE_VALUE_OWNER_LINES = 32
@@ -347,6 +351,17 @@ def normalized_cache_pair_config(config: Path) -> str:
     return "\n".join(normalized) + "\n"
 
 
+def normalized_cache_pair_command(command: list[str]) -> list[str]:
+    """Normalize the arm output path and remove only the cache treatment."""
+    normalized = []
+    for value in command:
+        if value.startswith("--outdir="):
+            normalized.append("--outdir=<ARM>")
+        elif value != "--maa_soa_jit_value_cache_enable":
+            normalized.append(value)
+    return normalized
+
+
 def classify_value_cache_pair(control: dict, candidate: dict) -> str:
     """Classify only an exact, work-conserving value-retention pair."""
     control_stats = control["stats"]
@@ -384,12 +399,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("out", type=Path)
     parser.add_argument("--cg-na", type=int, default=DEFAULT_CG_NA)
-    parser.add_argument(
+    pair = parser.add_mutually_exclusive_group()
+    pair.add_argument(
         "--value-cache-pair",
         action="store_true",
         help=(
             "hold direct4/q16 fixed and compare the bounded value cache "
             "disabled versus enabled"
+        ),
+    )
+    pair.add_argument(
+        "--page-fed-value-cache-pair",
+        action="store_true",
+        help=(
+            "hold page_fed_product_soa_jit fixed with p16/q16 preserved and "
+            "compare the bounded value cache disabled versus enabled"
         ),
     )
     args = parser.parse_args(argv)
@@ -420,11 +444,10 @@ def main(argv: list[str] | None = None) -> int:
     checkpoint.mkdir()
     guest = out / "cg_direct4_product_page_fed_q16_guest"
     selector = input_dir / "treatment.selector"
-    initial_treatment = (
-        "direct4_product_page_fed_q16"
-        if args.value_cache_pair
-        else "page_fed_product_soa_jit"
-    )
+    value_cache_pair = args.value_cache_pair or args.page_fed_value_cache_pair
+    initial_treatment = "page_fed_product_soa_jit"
+    if args.value_cache_pair:
+        initial_treatment = "direct4_product_page_fed_q16"
     selector.write_text(f"token_stream_ld {initial_treatment}\n")
     selector.chmod(0o444)
 
@@ -545,11 +568,12 @@ def main(argv: list[str] | None = None) -> int:
 
     parsed: dict[str, dict] = {}
     restore_commands: dict[str, list[str]] = {}
-    arm_specs = (
-        VALUE_CACHE_TREATMENTS
-        if args.value_cache_pair
-        else SELECTED_TREATMENTS
-    )
+    if args.value_cache_pair:
+        arm_specs = VALUE_CACHE_TREATMENTS
+    elif args.page_fed_value_cache_pair:
+        arm_specs = PAGE_FED_VALUE_CACHE_TREATMENTS
+    else:
+        arm_specs = SELECTED_TREATMENTS
     for arm_name, treatment, value_cache in arm_specs:
         selector.chmod(0o644)
         selector.write_text(f"token_stream_ld {treatment}\n")
@@ -566,8 +590,8 @@ def main(argv: list[str] | None = None) -> int:
             arm, cg_na, treatment, value_cache=value_cache
         )
 
-    control_name = "cache_off" if args.value_cache_pair else "control"
-    candidate_name = "cache_on" if args.value_cache_pair else "direct4_q16"
+    control_name = "cache_off" if value_cache_pair else "control"
+    candidate_name = "cache_on" if value_cache_pair else "direct4_q16"
     control = parsed[control_name]
     candidate = parsed[candidate_name]
     fingerprint_equal = (
@@ -587,7 +611,15 @@ def main(argv: list[str] | None = None) -> int:
         != candidate["terminal"]["full_windows"]
     ):
         raise RuntimeError("treatment window counts differ")
-    if args.value_cache_pair:
+    if value_cache_pair:
+        expected_selector = f"token_stream_ld {arm_specs[0][1]}\n"
+        for arm_name in (control_name, candidate_name):
+            if (out / arm_name / "selector.txt").read_text() != (
+                expected_selector
+            ):
+                raise RuntimeError(
+                    "value-cache pair changed the deferred guest treatment"
+                )
         if control["terminal"] != candidate["terminal"]:
             raise RuntimeError("value-cache pair changed the guest mechanism")
         if normalized_cache_pair_config(out / "cache_off/config.ini") != (
@@ -595,6 +627,23 @@ def main(argv: list[str] | None = None) -> int:
         ):
             raise RuntimeError(
                 "value-cache pair has a non-treatment config difference"
+            )
+        control_command = restore_commands[control_name]
+        candidate_command = restore_commands[candidate_name]
+        cache_option = "--maa_soa_jit_value_cache_enable"
+        if control_command.count(cache_option) != 0:
+            raise RuntimeError(
+                "cache-off arm unexpectedly enables value cache"
+            )
+        if candidate_command.count(cache_option) != 1:
+            raise RuntimeError(
+                "cache-on arm lacks exactly one value-cache knob"
+            )
+        if normalized_cache_pair_command(control_command) != (
+            normalized_cache_pair_command(candidate_command)
+        ):
+            raise RuntimeError(
+                "value-cache pair has a non-treatment command difference"
             )
 
     checkpoint_after = base.tree_ledger(checkpoint)
@@ -615,13 +664,19 @@ def main(argv: list[str] | None = None) -> int:
     control_ticks = control["stats"]["simTicks"]
     candidate_ticks = candidate["stats"]["simTicks"]
     value_cache_decision = None
-    if args.value_cache_pair:
+    if value_cache_pair:
         value_cache_decision = classify_value_cache_pair(control, candidate)
+    selected_treatment = arm_specs[0][1]
+    page_fed_cache_pair = args.page_fed_value_cache_pair
     result = {
         "schema": (
-            "dx100.cg.direct4_q16_value_cache.v1"
-            if args.value_cache_pair
-            else "dx100.cg.direct4_product_page_fed_q16.v1"
+            "dx100.cg.page_fed_p16_q16_value_cache.v1"
+            if page_fed_cache_pair
+            else (
+                "dx100.cg.direct4_q16_value_cache.v1"
+                if args.value_cache_pair
+                else "dx100.cg.direct4_product_page_fed_q16.v1"
+            )
         ),
         "terminal": True,
         "candidate_only": True,
@@ -640,13 +695,19 @@ def main(argv: list[str] | None = None) -> int:
         "restore_commands": restore_commands,
         "isolated_treatment": (
             "soa_jit_value_cache_enable"
-            if args.value_cache_pair
+            if value_cache_pair
             else "direct4_product_page_fed_q16"
+        ),
+        "same_guest_treatment": (
+            selected_treatment if value_cache_pair else None
+        ),
+        "sole_knob_delta": (
+            "soa_jit_value_cache_enable" if value_cache_pair else None
         ),
         "fingerprint_raw_and_quantized_exact_equal": True,
         "deterministic_reduction_records": 11,
         "deterministic_reduction_bits_exact_equal": True,
-        "p16_reorder_preserved_by_candidate": False,
+        "p16_reorder_preserved_by_candidate": page_fed_cache_pair,
         "q16_reorder_preserved_by_candidate": True,
         "selected_value_cache_enable": True,
         "performance": {
@@ -659,6 +720,15 @@ def main(argv: list[str] | None = None) -> int:
     }
     result["hardware_accounting"] = {
         "physical_spd_payload_bytes": 524288,
+        "external_coherent_backing_bytes": int(
+            candidate["terminal"]["external_coherent_backing_bytes"]
+        ),
+        "virtual_p_backing_bytes": int(
+            candidate["terminal"]["virtual_p_backing_bytes"]
+        ),
+        "coherent_q_index_backing_bytes": int(
+            candidate["terminal"]["coherent_index_backing_bytes"]
+        ),
         "new_payload_bytes": 0,
         "new_control_bytes": 0,
         "new_ports": 0,
@@ -677,7 +747,7 @@ def main(argv: list[str] | None = None) -> int:
             * INDIRECT_UNITS_PER_MAA
         ),
     }
-    if args.value_cache_pair:
+    if value_cache_pair:
         result["decision"] = value_cache_decision
         result["traffic"] = {
             "metric": "first_roi_cache_read_packets",
@@ -705,7 +775,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     ledger_sha = base.sha256_file(out / "raw_root.sha256")
     decision_line = (
-        f"decision={value_cache_decision}\n" if args.value_cache_pair else ""
+        f"decision={value_cache_decision}\n" if value_cache_pair else ""
     )
     (out / "gate.complete").write_text(
         "COMPLETE_CG_DIRECT4_PRODUCT_PAGE_FED_Q16\n"
