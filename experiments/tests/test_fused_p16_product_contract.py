@@ -16,7 +16,7 @@ def test_optimized_and_sanitized_full_16k_state_model():
     )
 
 
-def test_guarded_six_word_abi_and_four_span_hazards():
+def test_guarded_six_word_abi_and_registered_p_region_hazards():
     api = read("benchmarks/API/MAA_gem5.hpp")
     decode = read("src/mem/MAA/CpuSidePort.cc")
     interface = read("src/mem/MAA/IF.cc")
@@ -29,7 +29,9 @@ def test_guarded_six_word_abi_and_four_span_hazards():
     assert "optype == OPType::MUL_OP" in header
     assert "fusedP16CoefficientWordReceived" in header
     assert "Malformed fused-p16 coefficient closure" in decode
-    assert "pairwise disjoint" in decode
+    assert "registered p region and exact 16K" in decode
+    assert "registeredWordFits" in decode
+    assert "registeredRegionsDisjoint" in decode
     fused_accesses = interface.split("if (isFusedP16Product())", 1)[1]
     for access in (
         "append(addrRangeID, AccessType::READ)",
@@ -54,6 +56,12 @@ def test_exact_finite_geometry_and_no_drain_or_fallback():
         "CoefficientOwnerLines = 32",
         "CoefficientPrefetchCredits = 0",
         "GuestBackingBytesRemoved =",
+        "LifecycleSemanticBytesPerUnit",
+        "LifecycleCppBoundBytesPerUnit",
+        "DescriptorClosureSemanticBytesPerIf",
+        "DescriptorClosureCppBoundBytesPerIf",
+        "registeredWordFits",
+        "registeredRegionsDisjoint",
     ):
         assert token in contract
     assert "num_RT_slices[my_RT_config] != 32" in indirect

@@ -603,6 +603,10 @@ protected:
     uint64_t fused_p16_generation_counter = 0;
     uint64_t fused_p16_generation = 0;
     bool fused_p16_operation_active = false;
+    static_assert(
+        sizeof(maa::FusedP16LifecycleStorageBound) <=
+            maa::FusedP16ProductContract::LifecycleCppBoundBytesPerUnit,
+        "fused-p16 lifecycle storage exceeds the accounted C++ bound");
     uint64_t fused_p16_epochs = 0;
     uint64_t fused_p16_source_ordinals = 0;
     uint64_t fused_p16_coefficient_read_issues = 0;

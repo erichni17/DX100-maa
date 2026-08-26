@@ -44,6 +44,52 @@ FINITE_KNOBS = (
     "--maa_virtual_max_outstanding_writes=32",
     "--maa_soa_jit_value_prefetch_credits=0",
 )
+COMMON_STAT_SCHEMA = (
+    "simTicks",
+    "IND_SoaJitInstructions",
+    "IND_SoaJitSelected",
+    "IND_SoaJitAliasesApplied",
+    "IND_SoaJitValueReadIssues",
+    "IND_SoaJitValueReadResponses",
+    "IND_SoaJitValueFills",
+    "IND_SoaJitValueHits",
+    "IND_SoaJitValueMergedWaiters",
+    "IND_SoaJitValueDeliveries",
+    "IND_SoaJitAReadIssues",
+    "IND_SoaJitAReadResponses",
+    "IND_SoaJitAWriteIssues",
+    "IND_SoaJitAWriteResponses",
+    "IND_SoaJitPageFedOperations",
+    "IND_SoaJitPageFedAdmitCommands",
+    "IND_SoaJitPageFedCloseCommands",
+    "IND_SoaJitPageFedCommandResponses",
+    "IND_SoaJitPageFedAdmittedWords",
+    "IND_SoaJitPageFedSpdIndexReads",
+    "IND_SoaJitPageFedRowWrites",
+    "IND_SoaJitPageFedCoherentIndexReadLines",
+    "IND_SoaJitPageFedCoherentIndexWriteLines",
+    "IND_SoaJitEpochDrains",
+    "IND_BoundedGlobalMergeFallbacks",
+    "STR_PublishIssues",
+    "STR_PublishWriteResponses",
+)
+FUSED_STAT_SCHEMA = (
+    "IND_FusedP16Operations",
+    "IND_FusedP16Epochs",
+    "IND_FusedP16SourceOrdinals",
+    "IND_FusedP16CoefficientReadIssues",
+    "IND_FusedP16CoefficientReadResponses",
+    "IND_FusedP16CoefficientFills",
+    "IND_FusedP16CoefficientDeliveries",
+    "IND_FusedP16MulAccepts",
+    "IND_FusedP16MulCompletions",
+    "IND_FusedP16ProductInsertions",
+    "IND_FusedP16ProductWriteCompletions",
+    "IND_FusedP16EpochDrains",
+    "IND_FusedP16Fallbacks",
+    "IND_FusedP16PublisherLines",
+    "IND_FusedP16VirtualPBytes",
+)
 
 
 def require(condition: bool, message: str) -> None:
@@ -208,44 +254,13 @@ def require_terminal(fields: dict[str, str], treatment: str) -> int:
     return windows
 
 
-def stat_sum_or_zero(stats: Path, name: str) -> int:
-    try:
-        return base.stat_sum(stats, name)
-    except RuntimeError:
-        return 0
+def require_stat_schema(stats: Path, names: tuple[str, ...]) -> dict[str, int]:
+    """Read every first-ROI stat; absent/renamed fields are fatal."""
+    return {name: base.stat_sum(stats, name) for name in names}
 
 
 def require_stats(stats: Path, windows: int, treatment: str) -> dict[str, int]:
-    common_names = (
-        "simTicks",
-        "IND_SoaJitInstructions",
-        "IND_SoaJitSelected",
-        "IND_SoaJitAliasesApplied",
-        "IND_SoaJitValueReadIssues",
-        "IND_SoaJitValueReadResponses",
-        "IND_SoaJitValueFills",
-        "IND_SoaJitValueHits",
-        "IND_SoaJitValueMergedWaiters",
-        "IND_SoaJitValueDeliveries",
-        "IND_SoaJitAReadIssues",
-        "IND_SoaJitAReadResponses",
-        "IND_SoaJitAWriteIssues",
-        "IND_SoaJitAWriteResponses",
-        "IND_SoaJitPageFedOperations",
-        "IND_SoaJitPageFedAdmitCommands",
-        "IND_SoaJitPageFedCloseCommands",
-        "IND_SoaJitPageFedCommandResponses",
-        "IND_SoaJitPageFedAdmittedWords",
-        "IND_SoaJitPageFedSpdIndexReads",
-        "IND_SoaJitPageFedRowWrites",
-        "IND_SoaJitPageFedCoherentIndexReadLines",
-        "IND_SoaJitPageFedCoherentIndexWriteLines",
-        "IND_SoaJitEpochDrains",
-        "IND_BoundedGlobalMergeFallbacks",
-        "STR_PublishIssues",
-        "STR_PublishWriteResponses",
-    )
-    values = {name: stat_sum_or_zero(stats, name) for name in common_names}
+    values = require_stat_schema(stats, COMMON_STAT_SCHEMA)
     words = windows * 16384
     pages = windows * 4
     q_closed = (
@@ -282,26 +297,7 @@ def require_stats(stats: Path, windows: int, treatment: str) -> dict[str, int]:
     )
     require(q_closed, f"q16 stats closure failed: {values}")
 
-    fused_names = (
-        "IND_FusedP16Operations",
-        "IND_FusedP16Epochs",
-        "IND_FusedP16SourceOrdinals",
-        "IND_FusedP16CoefficientReadIssues",
-        "IND_FusedP16CoefficientReadResponses",
-        "IND_FusedP16CoefficientFills",
-        "IND_FusedP16CoefficientDeliveries",
-        "IND_FusedP16MulAccepts",
-        "IND_FusedP16MulCompletions",
-        "IND_FusedP16ProductInsertions",
-        "IND_FusedP16ProductWriteCompletions",
-        "IND_FusedP16EpochDrains",
-        "IND_FusedP16Fallbacks",
-        "IND_FusedP16PublisherLines",
-        "IND_FusedP16VirtualPBytes",
-    )
-    values.update(
-        {name: stat_sum_or_zero(stats, name) for name in fused_names}
-    )
+    values.update(require_stat_schema(stats, FUSED_STAT_SCHEMA))
     if treatment == "fused_p16_product_q16":
         issues = values["IND_FusedP16CoefficientReadIssues"]
         fused_closed = (
@@ -329,7 +325,7 @@ def require_stats(stats: Path, windows: int, treatment: str) -> dict[str, int]:
             )
         )
     else:
-        fused_closed = all(values[name] == 0 for name in fused_names)
+        fused_closed = all(values[name] == 0 for name in FUSED_STAT_SCHEMA)
         fused_closed = fused_closed and (
             values["STR_PublishIssues"] == pages * 256
             and values["STR_PublishWriteResponses"] == pages * 256
@@ -345,10 +341,14 @@ def restore_args(
     args = direct.restore_args(
         guest, selector, checkpoint, arm, value_cache=True
     )
-    require(args.count("--maa_soa_jit_value_cache_enable") == 1,
-            "restore must enable the selected cache exactly once")
-    require(args.count("--maa_soa_jit_active_value_owners=32") == 1,
-            "restore must select the 32-owner pool exactly once")
+    require(
+        args.count("--maa_soa_jit_value_cache_enable") == 1,
+        "restore must enable the selected cache exactly once",
+    )
+    require(
+        args.count("--maa_soa_jit_active_value_owners=32") == 1,
+        "restore must select the 32-owner pool exactly once",
+    )
     command_index = args.index("--cmd")
     args[command_index:command_index] = list(FINITE_KNOBS)
     return args
@@ -611,6 +611,8 @@ def main(argv: list[str] | None = None) -> int:
         "fingerprints_exact_equal": True,
         "deterministic_reductions_exact_equal": True,
         "p16_epochs": int(candidate["terminal"]["full_windows"]),
+        "required_stat_schema": [*COMMON_STAT_SCHEMA, *FUSED_STAT_SCHEMA],
+        "required_stat_schema_present": True,
         "virtual_p_bytes": 0,
         "publisher_lines": 0,
         "fallbacks": 0,

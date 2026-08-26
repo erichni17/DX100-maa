@@ -49,11 +49,29 @@ testContractAccountingAndSpans()
     static_assert(C::CombinerPayloadBytesPerUnit == 2048);
     static_assert(C::ResponseSubstateBytesPerUnit == 8);
     static_assert(C::TaggedAluStateBytesPerLane == 8);
+    static_assert(C::LifecycleSemanticBytesPerUnit == 17);
+    static_assert(C::LifecycleCppBoundBytesPerUnit == 24);
+    static_assert(C::DescriptorClosureSemanticBytesPerIf == 1);
+    static_assert(C::DescriptorClosureCppBoundBytesPerIf == 8);
+    static_assert(sizeof(gem5::maa::FusedP16LifecycleStorageBound) <=
+                  C::LifecycleCppBoundBytesPerUnit);
     CHECK(C::spanFits(0x1000, 0x1000, 0x11000));
     CHECK(!C::spanFits(0x1004, 0x1000, 0x12000));
     CHECK(!C::spanFits(0x1000, 0x1000, 0x10fff));
+    // Legal CG uses a small registered p region, not a fabricated 16K span.
+    CHECK(C::registeredWordFits(0x1004, 0x1000, 0x1400));
+    CHECK(C::registeredWordFits(0x13fc, 0x1000, 0x1400));
+    CHECK(!C::registeredWordFits(0x1002, 0x1000, 0x1400));
+    CHECK(!C::registeredWordFits(0x1400, 0x1000, 0x1400));
+    CHECK(!C::registeredWordFits(0x1004, 0x1004, 0x1007));
     CHECK(C::spansOverlap(0x1000, 0x100, 0x1080, 0x100));
     CHECK(!C::spansOverlap(0x1000, 0x100, 0x1100, 0x100));
+    CHECK(C::registeredRegionsDisjoint(
+        0x1000, 0x1400, 0x10000, 0x30000, 0x50000));
+    CHECK(!C::registeredRegionsDisjoint(
+        0x1000, 0x1400, 0x1200, 0x30000, 0x50000));
+    CHECK(!C::registeredRegionsDisjoint(
+        0x1000, 0x1400, 0x10000, 0x18000, 0x50000));
 }
 
 void

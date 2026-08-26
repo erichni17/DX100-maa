@@ -8,6 +8,7 @@
 #include <string>
 
 #include "base/types.hh"
+#include "mem/MAA/FusedP16ProductState.hh"
 #include "mem/MAA/SPD.hh"
 #include "mem/MAA/TransparentSPDController.hh"
 #include "sim/system.hh"
@@ -168,6 +169,11 @@ public:
     bool soaJitOldResult;
     bool soaJitPageFed;
     bool fusedP16CoefficientWordReceived;
+    static_assert(
+        sizeof(fusedP16CoefficientWordReceived) <=
+            maa::FusedP16ProductContract::
+                DescriptorClosureCppBoundBytesPerIf,
+        "fused-p16 descriptor closure exceeds the accounted C++ bound");
     bool soaJitPredicateWordReceived;
     bool soaJitResultWordReceived;
     uint64_t soaJitPageFedGeneration;

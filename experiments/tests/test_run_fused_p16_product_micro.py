@@ -1,3 +1,5 @@
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -72,6 +74,61 @@ class FusedP16ProductMicroContract(unittest.TestCase):
         self.assertIn('addresses("source_issue", operation_tick)', RUNNER)
         self.assertIn("expected 256 dump records", RUNNER)
         self.assertIn('"$out/checkpoint.log"', RUNNER)
+
+    def test_removed_or_renamed_zero_stat_is_rejected(self):
+        script = ROOT / "experiments/scripts/run_fused_p16_product_micro.sh"
+        with tempfile.TemporaryDirectory() as tmp:
+            stats = Path(tmp) / "stats.txt"
+            begin = "---------- Begin Simulation Statistics ----------\n"
+            end = "---------- End Simulation Statistics ----------\n"
+            stats.write_text(
+                begin
+                + "system.maa.indirectUnits0_IND_FusedP16Fallbacks 0\n"
+                + end
+            )
+            present = subprocess.run(
+                [
+                    str(script),
+                    "--require-stat",
+                    str(stats),
+                    "IND_FusedP16Fallbacks",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(present.returncode, 0)
+            self.assertEqual(present.stdout.strip(), "0")
+            for body in ("", "IND_FusedP16Fallback 0\n"):
+                stats.write_text(begin + body + end)
+                rejected = subprocess.run(
+                    [
+                        str(script),
+                        "--require-stat",
+                        str(stats),
+                        "IND_FusedP16Fallbacks",
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertNotEqual(rejected.returncode, 0)
+
+    def test_micro_persists_terminal_exit_and_digest_bound_raw_root(self):
+        for token in (
+            '"$out/input/wrapper_exit"',
+            '"$out/input/checkpoint_exit"',
+            '"$out/input/restore_exit"',
+            '"$out/checkpoint.terminal"',
+            '"$out/run/restore.terminal"',
+            "raw_root.sha256",
+            "gate.complete",
+            "raw_root_sha256=",
+            "! -name raw_root.sha256",
+            "! -name gate.complete",
+        ):
+            self.assertIn(token, RUNNER)
+        self.assertNotIn("stat_zero()", RUNNER)
 
 
 if __name__ == "__main__":

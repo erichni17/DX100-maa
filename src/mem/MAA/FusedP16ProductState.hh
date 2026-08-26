@@ -39,10 +39,28 @@ struct FusedP16ProductContract
         CombinerSlots * 16 * sizeof(uint64_t);
     static constexpr uint64_t ResponseSubstateBytesPerUnit = ResponseSlots;
     static constexpr uint64_t TaggedAluStateBytesPerLane = 8;
+    // Two uint64_t generation fields plus one active bit are functional
+    // ownership state.  The C++ bound includes the trailing alignment that
+    // precedes the next uint64_t member in IndirectAccessUnit.
+    static constexpr uint64_t LifecycleSemanticBytesPerUnit =
+        2 * sizeof(uint64_t) + 1;
+    static constexpr uint64_t LifecycleCppBoundBytesPerUnit =
+        3 * sizeof(uint64_t);
+    // The closure bit reuses descriptor payload, but it is still charged as
+    // control state.  One uint64_t alignment quantum is a conservative bound
+    // on its incremental Instruction-object footprint.
+    static constexpr uint64_t DescriptorClosureSemanticBytesPerIf = 1;
+    static constexpr uint64_t DescriptorClosureCppBoundBytesPerIf =
+        sizeof(uint64_t);
 
     static constexpr bool aligned(uint64_t address)
     {
         return address != 0 && (address % 64) == 0;
+    }
+
+    static constexpr bool wordAligned(uint64_t address)
+    {
+        return address != 0 && (address % WordBytes) == 0;
     }
 
     static constexpr bool spanFits(uint64_t base, uint64_t lower,
@@ -52,12 +70,55 @@ struct FusedP16ProductContract
             upper - base >= SpanBytes;
     }
 
+    /**
+     * p may be a small legal CG array.  Decode needs one aligned word at the
+     * submitted base; hazard ownership conservatively covers its complete
+     * registered region rather than asserting a 16K p allocation.
+     */
+    static constexpr bool registeredWordFits(uint64_t base, uint64_t lower,
+                                              uint64_t upper)
+    {
+        return wordAligned(base) && lower <= base && base < upper &&
+            upper - base >= WordBytes;
+    }
+
     static constexpr bool spansOverlap(uint64_t lhs, uint64_t lhs_bytes,
                                        uint64_t rhs, uint64_t rhs_bytes)
     {
         return lhs < rhs + rhs_bytes && rhs < lhs + lhs_bytes;
     }
+
+    static constexpr bool registeredRegionsDisjoint(
+        uint64_t p_lower, uint64_t p_upper, uint64_t product,
+        uint64_t index, uint64_t coefficient)
+    {
+        if (p_lower >= p_upper)
+            return false;
+        const uint64_t p_bytes = p_upper - p_lower;
+        return !spansOverlap(p_lower, p_bytes, product, SpanBytes) &&
+            !spansOverlap(p_lower, p_bytes, index, SpanBytes) &&
+            !spansOverlap(p_lower, p_bytes, coefficient, SpanBytes) &&
+            !spansOverlap(product, SpanBytes, index, SpanBytes) &&
+            !spansOverlap(product, SpanBytes, coefficient, SpanBytes) &&
+            !spansOverlap(index, SpanBytes, coefficient, SpanBytes);
+    }
 };
+
+struct FusedP16LifecycleStorageBound
+{
+    uint64_t generationCounter = 0;
+    uint64_t currentGeneration = 0;
+    bool active = false;
+};
+
+static_assert(FusedP16ProductContract::LifecycleSemanticBytesPerUnit == 17,
+              "fused lifecycle semantic byte charge changed");
+static_assert(sizeof(FusedP16LifecycleStorageBound) <=
+                  FusedP16ProductContract::LifecycleCppBoundBytesPerUnit,
+              "fused lifecycle exceeds its conservative C++ byte bound");
+static_assert(sizeof(bool) <=
+                  FusedP16ProductContract::DescriptorClosureCppBoundBytesPerIf,
+              "fused descriptor closure exceeds its C++ byte bound");
 
 enum class FusedP16ResponseState : uint8_t
 {

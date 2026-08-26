@@ -1,4 +1,5 @@
 import importlib.util
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -114,9 +115,7 @@ class FusedP16PairContract(unittest.TestCase):
         wrong_epoch_count = terminal("fused_p16_product_q16")
         wrong_epoch_count["full_windows"] = "9"
         with self.assertRaises(RuntimeError):
-            runner.require_terminal(
-                wrong_epoch_count, "fused_p16_product_q16"
-            )
+            runner.require_terminal(wrong_epoch_count, "fused_p16_product_q16")
 
     def test_finite_knobs_and_all_ledgers_are_mandatory(self):
         for knob in (
@@ -128,8 +127,8 @@ class FusedP16PairContract(unittest.TestCase):
             "--maa_soa_jit_value_prefetch_credits=0",
         ):
             self.assertIn(knob, runner.FINITE_KNOBS)
-        self.assertIn('--maa_soa_jit_value_cache_enable', TEXT)
-        self.assertIn('--maa_soa_jit_active_value_owners=32', TEXT)
+        self.assertIn("--maa_soa_jit_value_cache_enable", TEXT)
+        self.assertIn("--maa_soa_jit_active_value_owners=32", TEXT)
         cg = (ROOT / "benchmarks/NAS/cg/cg.cpp").read_text()
         self.assertIn("std::memset(virtual_gather_storage, 0,", cg)
         for ledger in (
@@ -148,6 +147,49 @@ class FusedP16PairContract(unittest.TestCase):
         ):
             self.assertIn(ledger, TEXT)
 
+    def test_zero_stat_schema_fails_closed_on_removed_or_renamed_field(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stats = Path(tmp) / "stats.txt"
+            stats.write_text(
+                "---------- Begin Simulation Statistics ----------\n"
+                "system.maa.indirectUnits0_IND_FusedP16EpochDrains 0\n"
+                "system.maa.indirectUnits0_IND_FusedP16Fallbacks 0\n"
+                "---------- End Simulation Statistics ----------\n"
+            )
+            self.assertEqual(
+                runner.require_stat_schema(
+                    stats,
+                    (
+                        "IND_FusedP16EpochDrains",
+                        "IND_FusedP16Fallbacks",
+                    ),
+                ),
+                {
+                    "IND_FusedP16EpochDrains": 0,
+                    "IND_FusedP16Fallbacks": 0,
+                },
+            )
+            removed = stats.read_text().replace(
+                "system.maa.indirectUnits0_IND_FusedP16Fallbacks 0\n", ""
+            )
+            stats.write_text(removed)
+            with self.assertRaisesRegex(RuntimeError, "missing first-window"):
+                runner.require_stat_schema(
+                    stats,
+                    (
+                        "IND_FusedP16EpochDrains",
+                        "IND_FusedP16Fallbacks",
+                    ),
+                )
+            stats.write_text(
+                removed.replace(
+                    "IND_FusedP16EpochDrains", "IND_FusedP16EpochDrain"
+                )
+            )
+            with self.assertRaisesRegex(RuntimeError, "missing first-window"):
+                runner.require_stat_schema(stats, ("IND_FusedP16EpochDrains",))
+        self.assertNotIn("stat_sum_or_zero", TEXT)
+
     def test_acceptance_requires_exactness_and_lower_simticks(self):
         self.assertIn(
             'control["fingerprint_line"] == candidate["fingerprint_line"]',
@@ -162,6 +204,7 @@ class FusedP16PairContract(unittest.TestCase):
             TEXT,
         )
         self.assertIn("checkpoint_before == checkpoint_after", TEXT)
+        self.assertIn('"required_stat_schema_present": True', TEXT)
 
 
 if __name__ == "__main__":
