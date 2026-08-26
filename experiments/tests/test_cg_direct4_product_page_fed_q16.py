@@ -10,6 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = (ROOT / "benchmarks/NAS/cg/cg.cpp").read_text()
+OVERLAP_STATE = (ROOT / "src/mem/MAA/SoaJitOverlapState.hh").read_text()
 RUNNER_PATH = (
     ROOT / "experiments/scripts/run_cg_direct4_product_page_fed_q16.py"
 )
@@ -165,6 +166,11 @@ def test_cg_na_default_and_explicit_4096_are_selected() -> None:
     explicit = runner.parse_args(["/tmp/cg-medium", "--cg-na", "4096"])
     assert default.cg_na == 1024
     assert explicit.cg_na == 4096
+    cache_pair = runner.parse_args(
+        ["/tmp/cg-cache", "--cg-na", "256", "--value-cache-pair"]
+    )
+    assert cache_pair.cg_na == 256
+    assert cache_pair.value_cache_pair
 
     captured: dict[str, object] = {}
     original_parse_arm = runner.base.parse_arm
@@ -263,6 +269,135 @@ def test_hardened_delivery_gate_uses_eight_tiles() -> None:
     assert 'values["IND_SoaJitValueReadIssues"]' in base_text
     assert '+ values["IND_SoaJitValueHits"]' in base_text
     assert '+ values["IND_SoaJitValueMergedWaiters"]' in base_text
+
+
+def test_value_cache_pair_is_one_bounded_general_treatment() -> None:
+    assert runner.VALUE_CACHE_TREATMENTS == (
+        ("cache_off", "direct4_product_page_fed_q16", False),
+        ("cache_on", "direct4_product_page_fed_q16", True),
+    )
+    off = runner.restore_args(
+        Path("guest"), Path("selector"), Path("cpt"), Path("arm"), False
+    )
+    on = runner.restore_args(
+        Path("guest"), Path("selector"), Path("cpt"), Path("arm"), True
+    )
+    option = "--maa_soa_jit_value_cache_enable"
+    assert option not in off
+    assert on.count(option) == 1
+    assert [value for value in on if value != option] == off
+
+    assert runner.FIXED_VALUE_OWNER_LINES == 128
+    assert runner.ACTIVE_VALUE_OWNER_LINES == 32
+    assert runner.VALUE_OWNER_LINE_BYTES == 64
+    assert runner.INDIRECT_UNITS_PER_MAA == 4
+    assert "static constexpr size_t CacheLines = MaxOwners;" in OVERLAP_STATE
+    assert "static constexpr size_t MaxOwners = 128;" in OVERLAP_STATE
+    assert "if (!cacheEnabled && line.waiterMask.none())" in OVERLAP_STATE
+    assert "bool clearGeneration(uint64_t generation)" in OVERLAP_STATE
+    assert '"new_payload_bytes": 0' in RUNNER_TEXT
+    assert '"new_control_bytes": 0' in RUNNER_TEXT
+    assert '"new_ports": 0' in RUNNER_TEXT
+    assert '"physical_spd_payload_bytes": 524288' in RUNNER_TEXT
+
+
+def test_value_cache_config_gate_and_normalization_fail_closed() -> None:
+    common = [
+        "page_fed_soa_jit=true",
+        "num_maas=1",
+        "num_indirect_units_per_maa=4",
+        "num_tiles_per_core=8",
+        "num_tile_elements=16384",
+        "physical_tile_elements=4096",
+        "num_offset_table_entries=16384",
+        "num_offset_table_epoch_entries=16384",
+        "num_initial_row_table_slices=32",
+        "soa_jit_predicate_active_credits=16",
+        "soa_jit_active_value_owners=32",
+        "[system.mem_ctrls0]",
+        "[system.mem_ctrls1]",
+    ]
+    with tempfile.TemporaryDirectory() as directory:
+        off = Path(directory) / "off.ini"
+        on = Path(directory) / "on.ini"
+        off.write_text(
+            "\n".join(
+                common
+                + [
+                    "soa_jit_value_cache_enable=false",
+                    "host_paths=/tmp/cache_off/fs/proc",
+                ]
+            )
+            + "\n"
+        )
+        on.write_text(
+            "\n".join(
+                common
+                + [
+                    "soa_jit_value_cache_enable=true",
+                    "host_paths=/tmp/cache_on/fs/proc",
+                ]
+            )
+            + "\n"
+        )
+        try:
+            runner._expected_value_cache = False
+            runner.require_config_8(off, True)
+            with unittest.TestCase().assertRaisesRegex(
+                RuntimeError, "value_cache_enable=false"
+            ):
+                runner.require_config_8(on, True)
+            runner._expected_value_cache = True
+            runner.require_config_8(on, True)
+        finally:
+            runner._expected_value_cache = None
+        assert runner.normalized_cache_pair_config(off) == (
+            runner.normalized_cache_pair_config(on)
+        )
+        on.write_text(on.read_text() + "soa_jit_apply_lanes=2\n")
+        assert runner.normalized_cache_pair_config(off) != (
+            runner.normalized_cache_pair_config(on)
+        )
+
+
+def test_value_cache_classification_requires_traffic_and_ticks() -> None:
+    conserved = {
+        "IND_SoaJitSelected": 16384,
+        "IND_SoaJitValueDeliveries": 16384,
+        "IND_SoaJitAReadIssues": 16,
+        "IND_SoaJitAWriteIssues": 16,
+        "STR_PublishIssues": 1024,
+    }
+    control = {
+        "stats": {
+            **conserved,
+            "IND_SoaJitValueReadIssues": 16384,
+            "IND_SoaJitValueHits": 0,
+            "system.maa.port_cache_RD_packets": 17000,
+            "simTicks": 1000,
+        }
+    }
+    candidate = {
+        "stats": {
+            **conserved,
+            "IND_SoaJitValueReadIssues": 1024,
+            "IND_SoaJitValueHits": 15360,
+            "system.maa.port_cache_RD_packets": 1640,
+            "simTicks": 800,
+        }
+    }
+    assert runner.classify_value_cache_pair(control, candidate) == (
+        "ACCEPT_TRAFFIC_AND_PERFORMANCE"
+    )
+    candidate["stats"]["simTicks"] = 1001
+    assert runner.classify_value_cache_pair(control, candidate) == (
+        "REJECT_NO_MATCHED_BENEFIT"
+    )
+    candidate["stats"]["IND_SoaJitSelected"] -= 1
+    with unittest.TestCase().assertRaisesRegex(
+        RuntimeError, "changed conserved work"
+    ):
+        runner.classify_value_cache_pair(control, candidate)
 
 
 def test_frozen_artifacts_and_correctness_before_performance() -> None:

@@ -4,7 +4,9 @@
 One deterministic-reduction guest and one deferred checkpoint feed the matched
 serial page-fed control and direct4-product/q16 treatment.  The default is
 CG_NA=1024; bounded explicit sizes are supported through --cg-na.  There is no
-native or full run, no timeout, and no per-access trace.
+native or full run, no timeout, and no per-access trace.  The optional
+--value-cache-pair instead holds direct4/q16 fixed and isolates retention in
+the already provisioned bounded SoA/JIT value-owner pool.
 """
 
 from __future__ import annotations
@@ -35,6 +37,15 @@ TREATMENTS = (
     ("control", "page_fed_product_soa_jit"),
     ("direct4_q16", "direct4_product_page_fed_q16"),
 )
+VALUE_CACHE_TREATMENTS = (
+    ("cache_off", "direct4_product_page_fed_q16", False),
+    ("cache_on", "direct4_product_page_fed_q16", True),
+)
+FIXED_VALUE_OWNER_LINES = 128
+ACTIVE_VALUE_OWNER_LINES = 32
+VALUE_OWNER_LINE_BYTES = 64
+INDIRECT_UNITS_PER_MAA = 4
+_expected_value_cache: bool | None = None
 
 
 def require_config_8(config: Path, page_fed: bool) -> None:
@@ -57,6 +68,20 @@ def require_config_8(config: Path, page_fed: bool) -> None:
     missing = sorted(required.difference(lines))
     if missing:
         raise RuntimeError(f"resolved 8-tile config missing {missing}")
+    if _expected_value_cache is not None:
+        expected = (
+            "soa_jit_value_cache_enable="
+            f"{'true' if _expected_value_cache else 'false'}"
+        )
+        cache_lines = [
+            line
+            for line in lines
+            if line.startswith("soa_jit_value_cache_enable=")
+        ]
+        if cache_lines != [expected]:
+            raise RuntimeError(
+                f"expected exactly one {expected}, saw {cache_lines!r}"
+            )
     tile_lines = [
         line for line in lines if line.startswith("num_tiles_per_core=")
     ]
@@ -186,6 +211,11 @@ def require_stats_8(
 ) -> dict[str, int]:
     values = HARDENED_REQUIRE_STATS(stats, windows, page_fed)
     extra_names = (
+        "IND_SoaJitValueEvictions",
+        "IND_SoaJitValueStalls",
+        "IND_SoaJitValueCacheHighWater",
+        "IND_SoaJitLookaheadStalls",
+        "IND_SoaJitContextStalls",
         "IND_SoaJitPageFedCommandResponses",
         "IND_SoaJitPageFedAdmittedWords",
         "IND_SoaJitPageFedSpdIndexReads",
@@ -207,7 +237,39 @@ def require_stats_8(
     )
     if not closed:
         raise RuntimeError(f"q16 mechanism closure failed: {values}")
+    exact_names = (
+        "system.maa.cycles_TOTAL",
+        "system.maa.cycles_INDRMW",
+        "system.maa.port_cache_RD_packets",
+        "system.maa.port_cache_WR_packets",
+        "system.maa.I0_IND_CyclesRequest",
+    )
+    values.update(
+        {name: first_stat_exact(stats, name) for name in exact_names}
+    )
     return values
+
+
+def first_stat_exact(stats: Path, name: str) -> int:
+    """Read one exact name from the first and only accepted ROI window."""
+    section = 0
+    found: list[int] = []
+    for line in stats.read_text(errors="replace").splitlines():
+        if line.startswith("---------- Begin Simulation Statistics"):
+            section += 1
+            continue
+        if section == 1 and line.startswith(
+            "---------- End Simulation Statistics"
+        ):
+            break
+        fields = line.split()
+        if section == 1 and len(fields) >= 2 and fields[0] == name:
+            found.append(int(float(fields[1])))
+    if len(found) != 1:
+        raise RuntimeError(
+            f"expected one first-window stat {name}, saw {len(found)}"
+        )
+    return found[0]
 
 
 # parse_arm resolves these names in the imported module.  Replace the inherited
@@ -218,7 +280,12 @@ base.require_config = require_config_8
 base.require_stats = require_stats_8
 
 
-def parse_arm(arm: Path, cg_na: int, treatment: str) -> dict:
+def parse_arm(
+    arm: Path,
+    cg_na: int,
+    treatment: str,
+    value_cache: bool | None = None,
+) -> dict:
     """Parse one arm with the selected size in fingerprint and terminal gates."""
     if not 1 <= cg_na <= MAX_CG_NA:
         raise RuntimeError(
@@ -231,11 +298,20 @@ def parse_arm(arm: Path, cg_na: int, treatment: str) -> dict:
         return require_terminal_8(fields, selected_treatment, cg_na)
 
     base.require_terminal = selected_terminal
-    return base.parse_arm(arm, cg_na, treatment, True)
+    global _expected_value_cache
+    _expected_value_cache = value_cache
+    try:
+        return base.parse_arm(arm, cg_na, treatment, True)
+    finally:
+        _expected_value_cache = None
 
 
 def restore_args(
-    guest: Path, selector: Path, checkpoint: Path, arm: Path
+    guest: Path,
+    selector: Path,
+    checkpoint: Path,
+    arm: Path,
+    value_cache: bool = False,
 ) -> list[str]:
     args = base.restore_args(guest, selector, checkpoint, arm, True)
     replaced = 0
@@ -247,13 +323,71 @@ def restore_args(
         raise RuntimeError(
             "restore command did not resolve exactly one 8-tile knob"
         )
+    if value_cache:
+        args.append("--maa_soa_jit_value_cache_enable")
     return args
+
+
+def normalized_cache_pair_config(config: Path) -> str:
+    """Normalize only the declared cache bit and run-local redirect paths."""
+    normalized = []
+    for line in config.read_text(errors="replace").splitlines():
+        if line.startswith("soa_jit_value_cache_enable="):
+            normalized.append("soa_jit_value_cache_enable=<TREATMENT>")
+        elif line.startswith("host_paths=") and "/fs/" in line:
+            normalized.append(
+                "host_paths=<ARM>/fs/" + line.rsplit("/fs/", 1)[1]
+            )
+        else:
+            normalized.append(line)
+    return "\n".join(normalized) + "\n"
+
+
+def classify_value_cache_pair(control: dict, candidate: dict) -> str:
+    """Classify only an exact, work-conserving value-retention pair."""
+    control_stats = control["stats"]
+    candidate_stats = candidate["stats"]
+    conserved_names = (
+        "IND_SoaJitSelected",
+        "IND_SoaJitValueDeliveries",
+        "IND_SoaJitAReadIssues",
+        "IND_SoaJitAWriteIssues",
+        "STR_PublishIssues",
+    )
+    if any(
+        control_stats[name] != candidate_stats[name]
+        for name in conserved_names
+    ):
+        raise RuntimeError("value-cache pair changed conserved work")
+    traffic_reduced = (
+        candidate_stats["IND_SoaJitValueReadIssues"]
+        < control_stats["IND_SoaJitValueReadIssues"]
+        and candidate_stats["system.maa.port_cache_RD_packets"]
+        < control_stats["system.maa.port_cache_RD_packets"]
+        and candidate_stats["IND_SoaJitValueHits"] > 0
+    )
+    performance_improved = (
+        candidate_stats["simTicks"] < control_stats["simTicks"]
+    )
+    return (
+        "ACCEPT_TRAFFIC_AND_PERFORMANCE"
+        if traffic_reduced and performance_improved
+        else "REJECT_NO_MATCHED_BENEFIT"
+    )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("out", type=Path)
     parser.add_argument("--cg-na", type=int, default=DEFAULT_CG_NA)
+    parser.add_argument(
+        "--value-cache-pair",
+        action="store_true",
+        help=(
+            "hold direct4/q16 fixed and compare the bounded value cache "
+            "disabled versus enabled"
+        ),
+    )
     args = parser.parse_args(argv)
     if not 1 <= args.cg_na <= MAX_CG_NA:
         parser.error(f"CG_NA must be in 1..{MAX_CG_NA}; full CG is forbidden")
@@ -282,7 +416,12 @@ def main(argv: list[str] | None = None) -> int:
     checkpoint.mkdir()
     guest = out / "cg_direct4_product_page_fed_q16_guest"
     selector = input_dir / "treatment.selector"
-    selector.write_text("token_stream_ld page_fed_product_soa_jit\n")
+    initial_treatment = (
+        "direct4_product_page_fed_q16"
+        if args.value_cache_pair
+        else "page_fed_product_soa_jit"
+    )
+    selector.write_text(f"token_stream_ld {initial_treatment}\n")
     selector.chmod(0o444)
 
     compile_args = [
@@ -402,20 +541,31 @@ def main(argv: list[str] | None = None) -> int:
 
     parsed: dict[str, dict] = {}
     restore_commands: dict[str, list[str]] = {}
-    for arm_name, treatment in TREATMENTS:
+    arm_specs = (
+        VALUE_CACHE_TREATMENTS
+        if args.value_cache_pair
+        else tuple((name, treatment, False) for name, treatment in TREATMENTS)
+    )
+    for arm_name, treatment, value_cache in arm_specs:
         selector.chmod(0o644)
         selector.write_text(f"token_stream_ld {treatment}\n")
         selector.chmod(0o444)
         arm = out / arm_name
         arm.mkdir()
         (arm / "selector.txt").write_text(selector.read_text())
-        restore = restore_args(guest, selector, checkpoint, arm)
+        restore = restore_args(
+            guest, selector, checkpoint, arm, value_cache=value_cache
+        )
         restore_commands[arm_name] = restore
         base.run_logged(restore, arm / "restore.log", environment)
-        parsed[arm_name] = parse_arm(arm, cg_na, treatment)
+        parsed[arm_name] = parse_arm(
+            arm, cg_na, treatment, value_cache=value_cache
+        )
 
-    control = parsed["control"]
-    candidate = parsed["direct4_q16"]
+    control_name = "cache_off" if args.value_cache_pair else "control"
+    candidate_name = "cache_on" if args.value_cache_pair else "direct4_q16"
+    control = parsed[control_name]
+    candidate = parsed[candidate_name]
     fingerprint_equal = (
         control["fingerprint_line"] == candidate["fingerprint_line"]
     )
@@ -433,6 +583,15 @@ def main(argv: list[str] | None = None) -> int:
         != candidate["terminal"]["full_windows"]
     ):
         raise RuntimeError("treatment window counts differ")
+    if args.value_cache_pair:
+        if control["terminal"] != candidate["terminal"]:
+            raise RuntimeError("value-cache pair changed the guest mechanism")
+        if normalized_cache_pair_config(out / "cache_off/config.ini") != (
+            normalized_cache_pair_config(out / "cache_on/config.ini")
+        ):
+            raise RuntimeError(
+                "value-cache pair has a non-treatment config difference"
+            )
 
     checkpoint_after = base.tree_ledger(checkpoint)
     (input_dir / "checkpoint_files.after").write_text(checkpoint_after)
@@ -451,8 +610,15 @@ def main(argv: list[str] | None = None) -> int:
 
     control_ticks = control["stats"]["simTicks"]
     candidate_ticks = candidate["stats"]["simTicks"]
+    value_cache_decision = None
+    if args.value_cache_pair:
+        value_cache_decision = classify_value_cache_pair(control, candidate)
     result = {
-        "schema": "dx100.cg.direct4_product_page_fed_q16.v1",
+        "schema": (
+            "dx100.cg.direct4_q16_value_cache.v1"
+            if args.value_cache_pair
+            else "dx100.cg.direct4_product_page_fed_q16.v1"
+        ),
         "terminal": True,
         "candidate_only": True,
         "native_runs": 0,
@@ -468,6 +634,11 @@ def main(argv: list[str] | None = None) -> int:
             checkpoint_before.encode()
         ).hexdigest(),
         "restore_commands": restore_commands,
+        "isolated_treatment": (
+            "soa_jit_value_cache_enable"
+            if args.value_cache_pair
+            else "direct4_product_page_fed_q16"
+        ),
         "fingerprint_raw_and_quantized_exact_equal": True,
         "deterministic_reduction_records": 11,
         "deterministic_reduction_bits_exact_equal": True,
@@ -476,11 +647,44 @@ def main(argv: list[str] | None = None) -> int:
         "performance": {
             "metric": "simTicks",
             "control": control_ticks,
-            "direct4_q16": candidate_ticks,
+            candidate_name: candidate_ticks,
             "control_over_candidate_speedup": control_ticks / candidate_ticks,
         },
         "arms": parsed,
     }
+    if args.value_cache_pair:
+        result["decision"] = value_cache_decision
+        result["traffic"] = {
+            "metric": "first_roi_cache_read_packets",
+            "cache_off": control["stats"]["system.maa.port_cache_RD_packets"],
+            "cache_on": candidate["stats"]["system.maa.port_cache_RD_packets"],
+            "value_read_issues_off": control["stats"][
+                "IND_SoaJitValueReadIssues"
+            ],
+            "value_read_issues_on": candidate["stats"][
+                "IND_SoaJitValueReadIssues"
+            ],
+        }
+        result["hardware_accounting"] = {
+            "physical_spd_payload_bytes": 524288,
+            "new_payload_bytes": 0,
+            "new_control_bytes": 0,
+            "new_ports": 0,
+            "fixed_value_owner_lines_per_unit": FIXED_VALUE_OWNER_LINES,
+            "active_value_owner_lines_per_unit": ACTIVE_VALUE_OWNER_LINES,
+            "line_bytes": VALUE_OWNER_LINE_BYTES,
+            "indirect_units_per_maa": INDIRECT_UNITS_PER_MAA,
+            "fixed_value_owner_payload_bytes_per_maa": (
+                FIXED_VALUE_OWNER_LINES
+                * VALUE_OWNER_LINE_BYTES
+                * INDIRECT_UNITS_PER_MAA
+            ),
+            "active_value_owner_payload_bytes_per_maa": (
+                ACTIVE_VALUE_OWNER_LINES
+                * VALUE_OWNER_LINE_BYTES
+                * INDIRECT_UNITS_PER_MAA
+            ),
+        }
     (out / "result.json").write_text(json.dumps(result, indent=2) + "\n")
     ledger_targets = [
         path
@@ -495,10 +699,14 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
     ledger_sha = base.sha256_file(out / "raw_root.sha256")
+    decision_line = (
+        f"decision={value_cache_decision}\n" if args.value_cache_pair else ""
+    )
     (out / "gate.complete").write_text(
         "COMPLETE_CG_DIRECT4_PRODUCT_PAGE_FED_Q16\n"
         "correctness=EXACT_MATCH\n"
-        f"raw_root_sha256={ledger_sha}\n"
+        + decision_line
+        + f"raw_root_sha256={ledger_sha}\n"
     )
     print(
         json.dumps(
@@ -506,6 +714,7 @@ def main(argv: list[str] | None = None) -> int:
                 "terminal": True,
                 "cg_na": cg_na,
                 "correctness": "EXACT_MATCH",
+                "decision": value_cache_decision,
                 "raw_root_sha256": ledger_sha,
             }
         )
