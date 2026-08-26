@@ -92,8 +92,7 @@ missing delivery, and before/after artifact sealing. C++ syntax checks pass
 with ordinary flags, deterministic-only flags,
 and deterministic-plus-evidence flags; deterministic-plus-evidence also
 compiles to an object. The focused and adjacent static CG suite passes 76
-tests. No simulator validation has been run; launch remains explicitly
-deferred.
+tests. These checks preceded the live result below.
 
 ## Runtime preflight correction
 
@@ -105,3 +104,22 @@ with a tab while resolving it to the exact pinned library. The successor
 accepts only leading horizontal whitespace and still compares the resolved
 canonical path to the frozen Ramulator path. `r1` contains no simulation
 result and is excluded.
+
+## Accepted `CG_NA=1024` live gate
+
+The corrected runner at commit `9afeb2b2` completed in
+`/data1/nier/dx100-runs/2026-08-26-cg-reduction-order-na1024-r2`.
+Checkpoint and both restores exit zero, the terminal gate reports `MATCH`, and
+all 56 sealed raw-ledger entries revalidate. The physical and page-fed arms
+have byte-identical raw and quantized fingerprints and byte-identical 11-record
+FP32/FP64 reduction evidence; there is no first differing partial or
+downstream bit.
+
+Physical staging takes `6,364,070,309 simTicks`; page-fed takes
+`5,285,251,018 simTicks`, a diagnostic `1.204118837x` ratio or 16.95% lower
+latency. This validates the instrumentation and preserves the previously
+observed small-CG page-fed benefit. It does not by itself explain the full-CG
+fingerprint or make a full-workload performance claim. The next causal arm is
+the same deterministic pair at `CG_NA=4096`, where the untreated treatments
+already have different raw fingerprints despite identical normalized MAA
+source order and matching quantized fingerprints.
