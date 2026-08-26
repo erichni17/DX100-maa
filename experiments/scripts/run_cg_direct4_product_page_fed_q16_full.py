@@ -6,6 +6,8 @@ the direct4_product_page_fed_q16 treatment.  It never invokes a native,
 predecessor, or page-fed control arm.  The tolerant successor certificate is
 the sole numerical-policy authority; performance is emitted only after every
 terminal, numerical, mechanism, provenance, and immutability check passes.
+The selected candidate retains ready product lines in the already provisioned
+bounded SoA/JIT value-owner pool.
 """
 
 from __future__ import annotations
@@ -82,6 +84,10 @@ EXPECTED_RESIDUAL_WINDOWS = 2_192
 EXPECTED_PAGES = 43_840
 EXPECTED_WORDS = 179_568_640
 EXPECTED_PUBLISH_LINES = 11_223_040
+FIXED_VALUE_OWNER_LINES = 128
+ACTIVE_VALUE_OWNER_LINES = 32
+VALUE_OWNER_LINE_BYTES = 64
+INDIRECT_UNITS_PER_MAA = 4
 RELATIVE_BOUNDS = {
     "x_sum": 1.0e-8,
     "x_norm_sq": 1.0e-8,
@@ -310,8 +316,18 @@ def validate_config(config: Path) -> None:
         "num_initial_row_table_slices=32",
         "soa_jit_predicate_active_credits=16",
         "soa_jit_active_value_owners=32",
+        "soa_jit_value_cache_enable=true",
     }
     require(not required.difference(lines), "resolved configuration mismatch")
+    cache_lines = [
+        line
+        for line in lines
+        if line.startswith("soa_jit_value_cache_enable=")
+    ]
+    require(
+        cache_lines == ["soa_jit_value_cache_enable=true"],
+        "resolved configuration does not select value retention exactly once",
+    )
     require(
         sum(line == "num_tiles_per_core=8" for line in lines) == 1,
         "resolved configuration does not contain exactly one eight-tile knob",
@@ -486,7 +502,10 @@ def validate_stats_values(values: dict[str, int]) -> None:
         "value issue/response/fill closure failed",
     )
     require(
-        hits >= 0 and merged >= 0 and issues + hits + merged == deliveries,
+        hits > 0
+        and issues < deliveries
+        and merged >= 0
+        and issues + hits + merged == deliveries,
         "value hit/merge/delivery closure failed",
     )
     a_values = [
@@ -642,6 +661,7 @@ def restore_command(
         "--maa_page_fed_soa_jit",
         "--maa_soa_jit_predicate_active_credits=16",
         "--maa_soa_jit_active_value_owners=32",
+        "--maa_soa_jit_value_cache_enable",
         "--cmd",
         str(guest),
         "--options",
@@ -879,6 +899,26 @@ def main(argv: list[str] | None = None) -> int:
             "physical_spd_payload_bytes": 524288,
             "external_coherent_backing_bytes": 262144,
         },
+        "value_retention": {
+            "enabled": True,
+            "new_payload_bytes": 0,
+            "new_control_bytes": 0,
+            "new_ports": 0,
+            "fixed_value_owner_lines_per_unit": FIXED_VALUE_OWNER_LINES,
+            "active_value_owner_lines_per_unit": ACTIVE_VALUE_OWNER_LINES,
+            "line_bytes": VALUE_OWNER_LINE_BYTES,
+            "indirect_units_per_maa": INDIRECT_UNITS_PER_MAA,
+            "fixed_value_owner_payload_bytes_per_maa": (
+                FIXED_VALUE_OWNER_LINES
+                * VALUE_OWNER_LINE_BYTES
+                * INDIRECT_UNITS_PER_MAA
+            ),
+            "active_value_owner_payload_bytes_per_maa": (
+                ACTIVE_VALUE_OWNER_LINES
+                * VALUE_OWNER_LINE_BYTES
+                * INDIRECT_UNITS_PER_MAA
+            ),
+        },
         "precomputed_header": {
             "source": str(FROZEN_HEADER),
             "sha256": FROZEN_HEADER_SHA256,
@@ -975,6 +1015,8 @@ def main(argv: list[str] | None = None) -> int:
         "iso_area_speedup_claim": False,
         "p16_reorder_preserved": False,
         "q16_reorder_preserved": True,
+        "selected_value_cache_enable": True,
+        "hardware_accounting": manifest["value_retention"],
         "source_commit": before_commit,
         "gem5_sha256": GEM5_SHA256,
         "ramulator_sha256": RAMULATOR_SHA256,
