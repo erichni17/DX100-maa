@@ -82,7 +82,11 @@ class HybridGoalAuditTest(unittest.TestCase):
                 "physical_spd_payload_bytes": 524288,
             },
             "commands": {
-                "restore": ["page_fed", "predicate_active_credits=16"]
+                "restore": [
+                    "page_fed",
+                    "predicate_active_credits=16",
+                    "--maa_soa_jit_value_cache_enable",
+                ]
             },
         }
         (root / "manifest.json").write_text(json.dumps(manifest))
@@ -101,6 +105,25 @@ class HybridGoalAuditTest(unittest.TestCase):
             "p16_reorder_preserved": False,
             "q16_reorder_preserved": True,
             "performance": {"candidate": 1},
+            "selected_value_cache_enable": True,
+            "hardware_accounting": {
+                "enabled": True,
+                "new_payload_bytes": 0,
+                "new_control_bytes": 0,
+                "new_ports": 0,
+                "fixed_value_owner_lines_per_unit": 128,
+                "active_value_owner_lines_per_unit": 32,
+                "fixed_value_owner_payload_bytes_per_maa": 32768,
+                "active_value_owner_payload_bytes_per_maa": 8192,
+            },
+            "candidate": {
+                "stats": {
+                    "IND_SoaJitValueReadIssues": 64,
+                    "IND_SoaJitValueHits": 960,
+                    "IND_SoaJitValueMergedWaiters": 0,
+                    "IND_SoaJitValueDeliveries": 1024,
+                }
+            },
         }
         (root / "result.json").write_text(json.dumps(result))
         authorities = []
@@ -239,6 +262,21 @@ class HybridGoalAuditTest(unittest.TestCase):
                 self.roots["cg_certificate"], self.roots["cg_direct4"]
             )["status"],
             "pending",
+        )
+
+    def test_full_cg_without_retention_traffic_is_rejected(self) -> None:
+        root = self.roots["cg_direct4"]
+        result = json.loads(root.joinpath("result.json").read_text())
+        result["candidate"]["stats"]["IND_SoaJitValueHits"] = 0
+        root.joinpath("result.json").write_text(json.dumps(result))
+        gate = root.joinpath("gate.complete").read_text().splitlines()
+        gate[1] = f"result_sha256={self._hash(root / 'result.json')}"
+        root.joinpath("gate.complete").write_text("\n".join(gate) + "\n")
+        self.assertEqual(
+            AUDIT.audit_cg(
+                self.roots["cg_certificate"], self.roots["cg_direct4"]
+            )["status"],
+            "failed",
         )
 
     def test_hidden_hardware_bytes_are_rejected(self) -> None:

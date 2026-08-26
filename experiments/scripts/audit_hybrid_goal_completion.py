@@ -19,7 +19,7 @@ from typing import Any
 
 DEFAULTS = {
     "cg_certificate": "/data1/nier/dx100-runs/2026-08-26-cg-page-fed-full-reclassification-r1",
-    "cg_direct4": "/data1/nier/dx100-runs/2026-08-26-cg-direct4-product-page-fed-q16-full-r2",
+    "cg_direct4": "/data1/nier/dx100-runs/2026-08-26-cg-direct4-product-page-fed-q16-value-cache-full-r2",
     "is_certificate": "/data1/nier/dx100-runs/2026-08-26-is-scalar-soa-full-certificate-r1",
     "hashjoin_pro": "/data1/nier/dx100-runs/2026-08-24-hashjoin-pro-hardened-r1",
     "hashjoin_prh": "/data1/nier/dx100-runs/2026-08-24-hashjoin-prh-hardened-r1",
@@ -320,10 +320,11 @@ def audit_cg(
     )
     check(
         "page_fed" in command
+        and "--maa_soa_jit_value_cache_enable" in command
         and result is not None
         and result.get("p16_reorder_preserved") is False
         and result.get("q16_reorder_preserved") is True,
-        "CG direct4: p16=false/q16=true contract absent",
+        "CG direct4: cache-on p16=false/q16=true contract absent",
         failures,
     )
     check(
@@ -334,6 +335,39 @@ def audit_cg(
         and isinstance(result["performance"].get("candidate"), int)
         and result["performance"]["candidate"] > 0,
         "CG direct4: performance observation absent",
+        failures,
+    )
+    accounting = result.get("hardware_accounting", {}) if result else {}
+    check(
+        isinstance(accounting, dict)
+        and accounting.get("enabled") is True
+        and accounting.get("new_payload_bytes") == 0
+        and accounting.get("new_control_bytes") == 0
+        and accounting.get("new_ports") == 0
+        and accounting.get("fixed_value_owner_lines_per_unit") == 128
+        and accounting.get("active_value_owner_lines_per_unit") == 32
+        and accounting.get("fixed_value_owner_payload_bytes_per_maa")
+        == 32768
+        and accounting.get("active_value_owner_payload_bytes_per_maa")
+        == 8192,
+        "CG direct4: bounded value-retention accounting absent",
+        failures,
+    )
+    stats = (
+        result.get("candidate", {}).get("stats", {})
+        if result and isinstance(result.get("candidate"), dict)
+        else {}
+    )
+    issues = stats.get("IND_SoaJitValueReadIssues")
+    hits = stats.get("IND_SoaJitValueHits")
+    merged = stats.get("IND_SoaJitValueMergedWaiters")
+    deliveries = stats.get("IND_SoaJitValueDeliveries")
+    check(
+        all(isinstance(value, int) for value in (issues, hits, merged, deliveries))
+        and 0 < issues < deliveries
+        and hits > 0
+        and issues + hits + merged == deliveries,
+        "CG direct4: value-retention traffic closure absent",
         failures,
     )
     return {
