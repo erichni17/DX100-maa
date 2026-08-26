@@ -143,6 +143,7 @@ enum class CgRmwTreatment
     PhysicalPageProductSoaJit,
     PageFedProductSoaJit,
     Direct4ProductPageFedQ16,
+    Direct4ProductPageFedQ16PingPong,
 };
 
 struct CgTreatmentSelector
@@ -238,6 +239,8 @@ cg_rmw_treatment_name(CgRmwTreatment treatment)
         return "page_fed_product_soa_jit";
       case CgRmwTreatment::Direct4ProductPageFedQ16:
         return "direct4_product_page_fed_q16";
+      case CgRmwTreatment::Direct4ProductPageFedQ16PingPong:
+        return "direct4_product_page_fed_q16_pingpong";
     }
     std::abort();
 }
@@ -278,26 +281,31 @@ read_cg_treatment_selector(const std::string &path)
         rmw = CgRmwTreatment::PageFedProductSoaJit;
     else if (treatment == "direct4_product_page_fed_q16")
         rmw = CgRmwTreatment::Direct4ProductPageFedQ16;
+    else if (treatment == "direct4_product_page_fed_q16_pingpong")
+        rmw = CgRmwTreatment::Direct4ProductPageFedQ16PingPong;
     else
         throw std::runtime_error(
             "CG RMW treatment must be legacy_4k, residual_soa_jit, or "
             "logical_page_soa_jit, physical_page_product_soa_jit, or "
-            "page_fed_product_soa_jit, or direct4_product_page_fed_q16");
+            "page_fed_product_soa_jit, direct4_product_page_fed_q16, or "
+            "direct4_product_page_fed_q16_pingpong");
 #ifndef CG_LOGICAL_PAGE_RMW
     if (rmw == CgRmwTreatment::LogicalPageSoaJit ||
         rmw == CgRmwTreatment::PhysicalPageProductSoaJit ||
         rmw == CgRmwTreatment::PageFedProductSoaJit ||
-        rmw == CgRmwTreatment::Direct4ProductPageFedQ16)
+        rmw == CgRmwTreatment::Direct4ProductPageFedQ16 ||
+        rmw == CgRmwTreatment::Direct4ProductPageFedQ16PingPong)
         throw std::runtime_error(
             "logical_page_soa_jit requires the opt-in CG logical-page build");
 #endif
 #ifdef CG_PHYSICAL_PAGE_PRODUCT_ONLY
 #ifdef CG_PAGE_FED_SOA_ONLY
     if (rmw != CgRmwTreatment::PageFedProductSoaJit &&
-        rmw != CgRmwTreatment::Direct4ProductPageFedQ16)
+        rmw != CgRmwTreatment::Direct4ProductPageFedQ16 &&
+        rmw != CgRmwTreatment::Direct4ProductPageFedQ16PingPong)
         throw std::runtime_error(
             "page-fed-only build requires page_fed_product_soa_jit or "
-            "direct4_product_page_fed_q16");
+            "a direct4_product_page_fed_q16 treatment");
 #else
     if (rmw != CgRmwTreatment::PhysicalPageProductSoaJit)
         throw std::runtime_error(
@@ -335,7 +343,16 @@ cg_uses_page_fed_product_soa_jit()
 static bool
 cg_uses_direct4_product_page_fed_q16()
 {
-    return cg_rmw_treatment == CgRmwTreatment::Direct4ProductPageFedQ16;
+    return cg_rmw_treatment == CgRmwTreatment::Direct4ProductPageFedQ16 ||
+           cg_rmw_treatment ==
+               CgRmwTreatment::Direct4ProductPageFedQ16PingPong;
+}
+
+static bool
+cg_uses_direct4_product_page_fed_q16_pingpong()
+{
+    return cg_rmw_treatment ==
+           CgRmwTreatment::Direct4ProductPageFedQ16PingPong;
 }
 
 static bool
@@ -535,9 +552,6 @@ cg_direct4_publish_product_page(
     maa_publish_spd_page_logical16_response_bearing<float>(
         cg_soa_products[tid], logical_page, product_tile, completion_tile,
         logical_page_reg, logical_offset_reg, generation_reg);
-    // The physical colidx/value/a/product lanes are not reusable until the
-    // exact final-product WriteResp closes this publisher completion.
-    wait_ready(completion_tile);
     cg_product_publish_pages[tid]++;
     cg_logical_product_words[tid] += MAA_CONSUMER_TILE_SIZE;
 }
@@ -2108,17 +2122,56 @@ if (!cg_uses_page_fed_product_soa_jit())
                         // each ordinary physical page gathers p directly, then
                         // publishes only its final product page.  No virtual p
                         // backing or 16K p[colidx] intermediate is created.
-                        maa_const<int>(0, r2);
-                        maa_const<int>(page_size, r3);
-                        maa_stream_load<int>(&colidx[page_base], r2, r3, r1,
-                                             t4);
-                        maa_indirect_load<float>(p, t4, t5);
-                        maa_stream_load<float>(&a[page_base], r2, r3, r1, t6);
-                        maa_alu_vector<float>(t5, t6, t7,
-                                              Operation_t::MUL_OP);
-                        wait_ready(t7);
+                        const bool pingpong =
+                            cg_uses_direct4_product_page_fed_q16_pingpong();
+                        const bool alternate_group =
+                            pingpong &&
+                            (page_offset / MAA_CONSUMER_TILE_SIZE) % 2 != 0;
+                        const int group = alternate_group ? t0 : t4;
+                        const int index_tile = group;
+                        const int value_tile = group + 1;
+                        const int coefficient_tile = group + 2;
+                        const int product_tile = group + 3;
+                        if (!pingpong || page_offset == 0)
+                            maa_stream_load<int>(
+                                &colidx[page_base], page_min_reg,
+                                page_max_reg, page_stride_reg, index_tile);
+                        maa_indirect_load<float>(p, index_tile, value_tile);
+                        maa_stream_load<float>(
+                            &a[page_base], page_min_reg, page_max_reg,
+                            page_stride_reg, coefficient_tile);
+                        maa_alu_vector<float>(
+                            value_tile, coefficient_tile, product_tile,
+                            Operation_t::MUL_OP);
+                        wait_ready(product_tile);
+                        if (pingpong &&
+                            page_offset + MAA_CONSUMER_TILE_SIZE <
+                                gather_size) {
+                            const int next_page_base =
+                                page_base + MAA_CONSUMER_TILE_SIZE;
+                            const int next_group =
+                                alternate_group ? t4 : t0;
+                            if (page_offset >= MAA_CONSUMER_TILE_SIZE)
+                                wait_ready(next_group);
+                            // Put the next group's colidx stream ahead of this
+                            // publisher on the sole stream unit. Its indirect
+                            // p gather can then overlap the current WriteReqs.
+                            maa_stream_load<int>(
+                                &colidx[next_page_base], page_min_reg,
+                                page_max_reg, page_stride_reg, next_group);
+                        }
+                        const int logical_page_reg =
+                            alternate_group ? r6 : r4;
+                        const int logical_offset_reg =
+                            alternate_group ? r7 : r5;
+                        const int generation_reg =
+                            alternate_group ? r3 : r2;
                         cg_direct4_publish_product_page(
-                            tid, page_offset, t7, t4, r4, r5, r2);
+                            tid, page_offset, product_tile, group,
+                            logical_page_reg, logical_offset_reg,
+                            generation_reg);
+                        if (!pingpong)
+                            wait_ready(group);
                         cg_physical_alu_vectors[tid]++;
                         cg_physical_p_gather_pages[tid]++;
                         continue;
@@ -2199,6 +2252,15 @@ if (!cg_uses_page_fed_product_soa_jit())
                         // All four product publisher completions have closed.
                         // Only now open one q-side page-fed RMW and regenerate
                         // its four destination pages in cursor/page order.
+                        if (cg_uses_direct4_product_page_fed_q16_pingpong()) {
+                            wait_ready(t4);
+                            wait_ready(t0);
+                            // The alternate publisher identity used r6/r7;
+                            // restore the q16 Row/Offset cursor only after its
+                            // exact publisher terminal releases both regs.
+                            maa_const<int>(0, r6);
+                            maa_const<int>(-1, r7);
+                        }
                         cg_page_fed_q16_open(tid, curr_q, t6);
                         for (int page_offset = 0; page_offset < TILE_SIZE;
                              page_offset += MAA_CONSUMER_TILE_SIZE) {
@@ -2574,16 +2636,48 @@ if (!cg_uses_page_fed_product_soa_jit())
 #ifdef CG_LOGICAL_PAGE_RMW
                 if (logical_page_full_window &&
                     cg_uses_direct4_product_page_fed_q16()) {
-                    maa_const<int>(0, r2);
-                    maa_const<int>(page_size, r3);
-                    maa_stream_load<int>(&colidx[page_base], r2, r3, r1, t4);
-                    maa_indirect_load<float>(z, t4, t5);
-                    maa_stream_load<float>(&a[page_base], r2, r3, r1, t6);
-                    maa_alu_vector<float>(t5, t6, t7,
-                                          Operation_t::MUL_OP);
-                    wait_ready(t7);
+                    const bool pingpong =
+                        cg_uses_direct4_product_page_fed_q16_pingpong();
+                    const bool alternate_group =
+                        pingpong &&
+                        (page_offset / MAA_CONSUMER_TILE_SIZE) % 2 != 0;
+                    const int group = alternate_group ? t0 : t4;
+                    const int index_tile = group;
+                    const int value_tile = group + 1;
+                    const int coefficient_tile = group + 2;
+                    const int product_tile = group + 3;
+                    if (!pingpong || page_offset == 0)
+                        maa_stream_load<int>(
+                            &colidx[page_base], page_min_reg, page_max_reg,
+                            page_stride_reg, index_tile);
+                    maa_indirect_load<float>(z, index_tile, value_tile);
+                    maa_stream_load<float>(
+                        &a[page_base], page_min_reg, page_max_reg,
+                        page_stride_reg, coefficient_tile);
+                    maa_alu_vector<float>(
+                        value_tile, coefficient_tile, product_tile,
+                        Operation_t::MUL_OP);
+                    wait_ready(product_tile);
+                    if (pingpong &&
+                        page_offset + MAA_CONSUMER_TILE_SIZE < gather_size) {
+                        const int next_page_base =
+                            page_base + MAA_CONSUMER_TILE_SIZE;
+                        const int next_group = alternate_group ? t4 : t0;
+                        if (page_offset >= MAA_CONSUMER_TILE_SIZE)
+                            wait_ready(next_group);
+                        maa_stream_load<int>(
+                            &colidx[next_page_base], page_min_reg,
+                            page_max_reg, page_stride_reg, next_group);
+                    }
+                    const int logical_page_reg = alternate_group ? r6 : r4;
+                    const int logical_offset_reg = alternate_group ? r7 : r5;
+                    const int generation_reg = alternate_group ? r3 : r2;
                     cg_direct4_publish_product_page(
-                        tid, page_offset, t7, t4, r4, r5, r2);
+                        tid, page_offset, product_tile, group,
+                        logical_page_reg, logical_offset_reg,
+                        generation_reg);
+                    if (!pingpong)
+                        wait_ready(group);
                     cg_physical_alu_vectors[tid]++;
                     cg_physical_p_gather_pages[tid]++;
                     continue;
@@ -2696,6 +2790,12 @@ if (!cg_uses_page_fed_product_soa_jit())
             if (logical_page_full_window) {
                 cg_residual_spmv_routed_windows[tid]++;
                 if (cg_uses_direct4_product_page_fed_q16()) {
+                    if (cg_uses_direct4_product_page_fed_q16_pingpong()) {
+                        wait_ready(t4);
+                        wait_ready(t0);
+                        maa_const<int>(0, r6);
+                        maa_const<int>(-1, r7);
+                    }
                     cg_page_fed_q16_open(tid, curr_r, t6);
                     for (int page_offset = 0; page_offset < TILE_SIZE;
                          page_offset += MAA_CONSUMER_TILE_SIZE) {

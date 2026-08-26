@@ -6,7 +6,9 @@ serial page-fed control and direct4-product/q16 treatment.  The default is
 CG_NA=1024; bounded explicit sizes are supported through --cg-na.  There is no
 native or full run, no timeout, and no per-access trace.  The optional
 --value-cache-pair instead holds direct4/q16 fixed and isolates retention in
-the already provisioned bounded SoA/JIT value-owner pool.
+the already provisioned bounded SoA/JIT value-owner pool.  The optional
+--publisher-pingpong-pair holds that cache on and compares the serial direct4
+schedule with two disjoint four-tile producer groups.
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ HARDENED_REQUIRE_STATS = base.require_stats
 
 DEFAULT_CG_NA = 1024
 MAX_CG_NA = 32768
+MAX_PINGPONG_CG_NA = 4096
 TREATMENTS = (
     ("control", "page_fed_product_soa_jit"),
     ("direct4_q16", "direct4_product_page_fed_q16"),
@@ -44,6 +47,14 @@ SELECTED_TREATMENTS = (
 VALUE_CACHE_TREATMENTS = (
     ("cache_off", "direct4_product_page_fed_q16", False),
     ("cache_on", "direct4_product_page_fed_q16", True),
+)
+PUBLISHER_PINGPONG_TREATMENTS = (
+    ("serial", "direct4_product_page_fed_q16", True),
+    (
+        "pingpong",
+        "direct4_product_page_fed_q16_pingpong",
+        True,
+    ),
 )
 FIXED_VALUE_OWNER_LINES = 128
 ACTIVE_VALUE_OWNER_LINES = 32
@@ -191,7 +202,10 @@ def require_terminal_8(
             and values["p16_reorder_preserved"] == 1
             and values["external_coherent_backing_bytes"] == 524288
         )
-    else:
+    elif treatment in {
+        "direct4_product_page_fed_q16",
+        "direct4_product_page_fed_q16_pingpong",
+    }:
         exact = (
             fields.get("p_gather_mode") == "physical_4k_direct"
             and values["page_fed_product_windows"] == 0
@@ -203,6 +217,8 @@ def require_terminal_8(
             and values["p16_reorder_preserved"] == 0
             and values["external_coherent_backing_bytes"] == 262144
         )
+    else:
+        raise RuntimeError(f"unrecognized candidate treatment {treatment}")
     if not common or not exact:
         raise RuntimeError(
             f"terminal closure failed for {treatment}: {fields}"
@@ -227,6 +243,9 @@ def require_stats_8(
         "IND_SoaJitPageFedCoherentIndexReadLines",
         "IND_SoaJitPageFedCoherentIndexWriteLines",
         "IND_SoaJitPageFedStateByteOperations",
+        "STR_PublishRetries",
+        "STR_PublishCreditStalls",
+        "STR_PublishOverlapIssues",
     )
     values.update({name: base.stat_sum(stats, name) for name in extra_names})
     words = windows * 16384
@@ -238,6 +257,8 @@ def require_stats_8(
         and values["IND_SoaJitPageFedCoherentIndexReadLines"] == 0
         and values["IND_SoaJitPageFedCoherentIndexWriteLines"] == 0
         and values["IND_SoaJitPageFedStateByteOperations"] == windows * 16
+        and values["STR_PublishRetries"] == 0
+        and values["STR_PublishCreditStalls"] > 0
     )
     if not closed:
         raise RuntimeError(f"q16 mechanism closure failed: {values}")
@@ -347,6 +368,15 @@ def normalized_cache_pair_config(config: Path) -> str:
     return "\n".join(normalized) + "\n"
 
 
+def normalized_direct4_terminal(terminal: dict[str, str]) -> dict[str, str]:
+    """Remove labels while retaining every mechanism/accounting field."""
+    return {
+        key: value
+        for key, value in terminal.items()
+        if key not in {"treatment", "result"}
+    }
+
+
 def classify_value_cache_pair(control: dict, candidate: dict) -> str:
     """Classify only an exact, work-conserving value-retention pair."""
     control_stats = control["stats"]
@@ -380,11 +410,62 @@ def classify_value_cache_pair(control: dict, candidate: dict) -> str:
     )
 
 
+def classify_publisher_pingpong_pair(serial: dict, pingpong: dict) -> str:
+    """Accept only a work-conserving overlap mechanism with lower simTicks."""
+    serial_stats = serial["stats"]
+    pingpong_stats = pingpong["stats"]
+    conserved_names = (
+        "IND_SoaJitInstructions",
+        "IND_SoaJitTerminalCompletions",
+        "IND_SoaJitSelected",
+        "IND_SoaJitAliasesApplied",
+        "IND_SoaJitValueDeliveries",
+        "IND_SoaJitAReadIssues",
+        "IND_SoaJitAReadResponses",
+        "IND_SoaJitAWriteIssues",
+        "IND_SoaJitAWriteResponses",
+        "IND_SoaJitPageFedOperations",
+        "IND_SoaJitPageFedAdmitCommands",
+        "IND_SoaJitPageFedCloseCommands",
+        "IND_SoaJitPageFedCommandResponses",
+        "IND_SoaJitPageFedAdmittedWords",
+        "IND_SoaJitPageFedSpdIndexReads",
+        "IND_SoaJitPageFedRowWrites",
+        "IND_SoaJitPageFedCoherentIndexReadLines",
+        "IND_SoaJitPageFedCoherentIndexWriteLines",
+        "IND_SoaJitPageFedStateByteOperations",
+        "IND_SoaJitEpochDrains",
+        "IND_BoundedGlobalMergeFallbacks",
+        "STR_PublishIssues",
+        "STR_PublishAccepts",
+        "STR_PublishWriteResponses",
+        "STR_PublishTerminals",
+        "STR_PublishRetries",
+    )
+    if any(
+        serial_stats[name] != pingpong_stats[name] for name in conserved_names
+    ):
+        raise RuntimeError("publisher ping-pong pair changed conserved work")
+    overlap_proven = (
+        serial_stats["STR_PublishOverlapIssues"] == 0
+        and pingpong_stats["STR_PublishOverlapIssues"] > 0
+    )
+    performance_improved = (
+        pingpong_stats["simTicks"] < serial_stats["simTicks"]
+    )
+    return (
+        "ACCEPT_OVERLAP_AND_PERFORMANCE"
+        if overlap_proven and performance_improved
+        else "REJECT_NO_MATCHED_BENEFIT"
+    )
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("out", type=Path)
     parser.add_argument("--cg-na", type=int, default=DEFAULT_CG_NA)
-    parser.add_argument(
+    pair = parser.add_mutually_exclusive_group()
+    pair.add_argument(
         "--value-cache-pair",
         action="store_true",
         help=(
@@ -392,9 +473,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "disabled versus enabled"
         ),
     )
+    pair.add_argument(
+        "--publisher-pingpong-pair",
+        action="store_true",
+        help=(
+            "hold the bounded value cache on and compare serial direct4 "
+            "against disjoint four-tile publisher ping-pong"
+        ),
+    )
     args = parser.parse_args(argv)
     if not 1 <= args.cg_na <= MAX_CG_NA:
         parser.error(f"CG_NA must be in 1..{MAX_CG_NA}; full CG is forbidden")
+    if args.publisher_pingpong_pair and args.cg_na > MAX_PINGPONG_CG_NA:
+        parser.error(
+            "publisher ping-pong evidence is bounded to "
+            f"CG_NA<={MAX_PINGPONG_CG_NA}; full CG is forbidden"
+        )
     return args
 
 
@@ -422,7 +516,7 @@ def main(argv: list[str] | None = None) -> int:
     selector = input_dir / "treatment.selector"
     initial_treatment = (
         "direct4_product_page_fed_q16"
-        if args.value_cache_pair
+        if args.value_cache_pair or args.publisher_pingpong_pair
         else "page_fed_product_soa_jit"
     )
     selector.write_text(f"token_stream_ld {initial_treatment}\n")
@@ -545,11 +639,12 @@ def main(argv: list[str] | None = None) -> int:
 
     parsed: dict[str, dict] = {}
     restore_commands: dict[str, list[str]] = {}
-    arm_specs = (
-        VALUE_CACHE_TREATMENTS
-        if args.value_cache_pair
-        else SELECTED_TREATMENTS
-    )
+    if args.publisher_pingpong_pair:
+        arm_specs = PUBLISHER_PINGPONG_TREATMENTS
+    elif args.value_cache_pair:
+        arm_specs = VALUE_CACHE_TREATMENTS
+    else:
+        arm_specs = SELECTED_TREATMENTS
     for arm_name, treatment, value_cache in arm_specs:
         selector.chmod(0o644)
         selector.write_text(f"token_stream_ld {treatment}\n")
@@ -566,8 +661,15 @@ def main(argv: list[str] | None = None) -> int:
             arm, cg_na, treatment, value_cache=value_cache
         )
 
-    control_name = "cache_off" if args.value_cache_pair else "control"
-    candidate_name = "cache_on" if args.value_cache_pair else "direct4_q16"
+    if args.publisher_pingpong_pair:
+        control_name = "serial"
+        candidate_name = "pingpong"
+    elif args.value_cache_pair:
+        control_name = "cache_off"
+        candidate_name = "cache_on"
+    else:
+        control_name = "control"
+        candidate_name = "direct4_q16"
     control = parsed[control_name]
     candidate = parsed[candidate_name]
     fingerprint_equal = (
@@ -596,6 +698,19 @@ def main(argv: list[str] | None = None) -> int:
             raise RuntimeError(
                 "value-cache pair has a non-treatment config difference"
             )
+    elif args.publisher_pingpong_pair:
+        if normalized_direct4_terminal(control["terminal"]) != (
+            normalized_direct4_terminal(candidate["terminal"])
+        ):
+            raise RuntimeError(
+                "publisher ping-pong changed the guest mechanism"
+            )
+        if normalized_cache_pair_config(out / "serial/config.ini") != (
+            normalized_cache_pair_config(out / "pingpong/config.ini")
+        ):
+            raise RuntimeError(
+                "publisher ping-pong pair has a non-treatment config difference"
+            )
 
     checkpoint_after = base.tree_ledger(checkpoint)
     (input_dir / "checkpoint_files.after").write_text(checkpoint_after)
@@ -614,14 +729,20 @@ def main(argv: list[str] | None = None) -> int:
 
     control_ticks = control["stats"]["simTicks"]
     candidate_ticks = candidate["stats"]["simTicks"]
-    value_cache_decision = None
+    decision = None
     if args.value_cache_pair:
-        value_cache_decision = classify_value_cache_pair(control, candidate)
+        decision = classify_value_cache_pair(control, candidate)
+    elif args.publisher_pingpong_pair:
+        decision = classify_publisher_pingpong_pair(control, candidate)
     result = {
         "schema": (
-            "dx100.cg.direct4_q16_value_cache.v1"
-            if args.value_cache_pair
-            else "dx100.cg.direct4_product_page_fed_q16.v1"
+            "dx100.cg.direct4_q16_publisher_pingpong.v1"
+            if args.publisher_pingpong_pair
+            else (
+                "dx100.cg.direct4_q16_value_cache.v1"
+                if args.value_cache_pair
+                else "dx100.cg.direct4_product_page_fed_q16.v1"
+            )
         ),
         "terminal": True,
         "candidate_only": True,
@@ -639,9 +760,13 @@ def main(argv: list[str] | None = None) -> int:
         ).hexdigest(),
         "restore_commands": restore_commands,
         "isolated_treatment": (
-            "soa_jit_value_cache_enable"
-            if args.value_cache_pair
-            else "direct4_product_page_fed_q16"
+            "direct4_four_tile_group_pingpong"
+            if args.publisher_pingpong_pair
+            else (
+                "soa_jit_value_cache_enable"
+                if args.value_cache_pair
+                else "direct4_product_page_fed_q16"
+            )
         ),
         "fingerprint_raw_and_quantized_exact_equal": True,
         "deterministic_reduction_records": 11,
@@ -678,7 +803,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
     }
     if args.value_cache_pair:
-        result["decision"] = value_cache_decision
+        result["decision"] = decision
         result["traffic"] = {
             "metric": "first_roi_cache_read_packets",
             "cache_off": control["stats"]["system.maa.port_cache_RD_packets"],
@@ -689,6 +814,15 @@ def main(argv: list[str] | None = None) -> int:
             "value_read_issues_on": candidate["stats"][
                 "IND_SoaJitValueReadIssues"
             ],
+        }
+    elif args.publisher_pingpong_pair:
+        result["decision"] = decision
+        result["publisher_overlap"] = {
+            "metric": "STR_PublishOverlapIssues",
+            "serial": control["stats"]["STR_PublishOverlapIssues"],
+            "pingpong": candidate["stats"]["STR_PublishOverlapIssues"],
+            "serial_retries": control["stats"]["STR_PublishRetries"],
+            "pingpong_retries": candidate["stats"]["STR_PublishRetries"],
         }
     (out / "result.json").write_text(json.dumps(result, indent=2) + "\n")
     ledger_targets = [
@@ -704,9 +838,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
     ledger_sha = base.sha256_file(out / "raw_root.sha256")
-    decision_line = (
-        f"decision={value_cache_decision}\n" if args.value_cache_pair else ""
-    )
+    decision_line = f"decision={decision}\n" if decision is not None else ""
     (out / "gate.complete").write_text(
         "COMPLETE_CG_DIRECT4_PRODUCT_PAGE_FED_Q16\n"
         "correctness=EXACT_MATCH\n"
@@ -719,7 +851,7 @@ def main(argv: list[str] | None = None) -> int:
                 "terminal": True,
                 "cg_na": cg_na,
                 "correctness": "EXACT_MATCH",
-                "decision": value_cache_decision,
+                "decision": decision,
                 "raw_root_sha256": ledger_sha,
             }
         )
