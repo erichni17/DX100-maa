@@ -45,6 +45,7 @@ def test_guarded_six_word_abi_and_registered_p_region_hazards():
 def test_exact_finite_geometry_and_no_drain_or_fallback():
     contract = read("src/mem/MAA/FusedP16ProductState.hh")
     indirect = read("src/mem/MAA/IndirectAccess.cc")
+    stats = read("src/mem/MAA/MAA.cc")
     for token in (
         "LogicalElements = 16 * 1024",
         "ResponseSlots = 8",
@@ -71,6 +72,12 @@ def test_exact_finite_geometry_and_no_drain_or_fallback():
     assert (
         "global_fallbacks=0 hidden_spill_bytes=0 publisher_lines=0" in indirect
     )
+    for always_emitted in (
+        "IND_NumOTEpochDrain[indirect_id]",
+        "STR_PublishIssues[stream_id]",
+        "STR_PublishWriteResponses[stream_id]",
+    ):
+        assert f"(*{always_emitted}).flags(statistics::nozero)" not in stats
 
 
 def test_tagged_one_cycle_ordinary_alu_and_in_place_product():

@@ -144,6 +144,7 @@ class FusedP16PairContract(unittest.TestCase):
             "IND_FusedP16VirtualPBytes",
             "IND_SoaJitPageFedCommandResponses",
             "IND_SoaJitValueDeliveries",
+            "IND_NumOTEpochDrain",
         ):
             self.assertIn(ledger, TEXT)
 

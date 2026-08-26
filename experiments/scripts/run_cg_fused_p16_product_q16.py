@@ -68,6 +68,7 @@ COMMON_STAT_SCHEMA = (
     "IND_SoaJitPageFedRowWrites",
     "IND_SoaJitPageFedCoherentIndexReadLines",
     "IND_SoaJitPageFedCoherentIndexWriteLines",
+    "IND_NumOTEpochDrain",
     "IND_SoaJitEpochDrains",
     "IND_BoundedGlobalMergeFallbacks",
     "STR_PublishIssues",
@@ -292,6 +293,7 @@ def require_stats(stats: Path, windows: int, treatment: str) -> dict[str, int]:
         and values["IND_SoaJitPageFedRowWrites"] == words
         and values["IND_SoaJitPageFedCoherentIndexReadLines"] == 0
         and values["IND_SoaJitPageFedCoherentIndexWriteLines"] == 0
+        and values["IND_NumOTEpochDrain"] == 0
         and values["IND_SoaJitEpochDrains"] == 0
         and values["IND_BoundedGlobalMergeFallbacks"] == 0
     )

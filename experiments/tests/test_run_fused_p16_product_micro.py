@@ -89,24 +89,26 @@ class FusedP16ProductMicroContract(unittest.TestCase):
             present = subprocess.run(
                 [
                     str(script),
-                    "--require-stat",
+                    "--require-stat-eq",
                     str(stats),
                     "IND_FusedP16Fallbacks",
+                    "0",
                 ],
                 check=False,
                 capture_output=True,
                 text=True,
             )
             self.assertEqual(present.returncode, 0)
-            self.assertEqual(present.stdout.strip(), "0")
+            self.assertEqual(present.stdout, "")
             for body in ("", "IND_FusedP16Fallback 0\n"):
                 stats.write_text(begin + body + end)
                 rejected = subprocess.run(
                     [
                         str(script),
-                        "--require-stat",
+                        "--require-stat-eq",
                         str(stats),
                         "IND_FusedP16Fallbacks",
+                        "0",
                     ],
                     check=False,
                     capture_output=True,
@@ -129,6 +131,7 @@ class FusedP16ProductMicroContract(unittest.TestCase):
         ):
             self.assertIn(token, RUNNER)
         self.assertNotIn("stat_zero()", RUNNER)
+        self.assertIn('required_stat_eq "$stats" "$forbidden" 0', RUNNER)
 
 
 if __name__ == "__main__":
