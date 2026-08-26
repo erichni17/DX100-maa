@@ -175,9 +175,42 @@ different source, guest, and checkpoint identities, so this is descriptive
 cross-evidence, not a shared-checkpoint A/B. A separate same-backing p16 toggle
 would be required to price reorder value independently.
 
+## Full CG confirmation
+
+Accepted raw root:
+
+`/data1/nier/dx100-runs/2026-08-26-cg-page-fed-p16q16-value-cache-full-r1`
+
+The sole candidate restore exits zero and its
+`PASS_NUMERICAL_MECHANISM_CORRECT` gate binds result SHA-256
+`55d6d3e5...2ee3` and certified-artifact ledger SHA-256
+`016dcf09...a31f`; every ledger entry revalidates. The predeclared numerical
+tolerances, all 10,960 p16/q16 windows, 179,568,640 selected aliases/value
+deliveries, 57,491 A reads/writes, 11,223,040 publisher WriteResps, and all
+page-fed terminals close with zero drains/fallbacks.
+
+The full candidate takes `162,849,334,269 simTicks`. The accepted cache-off
+page-fed full control takes `715,387,684,015`, yielding a 4.392942024x
+control/candidate ratio and 77.2362% lower latency. Value-line reads fall to
+11,266,329; 168,302,256 retained-line hits plus 55 merged waiters close the
+179,568,640-delivery identity.
+
+The full allocation remains 524,288 B physical SPD and 524,288 B external
+backing, split equally between virtual-p and products. Both p16 and q16 reorder
+are preserved. Retention still adds zero owner entries, payload bytes, control
+bytes, or ports beyond the already provisioned 128-line owner pool.
+
+For the separate full direct4 cache-on point, `123,968,991,971` ticks is
+23.8750% lower than this p16/q16 result. That comparison combines elimination
+of 262,144 B virtual-p backing/materialization with loss of p16 reorder; it does
+not isolate either effect. Historical native4/native16 endpoints are
+`77,075,327,902` / `58,928,150,676` ticks, so p16/q16 cache-on remains
+2.1129x / 2.7635x slower. These are orientation observations, not native
+reruns, native-speedup claims, or iso-area results.
+
 ## Handoff
 
-Retain commit `fed3640e` and both page-fed raw roots as the accepted bounded
-milestone. The new mode is suitable for rerunning bounded same-treatment
-cache A/B checks, but this result authorizes no native or full run and no
-promotion claim beyond CG_NA=256/1024.
+Retain commit `fed3640e`, both bounded roots, full runner commit `43de2d95`,
+and the full root as accepted evidence. This establishes the cache-on p16/q16
+design point but does not make it competitive with native4 or authorize a
+native/iso-area claim.
