@@ -133,6 +133,11 @@ def test_no_baseline_or_native_invocation() -> None:
     assert "--debug-flags" not in RUNNER_TEXT
     assert "--debug-file" not in RUNNER_TEXT
     assert "timeout=" not in RUNNER_TEXT
+    restore = runner.restore_command(
+        Path("guest"), Path("selector"), Path("checkpoint"), Path("run")
+    )
+    assert restore.count("--maa_soa_jit_value_cache_enable") == 1
+    assert restore.count("--maa_soa_jit_active_value_owners=32") == 1
 
 
 def test_exact_certificate_bounds_and_tolerant_not_exact_policy() -> None:
@@ -208,6 +213,32 @@ def test_value_issues_are_not_equated_to_selected_or_delivery() -> None:
     source = inspect.getsource(runner.validate_stats_values)
     assert 'issues == values["IND_SoaJitSelected"]' not in source
     assert "issues == deliveries" not in source
+
+
+def test_selected_value_retention_requires_hits_and_reduced_reads() -> None:
+    values = good_stats()
+    runner.validate_stats_values(values)
+    for key, bad_value in (
+        ("IND_SoaJitValueHits", 0),
+        ("IND_SoaJitValueReadIssues", runner.EXPECTED_WORDS),
+    ):
+        broken = copy.deepcopy(values)
+        broken[key] = bad_value
+        if key == "IND_SoaJitValueHits":
+            broken["IND_SoaJitValueReadIssues"] += values[key]
+            broken["IND_SoaJitValueReadResponses"] += values[key]
+            broken["IND_SoaJitValueFills"] += values[key]
+            broken["IND_SoaJitValueCachedResponses"] += values[key]
+        else:
+            broken["IND_SoaJitValueHits"] = 0
+            broken["IND_SoaJitValueMergedWaiters"] = 0
+            broken["IND_SoaJitValueReadResponses"] = bad_value
+            broken["IND_SoaJitValueFills"] = bad_value
+            broken["IND_SoaJitValueCachedResponses"] = bad_value
+        with unittest.TestCase().assertRaisesRegex(
+            runner.GateError, "value hit/merge"
+        ):
+            runner.validate_stats_values(broken)
 
 
 def test_exact_publisher_soa_a_and_zero_drain_closure() -> None:
@@ -290,6 +321,7 @@ def test_config_rejects_non_eight_tile_or_wrong_spd_geometry() -> None:
         "num_initial_row_table_slices=32",
         "soa_jit_predicate_active_credits=16",
         "soa_jit_active_value_owners=32",
+        "soa_jit_value_cache_enable=true",
         "[system.mem_ctrls0]",
         "[system.mem_ctrls1]",
     ]
@@ -303,6 +335,19 @@ def test_config_rejects_non_eight_tile_or_wrong_spd_geometry() -> None:
         )
         with unittest.TestCase().assertRaises(runner.GateError):
             runner.validate_config(config)
+
+
+def test_value_retention_has_explicit_zero_incremental_hardware() -> None:
+    assert runner.FIXED_VALUE_OWNER_LINES == 128
+    assert runner.ACTIVE_VALUE_OWNER_LINES == 32
+    assert runner.VALUE_OWNER_LINE_BYTES == 64
+    assert runner.INDIRECT_UNITS_PER_MAA == 4
+    assert '"new_payload_bytes": 0' in RUNNER_TEXT
+    assert '"new_control_bytes": 0' in RUNNER_TEXT
+    assert '"new_ports": 0' in RUNNER_TEXT
+    assert '"fixed_value_owner_payload_bytes_per_maa"' in RUNNER_TEXT
+    assert '"active_value_owner_payload_bytes_per_maa"' in RUNNER_TEXT
+    assert '"selected_value_cache_enable": True' in RUNNER_TEXT
 
 
 def load_tests(loader, tests, pattern):  # type: ignore[no-untyped-def]

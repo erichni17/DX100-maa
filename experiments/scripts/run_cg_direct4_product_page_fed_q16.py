@@ -37,6 +37,10 @@ TREATMENTS = (
     ("control", "page_fed_product_soa_jit"),
     ("direct4_q16", "direct4_product_page_fed_q16"),
 )
+SELECTED_TREATMENTS = (
+    ("control", "page_fed_product_soa_jit", False),
+    ("direct4_q16", "direct4_product_page_fed_q16", True),
+)
 VALUE_CACHE_TREATMENTS = (
     ("cache_off", "direct4_product_page_fed_q16", False),
     ("cache_on", "direct4_product_page_fed_q16", True),
@@ -544,7 +548,7 @@ def main(argv: list[str] | None = None) -> int:
     arm_specs = (
         VALUE_CACHE_TREATMENTS
         if args.value_cache_pair
-        else tuple((name, treatment, False) for name, treatment in TREATMENTS)
+        else SELECTED_TREATMENTS
     )
     for arm_name, treatment, value_cache in arm_specs:
         selector.chmod(0o644)
@@ -644,6 +648,7 @@ def main(argv: list[str] | None = None) -> int:
         "deterministic_reduction_bits_exact_equal": True,
         "p16_reorder_preserved_by_candidate": False,
         "q16_reorder_preserved_by_candidate": True,
+        "selected_value_cache_enable": True,
         "performance": {
             "metric": "simTicks",
             "control": control_ticks,
@@ -651,6 +656,26 @@ def main(argv: list[str] | None = None) -> int:
             "control_over_candidate_speedup": control_ticks / candidate_ticks,
         },
         "arms": parsed,
+    }
+    result["hardware_accounting"] = {
+        "physical_spd_payload_bytes": 524288,
+        "new_payload_bytes": 0,
+        "new_control_bytes": 0,
+        "new_ports": 0,
+        "fixed_value_owner_lines_per_unit": FIXED_VALUE_OWNER_LINES,
+        "active_value_owner_lines_per_unit": ACTIVE_VALUE_OWNER_LINES,
+        "line_bytes": VALUE_OWNER_LINE_BYTES,
+        "indirect_units_per_maa": INDIRECT_UNITS_PER_MAA,
+        "fixed_value_owner_payload_bytes_per_maa": (
+            FIXED_VALUE_OWNER_LINES
+            * VALUE_OWNER_LINE_BYTES
+            * INDIRECT_UNITS_PER_MAA
+        ),
+        "active_value_owner_payload_bytes_per_maa": (
+            ACTIVE_VALUE_OWNER_LINES
+            * VALUE_OWNER_LINE_BYTES
+            * INDIRECT_UNITS_PER_MAA
+        ),
     }
     if args.value_cache_pair:
         result["decision"] = value_cache_decision
@@ -664,26 +689,6 @@ def main(argv: list[str] | None = None) -> int:
             "value_read_issues_on": candidate["stats"][
                 "IND_SoaJitValueReadIssues"
             ],
-        }
-        result["hardware_accounting"] = {
-            "physical_spd_payload_bytes": 524288,
-            "new_payload_bytes": 0,
-            "new_control_bytes": 0,
-            "new_ports": 0,
-            "fixed_value_owner_lines_per_unit": FIXED_VALUE_OWNER_LINES,
-            "active_value_owner_lines_per_unit": ACTIVE_VALUE_OWNER_LINES,
-            "line_bytes": VALUE_OWNER_LINE_BYTES,
-            "indirect_units_per_maa": INDIRECT_UNITS_PER_MAA,
-            "fixed_value_owner_payload_bytes_per_maa": (
-                FIXED_VALUE_OWNER_LINES
-                * VALUE_OWNER_LINE_BYTES
-                * INDIRECT_UNITS_PER_MAA
-            ),
-            "active_value_owner_payload_bytes_per_maa": (
-                ACTIVE_VALUE_OWNER_LINES
-                * VALUE_OWNER_LINE_BYTES
-                * INDIRECT_UNITS_PER_MAA
-            ),
         }
     (out / "result.json").write_text(json.dumps(result, indent=2) + "\n")
     ledger_targets = [

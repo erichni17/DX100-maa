@@ -71,6 +71,10 @@ def test_selector_and_eight_tile_build_are_narrow() -> None:
         ("control", "page_fed_product_soa_jit"),
         ("direct4_q16", "direct4_product_page_fed_q16"),
     )
+    assert runner.SELECTED_TREATMENTS == (
+        ("control", "page_fed_product_soa_jit", False),
+        ("direct4_q16", "direct4_product_page_fed_q16", True),
+    )
     assert '"-DNUM_TILES_PER_CORE=8"' in RUNNER_TEXT
     assert '"-DCG_PHYSICAL_PAGE_PRODUCT_ONLY"' in RUNNER_TEXT
     assert '"-DCG_PAGE_FED_SOA_ONLY"' in RUNNER_TEXT
