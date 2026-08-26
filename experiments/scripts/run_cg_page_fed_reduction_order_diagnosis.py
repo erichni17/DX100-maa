@@ -36,6 +36,38 @@ RAMULATOR_SHA256 = (
 CONFIG = ROOT / "configs/deprecated/example/se.py"
 RAMULATOR_CONFIG = ROOT / "ext/ramulator2/ramulator2/example_gem5_config.yaml"
 SOURCE = ROOT / "benchmarks/NAS/cg/cg.cpp"
+GUEST_COMPILE_INPUTS = (
+    SOURCE,
+    ROOT / "benchmarks/API/MAA.hpp",
+    ROOT / "benchmarks/API/MAA_gem5.hpp",
+    ROOT / "benchmarks/API/MAA_virtual_materialize.hpp",
+    ROOT / "include/gem5/m5ops.h",
+    ROOT / "include/gem5/asm/generic/m5ops.h",
+    ROOT / "include/gem5/maa_logical_spd_cache_abi.hh",
+    ROOT / "include/gem5/maa_page_fed_soa_abi.hh",
+    ROOT / "util/m5/src/abi/x86/m5op.S",
+)
+RUNNER_CONFIG_INPUTS = (
+    Path(__file__).resolve(),
+    CONFIG,
+    RAMULATOR_CONFIG,
+    ROOT / "configs/common/__init__.py",
+    ROOT / "configs/common/Benchmarks.py",
+    ROOT / "configs/common/Options.py",
+    ROOT / "configs/common/Simulation.py",
+    ROOT / "configs/common/CacheConfig.py",
+    ROOT / "configs/common/MemConfig.py",
+    ROOT / "configs/common/MAAConfig.py",
+    ROOT / "configs/common/MAA.py",
+    ROOT / "configs/common/Caches.py",
+    ROOT / "configs/common/CpuConfig.py",
+    ROOT / "configs/common/HMC.py",
+    ROOT / "configs/common/ObjectList.py",
+    ROOT / "configs/common/cpu2000.py",
+    ROOT / "configs/common/FileSystemConfig.py",
+    ROOT / "configs/ruby/__init__.py",
+    ROOT / "configs/ruby/Ruby.py",
+)
 MAX_DIAGNOSTIC_CG_NA = 32768
 TREATMENTS = (
     ("physical", "physical_page_product_soa_jit", False),
@@ -286,6 +318,11 @@ def require_stats(stats: Path, windows: int, page_fed: bool) -> dict[str, int]:
         "IND_SoaJitAliasesApplied",
         "IND_SoaJitValueReadIssues",
         "IND_SoaJitValueReadResponses",
+        "IND_SoaJitValueFills",
+        "IND_SoaJitValueCachedResponses",
+        "IND_SoaJitValueHits",
+        "IND_SoaJitValueMergedWaiters",
+        "IND_SoaJitValueDeliveries",
         "IND_SoaJitAReadIssues",
         "IND_SoaJitAReadResponses",
         "IND_SoaJitAWriteIssues",
@@ -311,8 +348,18 @@ def require_stats(stats: Path, windows: int, page_fed: bool) -> dict[str, int]:
         and values["IND_SoaJitTerminalCompletions"] == windows
         and values["IND_SoaJitSelected"] == words
         and values["IND_SoaJitAliasesApplied"] == words
-        and values["IND_SoaJitValueReadIssues"] == words
-        and values["IND_SoaJitValueReadResponses"] == words
+        and values["IND_SoaJitValueDeliveries"] == words
+        and values["IND_SoaJitValueReadIssues"] > 0
+        and values["IND_SoaJitValueReadIssues"]
+        == values["IND_SoaJitValueReadResponses"]
+        and values["IND_SoaJitValueReadResponses"]
+        == values["IND_SoaJitValueFills"]
+        and values["IND_SoaJitValueCachedResponses"]
+        <= values["IND_SoaJitValueFills"]
+        and values["IND_SoaJitValueReadIssues"]
+        + values["IND_SoaJitValueHits"]
+        + values["IND_SoaJitValueMergedWaiters"]
+        == words
         and a_lines > 0
         and values["IND_SoaJitAReadResponses"] == a_lines
         and values["IND_SoaJitAWriteIssues"] == a_lines
@@ -547,10 +594,8 @@ def main() -> int:
         GEM5,
         RAMULATOR,
         guest,
-        SOURCE,
-        CONFIG,
-        RAMULATOR_CONFIG,
-        Path(__file__).resolve(),
+        *GUEST_COMPILE_INPUTS,
+        *RUNNER_CONFIG_INPUTS,
     )
     (input_dir / "artifact_sha256.before").write_text(
         artifact_ledger(immutable_artifacts)
