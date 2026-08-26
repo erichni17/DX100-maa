@@ -6,7 +6,9 @@ serial page-fed control and direct4-product/q16 treatment.  The default is
 CG_NA=1024; bounded explicit sizes are supported through --cg-na.  There is no
 native or full run, no timeout, and no per-access trace.  The optional cache
 pair modes hold either direct4/q16 or page-fed p16/q16 fixed and isolate
-retention in the already provisioned bounded SoA/JIT value-owner pool.
+retention in the already provisioned bounded SoA/JIT value-owner pool.  The
+apply-lane modes hold direct4/q16 and value retention fixed while selecting
+one, two, or four active lanes from the same fixed four-lane hardware pool.
 """
 
 from __future__ import annotations
@@ -49,11 +51,49 @@ PAGE_FED_VALUE_CACHE_TREATMENTS = (
     ("cache_off", "page_fed_product_soa_jit", False),
     ("cache_on", "page_fed_product_soa_jit", True),
 )
+APPLY_LANE_SWEEP_TREATMENTS = (
+    ("lane_1", "direct4_product_page_fed_q16", True, 1),
+    ("lane_2", "direct4_product_page_fed_q16", True, 2),
+    ("lane_4", "direct4_product_page_fed_q16", True, 4),
+)
 FIXED_VALUE_OWNER_LINES = 128
 ACTIVE_VALUE_OWNER_LINES = 32
 VALUE_OWNER_LINE_BYTES = 64
 INDIRECT_UNITS_PER_MAA = 4
+FIXED_APPLY_LANES_PER_UNIT = 4
+FIXED_APPLY_LANE_OWNER_BYTES = 32
+FIXED_APPLY_LANE_POOL_BYTES_PER_UNIT = 144
 _expected_value_cache: bool | None = None
+_expected_apply_lanes: int | None = None
+
+APPLY_LANE_CONSERVED_STATS = (
+    "IND_SoaJitInstructions",
+    "IND_SoaJitTerminalCompletions",
+    "IND_SoaJitSelected",
+    "IND_SoaJitAliasesApplied",
+    "IND_SoaJitValueDeliveries",
+    "IND_SoaJitAReadIssues",
+    "IND_SoaJitAReadResponses",
+    "IND_SoaJitAWriteIssues",
+    "IND_SoaJitAWriteResponses",
+    "IND_SoaJitPageFedOperations",
+    "IND_SoaJitPageFedAdmitCommands",
+    "IND_SoaJitPageFedCloseCommands",
+    "IND_SoaJitEpochDrains",
+    "IND_BoundedGlobalMergeFallbacks",
+    "STR_PublishIssues",
+    "STR_PublishAccepts",
+    "STR_PublishWriteResponses",
+    "STR_PublishTerminals",
+    "IND_SoaJitPageFedCommandResponses",
+    "IND_SoaJitPageFedAdmittedWords",
+    "IND_SoaJitPageFedSpdIndexReads",
+    "IND_SoaJitPageFedRowWrites",
+    "IND_SoaJitPageFedCoherentIndexReadLines",
+    "IND_SoaJitPageFedCoherentIndexWriteLines",
+    "IND_SoaJitPageFedStateByteOperations",
+    "system.maa.port_cache_WR_packets",
+)
 
 
 def require_config_8(config: Path, page_fed: bool) -> None:
@@ -89,6 +129,15 @@ def require_config_8(config: Path, page_fed: bool) -> None:
         if cache_lines != [expected]:
             raise RuntimeError(
                 f"expected exactly one {expected}, saw {cache_lines!r}"
+            )
+    if _expected_apply_lanes is not None:
+        expected = f"soa_jit_apply_lanes={_expected_apply_lanes}"
+        lane_lines = [
+            line for line in lines if line.startswith("soa_jit_apply_lanes=")
+        ]
+        if lane_lines != [expected]:
+            raise RuntimeError(
+                f"expected exactly one {expected}, saw {lane_lines!r}"
             )
     tile_lines = [
         line for line in lines if line.startswith("num_tiles_per_core=")
@@ -224,6 +273,8 @@ def require_stats_8(
         "IND_SoaJitValueCacheHighWater",
         "IND_SoaJitLookaheadStalls",
         "IND_SoaJitContextStalls",
+        "IND_SoaJitActiveApplyLanes",
+        "IND_SoaJitApplyLaneHighWater",
         "IND_SoaJitPageFedCommandResponses",
         "IND_SoaJitPageFedAdmittedWords",
         "IND_SoaJitPageFedSpdIndexReads",
@@ -245,6 +296,24 @@ def require_stats_8(
     )
     if not closed:
         raise RuntimeError(f"q16 mechanism closure failed: {values}")
+    if _expected_apply_lanes is not None:
+        instructions = values["IND_SoaJitInstructions"]
+        active_lane_sum = values["IND_SoaJitActiveApplyLanes"]
+        apply_hwm_sum = values["IND_SoaJitApplyLaneHighWater"]
+        lane_closed = (
+            instructions == windows
+            and active_lane_sum == instructions * _expected_apply_lanes
+            and instructions <= apply_hwm_sum
+            and apply_hwm_sum <= instructions * _expected_apply_lanes
+        )
+        if _expected_apply_lanes > 1:
+            lane_closed = lane_closed and apply_hwm_sum > instructions
+        if not lane_closed:
+            raise RuntimeError(
+                "apply-lane parallelism closure failed: "
+                f"lanes={_expected_apply_lanes} instructions={instructions} "
+                f"active_sum={active_lane_sum} hwm_sum={apply_hwm_sum}"
+            )
     exact_names = (
         "system.maa.cycles_TOTAL",
         "system.maa.cycles_INDRMW",
@@ -293,6 +362,7 @@ def parse_arm(
     cg_na: int,
     treatment: str,
     value_cache: bool | None = None,
+    apply_lanes: int | None = None,
 ) -> dict:
     """Parse one arm with the selected size in fingerprint and terminal gates."""
     if not 1 <= cg_na <= MAX_CG_NA:
@@ -306,12 +376,14 @@ def parse_arm(
         return require_terminal_8(fields, selected_treatment, cg_na)
 
     base.require_terminal = selected_terminal
-    global _expected_value_cache
+    global _expected_apply_lanes, _expected_value_cache
     _expected_value_cache = value_cache
+    _expected_apply_lanes = apply_lanes
     try:
         return base.parse_arm(arm, cg_na, treatment, True)
     finally:
         _expected_value_cache = None
+        _expected_apply_lanes = None
 
 
 def restore_args(
@@ -320,6 +392,7 @@ def restore_args(
     checkpoint: Path,
     arm: Path,
     value_cache: bool = False,
+    apply_lanes: int | None = None,
 ) -> list[str]:
     args = base.restore_args(guest, selector, checkpoint, arm, True)
     replaced = 0
@@ -333,6 +406,12 @@ def restore_args(
         )
     if value_cache:
         args.append("--maa_soa_jit_value_cache_enable")
+    if apply_lanes is not None:
+        if apply_lanes not in (1, 2, 4):
+            raise RuntimeError(
+                f"invalid active apply-lane count {apply_lanes}"
+            )
+        args.append(f"--maa_soa_jit_apply_lanes={apply_lanes}")
     return args
 
 
@@ -360,6 +439,93 @@ def normalized_cache_pair_command(command: list[str]) -> list[str]:
         elif value != "--maa_soa_jit_value_cache_enable":
             normalized.append(value)
     return normalized
+
+
+def normalized_apply_lane_config(config: Path) -> str:
+    """Normalize only the declared active-lane count and arm redirect paths."""
+    normalized = []
+    for line in config.read_text(errors="replace").splitlines():
+        if line.startswith("soa_jit_apply_lanes="):
+            normalized.append("soa_jit_apply_lanes=<TREATMENT>")
+        elif line.startswith("host_paths=") and "/fs/" in line:
+            normalized.append(
+                "host_paths=<ARM>/fs/" + line.rsplit("/fs/", 1)[1]
+            )
+        else:
+            normalized.append(line)
+    return "\n".join(normalized) + "\n"
+
+
+def normalized_apply_lane_command(command: list[str]) -> list[str]:
+    """Normalize the arm path and exactly one active-lane treatment value."""
+    normalized = []
+    for value in command:
+        if value.startswith("--outdir="):
+            normalized.append("--outdir=<ARM>")
+        elif value.startswith("--maa_soa_jit_apply_lanes="):
+            normalized.append("--maa_soa_jit_apply_lanes=<TREATMENT>")
+        else:
+            normalized.append(value)
+    return normalized
+
+
+def verify_raw_root(root: Path) -> str:
+    """Revalidate one frozen raw-root ledger before using it as a gate."""
+    root = root.resolve()
+    ledger = root / "raw_root.sha256"
+    gate = root / "gate.complete"
+    if not ledger.is_file() or not gate.is_file():
+        raise RuntimeError(f"incomplete confirmation root: {root}")
+    seen: set[Path] = set()
+    for number, line in enumerate(ledger.read_text().splitlines(), 1):
+        match = re.fullmatch(r"([0-9a-f]{64})  (.+)", line)
+        if match is None:
+            raise RuntimeError(f"malformed raw ledger line {number}")
+        relative = Path(match.group(2))
+        if (
+            relative.is_absolute()
+            or ".." in relative.parts
+            or relative in seen
+        ):
+            raise RuntimeError(
+                f"unsafe or duplicate raw ledger path {relative}"
+            )
+        seen.add(relative)
+        artifact = root / relative
+        if not artifact.is_file() or base.sha256_file(artifact) != match.group(
+            1
+        ):
+            raise RuntimeError(f"raw ledger mismatch for {relative}")
+    if Path("result.json") not in seen:
+        raise RuntimeError("raw ledger does not cover result.json")
+    ledger_sha = base.sha256_file(ledger)
+    gate_lines = gate.read_text().splitlines()
+    if (
+        gate_lines.count("COMPLETE_CG_DIRECT4_PRODUCT_PAGE_FED_Q16") != 1
+        or gate_lines.count("correctness=EXACT_MATCH") != 1
+        or gate_lines.count(f"raw_root_sha256={ledger_sha}") != 1
+    ):
+        raise RuntimeError("confirmation gate does not bind the raw ledger")
+    return ledger_sha
+
+
+def validate_confirmation_source(root: Path, lane: int) -> str:
+    """Require a terminal NA=256 sweep that named this exact faster lane."""
+    ledger_sha = verify_raw_root(root)
+    result = json.loads((root.resolve() / "result.json").read_text())
+    expected_arm = f"lane_{lane}"
+    if not (
+        result.get("schema") == "dx100.cg.direct4_q16_apply_lanes.v1"
+        and result.get("terminal") is True
+        and result.get("cg_na") == 256
+        and result.get("decision") == "ACCEPT_EXACT_FASTER_ARM"
+        and expected_arm
+        in result.get("performance", {}).get("exact_faster_arms", [])
+    ):
+        raise RuntimeError(
+            f"NA=1024 confirmation is not authorized for {expected_arm}"
+        )
+    return ledger_sha
 
 
 def classify_value_cache_pair(control: dict, candidate: dict) -> str:
@@ -416,9 +582,40 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "compare the bounded value cache disabled versus enabled"
         ),
     )
+    pair.add_argument(
+        "--apply-lane-sweep",
+        action="store_true",
+        help=(
+            "at CG_NA=256, hold cache-on direct4/q16 fixed and sweep active "
+            "apply lanes 1, 2, and 4"
+        ),
+    )
+    pair.add_argument(
+        "--apply-lane-confirm",
+        type=int,
+        choices=(2, 4),
+        help=(
+            "at CG_NA=1024, compare lane 1 with one exact faster lane from "
+            "a validated CG_NA=256 sweep"
+        ),
+    )
+    parser.add_argument(
+        "--confirm-from",
+        type=Path,
+        help="terminal CG_NA=256 apply-lane raw root authorizing confirmation",
+    )
     args = parser.parse_args(argv)
     if not 1 <= args.cg_na <= MAX_CG_NA:
         parser.error(f"CG_NA must be in 1..{MAX_CG_NA}; full CG is forbidden")
+    if args.apply_lane_sweep and args.cg_na != 256:
+        parser.error("the first apply-lane sweep must use CG_NA=256")
+    if args.apply_lane_confirm is not None:
+        if args.cg_na != 1024:
+            parser.error("apply-lane confirmation must use CG_NA=1024")
+        if args.confirm_from is None:
+            parser.error("--apply-lane-confirm requires --confirm-from")
+    elif args.confirm_from is not None:
+        parser.error("--confirm-from requires --apply-lane-confirm")
     return args
 
 
@@ -438,6 +635,15 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("refusing evidence from a dirty source worktree")
     before_commit = base.source_commit()
 
+    apply_lane_mode = (
+        args.apply_lane_sweep or args.apply_lane_confirm is not None
+    )
+    confirmation_source_ledger = None
+    if args.apply_lane_confirm is not None:
+        confirmation_source_ledger = validate_confirmation_source(
+            args.confirm_from, args.apply_lane_confirm
+        )
+
     input_dir = out / "input"
     checkpoint = out / "checkpoint"
     input_dir.mkdir(parents=True)
@@ -446,7 +652,7 @@ def main(argv: list[str] | None = None) -> int:
     selector = input_dir / "treatment.selector"
     value_cache_pair = args.value_cache_pair or args.page_fed_value_cache_pair
     initial_treatment = "page_fed_product_soa_jit"
-    if args.value_cache_pair:
+    if args.value_cache_pair or apply_lane_mode:
         initial_treatment = "direct4_product_page_fed_q16"
     selector.write_text(f"token_stream_ld {initial_treatment}\n")
     selector.chmod(0o444)
@@ -568,13 +774,26 @@ def main(argv: list[str] | None = None) -> int:
 
     parsed: dict[str, dict] = {}
     restore_commands: dict[str, list[str]] = {}
-    if args.value_cache_pair:
-        arm_specs = VALUE_CACHE_TREATMENTS
+    if args.apply_lane_sweep:
+        arm_specs = APPLY_LANE_SWEEP_TREATMENTS
+    elif args.apply_lane_confirm is not None:
+        arm_specs = (
+            APPLY_LANE_SWEEP_TREATMENTS[0],
+            next(
+                spec
+                for spec in APPLY_LANE_SWEEP_TREATMENTS
+                if spec[3] == args.apply_lane_confirm
+            ),
+        )
+    elif args.value_cache_pair:
+        arm_specs = tuple((*spec, None) for spec in VALUE_CACHE_TREATMENTS)
     elif args.page_fed_value_cache_pair:
-        arm_specs = PAGE_FED_VALUE_CACHE_TREATMENTS
+        arm_specs = tuple(
+            (*spec, None) for spec in PAGE_FED_VALUE_CACHE_TREATMENTS
+        )
     else:
-        arm_specs = SELECTED_TREATMENTS
-    for arm_name, treatment, value_cache in arm_specs:
+        arm_specs = tuple((*spec, None) for spec in SELECTED_TREATMENTS)
+    for arm_name, treatment, value_cache, apply_lanes in arm_specs:
         selector.chmod(0o644)
         selector.write_text(f"token_stream_ld {treatment}\n")
         selector.chmod(0o444)
@@ -582,33 +801,50 @@ def main(argv: list[str] | None = None) -> int:
         arm.mkdir()
         (arm / "selector.txt").write_text(selector.read_text())
         restore = restore_args(
-            guest, selector, checkpoint, arm, value_cache=value_cache
+            guest,
+            selector,
+            checkpoint,
+            arm,
+            value_cache=value_cache,
+            apply_lanes=apply_lanes,
         )
         restore_commands[arm_name] = restore
         base.run_logged(restore, arm / "restore.log", environment)
         parsed[arm_name] = parse_arm(
-            arm, cg_na, treatment, value_cache=value_cache
+            arm,
+            cg_na,
+            treatment,
+            value_cache=value_cache,
+            apply_lanes=apply_lanes,
         )
 
-    control_name = "cache_off" if value_cache_pair else "control"
-    candidate_name = "cache_on" if value_cache_pair else "direct4_q16"
+    if apply_lane_mode:
+        control_name = "lane_1"
+        candidate_name = list(parsed)[-1]
+    else:
+        control_name = "cache_off" if value_cache_pair else "control"
+        candidate_name = "cache_on" if value_cache_pair else "direct4_q16"
     control = parsed[control_name]
     candidate = parsed[candidate_name]
-    fingerprint_equal = (
-        control["fingerprint_line"] == candidate["fingerprint_line"]
+    fingerprint_equal = all(
+        arm["fingerprint_line"] == control["fingerprint_line"]
+        for arm in parsed.values()
     )
-    reduction_equal = (
-        control["reduction_evidence"] == candidate["reduction_evidence"]
+    reduction_equal = all(
+        arm["reduction_evidence"] == control["reduction_evidence"]
+        for arm in parsed.values()
     )
-    if len(control["reduction_evidence"]) != 11:
-        raise RuntimeError("expected all 11 deterministic reduction records")
+    if any(len(arm["reduction_evidence"]) != 11 for arm in parsed.values()):
+        raise RuntimeError(
+            "expected all 11 deterministic reduction records per arm"
+        )
     if not fingerprint_equal or not reduction_equal:
         raise RuntimeError(
             "correctness mismatch; simTicks comparison forbidden"
         )
-    if (
-        control["terminal"]["full_windows"]
-        != candidate["terminal"]["full_windows"]
+    if any(
+        arm["terminal"]["full_windows"] != control["terminal"]["full_windows"]
+        for arm in parsed.values()
     ):
         raise RuntimeError("treatment window counts differ")
     if value_cache_pair:
@@ -645,6 +881,61 @@ def main(argv: list[str] | None = None) -> int:
             raise RuntimeError(
                 "value-cache pair has a non-treatment command difference"
             )
+    if apply_lane_mode:
+        expected_selector = "token_stream_ld direct4_product_page_fed_q16\n"
+        control_config = normalized_apply_lane_config(
+            out / f"{control_name}/config.ini"
+        )
+        control_command = normalized_apply_lane_command(
+            restore_commands[control_name]
+        )
+        for arm_name, _, value_cache, apply_lanes in arm_specs:
+            if not value_cache or apply_lanes not in (1, 2, 4):
+                raise RuntimeError(
+                    "apply-lane arm lost its fixed cache-on treatment"
+                )
+            if (
+                out / arm_name / "selector.txt"
+            ).read_text() != expected_selector:
+                raise RuntimeError(
+                    "apply-lane sweep changed the guest treatment"
+                )
+            if parsed[arm_name]["terminal"] != control["terminal"]:
+                raise RuntimeError(
+                    "apply-lane sweep changed the guest mechanism"
+                )
+            for name in APPLY_LANE_CONSERVED_STATS:
+                if parsed[arm_name]["stats"][name] != control["stats"][name]:
+                    raise RuntimeError(
+                        f"apply-lane sweep changed conserved stat {name}"
+                    )
+            if normalized_apply_lane_config(
+                out / f"{arm_name}/config.ini"
+            ) != (control_config):
+                raise RuntimeError(
+                    "apply-lane sweep has a non-treatment config difference"
+                )
+            command = restore_commands[arm_name]
+            lane_option = f"--maa_soa_jit_apply_lanes={apply_lanes}"
+            if command.count("--maa_soa_jit_value_cache_enable") != 1:
+                raise RuntimeError(
+                    "apply-lane arm must enable value retention once"
+                )
+            if (
+                command.count(lane_option) != 1
+                or sum(
+                    value.startswith("--maa_soa_jit_apply_lanes=")
+                    for value in command
+                )
+                != 1
+            ):
+                raise RuntimeError(
+                    "apply-lane arm lacks its sole exact lane knob"
+                )
+            if normalized_apply_lane_command(command) != control_command:
+                raise RuntimeError(
+                    "apply-lane sweep has a non-treatment command difference"
+                )
 
     checkpoint_after = base.tree_ledger(checkpoint)
     (input_dir / "checkpoint_files.after").write_text(checkpoint_after)
@@ -666,16 +957,37 @@ def main(argv: list[str] | None = None) -> int:
     value_cache_decision = None
     if value_cache_pair:
         value_cache_decision = classify_value_cache_pair(control, candidate)
+    apply_lane_decision = None
+    exact_faster_arms: list[str] = []
+    if apply_lane_mode:
+        exact_faster_arms = [
+            name
+            for name, arm in parsed.items()
+            if name != "lane_1" and arm["stats"]["simTicks"] < control_ticks
+        ]
+        apply_lane_decision = (
+            "ACCEPT_EXACT_FASTER_ARM"
+            if exact_faster_arms
+            else "REJECT_NO_EXACT_FASTER_ARM"
+        )
     selected_treatment = arm_specs[0][1]
     page_fed_cache_pair = args.page_fed_value_cache_pair
     result = {
         "schema": (
-            "dx100.cg.page_fed_p16_q16_value_cache.v1"
-            if page_fed_cache_pair
+            "dx100.cg.direct4_q16_apply_lanes_confirmation.v1"
+            if args.apply_lane_confirm is not None
             else (
-                "dx100.cg.direct4_q16_value_cache.v1"
-                if args.value_cache_pair
-                else "dx100.cg.direct4_product_page_fed_q16.v1"
+                "dx100.cg.direct4_q16_apply_lanes.v1"
+                if args.apply_lane_sweep
+                else (
+                    "dx100.cg.page_fed_p16_q16_value_cache.v1"
+                    if page_fed_cache_pair
+                    else (
+                        "dx100.cg.direct4_q16_value_cache.v1"
+                        if args.value_cache_pair
+                        else "dx100.cg.direct4_product_page_fed_q16.v1"
+                    )
+                )
             )
         ),
         "terminal": True,
@@ -694,15 +1006,21 @@ def main(argv: list[str] | None = None) -> int:
         ).hexdigest(),
         "restore_commands": restore_commands,
         "isolated_treatment": (
-            "soa_jit_value_cache_enable"
-            if value_cache_pair
-            else "direct4_product_page_fed_q16"
+            "soa_jit_apply_lanes"
+            if apply_lane_mode
+            else (
+                "soa_jit_value_cache_enable"
+                if value_cache_pair
+                else "direct4_product_page_fed_q16"
+            )
         ),
         "same_guest_treatment": (
-            selected_treatment if value_cache_pair else None
+            selected_treatment if value_cache_pair or apply_lane_mode else None
         ),
         "sole_knob_delta": (
-            "soa_jit_value_cache_enable" if value_cache_pair else None
+            "maa_soa_jit_apply_lanes"
+            if apply_lane_mode
+            else ("soa_jit_value_cache_enable" if value_cache_pair else None)
         ),
         "fingerprint_raw_and_quantized_exact_equal": True,
         "deterministic_reduction_records": 11,
@@ -710,14 +1028,38 @@ def main(argv: list[str] | None = None) -> int:
         "p16_reorder_preserved_by_candidate": page_fed_cache_pair,
         "q16_reorder_preserved_by_candidate": True,
         "selected_value_cache_enable": True,
-        "performance": {
-            "metric": "simTicks",
-            "control": control_ticks,
-            candidate_name: candidate_ticks,
-            "control_over_candidate_speedup": control_ticks / candidate_ticks,
-        },
+        "performance": (
+            {
+                "metric": "simTicks",
+                "baseline_arm": "lane_1",
+                "arms": {
+                    name: arm["stats"]["simTicks"]
+                    for name, arm in parsed.items()
+                },
+                "lane_1_over_arm_speedup": {
+                    name: control_ticks / arm["stats"]["simTicks"]
+                    for name, arm in parsed.items()
+                    if name != "lane_1"
+                },
+                "exact_faster_arms": exact_faster_arms,
+            }
+            if apply_lane_mode
+            else {
+                "metric": "simTicks",
+                "control": control_ticks,
+                candidate_name: candidate_ticks,
+                "control_over_candidate_speedup": control_ticks
+                / candidate_ticks,
+            }
+        ),
         "arms": parsed,
     }
+    if args.apply_lane_confirm is not None:
+        result["confirmation"] = {
+            "authorized_by_na256_root": str(args.confirm_from.resolve()),
+            "authorized_raw_root_sha256": confirmation_source_ledger,
+            "confirmed_lane": args.apply_lane_confirm,
+        }
     result["hardware_accounting"] = {
         "physical_spd_payload_bytes": 524288,
         "external_coherent_backing_bytes": int(
@@ -746,6 +1088,23 @@ def main(argv: list[str] | None = None) -> int:
             * VALUE_OWNER_LINE_BYTES
             * INDIRECT_UNITS_PER_MAA
         ),
+        "fixed_apply_lanes_per_indirect_unit": FIXED_APPLY_LANES_PER_UNIT,
+        "fixed_apply_lane_owners_per_maa": (
+            FIXED_APPLY_LANES_PER_UNIT * INDIRECT_UNITS_PER_MAA
+        ),
+        "fixed_apply_lane_owner_state_bytes": FIXED_APPLY_LANE_OWNER_BYTES,
+        "fixed_apply_lane_pool_state_bytes_per_unit": (
+            FIXED_APPLY_LANE_POOL_BYTES_PER_UNIT
+        ),
+        "fixed_apply_lane_pool_state_bytes_per_maa": (
+            FIXED_APPLY_LANE_POOL_BYTES_PER_UNIT * INDIRECT_UNITS_PER_MAA
+        ),
+        "incremental_apply_lane_pool_bytes_across_arms": 0,
+        "active_apply_lanes_by_arm": (
+            {name: lanes for name, _, _, lanes in arm_specs}
+            if apply_lane_mode
+            else None
+        ),
     }
     if value_cache_pair:
         result["decision"] = value_cache_decision
@@ -759,6 +1118,33 @@ def main(argv: list[str] | None = None) -> int:
             "value_read_issues_on": candidate["stats"][
                 "IND_SoaJitValueReadIssues"
             ],
+        }
+    if apply_lane_mode:
+        result["decision"] = apply_lane_decision
+        result["mechanism"] = {
+            name: {
+                "cycles_indrmw": arm["stats"]["system.maa.cycles_INDRMW"],
+                "cycles_request": arm["stats"][
+                    "system.maa.I0_IND_CyclesRequest"
+                ],
+                "value_read_issues": arm["stats"]["IND_SoaJitValueReadIssues"],
+                "value_hits": arm["stats"]["IND_SoaJitValueHits"],
+                "cache_read_packets": arm["stats"][
+                    "system.maa.port_cache_RD_packets"
+                ],
+                "cache_write_packets": arm["stats"][
+                    "system.maa.port_cache_WR_packets"
+                ],
+                "apply_high_water_sum": arm["stats"][
+                    "IND_SoaJitApplyLaneHighWater"
+                ],
+                "instructions": arm["stats"]["IND_SoaJitInstructions"],
+                "apply_high_water_mean": (
+                    arm["stats"]["IND_SoaJitApplyLaneHighWater"]
+                    / arm["stats"]["IND_SoaJitInstructions"]
+                ),
+            }
+            for name, arm in parsed.items()
         }
     (out / "result.json").write_text(json.dumps(result, indent=2) + "\n")
     ledger_targets = [
@@ -774,9 +1160,8 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
     ledger_sha = base.sha256_file(out / "raw_root.sha256")
-    decision_line = (
-        f"decision={value_cache_decision}\n" if value_cache_pair else ""
-    )
+    decision = apply_lane_decision if apply_lane_mode else value_cache_decision
+    decision_line = f"decision={decision}\n" if decision is not None else ""
     (out / "gate.complete").write_text(
         "COMPLETE_CG_DIRECT4_PRODUCT_PAGE_FED_Q16\n"
         "correctness=EXACT_MATCH\n"
@@ -789,7 +1174,7 @@ def main(argv: list[str] | None = None) -> int:
                 "terminal": True,
                 "cg_na": cg_na,
                 "correctness": "EXACT_MATCH",
-                "decision": value_cache_decision,
+                "decision": decision,
                 "raw_root_sha256": ledger_sha,
             }
         )
