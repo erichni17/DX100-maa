@@ -618,7 +618,9 @@ def main() -> int:
     ldd_output = subprocess.check_output(
         ["ldd", str(GEM5)], env=environment, text=True
     )
-    resolved_match = re.search(r"^libramulator\.so => (\S+)", ldd_output, re.M)
+    resolved_match = re.search(
+        r"^[ \t]*libramulator\.so => (\S+)", ldd_output, re.M
+    )
     if (
         resolved_match is None
         or Path(resolved_match.group(1)).resolve() != RAMULATOR.resolve()

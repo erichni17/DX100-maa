@@ -94,3 +94,14 @@ and deterministic-plus-evidence flags; deterministic-plus-evidence also
 compiles to an object. The focused and adjacent static CG suite passes 76
 tests. No simulator validation has been run; launch remains explicitly
 deferred.
+
+## Runtime preflight correction
+
+The first `CG_NA=1024` launch root,
+`/data1/nier/dx100-runs/2026-08-26-cg-reduction-order-na1024-r1`, stopped
+before checkpoint creation because the linkage preflight required
+`libramulator.so` at column zero. Real `ldd` output prefixes the dependency
+with a tab while resolving it to the exact pinned library. The successor
+accepts only leading horizontal whitespace and still compares the resolved
+canonical path to the frozen Ramulator path. `r1` contains no simulation
+result and is excluded.
