@@ -389,6 +389,13 @@ class CgReductionRunnerContract(unittest.TestCase):
         ):
             self.assertIn(token, self.text)
 
+    def test_ramulator_linkage_accepts_ldd_indentation_but_pins_path(self):
+        self.assertIn('r"^[ \\t]*libramulator\\.so => (\\S+)"', self.text)
+        self.assertIn(
+            "Path(resolved_match.group(1)).resolve() != RAMULATOR.resolve()",
+            self.text,
+        )
+
     def test_adversarial_removal_of_each_core_guard_fails_contract(self):
         guards = (
             "MAX_DIAGNOSTIC_CG_NA = 32768",
