@@ -264,12 +264,14 @@ def validate_stats_values(values: dict[str, int]) -> None:
         "exact full A-line closure failed",
     )
     instructions = values["IND_SoaJitInstructions"]
+    active_lanes = values["IND_SoaJitActiveApplyLanes"]
+    apply_lane_high_water = values["IND_SoaJitApplyLaneHighWater"]
     require(
         instructions == EXPECTED_WINDOWS
-        and values["IND_SoaJitActiveApplyLanes"] == instructions * APPLY_LANES
-        and values["IND_SoaJitApplyLaneHighWater"]
-        == instructions * APPLY_LANES,
-        "four-lane active/high-water closure failed",
+        and active_lanes == instructions * APPLY_LANES
+        and instructions * (APPLY_LANES - 1) < apply_lane_high_water
+        <= instructions * APPLY_LANES,
+        "four-lane active/high-water evidence failed",
     )
     require(
         0

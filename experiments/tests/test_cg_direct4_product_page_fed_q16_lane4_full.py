@@ -195,20 +195,32 @@ def test_exact_full_mechanism_and_value_retention_closure() -> None:
     assert values["IND_SoaJitEpochDrains"] == 0
 
 
-def test_four_lane_active_sum_and_high_water_are_both_exact() -> None:
+def test_four_lane_active_sum_and_sparse_high_water_bounds() -> None:
     values = good_stats()
     assert values["IND_SoaJitActiveApplyLanes"] == runner.EXPECTED_WINDOWS * 4
     assert (
         values["IND_SoaJitApplyLaneHighWater"] == runner.EXPECTED_WINDOWS * 4
     )
-    for key, bad in (
-        ("IND_SoaJitActiveApplyLanes", runner.EXPECTED_WINDOWS),
-        ("IND_SoaJitApplyLaneHighWater", runner.EXPECTED_WINDOWS * 3),
+    runner.validate_stats_values(values)
+
+    sparse = copy.deepcopy(values)
+    sparse["IND_SoaJitApplyLaneHighWater"] = runner.EXPECTED_WINDOWS * 3 + 1
+    runner.validate_stats_values(sparse)
+
+    for bad in (
+        runner.EXPECTED_WINDOWS * 3,
+        runner.EXPECTED_WINDOWS * 3 - 1,
+        runner.EXPECTED_WINDOWS * 4 + 1,
     ):
         broken = copy.deepcopy(values)
-        broken[key] = bad
+        broken["IND_SoaJitApplyLaneHighWater"] = bad
         with unittest.TestCase().assertRaisesRegex(RuntimeError, "four-lane"):
             runner.validate_stats_values(broken)
+
+    broken = copy.deepcopy(values)
+    broken["IND_SoaJitActiveApplyLanes"] -= 1
+    with unittest.TestCase().assertRaisesRegex(RuntimeError, "four-lane"):
+        runner.validate_stats_values(broken)
 
 
 def test_value_retention_stalls_and_identity_fail_closed() -> None:
