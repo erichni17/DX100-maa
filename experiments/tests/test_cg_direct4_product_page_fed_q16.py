@@ -64,7 +64,8 @@ def terminal_fields(treatment: str, windows: int = 3) -> dict[str, str]:
 
 def test_selector_and_eight_tile_build_are_narrow() -> None:
     assert 'return "direct4_product_page_fed_q16";' in SOURCE
-    assert runner.CG_NA == 1024
+    assert runner.DEFAULT_CG_NA == 1024
+    assert runner.MAX_CG_NA == 32768
     assert runner.TREATMENTS == (
         ("control", "page_fed_product_soa_jit"),
         ("direct4_q16", "direct4_product_page_fed_q16"),
@@ -73,7 +74,7 @@ def test_selector_and_eight_tile_build_are_narrow() -> None:
     assert '"-DCG_PHYSICAL_PAGE_PRODUCT_ONLY"' in RUNNER_TEXT
     assert '"-DCG_PAGE_FED_SOA_ONLY"' in RUNNER_TEXT
     assert '"native_runs": 0' in RUNNER_TEXT
-    assert '"full_or_medium_runs": 0' in RUNNER_TEXT
+    assert '"full_cg_runs": 0' in RUNNER_TEXT
     assert '"timeout": "none"' in RUNNER_TEXT
 
 
@@ -146,7 +147,9 @@ def test_terminal_gate_records_the_tradeoff_and_exact_payload() -> None:
         "direct4_product_page_fed_q16",
     ):
         assert (
-            runner.require_terminal_8(terminal_fields(treatment), treatment)
+            runner.require_terminal_8(
+                terminal_fields(treatment), treatment, 1024
+            )
             == 3
         )
     bad = terminal_fields("direct4_product_page_fed_q16")
@@ -154,7 +157,72 @@ def test_terminal_gate_records_the_tradeoff_and_exact_payload() -> None:
     with unittest.TestCase().assertRaisesRegex(
         RuntimeError, "terminal closure failed"
     ):
-        runner.require_terminal_8(bad, "direct4_product_page_fed_q16")
+        runner.require_terminal_8(bad, "direct4_product_page_fed_q16", 1024)
+
+
+def test_cg_na_default_and_explicit_4096_are_selected() -> None:
+    default = runner.parse_args(["/tmp/cg-default"])
+    explicit = runner.parse_args(["/tmp/cg-medium", "--cg-na", "4096"])
+    assert default.cg_na == 1024
+    assert explicit.cg_na == 4096
+
+    captured: dict[str, object] = {}
+    original_parse_arm = runner.base.parse_arm
+    try:
+
+        def capture(
+            arm: Path, cg_na: int, treatment: str, page_fed: bool
+        ) -> dict[str, object]:
+            captured.update(
+                arm=arm,
+                cg_na=cg_na,
+                treatment=treatment,
+                page_fed=page_fed,
+            )
+            return {}
+
+        runner.base.parse_arm = capture
+        assert (
+            runner.parse_arm(Path("arm"), 4096, "direct4_product_page_fed_q16")
+            == {}
+        )
+        assert captured == {
+            "arm": Path("arm"),
+            "cg_na": 4096,
+            "treatment": "direct4_product_page_fed_q16",
+            "page_fed": True,
+        }
+        assert (
+            runner.base.require_terminal(
+                terminal_fields("direct4_product_page_fed_q16"),
+                "direct4_product_page_fed_q16",
+            )
+            == 3
+        )
+    finally:
+        runner.base.parse_arm = original_parse_arm
+
+
+def test_cg_na_rejects_out_of_range_and_full_sizes() -> None:
+    for forbidden in ("0", "32769", "150000"):
+        with unittest.TestCase().assertRaises(SystemExit):
+            runner.parse_args(["/tmp/cg-forbidden", "--cg-na", forbidden])
+    with unittest.TestCase().assertRaisesRegex(
+        RuntimeError, "forbidden CG_NA"
+    ):
+        runner.require_terminal_8(
+            terminal_fields("direct4_product_page_fed_q16"),
+            "direct4_product_page_fed_q16",
+            150000,
+        )
+
+
+def test_fingerprint_parser_has_no_hidden_1024_size() -> None:
+    assert re.search(r"^CG_NA\s*=\s*1024$", RUNNER_TEXT, re.M) is None
+    assert "elements=1024" not in RUNNER_TEXT
+    assert 'f"-DCG_NA={cg_na}"' in RUNNER_TEXT
+    assert "base.parse_arm(arm, cg_na, treatment, True)" in RUNNER_TEXT
+    assert '"selected_cg_na": cg_na' in RUNNER_TEXT
 
 
 def test_config_gate_rejects_inherited_ten_tiles() -> None:

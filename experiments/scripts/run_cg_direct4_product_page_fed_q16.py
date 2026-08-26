@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Run the sole CG_NA=1024 direct4-product/q16 candidate pair.
+"""Run one bounded CG direct4-product/q16 candidate pair.
 
 One deterministic-reduction guest and one deferred checkpoint feed the matched
-serial page-fed control and direct4-product/q16 treatment.  There is no native,
-medium, or full run, no timeout, and no per-access trace.
+serial page-fed control and direct4-product/q16 treatment.  The default is
+CG_NA=1024; bounded explicit sizes are supported through --cg-na.  There is no
+native or full run, no timeout, and no per-access trace.
 """
 
 from __future__ import annotations
@@ -28,7 +29,8 @@ base = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(base)
 HARDENED_REQUIRE_STATS = base.require_stats
 
-CG_NA = 1024
+DEFAULT_CG_NA = 1024
+MAX_CG_NA = 32768
 TREATMENTS = (
     ("control", "page_fed_product_soa_jit"),
     ("direct4_q16", "direct4_product_page_fed_q16"),
@@ -72,7 +74,12 @@ def require_config_8(config: Path, page_fed: bool) -> None:
         )
 
 
-def require_terminal_8(fields: dict[str, str], treatment: str) -> int:
+def require_terminal_8(
+    fields: dict[str, str], treatment: str, cg_na: int
+) -> int:
+    """Close one terminal against the explicitly selected bounded size."""
+    if not 1 <= cg_na <= MAX_CG_NA:
+        raise RuntimeError(f"terminal gate received forbidden CG_NA={cg_na}")
     integer_keys = (
         "full_windows",
         "staged_index_words",
@@ -204,11 +211,27 @@ def require_stats_8(
 
 
 # parse_arm resolves these names in the imported module.  Replace the inherited
-# ten-tile config gate and treatment terminal before any arm is parsed while
-# retaining the hardened coalescer delivery closure from 51ec728d.
+# ten-tile config gate before any arm is parsed while retaining the hardened
+# coalescer delivery closure from 51ec728d.  The terminal gate is bound to the
+# selected CG size in parse_arm below.
 base.require_config = require_config_8
-base.require_terminal = require_terminal_8
 base.require_stats = require_stats_8
+
+
+def parse_arm(arm: Path, cg_na: int, treatment: str) -> dict:
+    """Parse one arm with the selected size in fingerprint and terminal gates."""
+    if not 1 <= cg_na <= MAX_CG_NA:
+        raise RuntimeError(
+            f"CG_NA must be in 1..{MAX_CG_NA}; full CG is forbidden"
+        )
+
+    def selected_terminal(
+        fields: dict[str, str], selected_treatment: str
+    ) -> int:
+        return require_terminal_8(fields, selected_treatment, cg_na)
+
+    base.require_terminal = selected_terminal
+    return base.parse_arm(arm, cg_na, treatment, True)
 
 
 def restore_args(
@@ -227,10 +250,19 @@ def restore_args(
     return args
 
 
-def main() -> int:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("out", type=Path)
-    args = parser.parse_args()
+    parser.add_argument("--cg-na", type=int, default=DEFAULT_CG_NA)
+    args = parser.parse_args(argv)
+    if not 1 <= args.cg_na <= MAX_CG_NA:
+        parser.error(f"CG_NA must be in 1..{MAX_CG_NA}; full CG is forbidden")
+    return args
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    cg_na = args.cg_na
     out = args.out.resolve()
     if out == ROOT or ROOT in out.parents:
         raise SystemExit("output must be outside the source worktree")
@@ -279,7 +311,7 @@ def main() -> int:
         "-DCG_FP_ENABLE",
         "-DCG_DETERMINISTIC_REDUCTIONS",
         "-DCG_REDUCTION_EVIDENCE",
-        f"-DCG_NA={CG_NA}",
+        f"-DCG_NA={cg_na}",
         "-DNUM_CORES=4",
         "-DNUM_TILES_PER_CORE=8",
         "-DTILE_SIZE=16384",
@@ -380,7 +412,7 @@ def main() -> int:
         restore = restore_args(guest, selector, checkpoint, arm)
         restore_commands[arm_name] = restore
         base.run_logged(restore, arm / "restore.log", environment)
-        parsed[arm_name] = base.parse_arm(arm, CG_NA, treatment, True)
+        parsed[arm_name] = parse_arm(arm, cg_na, treatment)
 
     control = parsed["control"]
     candidate = parsed["direct4_q16"]
@@ -424,9 +456,10 @@ def main() -> int:
         "terminal": True,
         "candidate_only": True,
         "native_runs": 0,
-        "full_or_medium_runs": 0,
+        "full_cg_runs": 0,
         "timeout": "none",
-        "cg_na": CG_NA,
+        "cg_na": cg_na,
+        "selected_cg_na": cg_na,
         "source_commit": before_commit,
         "gem5_sha256": base.GEM5_SHA256,
         "ramulator_sha256": base.RAMULATOR_SHA256,
@@ -471,7 +504,7 @@ def main() -> int:
         json.dumps(
             {
                 "terminal": True,
-                "cg_na": CG_NA,
+                "cg_na": cg_na,
                 "correctness": "EXACT_MATCH",
                 "raw_root_sha256": ledger_sha,
             }
