@@ -64,7 +64,6 @@ CONSERVE_STATS = tuple(
             "IND_SoaJitValueStalls",
             "IND_SoaJitValueCacheHighWater",
             "IND_SoaJitLookaheadStalls",
-            "IND_SoaJitContextStalls",
             "system.maa.port_cache_RD_packets",
             "system.maa.port_cache_WR_packets",
         )
@@ -585,6 +584,7 @@ def run(argv: list[str] | None = None) -> int:
                     "IND_SoaJitApplyLaneHighWater"
                 ],
                 "instructions": arm["stats"]["IND_SoaJitInstructions"],
+                "context_stalls": arm["stats"]["IND_SoaJitContextStalls"],
             }
             for name, arm in parsed.items()
         },

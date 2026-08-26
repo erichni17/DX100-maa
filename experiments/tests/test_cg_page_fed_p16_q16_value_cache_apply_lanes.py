@@ -78,6 +78,8 @@ def test_exact_lane_four_high_water_and_conserved_ledgers_fail_closed() -> (
         "system.maa.port_cache_RD_packets",
     ):
         assert name in runner.CONSERVE_STATS
+    assert "IND_SoaJitContextStalls" not in runner.CONSERVE_STATS
+    assert '"context_stalls"' in TEXT
     assert "fingerprint_line" in TEXT and "reduction_evidence" in TEXT
     assert 'len(arm["reduction_evidence"]) == 11' in TEXT
 
