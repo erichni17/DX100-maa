@@ -242,15 +242,59 @@ def audit_cg(
             "failures": failures,
             "validator": verifier,
         }
-    terminal = manifest.get("terminal") is True
-    if not terminal:
+    result = json_file(direct4_root / "result.json")
+    gate_text = text(direct4_root / "gate.complete")
+    if result is None and gate_text is None:
         return {
             "status": "pending",
             "failures": failures
             + ["CG direct4: selected full candidate is not terminal"],
             "validator": verifier,
         }
-    direct_cert = manifest.get("certificate")
+    check(
+        result is not None, "CG direct4: malformed terminal result", failures
+    )
+    check(
+        gate_text is not None
+        and gate_text.splitlines()[0:1]
+        == ["PASS_NUMERICAL_MECHANISM_CORRECT"],
+        "CG direct4: missing or forged terminal gate",
+        failures,
+    )
+    gate = kv_file(direct4_root / "gate.complete")
+    if result is not None:
+        check(
+            gate.get("result_sha256") == digest(direct4_root / "result.json"),
+            "CG direct4: result gate hash is stale",
+            failures,
+        )
+    ledger = direct4_root / "certified_artifacts.sha256"
+    check(
+        ledger.is_file()
+        and not ledger.is_symlink()
+        and gate.get("certified_artifacts_sha256") == digest(ledger),
+        "CG direct4: certified-artifact gate hash is stale",
+        failures,
+    )
+    required = {
+        (direct4_root / "manifest.json").resolve(),
+        (direct4_root / "run/restore.log").resolve(),
+        (direct4_root / "run/restore.log.exit").resolve(),
+        (direct4_root / "run/stats.txt").resolve(),
+        (direct4_root / "run/config.ini").resolve(),
+        (direct4_root / "input/source_commit.before").resolve(),
+        (direct4_root / "input/source_commit.after").resolve(),
+    }
+    covered = check_ledger(
+        ledger, failures, "CG direct4 certified artifacts", required
+    )
+    check(
+        required <= covered,
+        "CG direct4: certified-artifact ledger omits terminal authority",
+        failures,
+    )
+
+    direct_cert = result.get("certificate") if result is not None else None
     check(
         isinstance(direct_cert, dict)
         and direct_cert.get("verdict") == "PASS_NUMERICAL_MECHANISM_CORRECT",
@@ -274,21 +318,21 @@ def audit_cg(
         if isinstance(manifest.get("commands"), dict)
         else ""
     )
-    contract = json.dumps(manifest, sort_keys=True).lower()
     check(
         "page_fed" in command
-        and (
-            ('"p16": false' in contract and '"q16": true' in contract)
-            or "p16=false" in contract
-            and "q16=true" in contract
-        ),
+        and result is not None
+        and result.get("p16_reorder_preserved") is False
+        and result.get("q16_reorder_preserved") is True,
         "CG direct4: p16=false/q16=true contract absent",
         failures,
     )
     check(
-        bool(
-            manifest.get("performance_observation") or manifest.get("simTicks")
-        ),
+        result is not None
+        and result.get("terminal") is True
+        and result.get("candidate_only") is True
+        and isinstance(result.get("performance"), dict)
+        and isinstance(result["performance"].get("candidate"), int)
+        and result["performance"]["candidate"] > 0,
         "CG direct4: performance observation absent",
         failures,
     )

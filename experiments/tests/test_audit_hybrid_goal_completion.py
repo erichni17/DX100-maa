@@ -74,8 +74,8 @@ class HybridGoalAuditTest(unittest.TestCase):
 
     def _direct4(self, terminal: bool) -> None:
         root = self.roots["cg_direct4"]
-        data = {
-            "terminal": terminal,
+        manifest = {
+            "terminal": False,
             "certificate": {"verdict": "PASS_NUMERICAL_MECHANISM_CORRECT"},
             "geometry": {
                 "tiles_per_core": 8,
@@ -84,11 +84,48 @@ class HybridGoalAuditTest(unittest.TestCase):
             "commands": {
                 "restore": ["page_fed", "predicate_active_credits=16"]
             },
-            "p16": False,
-            "q16": True,
-            "performance_observation": {"simTicks": 1},
         }
-        (root / "manifest.json").write_text(json.dumps(data))
+        (root / "manifest.json").write_text(json.dumps(manifest))
+        if not terminal:
+            for name in (
+                "result.json",
+                "gate.complete",
+                "certified_artifacts.sha256",
+            ):
+                (root / name).unlink(missing_ok=True)
+            return
+        result = {
+            "terminal": True,
+            "candidate_only": True,
+            "certificate": {"verdict": "PASS_NUMERICAL_MECHANISM_CORRECT"},
+            "p16_reorder_preserved": False,
+            "q16_reorder_preserved": True,
+            "performance": {"candidate": 1},
+        }
+        (root / "result.json").write_text(json.dumps(result))
+        authorities = []
+        for name in (
+            "run/restore.log",
+            "run/restore.log.exit",
+            "run/stats.txt",
+            "run/config.ini",
+            "input/source_commit.before",
+            "input/source_commit.after",
+        ):
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(name)
+            authorities.append(path)
+        self._ledger(
+            root,
+            "certified_artifacts.sha256",
+            [root / "manifest.json", *authorities],
+        )
+        (root / "gate.complete").write_text(
+            "PASS_NUMERICAL_MECHANISM_CORRECT\n"
+            f"result_sha256={self._hash(root / 'result.json')}\n"
+            f"certified_artifacts_sha256={self._hash(root / 'certified_artifacts.sha256')}\n"
+        )
 
     def _is_certificate(self) -> None:
         root = self.roots["is_certificate"]
