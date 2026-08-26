@@ -124,6 +124,8 @@ class FusedP16PairContract(unittest.TestCase):
             self.assertIn(knob, runner.FINITE_KNOBS)
         self.assertIn('--maa_soa_jit_value_cache_enable', TEXT)
         self.assertIn('--maa_soa_jit_active_value_owners=32', TEXT)
+        cg = (ROOT / "benchmarks/NAS/cg/cg.cpp").read_text()
+        self.assertIn("std::memset(virtual_gather_storage, 0,", cg)
         for ledger in (
             "IND_FusedP16Operations",
             "IND_FusedP16Epochs",

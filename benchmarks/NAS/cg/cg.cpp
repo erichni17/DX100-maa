@@ -1325,6 +1325,8 @@ int main(int argc, char **argv) {
             return 1;
         }
         virtual_gather_storage = static_cast<float *>(storage);
+        std::memset(virtual_gather_storage, 0,
+                    virtual_gather_storage_words * sizeof(float));
 #ifdef CG_LOGICAL16_RMW
     }
 #endif
