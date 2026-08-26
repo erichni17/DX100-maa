@@ -79,3 +79,45 @@ mechanism, artifact, and response-ledger gates.
    publication responses, and closed predicate/value/A/old-result ledgers.
 3. Verify each final raw hash ledger and commit the terminal classification.
 4. Only then perform the requirement-by-requirement goal completion audit.
+
+## Successor final-auditor contract (2026-08-26)
+
+`experiments/scripts/audit_hybrid_goal_completion.py` is the successor,
+read-only final auditor. It accepts only raw roots and writes its three output
+files to a separate audit directory. It never starts gem5, modifies an input
+root, infers a result from a PID, or upgrades a prose report to evidence.
+
+It independently verifies certificate gates and SHA-256 ledgers and invokes an
+in-root authoritative `validate`/`verifier --validate` only when one is
+present. `audit.json` records every requirement and a hardware-accounting
+summary; `input_sha256.txt` captures the direct audit inputs. `gate.complete`
+is created last and only for a terminal `PASS`; `INCOMPLETE` leaves no gate.
+`--validate` re-evaluates an existing terminal PASS audit without mutation.
+
+The exact completion bar is:
+
+- CG requires the tolerant page-fed certificate and, once terminal, the
+  selected direct4/q16 full candidate's numerical-mechanism gate, closure,
+  8-tile/524288-B geometry, p16=false/q16=true contract, and an observed
+  simulated-performance measurement. A nonterminal direct4 candidate remains
+  pending; medium evidence is never promoted to full evidence.
+- IS requires `PASS_FULL_IS_CORRECTNESS`, official verification, 524288-B
+  physical payload, no staging payload, and no performance promotion.
+- HashJoin requires hardened PRO and PRH terminal-pass gates, exact ledgers,
+  exact 2M result cardinalities, correct PRO/PRH route semantics, the
+  16K-logical/4K-physical/two-channel/32-row-slice configuration, and
+  candidate-only/no-native-rerun provenance. It is correctness evidence only.
+- SSSP requires a final gate, zero wrapper/native violations, exact external
+  fingerprint/oracle, artifact/checkpoint ledgers, closed routed/coherent
+  fallback accounting, 8-tile geometry, and zero host-SPD, out-of-range, or
+  hidden-payload evidence. Until that gate exists it is pending.
+
+The accounting summary explicitly separates physical SPD payload, Row/Offset
+configuration, external coherent backing, target-only assumptions, and
+simulator-only counters. Hidden payload, iso-area claims, and native-speedup
+claims are rejected.
+
+At the 2026-08-26 milestone the default invocation writes
+`/data1/nier/dx100-runs/2026-08-26-hybrid-goal-audit-r1` with `INCOMPLETE`:
+the selected direct4 CG and full SSSP roots are active/nonterminal. This is an
+audit milestone, not hybrid-goal completion.
