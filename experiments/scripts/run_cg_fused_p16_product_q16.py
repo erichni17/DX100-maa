@@ -42,8 +42,6 @@ FINITE_KNOBS = (
     "--maa_virtual_response_words=0",
     "--maa_virtual_response_word_pool=0",
     "--maa_virtual_max_outstanding_writes=32",
-    "--maa_soa_jit_value_cache_enable",
-    "--maa_soa_jit_active_value_owners=32",
     "--maa_soa_jit_value_prefetch_credits=0",
 )
 
@@ -347,6 +345,10 @@ def restore_args(
     args = direct.restore_args(
         guest, selector, checkpoint, arm, value_cache=True
     )
+    require(args.count("--maa_soa_jit_value_cache_enable") == 1,
+            "restore must enable the selected cache exactly once")
+    require(args.count("--maa_soa_jit_active_value_owners=32") == 1,
+            "restore must select the 32-owner pool exactly once")
     command_index = args.index("--cmd")
     args[command_index:command_index] = list(FINITE_KNOBS)
     return args

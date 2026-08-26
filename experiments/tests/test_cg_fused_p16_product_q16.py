@@ -119,11 +119,11 @@ class FusedP16PairContract(unittest.TestCase):
             "--maa_virtual_words_per_cycle=1",
             "--maa_virtual_response_slots=8",
             "--maa_virtual_max_outstanding_writes=32",
-            "--maa_soa_jit_value_cache_enable",
-            "--maa_soa_jit_active_value_owners=32",
             "--maa_soa_jit_value_prefetch_credits=0",
         ):
             self.assertIn(knob, runner.FINITE_KNOBS)
+        self.assertIn('--maa_soa_jit_value_cache_enable', TEXT)
+        self.assertIn('--maa_soa_jit_active_value_owners=32', TEXT)
         for ledger in (
             "IND_FusedP16Operations",
             "IND_FusedP16Epochs",
