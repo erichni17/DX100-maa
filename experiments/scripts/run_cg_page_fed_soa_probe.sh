@@ -153,13 +153,20 @@ sum_stat() {
 [[ $(sum_stat 'IND_SoaJitPageFedCoherentIndexReadLines') -eq 0 ]]
 [[ $(sum_stat 'IND_SoaJitPageFedCoherentIndexWriteLines') -eq 0 ]]
 [[ $(sum_stat 'IND_SoaJitPageFedStateByteOperations') -eq 16 ]]
+[[ $(sum_stat 'IND_SoaJitPageFedProductReadySignals') -eq 4 ]]
+[[ $(sum_stat 'IND_SoaJitPageFedValueReadinessStalls') -eq 0 ]]
+[[ $(sum_stat 'IND_SoaJitPageFedFirstReadyTicks') -gt 0 ]]
+[[ $(sum_stat 'IND_SoaJitPageFedLastReadyTicks') -ge \
+   $(sum_stat 'IND_SoaJitPageFedFirstReadyTicks') ]]
+[[ $(sum_stat 'IND_SoaJitPageFedExecutionBeforeAllReady') -eq 0 ]]
+[[ $(sum_stat 'IND_SoaJitPageFedTerminalClosures') -eq 1 ]]
 [[ $(sum_stat 'STR_PublishIssues') -eq 1024 ]]
 [[ $(sum_stat 'STR_PublishAccepts') -eq 1024 ]]
 [[ $(sum_stat 'STR_PublishWriteResponses') -eq 1024 ]]
 [[ $(sum_stat 'STR_PublishTerminals') -eq 4 ]]
 [[ $(grep -Fc 'event=soa_jit_page_fed_admit ' "$trace" || true) -eq 4 ]]
 [[ $(grep -Fc 'event=soa_jit_page_fed_open_response ' "$trace" || true) -eq 1 ]]
-[[ $(grep -Ec 'event=soa_jit_page_fed_complete .*opens=1 open_responses=1 admissions=4 closes=1 command_responses=5 total_abi_responses=6 .*coherent_index_read_lines=0 coherent_index_write_lines=0 index_payload_bytes=0 descriptor_payload_bytes=0 persistent_state_bytes=16 value_read_lines=16384 value_read_responses=16384 a_read_lines=256 a_write_lines=256 .*terminal=1$' "$trace" || true) -eq 1 ]]
+[[ $(grep -Ec 'event=soa_jit_page_fed_complete .*opens=1 open_responses=1 admissions=4 closes=1 command_responses=5 total_abi_responses=6 .*coherent_index_read_lines=0 coherent_index_write_lines=0 index_payload_bytes=0 descriptor_payload_bytes=0 new_product_payload_bytes=0 persistent_state_bytes=16 additional_fixed_control_bytes=0 product_ready_mask=0xf product_ready_signals=4 value_readiness_stalls=0 first_ready_tick=[1-9][0-9]* last_ready_tick=[1-9][0-9]* execution_before_all_ready=0 terminal_closures=1 value_read_lines=16384 value_read_responses=16384 a_read_lines=256 a_write_lines=256 .*terminal=1$' "$trace" || true) -eq 1 ]]
 for resolved in \
     'page_fed_soa_jit=true' 'num_maas=1' \
     'num_indirect_units_per_maa=4' 'num_tiles_per_core=8' \
@@ -183,6 +190,8 @@ cmp -s "$out/artifacts.before.sha256" "$out/artifacts.after.sha256"
     printf 'index_publish_pages=0\ncoherent_index_lines=0\n'
     printf 'product_publish_pages=4\nproduct_publish_lines=1024\n'
     printf 'product_value_read_lines=16384\npersistent_state_bytes=16\n'
+    printf 'product_ready_signals=4\nvalue_readiness_stalls=0\n'
+    printf 'execution_before_all_ready=0\nterminal_closures=1\n'
     printf 'performance_claim=0\n'
 } > "$out/result.txt"
 sha256sum "$out/checkpoint.before.sha256" "$out/restore.log" "$stats" \
