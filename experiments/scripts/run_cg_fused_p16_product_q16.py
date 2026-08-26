@@ -143,7 +143,7 @@ def require_terminal(fields: dict[str, str], treatment: str) -> int:
     words = windows * 16384
     pages = windows * 4
     common = (
-        windows > 0
+        windows == 10
         and values["staged_index_words"] == words
         and values["staged_value_words"] == 0
         and values["product_words"] == words

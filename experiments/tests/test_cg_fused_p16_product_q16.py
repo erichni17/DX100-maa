@@ -111,6 +111,12 @@ class FusedP16PairContract(unittest.TestCase):
         broken["virtual_p_write_bytes"] = "1"
         with self.assertRaises(RuntimeError):
             runner.require_terminal(broken, "fused_p16_product_q16")
+        wrong_epoch_count = terminal("fused_p16_product_q16")
+        wrong_epoch_count["full_windows"] = "9"
+        with self.assertRaises(RuntimeError):
+            runner.require_terminal(
+                wrong_epoch_count, "fused_p16_product_q16"
+            )
 
     def test_finite_knobs_and_all_ledgers_are_mandatory(self):
         for knob in (
