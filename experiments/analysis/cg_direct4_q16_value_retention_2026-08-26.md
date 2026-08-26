@@ -90,7 +90,37 @@ the root after the lead committed an unrelated full-run provenance fix in its
 live worktree. It has no result or gate and is retained as
 `REJECT_SOURCE_IDENTITY_CHANGED`, not as architecture evidence.
 
-A candidate-only full cache-on run remains active. It may be compared only to
-the accepted cache-off direct4 full candidate after its own numerical,
-mechanism, provenance, and immutable-ledger gates pass. No native result is
-rerun or claimed.
+### Full CG confirmation
+
+Accepted raw root:
+
+`/data1/nier/dx100-runs/2026-08-26-cg-direct4-product-page-fed-q16-value-cache-full-r2`
+
+The candidate-only full run exits zero and has a
+`PASS_NUMERICAL_MECHANISM_CORRECT` gate. Its result SHA-256 is
+`270edfd1...68a4`, its certified-artifact ledger SHA-256 is
+`0781f4e8...22d2`, and every ledger entry revalidates. The predeclared full-CG
+numerical tolerances, all 10,960 windows, 179,568,640 selected aliases/value
+deliveries, 57,491 A reads/writes, 11,223,040 publisher WriteResps, and all
+page-fed terminals close with zero drains/fallbacks.
+
+| Metric | Cache off full | Cache on full | Change |
+|---|---:|---:|---:|
+| `simTicks` | 685,101,315,109 | 123,968,991,971 | 5.526392562x; 81.9050% lower |
+| SoA/JIT value-line reads | 179,568,398 | 11,266,321 | 93.7259% fewer |
+| Internal ready-line hits | 209 | 168,302,259 | cache-on issue + hit + 60 merged = 179,568,640 deliveries |
+| Publisher lines | 11,223,040 | 11,223,040 | unchanged |
+| A read/write lines | 57,491 / 57,491 | 57,491 / 57,491 | unchanged |
+
+The separately certified cache-off page-fed p16/q16 control takes
+`715,387,684,015` ticks, making the selected direct4+retention point 5.7707x
+faster. That ratio combines p-backing elimination, p16 loss, and value
+retention; the cache-off/on direct4 ratio above is the isolated retention
+effect.
+
+For orientation, the existing full physical-tile campaign records native4 at
+`77,075,327,902` ticks and native16 at `58,928,150,676`. The selected candidate
+is still 1.6084x slower than native4 and 2.1037x slower than native16. These are
+historical end-to-end observations, not a new native rerun, iso-area result, or
+native-speedup claim. The remaining gap is therefore real despite the large
+retention improvement.
