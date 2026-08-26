@@ -2,9 +2,12 @@
 
 ## Decision
 
-Implementation and matched evidence are pending final build/run closure.  This
-report does not claim a speedup until both arms pass exact output, reduction,
-mechanism, terminal, and immutable-ledger gates.
+Accepted for the bounded NA=1024 diagnostic: the two-pass treatment preserved
+the exact cross-arm fingerprint and every deterministic-reduction record,
+closed its predicted readiness/terminal mechanisms, and reduced `simTicks`
+from 5,293,812,820 to 5,198,082,709.  This is 1.018416x serial/overlap, or
+1.808340% fewer ticks.  It is one small-CG observation, not a full-CG,
+original-8-tile iso-area, or promotion claim.
 
 ## Bounded architecture
 
@@ -68,4 +71,54 @@ artifact/checkpoint/raw-root ledgers.
 
 ## Results
 
-Pending.
+### Accepted microprobe
+
+`evidence/cg-page-fed-product-overlap-microprobe-r1` under the coordination
+session completed with `simTicks=402615969`, exact three-way destination hashes,
+four admissions, four product-ready signals, 1,024 product WriteReq/WriteResp
+lines, one close/terminal, zero readiness stalls, zero execution-before-all-
+ready, and the exact 16-byte persistent state.  This validates the retained
+serial treatment and notification identity path; it carries no performance
+claim.
+
+### Accepted matched pair
+
+Evidence root:
+`evidence/cg-page-fed-product-overlap-na1024-r1` under coordination session
+`cg-page-fed-product-overlap-20260826-20260826-001126-188985bc`.
+
+- Source commit: `549a401ad4d1d308a552701dc09451852fc669ed`.
+- gem5 SHA-256:
+  `f4b5d12d5c82c2d861c890114fb578b05e4beaf18bcfc7c7720b23317e3e42f3`.
+- Frozen Ramulator SHA-256:
+  `76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753`.
+- Guest SHA-256:
+  `cf50ec5eca24eb58f754c01d52c387eebe0b2788c823bbaf2ccb7af6aa9749b2`.
+- Shared-checkpoint ledger SHA-256:
+  `f8d5dc8e154b08b2173cd5a689a292e6bc09b9ee35407be6740730d328b5c732`.
+- Sealed raw-root ledger SHA-256:
+  `b1395b7569ed9db1e09be0c42b84f8190a1c2985127c1742536767194c6bb2ff`.
+- Both arms closed 65 logical windows, 260 admissions/publications/readiness
+  signals, 1,064,960 admitted/product words, 52 q windows, 13 residual
+  windows, exact issue/response totals, and zero gather/q overlap attempts.
+- Serial signature: zero overlap windows, readiness stalls, and execution-
+  before-all-ready observations.
+- Overlap signature: 65 overlap windows, 65 post-gather completion waits, 65
+  execution-before-all-ready observations, 1,571,957 readiness stalls that
+  retained ordered heads, 260 product-ready signals, and 65 terminal closures.
+- Both arms report the identical 10-tile allocation and 655,360 B physical
+  SPD payload; incremental payload versus the matched serial arm is zero.
+
+The runner used the source-grounded hardening from `a77916e9` and `9afeb2b2`:
+logical deliveries close through issue + cache hit + merged waiter accounting,
+all direct guest/API/ABI/config inputs are in the immutable ledger, and the
+indentation-tolerant `ldd` preflight still pins the exact Ramulator path.
+
+### Rejected/non-evidence
+
+No simulator candidate arm was rejected.  Two isolated build attempts stopped
+before a usable binary—first because the copied source tree lacked the pinned
+spdlog headers, then because the local Ramulator link name was absent.  They
+produced no workload evidence and are excluded.  After populating the exact
+dependency sources and binding the link to the frozen library, the full build
+and a subsequent no-op incremental build passed.
