@@ -560,6 +560,10 @@ public:
                                     uint8_t responseSlot,
                                     uint16_t offsetSlot,
                                     uint64_t generation);
+    void retireFusedP16ProductALU(int indirectUnit,
+                                  uint8_t responseSlot,
+                                  uint16_t offsetSlot,
+                                  uint64_t generation);
 
 protected:
     std::vector<RequestorID> my_instruction_RIDs;

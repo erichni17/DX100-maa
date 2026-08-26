@@ -22,17 +22,19 @@ public:
         Finish = 3,
         DirectLine = 4,
         DirectPair = 5,
+        DirectPairReady = 6,
         max
     };
 
 protected:
-    std::string status_names[7] = {
+    std::string status_names[8] = {
         "Idle",
         "Decode",
         "Work",
         "Finish",
         "DirectLine",
         "DirectPair",
+        "DirectPairReady",
         "max"};
     Status state;
     MAA *maa;
@@ -61,6 +63,8 @@ public:
     bool startDirectPair(std::byte *data, uint32_t coefficient_bits,
                          uint16_t indirect_unit, uint8_t response_slot,
                          uint16_t offset_slot, uint64_t generation);
+    bool finishDirectPair(uint16_t indirect_unit, uint8_t response_slot,
+                          uint16_t offset_slot, uint64_t generation);
 
     bool scheduleNextExecution(bool force = false);
     void scheduleExecuteInstructionEvent(int latency = 0);

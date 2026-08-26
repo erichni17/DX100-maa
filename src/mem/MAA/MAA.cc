@@ -2366,11 +2366,28 @@ MAA::completeFusedP16ProductALU(int maaID, uint16_t indirectUnit,
                  indirectUnit / num_indirect_units_per_maa !=
                      static_cast<unsigned>(maaID) ||
                  aluUnitsIdle[maaID] ||
-                 aluUnits[maaID].getState() != ALUUnit::Status::Idle,
+                 aluUnits[maaID].getState() !=
+                     ALUUnit::Status::DirectPairReady,
              "Fused-p16 ALU completion lost unit ownership\n");
-    aluUnitsIdle[maaID] = true;
     indirectAccessUnits[indirectUnit].completeFusedP16Multiply(
         generation, responseSlot, offsetSlot);
+}
+
+void
+MAA::retireFusedP16ProductALU(int indirectUnit, uint8_t responseSlot,
+                              uint16_t offsetSlot, uint64_t generation)
+{
+    panic_if(indirectUnit < 0 ||
+                 indirectUnit >= static_cast<int>(num_indirect_units_total),
+             "Fused-p16 ALU retirement has an invalid indirect unit\n");
+    const int maaID = indirectUnit / num_indirect_units_per_maa;
+    panic_if(maaID < 0 || maaID >= static_cast<int>(num_maas) ||
+                 aluUnitsIdle[maaID] ||
+                 !aluUnits[maaID].finishDirectPair(
+                     static_cast<uint16_t>(indirectUnit), responseSlot,
+                     offsetSlot, generation),
+             "Fused-p16 product retirement lost exact ALU ownership\n");
+    aluUnitsIdle[maaID] = true;
     scheduleIssueInstructionEvent(1);
 }
 

@@ -10011,6 +10011,10 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                     capacity_stalled = true;
                     break;
                 }
+                maa->retireFusedP16ProductALU(
+                    my_indirect_id, static_cast<uint8_t>(slot_idx),
+                    static_cast<uint16_t>(slot.next_itr),
+                    fused_p16_generation);
                 panic_if(!slot.fusedProduct.consumeProduct(),
                          "I[%d] fused-p16 product owner could not retire\n",
                          my_indirect_id);

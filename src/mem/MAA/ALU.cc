@@ -121,15 +121,40 @@ ALUUnit::startDirectPair(std::byte *data, uint32_t coefficient_bits,
     if (state != Status::Idle || my_instruction != nullptr ||
         data == nullptr || generation == 0)
         return false;
+    uint32_t source_bits = 0;
+    std::memcpy(&source_bits, data, sizeof(source_bits));
     direct_line_data = data;
     direct_line_generation = generation;
-    direct_line_scalar_bits = coefficient_bits;
+    direct_line_scalar_bits = coefficient_bits |
+        (static_cast<uint64_t>(source_bits) << 32);
     direct_pair_indirect_unit = indirect_unit;
     direct_pair_response_slot = response_slot;
     direct_pair_offset_slot = offset_slot;
     state = Status::DirectPair;
     (*maa->stats.ALU_CyclesCompute[my_alu_id]) += ALU_lane_latency;
     scheduleExecuteInstructionEvent(ALU_lane_latency);
+    return true;
+}
+
+bool
+ALUUnit::finishDirectPair(uint16_t indirect_unit, uint8_t response_slot,
+                          uint16_t offset_slot, uint64_t generation)
+{
+    if (state != Status::DirectPairReady || direct_line_data == nullptr ||
+        direct_line_generation != generation ||
+        direct_pair_indirect_unit != indirect_unit ||
+        direct_pair_response_slot != response_slot ||
+        direct_pair_offset_slot != offset_slot)
+        return false;
+    const uint32_t source_bits = direct_line_scalar_bits >> 32;
+    std::memcpy(direct_line_data, &source_bits, sizeof(source_bits));
+    direct_line_data = nullptr;
+    direct_line_generation = 0;
+    direct_line_scalar_bits = 0;
+    direct_pair_indirect_unit = 0;
+    direct_pair_response_slot = 0;
+    direct_pair_offset_slot = 0;
+    state = Status::Idle;
     return true;
 }
 
@@ -1024,26 +1049,23 @@ void ALUUnit::executeInstruction() {
         float source = 0.0f;
         float coefficient = 0.0f;
         std::memcpy(&source, direct_line_data, sizeof(source));
-        std::memcpy(&coefficient, &direct_line_scalar_bits,
-                    sizeof(coefficient));
+        const uint32_t coefficient_bits = direct_line_scalar_bits;
+        std::memcpy(&coefficient, &coefficient_bits, sizeof(coefficient));
         source *= coefficient;
         std::memcpy(direct_line_data, &source, sizeof(source));
         const uint16_t indirect_unit = direct_pair_indirect_unit;
         const uint8_t response_slot = direct_pair_response_slot;
         const uint16_t offset_slot = direct_pair_offset_slot;
         const uint64_t generation = direct_line_generation;
-        direct_line_data = nullptr;
-        direct_line_generation = 0;
-        direct_line_scalar_bits = 0;
-        direct_pair_indirect_unit = 0;
-        direct_pair_response_slot = 0;
-        direct_pair_offset_slot = 0;
-        state = Status::Idle;
+        state = Status::DirectPairReady;
         maa->completeFusedP16ProductALU(
             my_alu_id, indirect_unit, response_slot, offset_slot,
             generation);
         break;
     }
+    case Status::DirectPairReady:
+        panic("A[%d] scheduled while a fused-p16 product awaits bounded "
+              "combiner acceptance\n", my_alu_id);
     default:
         assert(false);
     }
