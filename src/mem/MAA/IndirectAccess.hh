@@ -22,6 +22,7 @@
 #include "mem/MAA/BoundedMetadataLedger.hh"
 #include "mem/MAA/BoundedQuantileRanges.hh"
 #include "mem/MAA/BoundedRangePass.hh"
+#include "mem/MAA/FusedP16ProductState.hh"
 #include "mem/MAA/ReorderSurvivalTracker.hh"
 #include "mem/MAA/SoaJitOldResultBuffer.hh"
 #include "mem/MAA/SoaJitOverlapState.hh"
@@ -105,6 +106,7 @@ protected:
         Addr claim_grow_addr = 0;
         Addr claim_addr = 0;
         int claim_head = -1;
+        maa::FusedP16ResponseOwner fusedProduct{};
     };
     std::vector<VirtualResponseSlot> virtual_response_slots;
     VirtualResponsePayloadStore virtual_response_line_payloads;
@@ -598,6 +600,24 @@ protected:
     SoaJitValuePrefetchCursor soa_jit_value_prefetch_cursor;
     int soa_jit_apply_lanes = 1;
     SoaJitApplyLanePool soa_jit_apply_lane_pool;
+    uint64_t fused_p16_generation_counter = 0;
+    uint64_t fused_p16_generation = 0;
+    bool fused_p16_operation_active = false;
+    uint64_t fused_p16_epochs = 0;
+    uint64_t fused_p16_source_ordinals = 0;
+    uint64_t fused_p16_coefficient_read_issues = 0;
+    uint64_t fused_p16_coefficient_read_responses = 0;
+    uint64_t fused_p16_coefficient_fills = 0;
+    uint64_t fused_p16_coefficient_hits = 0;
+    uint64_t fused_p16_coefficient_merged_waiters = 0;
+    uint64_t fused_p16_coefficient_evictions = 0;
+    uint64_t fused_p16_coefficient_deliveries = 0;
+    uint64_t fused_p16_coefficient_stalls = 0;
+    uint64_t fused_p16_alu_accepts = 0;
+    uint64_t fused_p16_alu_completions = 0;
+    uint64_t fused_p16_alu_backpressure = 0;
+    uint64_t fused_p16_product_insertions = 0;
+    uint64_t fused_p16_product_write_completions = 0;
     bool soa_jit_all_rows_claimed = false;
     // Fixed operation state only: pressure never allocates an operation-sized
     // ordinal bitmap or spills Row/Offset metadata.
@@ -712,6 +732,7 @@ protected:
                          unsigned size = 64);
     bool isVirtualLoad() const;
     bool isDirectIndexLoad() const;
+    bool isFusedP16Product() const;
     bool isSoaJitRmw() const;
     bool isSoaJitScalarRmw() const;
     bool isSoaJitMaskedIndexRmw() const;
@@ -763,6 +784,11 @@ protected:
     bool serviceSoaJitBuild();
     bool receiveSoaJitData(Addr addr, uint8_t *dataptr,
                            bool is_block_cached);
+    bool receiveFusedP16Coefficient(Addr addr, uint8_t *dataptr,
+                                    bool is_block_cached);
+    bool beginFusedP16ResponseHead(size_t response_slot,
+                                  VirtualResponseSlot &slot);
+    void checkFusedP16Terminal();
     bool fillSoaJitLookahead(size_t context_index);
     bool serviceSoaJitLookahead();
     bool issueSoaJitValueRead(size_t context_index, size_t slot_index,
@@ -830,6 +856,7 @@ protected:
     void createDirectIndexReadPacket(Addr addr, int latency);
     void createSoaPredicateReadPacket(Addr addr, int latency);
     void createSoaJitReadPacket(Addr addr, int latency);
+    void createFusedP16CoefficientReadPacket(Addr addr, int latency);
     void accountReadResponse(Addr addr, bool is_block_cached);
     Addr backingWordAddr(int itr) const;
     void validateRetirementWriteRange(Addr vaddr, unsigned size,
@@ -895,6 +922,9 @@ public:
     Cycles admitPageFedSoaJitIndexPage(uint64_t generation, uint8_t page,
                                       uint8_t index_tile);
     Cycles closePageFedSoaJit(uint64_t generation);
+    void completeFusedP16Multiply(uint64_t generation,
+                                  uint8_t response_slot,
+                                  uint16_t offset_slot);
 };
 
 static_assert(IndirectAccessUnit::lineHandoffMetadataBytesPerWrite() == 16);

@@ -167,6 +167,7 @@ public:
     bool soaJitMaskedIndex;
     bool soaJitOldResult;
     bool soaJitPageFed;
+    bool fusedP16CoefficientWordReceived;
     bool soaJitPredicateWordReceived;
     bool soaJitResultWordReceived;
     uint64_t soaJitPageFedGeneration;
@@ -293,6 +294,26 @@ public:
         return opcode == OpcodeType::STREAM_ST && !controllerManaged &&
                !logicalPageManaged && controllerTransactionID != 0 &&
                controllerDstSlot != -1 && dst1SpdID == -1;
+    }
+    /**
+     * The only non-legacy virtual-index operation: FP32 MUL with word five
+     * naming a dense coefficient span.  A legacy virtual-index load keeps
+     * optype=MAX (the decoded NA sentinel).
+     */
+    bool isFusedP16ProductCandidate() const {
+        return opcode == OpcodeType::INDIR_LD_VIRTUAL_INDEX &&
+               datatype == DataType::FLOAT32_TYPE &&
+               optype == OPType::MUL_OP;
+    }
+    bool isFusedP16Product() const {
+        return isFusedP16ProductCandidate() &&
+               fusedP16CoefficientWordReceived;
+    }
+    bool hasValidFusedP16ProductShape() const {
+        return isFusedP16ProductCandidate() && dst1SpdID != -1 &&
+               dst2SpdID == -1 && src1SpdID == -1 && src2SpdID == -1 &&
+               condSpdID == -1 && dst1RegID == -1 && dst2RegID == -1 &&
+               src1RegID != -1 && src2RegID != -1 && src3RegID != -1;
     }
     bool hasValidSoaJitRmwOperands() const {
         return hasValidSoaJitRmwShape() &&

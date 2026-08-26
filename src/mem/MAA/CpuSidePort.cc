@@ -12,6 +12,7 @@
 #include "debug/MAAVirtualTrace.hh"
 #include "mem/MAA/ALU.hh"
 #include "mem/MAA/CpuSpdAperture.hh"
+#include "mem/MAA/FusedP16ProductState.hh"
 #include "mem/MAA/IF.hh"
 #include "mem/MAA/IndirectAccess.hh"
 #include "mem/MAA/Invalidator.hh"
@@ -326,6 +327,16 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                 data = data >> 8;
                 current_instruction->opcode = (data & NA_UINT8) == NA_UINT8 ? Instruction::OpcodeType::MAX : static_cast<Instruction::OpcodeType>(data & NA_UINT8);
                 assert(current_instruction->opcode != Instruction::OpcodeType::MAX);
+                if (current_instruction->opcode ==
+                    Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX) {
+                    panic_if(
+                        current_instruction->optype !=
+                                Instruction::OPType::MAX &&
+                            !current_instruction->
+                                 isFusedP16ProductCandidate(),
+                        "INDIR_LD_VIRTUAL_INDEX accepts only legacy NA or "
+                        "the guarded FP32/MUL product form\n");
+                }
                 panic_if(current_instruction->soaJitOldResult &&
                              current_instruction->opcode !=
                                  Instruction::OpcodeType::INDIR_RMW_VECTOR,
@@ -544,6 +555,18 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                     break;
                 }
                 current_instruction->baseAddr = data;
+                if (current_instruction->isFusedP16ProductCandidate()) {
+                    panic_if(
+                        !current_instruction->hasValidFusedP16ProductShape() ||
+                            current_instruction->src1RegID >= num_regs ||
+                            current_instruction->src2RegID >= num_regs ||
+                            current_instruction->src3RegID >= num_regs ||
+                            current_instruction->dst1SpdID < 0 ||
+                            current_instruction->dst1SpdID >=
+                                static_cast<int>(num_tiles),
+                        "Rejected malformed fused-p16 product shape before "
+                        "address-word dispatch\n");
+                }
                 if (current_instruction->isSoaJitRmw()) {
                     panic_if(
                         !current_instruction->hasValidSoaJitRmwShape(),
@@ -687,7 +710,7 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                 if (current_instruction->isSoaJitRmw())
                     break;
                 if (current_instruction->opcode ==
-                    Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX)
+                        Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX)
                     break;
                 my_instruction_recvs[instruction_id] = true;
                 DPRINTF(
@@ -823,6 +846,8 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                     addrRegions[current_instruction->indexAddrRangeID].second;
                 if (current_instruction->isSoaJitRmw())
                     break;
+                if (current_instruction->isFusedP16ProductCandidate())
+                    break;
                 my_instruction_recvs[instruction_id] = true;
                 DPRINTF(MAAController,
                         "%s: %s received with index address 0x%lx!\n",
@@ -836,6 +861,91 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                 panic_if(instruction_id == -1,
                          "Received predicate address before instruction "
                          "header!\n");
+                if (current_instruction->isFusedP16ProductCandidate()) {
+                    using Contract = maa::FusedP16ProductContract;
+                    panic_if(
+                        !current_instruction->hasValidFusedP16ProductShape() ||
+                            current_instruction->
+                                fusedP16CoefficientWordReceived ||
+                            current_instruction->addrRangeID < 0 ||
+                            current_instruction->backingAddrRangeID < 0 ||
+                            current_instruction->indexAddrRangeID < 0 ||
+                            !Contract::aligned(data),
+                        "Malformed fused-p16 coefficient closure\n");
+                    current_instruction->predicateAddr = data;
+                    current_instruction->predicateAddrRangeID =
+                        getAddrRegion(data);
+                    panic_if(current_instruction->predicateAddrRangeID < 0,
+                             "Fused-p16 coefficient address 0x%lx is not "
+                             "registered\n", data);
+                    current_instruction->predicateMinAddr = addrRegions[
+                        current_instruction->predicateAddrRangeID].first;
+                    current_instruction->predicateMaxAddr = addrRegions[
+                        current_instruction->predicateAddrRangeID].second;
+                    panic_if(
+                        !Contract::spanFits(
+                            current_instruction->backingAddr,
+                            current_instruction->backingMinAddr,
+                            current_instruction->backingMaxAddr) ||
+                            !Contract::spanFits(
+                                current_instruction->indexAddr,
+                                current_instruction->indexMinAddr,
+                                current_instruction->indexMaxAddr) ||
+                            !Contract::spanFits(
+                                current_instruction->predicateAddr,
+                                current_instruction->predicateMinAddr,
+                                current_instruction->predicateMaxAddr) ||
+                            current_instruction->baseAddr %
+                                    Contract::WordBytes !=
+                                0 ||
+                            current_instruction->baseAddr <
+                                current_instruction->minAddr ||
+                            current_instruction->baseAddr >=
+                                current_instruction->maxAddr ||
+                            current_instruction->maxAddr -
+                                    current_instruction->baseAddr <
+                                Contract::WordBytes,
+                        "Fused-p16 requires aligned registered p and full "
+                        "16K product/colidx/coefficient spans\n");
+                    const Addr p_begin = current_instruction->minAddr;
+                    const Addr p_bytes = current_instruction->maxAddr -
+                        current_instruction->minAddr;
+                    const Addr product = current_instruction->backingAddr;
+                    const Addr index = current_instruction->indexAddr;
+                    const Addr coefficient =
+                        current_instruction->predicateAddr;
+                    panic_if(
+                        Contract::spansOverlap(
+                            p_begin, p_bytes, product,
+                            Contract::SpanBytes) ||
+                            Contract::spansOverlap(
+                                p_begin, p_bytes, index,
+                                Contract::SpanBytes) ||
+                            Contract::spansOverlap(
+                                p_begin, p_bytes, coefficient,
+                                Contract::SpanBytes) ||
+                            Contract::spansOverlap(
+                                product, Contract::SpanBytes, index,
+                                Contract::SpanBytes) ||
+                            Contract::spansOverlap(
+                                product, Contract::SpanBytes, coefficient,
+                                Contract::SpanBytes) ||
+                            Contract::spansOverlap(
+                                index, Contract::SpanBytes, coefficient,
+                                Contract::SpanBytes),
+                        "Fused-p16 p/product/colidx/coefficient spans must "
+                        "be pairwise disjoint\n");
+                    current_instruction->fusedP16CoefficientWordReceived =
+                        true;
+                    my_instruction_recvs[instruction_id] = true;
+                    DPRINTF(MAAController,
+                            "%s: %s received guarded fused-p16 product "
+                            "coefficient=0x%lx\n",
+                            __func__, current_instruction->print(), data);
+                    respond_immediately = false;
+                    scheduleDispatchInstructionEvent();
+                    break;
+                }
                 if (current_instruction->isLogicalALUVector()) {
                     current_instruction->logicalSource2BackingAddr = data;
                     maa::LogicalSPDCacheABI::VectorOperandShape shape;

@@ -21,16 +21,18 @@ public:
         Work = 2,
         Finish = 3,
         DirectLine = 4,
+        DirectPair = 5,
         max
     };
 
 protected:
-    std::string status_names[6] = {
+    std::string status_names[7] = {
         "Idle",
         "Decode",
         "Work",
         "Finish",
         "DirectLine",
+        "DirectPair",
         "max"};
     Status state;
     MAA *maa;
@@ -54,6 +56,11 @@ public:
                          uint64_t scalar_bits, uint16_t token_tile,
                          uint64_t generation, uint64_t incarnation,
                          uint64_t transaction);
+
+    /** One backpressured FP32 pair through the ordinary one-cycle lane. */
+    bool startDirectPair(std::byte *data, uint32_t coefficient_bits,
+                         uint16_t indirect_unit, uint8_t response_slot,
+                         uint16_t offset_slot, uint64_t generation);
 
     bool scheduleNextExecution(bool force = false);
     void scheduleExecuteInstructionEvent(int latency = 0);
@@ -92,6 +99,9 @@ protected:
     uint64_t direct_line_generation = 0;
     uint64_t direct_line_incarnation = 0;
     uint64_t direct_line_transaction = 0;
+    uint16_t direct_pair_indirect_unit = 0;
+    uint8_t direct_pair_response_slot = 0;
+    uint16_t direct_pair_offset_slot = 0;
 
     void executeInstruction();
     void updateLatency(int num_spd_read_data_accesses,

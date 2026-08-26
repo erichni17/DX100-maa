@@ -113,6 +113,26 @@ ALUUnit::startDirectLine(std::byte *data, uint8_t word_bytes,
     return true;
 }
 
+bool
+ALUUnit::startDirectPair(std::byte *data, uint32_t coefficient_bits,
+                         uint16_t indirect_unit, uint8_t response_slot,
+                         uint16_t offset_slot, uint64_t generation)
+{
+    if (state != Status::Idle || my_instruction != nullptr ||
+        data == nullptr || generation == 0)
+        return false;
+    direct_line_data = data;
+    direct_line_generation = generation;
+    direct_line_scalar_bits = coefficient_bits;
+    direct_pair_indirect_unit = indirect_unit;
+    direct_pair_response_slot = response_slot;
+    direct_pair_offset_slot = offset_slot;
+    state = Status::DirectPair;
+    (*maa->stats.ALU_CyclesCompute[my_alu_id]) += ALU_lane_latency;
+    scheduleExecuteInstructionEvent(ALU_lane_latency);
+    return true;
+}
+
 void ALUUnit::executeInstruction() {
     switch (state) {
     case Status::Idle: {
@@ -994,6 +1014,34 @@ void ALUUnit::executeInstruction() {
         state = Status::Idle;
         maa->completeDirectRetirementALU(
             maa_id, token_tile, generation, incarnation, transaction);
+        break;
+    }
+    case Status::DirectPair: {
+        panic_if(direct_line_data == nullptr ||
+                     direct_line_generation == 0,
+                 "A[%d] fused-p16 pair lost its exact ALU contract\n",
+                 my_alu_id);
+        float source = 0.0f;
+        float coefficient = 0.0f;
+        std::memcpy(&source, direct_line_data, sizeof(source));
+        std::memcpy(&coefficient, &direct_line_scalar_bits,
+                    sizeof(coefficient));
+        source *= coefficient;
+        std::memcpy(direct_line_data, &source, sizeof(source));
+        const uint16_t indirect_unit = direct_pair_indirect_unit;
+        const uint8_t response_slot = direct_pair_response_slot;
+        const uint16_t offset_slot = direct_pair_offset_slot;
+        const uint64_t generation = direct_line_generation;
+        direct_line_data = nullptr;
+        direct_line_generation = 0;
+        direct_line_scalar_bits = 0;
+        direct_pair_indirect_unit = 0;
+        direct_pair_response_slot = 0;
+        direct_pair_offset_slot = 0;
+        state = Status::Idle;
+        maa->completeFusedP16ProductALU(
+            my_alu_id, indirect_unit, response_slot, offset_slot,
+            generation);
         break;
     }
     default:

@@ -662,6 +662,37 @@ inline void maa_indirect_load_virtual_index(
     *INSTR_indexaddr = (uint64_t)indices;
     __asm__ __volatile__("mfence;");
 }
+
+/**
+ * Guarded six-word p16 gather-map-product producer.
+ *
+ * Hardware accepts only the exact FP32/MUL shape and exact 0:16384:1
+ * register values.  It writes final products to products[k], and the
+ * completion tile closes only after every final WriteResp.
+ */
+inline void maa_indirect_load_virtual_index_product_fp32(
+    float *p, uint32_t *colidx, float *coefficients,
+    int completion_tile, float *products,
+    int min_reg, int max_reg, int stride_reg) {
+    *INSTR_opcode_datatype_optype_tdst1_tdst2 =
+        ((uint64_t)OpcodeType::INDIR_LD_VIRTUAL_INDEX << 32) |
+        ((uint64_t)DataType::FLOAT32_TYPE << 24) |
+        ((uint64_t)Operation_t::MUL_OP << 16) |
+        ((uint64_t)completion_tile << 8) | (uint64_t)NA_UINT8;
+    *INSTR_tsrc1_tsrc2_rdst1_rdst2_rsrc1_rsrc2_rsrc3_csrc =
+        ((uint64_t)NA_UINT8 << 56) |
+        ((uint64_t)NA_UINT8 << 48) |
+        ((uint64_t)NA_UINT8 << 40) |
+        ((uint64_t)NA_UINT8 << 32) |
+        ((uint64_t)min_reg << 24) |
+        ((uint64_t)max_reg << 16) |
+        ((uint64_t)stride_reg << 8) | (uint64_t)NA_UINT8;
+    *INSTR_baseaddr = (uint64_t)p;
+    *INSTR_backingaddr = (uint64_t)products;
+    *INSTR_indexaddr = (uint64_t)colidx;
+    *INSTR_predicateaddr = (uint64_t)coefficients;
+    __asm__ __volatile__("mfence;");
+}
 /**
  * Submit the bounded transparent consumer descriptor.  Hardware waits for
  * each acknowledged backing page, fills one real physical SPD tile, executes

@@ -20,6 +20,7 @@ Instruction::Instruction() : baseAddr(0xFFFFFFFFFFFFFFFF),
                              soaJitMaskedIndex(false),
                              soaJitOldResult(false),
                              soaJitPageFed(false),
+                             fusedP16CoefficientWordReceived(false),
                              soaJitPredicateWordReceived(false),
                              soaJitResultWordReceived(false),
                              soaJitPageFedGeneration(0),
@@ -240,7 +241,12 @@ Instruction::getMemoryAccesses(
         accesses[count++] = {region, type};
     };
 
-    if (isSoaJitRmw()) {
+    if (isFusedP16Product()) {
+        append(addrRangeID, AccessType::READ);
+        append(indexAddrRangeID, AccessType::READ);
+        append(predicateAddrRangeID, AccessType::READ);
+        append(backingAddrRangeID, AccessType::WRITE);
+    } else if (isSoaJitRmw()) {
         append(addrRangeID, AccessType::WRITE);
         if (isSoaJitVectorRmw())
             append(backingAddrRangeID, AccessType::READ);

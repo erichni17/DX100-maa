@@ -59,7 +59,7 @@ void Invalidator::allocate(int _num_maas,
     state = Status::Idle;
 }
 bool Invalidator::getAddrRegionPermit(Instruction *instruction) {
-    if (instruction->isSoaJitRmw())
+    if (instruction->isSoaJitRmw() || instruction->isFusedP16Product())
         return getSoaJitAddrRegionPermit(instruction);
     int8_t region_id = instruction->addrRangeID;
     int maa_id = instruction->maa_id;
@@ -223,8 +223,10 @@ Invalidator::getSoaJitAddrRegionPermit(Instruction *instruction)
         TransitionModified,
     };
 
-    panic_if(!instruction->hasValidSoaJitRmwOperands(),
-             "Malformed SoA/JIT instruction requested region permits\n");
+    panic_if(!(instruction->hasValidSoaJitRmwOperands() ||
+               (instruction->isFusedP16Product() &&
+                instruction->hasValidFusedP16ProductShape())),
+             "Malformed multi-span instruction requested region permits\n");
     panic_if(instruction->maa_id < 0 || instruction->maa_id >= num_maas,
              "SoA/JIT instruction has invalid MAA id %d\n",
              instruction->maa_id);
@@ -232,9 +234,12 @@ Invalidator::getSoaJitAddrRegionPermit(Instruction *instruction)
                  (instruction->isSoaJitVectorRmw() &&
                   instruction->backingAddrRangeID < 0) ||
                  instruction->indexAddrRangeID < 0 ||
-                 (instruction->predicateAddr != 0 &&
-                  instruction->predicateAddrRangeID < 0),
-             "SoA/JIT instruction is missing a registered region\n");
+                 ((instruction->predicateAddr != 0 ||
+                   instruction->isFusedP16Product()) &&
+                  instruction->predicateAddrRangeID < 0) ||
+                 (instruction->isFusedP16Product() &&
+                  instruction->backingAddrRangeID < 0),
+             "Multi-span instruction is missing a registered region\n");
     std::array<Access, Instruction::MaxMemoryAccesses> accesses;
     const size_t count = instruction->getMemoryAccesses(accesses);
     panic_if(count == 0, "SoA/JIT instruction has no memory regions\n");
@@ -450,7 +455,7 @@ void Invalidator::transientInstruction() {
     }
 }
 void Invalidator::finishInstruction(Instruction *instruction) {
-    if (instruction->isSoaJitRmw()) {
+    if (instruction->isSoaJitRmw() || instruction->isFusedP16Product()) {
         finishSoaJitAddrRegionPermit(instruction);
         return;
     }

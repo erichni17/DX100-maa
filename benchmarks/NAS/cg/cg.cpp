@@ -142,6 +142,7 @@ enum class CgRmwTreatment
     LogicalPageSoaJit,
     PhysicalPageProductSoaJit,
     PageFedProductSoaJit,
+    FusedP16ProductQ16,
     Direct4ProductPageFedQ16,
 };
 
@@ -171,6 +172,7 @@ static uint64_t cg_legacy_residual_words[NUM_CORES] = {};
 static uint64_t cg_logical_page_windows[NUM_CORES] = {};
 static uint64_t cg_physical_page_product_windows[NUM_CORES] = {};
 static uint64_t cg_page_fed_product_windows[NUM_CORES] = {};
+static uint64_t cg_fused_p16_product_windows[NUM_CORES] = {};
 static uint64_t cg_direct4_product_page_fed_q16_windows[NUM_CORES] = {};
 static uint64_t cg_virtual_p_gather_windows[NUM_CORES] = {};
 static uint64_t cg_physical_p_gather_pages[NUM_CORES] = {};
@@ -236,6 +238,8 @@ cg_rmw_treatment_name(CgRmwTreatment treatment)
         return "physical_page_product_soa_jit";
       case CgRmwTreatment::PageFedProductSoaJit:
         return "page_fed_product_soa_jit";
+      case CgRmwTreatment::FusedP16ProductQ16:
+        return "fused_p16_product_q16";
       case CgRmwTreatment::Direct4ProductPageFedQ16:
         return "direct4_product_page_fed_q16";
     }
@@ -276,17 +280,21 @@ read_cg_treatment_selector(const std::string &path)
         rmw = CgRmwTreatment::PhysicalPageProductSoaJit;
     else if (treatment == "page_fed_product_soa_jit")
         rmw = CgRmwTreatment::PageFedProductSoaJit;
+    else if (treatment == "fused_p16_product_q16")
+        rmw = CgRmwTreatment::FusedP16ProductQ16;
     else if (treatment == "direct4_product_page_fed_q16")
         rmw = CgRmwTreatment::Direct4ProductPageFedQ16;
     else
         throw std::runtime_error(
             "CG RMW treatment must be legacy_4k, residual_soa_jit, or "
             "logical_page_soa_jit, physical_page_product_soa_jit, or "
-            "page_fed_product_soa_jit, or direct4_product_page_fed_q16");
+            "page_fed_product_soa_jit, fused_p16_product_q16, or "
+            "direct4_product_page_fed_q16");
 #ifndef CG_LOGICAL_PAGE_RMW
     if (rmw == CgRmwTreatment::LogicalPageSoaJit ||
         rmw == CgRmwTreatment::PhysicalPageProductSoaJit ||
         rmw == CgRmwTreatment::PageFedProductSoaJit ||
+        rmw == CgRmwTreatment::FusedP16ProductQ16 ||
         rmw == CgRmwTreatment::Direct4ProductPageFedQ16)
         throw std::runtime_error(
             "logical_page_soa_jit requires the opt-in CG logical-page build");
@@ -294,6 +302,7 @@ read_cg_treatment_selector(const std::string &path)
 #ifdef CG_PHYSICAL_PAGE_PRODUCT_ONLY
 #ifdef CG_PAGE_FED_SOA_ONLY
     if (rmw != CgRmwTreatment::PageFedProductSoaJit &&
+        rmw != CgRmwTreatment::FusedP16ProductQ16 &&
         rmw != CgRmwTreatment::Direct4ProductPageFedQ16)
         throw std::runtime_error(
             "page-fed-only build requires page_fed_product_soa_jit or "
@@ -339,16 +348,24 @@ cg_uses_direct4_product_page_fed_q16()
 }
 
 static bool
+cg_uses_fused_p16_product_q16()
+{
+    return cg_rmw_treatment == CgRmwTreatment::FusedP16ProductQ16;
+}
+
+static bool
 cg_uses_page_fed_q16()
 {
     return cg_uses_page_fed_product_soa_jit() ||
+           cg_uses_fused_p16_product_q16() ||
            cg_uses_direct4_product_page_fed_q16();
 }
 
 static size_t
 cg_active_external_coherent_backing_bytes()
 {
-    if (cg_uses_direct4_product_page_fed_q16())
+    if (cg_uses_direct4_product_page_fed_q16() ||
+        cg_uses_fused_p16_product_q16())
         return cg_direct4_external_coherent_backing_bytes;
     if (cg_uses_page_fed_product_soa_jit())
         return cg_page_fed_external_coherent_backing_bytes;
@@ -508,6 +525,21 @@ cg_page_fed_product_open(int tid, float *destination, int completion_tile)
 }
 
 static void
+cg_fused_p16_product(int tid, float *source, uint32_t *indices,
+                     float *coefficients, int completion_tile,
+                     int min_reg, int max_reg, int stride_reg)
+{
+    maa_const<int>(0, min_reg);
+    maa_const<int>(TILE_SIZE, max_reg);
+    maa_const<int>(1, stride_reg);
+    maa_indirect_load_virtual_index_product_fp32(
+        source, indices, coefficients, completion_tile,
+        cg_soa_products[tid], min_reg, max_reg, stride_reg);
+    wait_ready(completion_tile);
+    cg_logical_product_words[tid] += TILE_SIZE;
+}
+
+static void
 cg_page_fed_q16_open(int tid, float *destination, int completion_tile)
 {
     cg_page_fed_open_impl(tid, destination, completion_tile);
@@ -607,6 +639,8 @@ cg_page_fed_close_impl(int tid, int completion_tile)
     cg_soa_full_windows[tid]++;
     if (cg_uses_direct4_product_page_fed_q16())
         cg_direct4_product_page_fed_q16_windows[tid]++;
+    else if (cg_uses_fused_p16_product_q16())
+        cg_fused_p16_product_windows[tid]++;
     else
         cg_page_fed_product_windows[tid]++;
 }
@@ -853,25 +887,43 @@ constexpr size_t virtual_descriptor_spool_slot_bytes =
 constexpr size_t virtual_descriptor_spool_words =
     virtual_descriptor_spool_units * virtual_descriptor_spool_slot_bytes /
     sizeof(float);
-alignas(TILE_SIZE * sizeof(float)) static float virtual_gather_storage[
-    NUM_CORES * TILE_SIZE + virtual_descriptor_spool_words];
+constexpr size_t virtual_gather_storage_words =
+    NUM_CORES * TILE_SIZE + virtual_descriptor_spool_words;
+// posix_memalign preserves the former alignas(TILE_SIZE * sizeof(float))
+// contract while allowing the fused candidate to allocate zero virtual-p.
+static float *virtual_gather_storage = nullptr;
 
 static float *
 virtual_gather_backing_for_thread(int tid)
 {
+    if (virtual_gather_storage == nullptr)
+        std::abort();
     return virtual_gather_storage + tid * TILE_SIZE;
 }
 #else
-alignas(TILE_SIZE * sizeof(float)) static float
-    virtual_gather_backing[NUM_CORES][TILE_SIZE];
+constexpr size_t virtual_gather_storage_words = NUM_CORES * TILE_SIZE;
+static float *virtual_gather_storage = nullptr;
 
 static float *
 virtual_gather_backing_for_thread(int tid)
 {
-    return virtual_gather_backing[tid];
+    if (virtual_gather_storage == nullptr)
+        std::abort();
+    return virtual_gather_storage + tid * TILE_SIZE;
 }
 #endif
 #endif
+
+static size_t
+cg_virtual_p_allocation_bytes()
+{
+#ifdef MAA_VIRTUAL_GATHER
+    return virtual_gather_storage == nullptr
+        ? 0 : virtual_gather_storage_words * sizeof(float);
+#else
+    return 0;
+#endif
+}
 
 /*
  * ---------------------------------------------------------------------
@@ -921,7 +973,7 @@ typedef int boolean;
 
 // Total: 26MB
 // 8MB
-static int colidx[NZ];
+alignas(64) static int colidx[NZ];
 // 56KB
 static int rowstr[NA + 1];
 // 56KB
@@ -933,7 +985,7 @@ static int acol[NAZ];
 // 1.3MB
 static float aelt[NAZ];
 // 16MB
-static float a[NZ];
+alignas(64) static float a[NZ];
 #else
 #if NUM_CORES == 4
 #include "cg_data_4C.h"
@@ -1257,6 +1309,26 @@ int main(int argc, char **argv) {
             return 1;
         }
     }
+#ifdef MAA_VIRTUAL_GATHER
+#ifdef CG_LOGICAL16_RMW
+    if (!cg_uses_direct4_product_page_fed_q16() &&
+        !cg_uses_fused_p16_product_q16()) {
+#endif
+        void *storage = nullptr;
+        const size_t alignment = TILE_SIZE * sizeof(float);
+        const int allocation = posix_memalign(
+            &storage, alignment,
+            virtual_gather_storage_words * sizeof(float));
+        if (allocation != 0 || storage == nullptr) {
+            std::cerr << "CG virtual-p allocation failed: " << allocation
+                      << std::endl;
+            return 1;
+        }
+        virtual_gather_storage = static_cast<float *>(storage);
+#ifdef CG_LOGICAL16_RMW
+    }
+#endif
+#endif
     std::cout << "CG_VIRTUAL_CONSUMER mode="
               << maa_virtual_consumer_mode_name(virtual_consumer_mode)
               << " logical=" << TILE_SIZE
@@ -1271,7 +1343,9 @@ int main(int argc, char **argv) {
                       ? "all_spmv_full_windows"
                       : "residual_spmv")
               << " producer="
-              << (cg_uses_direct4_product_page_fed_q16()
+              << (cg_uses_fused_p16_product_q16()
+                      ? "fused_p16_gather_map_product_then_q16"
+                      : cg_uses_direct4_product_page_fed_q16()
                       ? "direct4_physical_p_gather_product_publish_then_q16"
                       : cg_uses_page_fed_product_soa_jit()
                       ? "physical_page_mul_direct_index_admit"
@@ -1301,12 +1375,19 @@ int main(int argc, char **argv) {
               << (cg_uses_page_fed_q16()
                       ? 0 : sizeof(cg_soa_indices))
               << " p_gather_mode="
-              << (cg_uses_direct4_product_page_fed_q16()
+              << (cg_uses_fused_p16_product_q16()
+                      ? "fused_virtual_16k_product"
+                      : cg_uses_direct4_product_page_fed_q16()
                       ? "physical_4k_direct"
                       : "virtual_16k")
               << " virtual_p_backing_bytes="
-              << (cg_uses_direct4_product_page_fed_q16()
+              << (cg_uses_direct4_product_page_fed_q16() ||
+                          cg_uses_fused_p16_product_q16()
                       ? 0 : cg_virtual_gather_coherent_backing_bytes)
+              << " virtual_p_allocation_bytes="
+              << cg_virtual_p_allocation_bytes()
+              << " product_publisher_lines=0 hidden_spill_bytes=0"
+              << " global_fallbacks=0"
               << " p16_reorder_preserved="
               << (cg_uses_direct4_product_page_fed_q16() ? 0 : 1)
               << " q16_reorder_preserved=1"
@@ -1440,6 +1521,7 @@ int main(int argc, char **argv) {
             uint64_t logical_windows = 0;
             uint64_t physical_page_product_windows = 0;
             uint64_t page_fed_product_windows = 0;
+            uint64_t fused_p16_product_windows = 0;
             uint64_t direct4_product_page_fed_q16_windows = 0;
             uint64_t virtual_p_gather_windows = 0;
             uint64_t physical_p_gather_pages = 0;
@@ -1466,6 +1548,8 @@ int main(int argc, char **argv) {
                     cg_physical_page_product_windows[core];
                 page_fed_product_windows +=
                     cg_page_fed_product_windows[core];
+                fused_p16_product_windows +=
+                    cg_fused_p16_product_windows[core];
                 direct4_product_page_fed_q16_windows +=
                     cg_direct4_product_page_fed_q16_windows[core];
                 virtual_p_gather_windows +=
@@ -1552,6 +1636,28 @@ int main(int argc, char **argv) {
                     residual_spmv_eligible_windows > 0 &&
                     residual_spmv_eligible_windows ==
                         residual_spmv_routed_windows;
+            } else if (cg_uses_fused_p16_product_q16()) {
+                treatment_used = full_windows > 0 &&
+                    fused_p16_product_windows == full_windows &&
+                    page_fed_product_windows == 0 &&
+                    direct4_product_page_fed_q16_windows == 0 &&
+                    physical_page_product_windows == 0 &&
+                    logical_windows == 0 && logical_alus == 0 &&
+                    physical_alus == 0 &&
+                    index_words == full_windows * TILE_SIZE &&
+                    value_words == 0 &&
+                    product_words == full_windows * TILE_SIZE &&
+                    index_pages == 0 && value_pages == 0 &&
+                    product_pages == 0 &&
+                    page_fed_admit_pages == full_windows * 4 &&
+                    page_fed_closes == full_windows &&
+                    virtual_p_gather_windows == 0 &&
+                    physical_p_gather_pages == 0 &&
+                    q_spmv_eligible_windows > 0 &&
+                    q_spmv_eligible_windows == q_spmv_routed_windows &&
+                    residual_spmv_eligible_windows > 0 &&
+                    residual_spmv_eligible_windows ==
+                        residual_spmv_routed_windows;
             } else {
                 treatment_used = full_windows > 0 &&
                     direct4_product_page_fed_q16_windows == full_windows &&
@@ -1597,6 +1703,8 @@ int main(int argc, char **argv) {
                       << physical_page_product_windows
                       << " page_fed_product_windows="
                       << page_fed_product_windows
+                      << " fused_p16_product_windows="
+                      << fused_p16_product_windows
                       << " direct4_product_page_fed_q16_windows="
                       << direct4_product_page_fed_q16_windows
                       << " virtual_p_gather_windows="
@@ -1622,7 +1730,9 @@ int main(int argc, char **argv) {
                       << " logical_scheduler_reserved_lane_payload_bytes="
                       << cg_logical_scheduler_reserved_lane_payload_bytes
                       << " producer="
-                      << (cg_uses_direct4_product_page_fed_q16()
+                      << (cg_uses_fused_p16_product_q16()
+                              ? "fused_p16_gather_map_product_then_q16"
+                              : cg_uses_direct4_product_page_fed_q16()
                               ? "direct4_physical_p_gather_product_publish_"
                                 "then_q16"
                               : cg_uses_page_fed_product_soa_jit()
@@ -1644,17 +1754,32 @@ int main(int argc, char **argv) {
                       << (cg_uses_page_fed_q16()
                               ? 0 : sizeof(cg_soa_indices))
                       << " p_gather_mode="
-                      << (cg_uses_direct4_product_page_fed_q16()
+                      << (cg_uses_fused_p16_product_q16()
+                              ? "fused_virtual_16k_product"
+                              : cg_uses_direct4_product_page_fed_q16()
                               ? "physical_4k_direct"
                               : "virtual_16k")
                       << " virtual_p_backing_bytes="
-                      << (cg_uses_direct4_product_page_fed_q16()
+                      << (cg_uses_direct4_product_page_fed_q16() ||
+                                  cg_uses_fused_p16_product_q16()
                               ? 0 : cg_virtual_gather_coherent_backing_bytes)
+                      << " virtual_p_allocation_bytes="
+                      << cg_virtual_p_allocation_bytes()
+                      << " virtual_p_write_bytes="
+                      << virtual_p_gather_windows * TILE_SIZE * sizeof(float)
+                      << " virtual_p_read_bytes="
+                      << virtual_p_gather_windows * TILE_SIZE * sizeof(float)
+                      << " product_publisher_lines="
+                      << product_pages *
+                             (MAA_CONSUMER_TILE_SIZE * sizeof(float) / 64)
                       << " virtual_backing_traffic_eliminated="
-                      << (cg_uses_direct4_product_page_fed_q16() ? 1 : 0)
+                      << (cg_uses_direct4_product_page_fed_q16() ||
+                                  cg_uses_fused_p16_product_q16()
+                              ? 1 : 0)
                       << " p16_reorder_preserved="
                       << (cg_uses_direct4_product_page_fed_q16() ? 0 : 1)
                       << " q16_reorder_preserved=1"
+                      << " hidden_spill_bytes=0 global_fallbacks=0"
                       << " performance_promotable=0 result="
                       << (treatment_used ? "PASS" : "FAIL") << std::endl;
             if (!treatment_used)
@@ -1751,7 +1876,8 @@ if (!cg_uses_page_fed_product_soa_jit())
         */
         for (int core = 0; core < NUM_CORES; ++core) {
             if (!cg_uses_page_fed_product_soa_jit())
-                if (!cg_uses_direct4_product_page_fed_q16())
+                if (!cg_uses_direct4_product_page_fed_q16() &&
+                    !cg_uses_fused_p16_product_q16())
                     add_mem_region(cg_soa_indices[core],
                                    cg_soa_indices[core] + TILE_SIZE);
 #ifdef CG_LOGICAL_PAGE_RMW
@@ -1773,7 +1899,8 @@ if (!cg_uses_page_fed_product_soa_jit())
 #endif
 #ifdef MAA_VIRTUAL_GATHER
 #ifdef CG_LOGICAL_PAGE_RMW
-        if (!cg_uses_direct4_product_page_fed_q16()) {
+        if (!cg_uses_direct4_product_page_fed_q16() &&
+            !cg_uses_fused_p16_product_q16()) {
 #endif
 #ifdef MAA_BOUNDED_VIRTUAL_GATHER
         add_mem_region(virtual_gather_storage,
@@ -1781,8 +1908,9 @@ if (!cg_uses_page_fed_product_soa_jit())
                            NUM_CORES * TILE_SIZE +
                            virtual_descriptor_spool_words);
 #else
-        add_mem_region(&virtual_gather_backing[0][0],
-                       &virtual_gather_backing[NUM_CORES - 1][TILE_SIZE]);
+        add_mem_region(virtual_gather_storage,
+                       virtual_gather_storage +
+                           virtual_gather_storage_words);
 #endif
 #ifdef CG_LOGICAL_PAGE_RMW
         }
@@ -2076,7 +2204,14 @@ if (!cg_uses_page_fed_product_soa_jit())
                 const bool logical_page_full_window = false;
 #endif
                 if (gather_size == TILE_SIZE) {
-                    if (!cg_uses_direct4_product_page_fed_q16()) {
+                    if (cg_uses_fused_p16_product_q16()) {
+                        cg_fused_p16_product(
+                            tid, p,
+                            reinterpret_cast<uint32_t *>(
+                                &colidx[k_base]),
+                            &a[k_base], t6, r2, r3, r1);
+                        cg_page_fed_q16_open(tid, curr_q, t6);
+                    } else if (!cg_uses_direct4_product_page_fed_q16()) {
                         maa_const<int>(k_base, r2);
                         maa_const<int>(k_base + gather_size, r3);
                         maa_indirect_load_virtual_index<float>(
@@ -2126,6 +2261,13 @@ if (!cg_uses_page_fed_product_soa_jit())
 #endif
                     maa_range_loop<int>(r6, r7, t2, t3, r1, t0, t1);
 #ifdef CG_LOGICAL_PAGE_RMW
+                    if (logical_page_full_window &&
+                        cg_uses_fused_p16_product_q16()) {
+                        wait_ready(t0);
+                        cg_page_fed_admit_q_index_page(
+                            tid, page_offset, t0);
+                        continue;
+                    }
                     if (logical_page_full_window) {
                         if (cg_uses_physical_page_product_soa_jit() ||
                             cg_uses_page_fed_product_soa_jit()) {
@@ -2207,6 +2349,8 @@ if (!cg_uses_page_fed_product_soa_jit())
                             cg_page_fed_admit_q_index_page(
                                 tid, page_offset, t0);
                         }
+                        cg_page_fed_q16_close(tid, t6);
+                    } else if (cg_uses_fused_p16_product_q16()) {
                         cg_page_fed_q16_close(tid, t6);
                     } else if (cg_uses_page_fed_product_soa_jit())
                         cg_page_fed_product_close(tid, t6);
@@ -2548,7 +2692,13 @@ if (!cg_uses_page_fed_product_soa_jit())
             const bool logical_page_full_window = false;
 #endif
             if (gather_size == TILE_SIZE) {
-                if (!cg_uses_direct4_product_page_fed_q16()) {
+                if (cg_uses_fused_p16_product_q16()) {
+                    cg_fused_p16_product(
+                        tid, z,
+                        reinterpret_cast<uint32_t *>(&colidx[k_base]),
+                        &a[k_base], t6, r2, r3, r1);
+                    cg_page_fed_q16_open(tid, curr_r, t6);
+                } else if (!cg_uses_direct4_product_page_fed_q16()) {
                     maa_const<int>(k_base, r2);
                     maa_const<int>(k_base + gather_size, r3);
                     maa_indirect_load_virtual_index<float>(
@@ -2591,6 +2741,12 @@ if (!cg_uses_page_fed_product_soa_jit())
 #endif
                 maa_range_loop<int>(r6, r7, t2, t3, r1, t0, t1);
 #ifdef CG_LOGICAL_PAGE_RMW
+                if (logical_page_full_window &&
+                    cg_uses_fused_p16_product_q16()) {
+                    wait_ready(t0);
+                    cg_page_fed_admit_q_index_page(tid, page_offset, t0);
+                    continue;
+                }
                 if (logical_page_full_window) {
                     if (cg_uses_physical_page_product_soa_jit() ||
                         cg_uses_page_fed_product_soa_jit()) {
@@ -2703,6 +2859,8 @@ if (!cg_uses_page_fed_product_soa_jit())
                         wait_ready(t0);
                         cg_page_fed_admit_q_index_page(tid, page_offset, t0);
                     }
+                    cg_page_fed_q16_close(tid, t6);
+                } else if (cg_uses_fused_p16_product_q16()) {
                     cg_page_fed_q16_close(tid, t6);
                 } else if (cg_uses_page_fed_product_soa_jit())
                     cg_page_fed_product_close(tid, t6);

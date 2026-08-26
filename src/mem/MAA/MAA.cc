@@ -2325,6 +2325,55 @@ MAA::completeDirectRetirementALU(int maaID, uint16_t tokenTile,
     scheduleIssueInstructionEvent(1);
 }
 
+bool
+MAA::fusedP16ProductALUAvailable(int indirectUnit) const
+{
+    if (indirectUnit < 0 ||
+        indirectUnit >= static_cast<int>(num_indirect_units_total))
+        return false;
+    const int maaID = indirectUnit / num_indirect_units_per_maa;
+    return maaID >= 0 && maaID < static_cast<int>(num_maas) &&
+        aluUnitsIdle[maaID] &&
+        aluUnits[maaID].getState() == ALUUnit::Status::Idle;
+}
+
+bool
+MAA::startFusedP16ProductALU(int indirectUnit, uint8_t responseSlot,
+                             uint16_t offsetSlot, std::byte *source,
+                             uint32_t coefficientBits,
+                             uint64_t generation)
+{
+    if (!fusedP16ProductALUAvailable(indirectUnit))
+        return false;
+    const int maaID = indirectUnit / num_indirect_units_per_maa;
+    if (!aluUnits[maaID].startDirectPair(
+            source, coefficientBits,
+            static_cast<uint16_t>(indirectUnit), responseSlot,
+            offsetSlot, generation))
+        return false;
+    aluUnitsIdle[maaID] = false;
+    return true;
+}
+
+void
+MAA::completeFusedP16ProductALU(int maaID, uint16_t indirectUnit,
+                                uint8_t responseSlot,
+                                uint16_t offsetSlot,
+                                uint64_t generation)
+{
+    panic_if(maaID < 0 || maaID >= static_cast<int>(num_maas) ||
+                 indirectUnit >= num_indirect_units_total ||
+                 indirectUnit / num_indirect_units_per_maa !=
+                     static_cast<unsigned>(maaID) ||
+                 aluUnitsIdle[maaID] ||
+                 aluUnits[maaID].getState() != ALUUnit::Status::Idle,
+             "Fused-p16 ALU completion lost unit ownership\n");
+    aluUnitsIdle[maaID] = true;
+    indirectAccessUnits[indirectUnit].completeFusedP16Multiply(
+        generation, responseSlot, offsetSlot);
+    scheduleIssueInstructionEvent(1);
+}
+
 void
 MAA::scheduleDirectRetirementEvent(int latency)
 {
@@ -7357,6 +7406,73 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtIndexFilterWaitCycles"),
             statistics::units::Cycle::get(),
             "non-overlapped scheduler cycles caused by index filtering"));
+        auto addFusedCount = [this, indirect_id](
+                                 std::vector<statistics::Scalar *> &target,
+                                 const char *name,
+                                 const char *description) {
+            const std::string fullName =
+                std::string("I") + std::to_string(indirect_id) + "_" + name;
+            target.push_back(new statistics::Scalar(
+                this, fullName.c_str(),
+                statistics::units::Count::get(), description));
+        };
+        addFusedCount(IND_FusedP16Operations, "IND_FusedP16Operations",
+                      "guarded fused-p16 product operations completed");
+        addFusedCount(IND_FusedP16Epochs, "IND_FusedP16Epochs",
+                      "complete fused-p16 Row/Offset epochs");
+        addFusedCount(IND_FusedP16SourceOrdinals,
+                      "IND_FusedP16SourceOrdinals",
+                      "fused-p16 source ordinals retired");
+        addFusedCount(IND_FusedP16CoefficientReadIssues,
+                      "IND_FusedP16CoefficientReadIssues",
+                      "timed coefficient cache-line reads issued");
+        addFusedCount(IND_FusedP16CoefficientReadResponses,
+                      "IND_FusedP16CoefficientReadResponses",
+                      "timed coefficient cache-line responses");
+        addFusedCount(IND_FusedP16CoefficientFills,
+                      "IND_FusedP16CoefficientFills",
+                      "coefficient owner fills");
+        addFusedCount(IND_FusedP16CoefficientHits,
+                      "IND_FusedP16CoefficientHits",
+                      "retained coefficient owner hits");
+        addFusedCount(IND_FusedP16CoefficientMergedWaiters,
+                      "IND_FusedP16CoefficientMergedWaiters",
+                      "coefficient aliases merged into an owner");
+        addFusedCount(IND_FusedP16CoefficientEvictions,
+                      "IND_FusedP16CoefficientEvictions",
+                      "ready coefficient owners evicted");
+        addFusedCount(IND_FusedP16CoefficientDeliveries,
+                      "IND_FusedP16CoefficientDeliveries",
+                      "coefficient words delivered to tagged MUL");
+        addFusedCount(IND_FusedP16CoefficientStalls,
+                      "IND_FusedP16CoefficientStalls",
+                      "coefficient owner-capacity stalls");
+        addFusedCount(IND_FusedP16MulAccepts,
+                      "IND_FusedP16MulAccepts",
+                      "tagged ordinary-ALU FP32 MUL accepts");
+        addFusedCount(IND_FusedP16MulCompletions,
+                      "IND_FusedP16MulCompletions",
+                      "tagged ordinary-ALU FP32 MUL completions");
+        addFusedCount(IND_FusedP16MulBackpressure,
+                      "IND_FusedP16MulBackpressure",
+                      "cycles observing ordinary-ALU backpressure");
+        addFusedCount(IND_FusedP16ProductInsertions,
+                      "IND_FusedP16ProductInsertions",
+                      "final products accepted by the bounded combiner");
+        addFusedCount(IND_FusedP16ProductWriteCompletions,
+                      "IND_FusedP16ProductWriteCompletions",
+                      "semantic product words closed by WriteResp");
+        addFusedCount(IND_FusedP16EpochDrains,
+                      "IND_FusedP16EpochDrains",
+                      "forbidden fused-p16 epoch drains");
+        addFusedCount(IND_FusedP16Fallbacks, "IND_FusedP16Fallbacks",
+                      "forbidden fused-p16 fallbacks");
+        addFusedCount(IND_FusedP16PublisherLines,
+                      "IND_FusedP16PublisherLines",
+                      "forbidden response-bearing product publisher lines");
+        addFusedCount(IND_FusedP16VirtualPBytes,
+                      "IND_FusedP16VirtualPBytes",
+                      "forbidden virtual-p materialization traffic bytes");
         IND_SoaJitInstructions.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitInstructions"),
             statistics::units::Count::get(),

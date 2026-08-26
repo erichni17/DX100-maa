@@ -668,6 +668,15 @@ void IndirectAccessUnit::check_reset() {
              my_indirect_id);
     panic_if(!virtualCombinerEmpty(),
              "I[%d] virtual combiner is not empty at reset\n", my_indirect_id);
+    panic_if(fused_p16_operation_active || fused_p16_generation != 0 ||
+                 std::any_of(
+                     virtual_response_slots.begin(),
+                     virtual_response_slots.end(),
+                     [](const VirtualResponseSlot &slot) {
+                         return slot.fusedProduct.isActive();
+                     }),
+             "I[%d] fused-p16 response/ALU state is not empty at reset\n",
+             my_indirect_id);
     panic_if(virtual_combine_words != 0,
              "I[%d] virtual combiner still accounts for %d words\n",
              my_indirect_id, virtual_combine_words);
@@ -858,6 +867,10 @@ bool IndirectAccessUnit::isDirectIndexLoad() const {
             my_instruction->opcode ==
                 Instruction::OpcodeType::INDIR_LD_INDEX ||
             isSoaJitRmw());
+}
+bool IndirectAccessUnit::isFusedP16Product() const {
+    return my_instruction != nullptr &&
+           my_instruction->isFusedP16Product();
 }
 bool IndirectAccessUnit::isSoaJitRmw() const {
     return my_instruction != nullptr && my_instruction->isSoaJitRmw();
@@ -4434,7 +4447,14 @@ IndirectAccessUnit::observeSoaJitResultPipeline()
 bool
 IndirectAccessUnit::hasLiveSoaJitState() const
 {
-    return soa_jit_operation_active ||
+    return fused_p16_operation_active || fused_p16_generation != 0 ||
+           std::any_of(
+               virtual_response_slots.begin(),
+               virtual_response_slots.end(),
+               [](const VirtualResponseSlot &slot) {
+                   return slot.fusedProduct.isActive();
+               }) ||
+           soa_jit_operation_active ||
            (my_instruction != nullptr && my_instruction->isSoaJitRmw()) ||
            !soaPredicateLinesEmpty() ||
            !soaJitContextsEmpty() ||
@@ -5291,6 +5311,61 @@ void IndirectAccessUnit::issueSoaJitWrite(SoaJitContext &context)
             my_indirect_id, my_decode_start_tick, soa_jit_generation,
             context.aPaddr, soa_jit_aliases_applied);
 }
+bool
+IndirectAccessUnit::beginFusedP16ResponseHead(
+    size_t response_slot, VirtualResponseSlot &slot)
+{
+    if (!isFusedP16Product() || !slot.valid || slot.next_itr < 0 ||
+        response_slot >= virtual_response_slots.size())
+        return false;
+    const OffsetTableEntry entry = offset_table->peek_entry(slot.next_itr);
+    panic_if(slot.next_itr >= static_cast<int>(
+                 maa::FusedP16ProductContract::LogicalElements) ||
+                 entry.itr < 0 ||
+                 entry.itr >= static_cast<int>(
+                     maa::FusedP16ProductContract::LogicalElements) ||
+                 !slot.fusedProduct.begin(
+                     fused_p16_generation,
+                     static_cast<uint16_t>(my_indirect_id),
+                     static_cast<uint8_t>(response_slot),
+                     static_cast<uint16_t>(slot.next_itr),
+                     static_cast<uint16_t>(entry.itr)),
+             "I[%d] fused-p16 response slot %lu could not claim Offset "
+             "head=%d logical=%d generation=%lu\n",
+             my_indirect_id, response_slot, slot.next_itr, entry.itr,
+             fused_p16_generation);
+    return true;
+}
+
+bool
+IndirectAccessUnit::receiveFusedP16Coefficient(
+    Addr addr, uint8_t *dataptr, bool is_block_cached)
+{
+    if (!isFusedP16Product() || fused_p16_generation == 0 ||
+        !soa_jit_value_coalescer.owns(fused_p16_generation, addr))
+        return false;
+    const auto response = soa_jit_value_coalescer.acceptResponse(
+        fused_p16_generation, addr, dataptr, block_size);
+    panic_if(response !=
+                 SoaJitValueCoalescer::ResponseResult::CacheFill,
+             "I[%d] fused-p16 received stale/duplicate/unmatched "
+             "coefficient response 0x%lx result=%d\n",
+             my_indirect_id, addr, static_cast<int>(response));
+    accountReadResponse(addr, is_block_cached);
+    my_received_responses++;
+    fused_p16_coefficient_read_responses++;
+    fused_p16_coefficient_fills++;
+    DPRINTF(MAAVirtualTrace,
+            "event=fused_p16_coefficient_response schema=1 unit=%d "
+            "operation_tick=%lu generation=%lu paddr=0x%lx cached=%d "
+            "responses=%lu fills=%lu\n",
+            my_indirect_id, my_decode_start_tick, fused_p16_generation,
+            addr, is_block_cached, fused_p16_coefficient_read_responses,
+            fused_p16_coefficient_fills);
+    scheduleNextExecution(true);
+    return true;
+}
+
 bool IndirectAccessUnit::receiveSoaJitData(
     Addr addr, uint8_t *dataptr, bool is_block_cached)
 {
@@ -5546,6 +5621,127 @@ void IndirectAccessUnit::checkSoaJitTerminal()
     offset_table->check_reset();
     for (int slice = 0; slice < num_RT_slices[my_RT_config]; ++slice)
         RT[my_RT_config][slice].check_reset();
+}
+
+void
+IndirectAccessUnit::checkFusedP16Terminal()
+{
+    if (!isFusedP16Product())
+        return;
+    using Contract = maa::FusedP16ProductContract;
+    fused_p16_product_write_completions = 0;
+    for (const int completed : virtual_page_completed_words)
+        fused_p16_product_write_completions += completed;
+    const bool response_owners_empty = std::all_of(
+        virtual_response_slots.begin(), virtual_response_slots.end(),
+        [](const VirtualResponseSlot &slot) {
+            return !slot.valid && !slot.fusedProduct.isActive() &&
+                slot.fusedProduct.assertInvariants();
+        });
+    panic_if(
+        !fused_p16_operation_active || fused_p16_generation == 0 ||
+            fused_p16_epochs != 1 ||
+            fused_p16_source_ordinals != Contract::LogicalElements ||
+            fused_p16_coefficient_read_issues !=
+                fused_p16_coefficient_read_responses ||
+            fused_p16_coefficient_read_responses !=
+                fused_p16_coefficient_fills ||
+            fused_p16_coefficient_deliveries !=
+                Contract::LogicalElements ||
+            fused_p16_alu_accepts != Contract::LogicalElements ||
+            fused_p16_alu_completions != Contract::LogicalElements ||
+            fused_p16_product_insertions != Contract::LogicalElements ||
+            fused_p16_product_write_completions !=
+                Contract::LogicalElements ||
+            offset_table_drain || direct_index_partition != 0 ||
+            direct_index_partitions != 1 || !response_owners_empty ||
+            virtual_reserved_responses != 0 ||
+            !virtual_source_reservations.empty() ||
+            !virtualCombinerEmpty() || virtual_outstanding_writes != 0 ||
+            !soa_jit_value_coalescer.clearGeneration(
+                fused_p16_generation) ||
+            !soa_jit_value_coalescer.assertInvariants(),
+        "I[%d] fused-p16 terminal closure failed generation=%lu "
+        "epochs=%lu ordinals=%lu coefficient=%lu/%lu/%lu "
+        "deliveries=%lu mul=%lu/%lu products=%lu writes=%lu "
+        "responses_empty=%d reserved=%d outstanding_writes=%d\n",
+        my_indirect_id, fused_p16_generation, fused_p16_epochs,
+        fused_p16_source_ordinals, fused_p16_coefficient_read_issues,
+        fused_p16_coefficient_read_responses,
+        fused_p16_coefficient_fills,
+        fused_p16_coefficient_deliveries, fused_p16_alu_accepts,
+        fused_p16_alu_completions, fused_p16_product_insertions,
+        fused_p16_product_write_completions, response_owners_empty,
+        virtual_reserved_responses, virtual_outstanding_writes);
+    (*maa->stats.IND_FusedP16Operations[my_indirect_id])++;
+    (*maa->stats.IND_FusedP16Epochs[my_indirect_id]) += fused_p16_epochs;
+    (*maa->stats.IND_FusedP16SourceOrdinals[my_indirect_id]) +=
+        fused_p16_source_ordinals;
+    (*maa->stats.IND_FusedP16CoefficientReadIssues[my_indirect_id]) +=
+        fused_p16_coefficient_read_issues;
+    (*maa->stats.IND_FusedP16CoefficientReadResponses[my_indirect_id]) +=
+        fused_p16_coefficient_read_responses;
+    (*maa->stats.IND_FusedP16CoefficientFills[my_indirect_id]) +=
+        fused_p16_coefficient_fills;
+    (*maa->stats.IND_FusedP16CoefficientHits[my_indirect_id]) +=
+        fused_p16_coefficient_hits;
+    (*maa->stats.IND_FusedP16CoefficientMergedWaiters[my_indirect_id]) +=
+        fused_p16_coefficient_merged_waiters;
+    (*maa->stats.IND_FusedP16CoefficientEvictions[my_indirect_id]) +=
+        fused_p16_coefficient_evictions;
+    (*maa->stats.IND_FusedP16CoefficientDeliveries[my_indirect_id]) +=
+        fused_p16_coefficient_deliveries;
+    (*maa->stats.IND_FusedP16CoefficientStalls[my_indirect_id]) +=
+        fused_p16_coefficient_stalls;
+    (*maa->stats.IND_FusedP16MulAccepts[my_indirect_id]) +=
+        fused_p16_alu_accepts;
+    (*maa->stats.IND_FusedP16MulCompletions[my_indirect_id]) +=
+        fused_p16_alu_completions;
+    (*maa->stats.IND_FusedP16MulBackpressure[my_indirect_id]) +=
+        fused_p16_alu_backpressure;
+    (*maa->stats.IND_FusedP16ProductInsertions[my_indirect_id]) +=
+        fused_p16_product_insertions;
+    (*maa->stats.IND_FusedP16ProductWriteCompletions[my_indirect_id]) +=
+        fused_p16_product_write_completions;
+    DPRINTF(MAAVirtualTrace,
+            "event=fused_p16_product_complete schema=1 unit=%d "
+            "operation_tick=%lu generation=%lu epochs=%lu "
+            "source_ordinals=%lu coefficient_read_issues=%lu "
+            "coefficient_read_responses=%lu coefficient_fills=%lu "
+            "coefficient_hits=%lu coefficient_merged_waiters=%lu "
+            "coefficient_evictions=%lu coefficient_deliveries=%lu "
+            "coefficient_stalls=%lu mul_accepts=%lu "
+            "mul_completions=%lu mul_backpressure=%lu "
+            "product_insertions=%lu product_semantic_write_completions=%lu "
+            "p_source_lines=%d p_source_responses=%d "
+            "product_transport_lines=%lu product_transport_bytes=%lu "
+            "product_semantic_bytes=%lu offset_drains=0 "
+            "global_fallbacks=0 hidden_spill_bytes=0 publisher_lines=0 "
+            "virtual_p_backing_bytes=0 virtual_p_read_bytes=0 "
+            "virtual_p_write_bytes=0 host_payload_access=0 "
+            "external_ports_added=0 guest_backing_bytes_removed=%lu "
+            "window_virtual_p_write_bytes_removed=%lu "
+            "window_virtual_p_read_bytes_removed=%lu\n",
+            my_indirect_id, my_decode_start_tick, fused_p16_generation,
+            fused_p16_epochs, fused_p16_source_ordinals,
+            fused_p16_coefficient_read_issues,
+            fused_p16_coefficient_read_responses,
+            fused_p16_coefficient_fills, fused_p16_coefficient_hits,
+            fused_p16_coefficient_merged_waiters,
+            fused_p16_coefficient_evictions,
+            fused_p16_coefficient_deliveries,
+            fused_p16_coefficient_stalls, fused_p16_alu_accepts,
+            fused_p16_alu_completions, fused_p16_alu_backpressure,
+            fused_p16_product_insertions,
+            fused_p16_product_write_completions,
+            virtual_source_expected, virtual_source_received,
+            macro_backing_line_issues, macro_backing_transport_bytes,
+            macro_backing_semantic_bytes,
+            Contract::GuestBackingBytesRemoved,
+            Contract::VirtualPWriteBytesRemovedPerWindow,
+            Contract::VirtualPReadBytesRemovedPerWindow);
+    fused_p16_operation_active = false;
+    fused_p16_generation = 0;
 }
 void IndirectAccessUnit::executeInstruction() {
     if (state == Status::Idle) {
@@ -5880,10 +6076,40 @@ void IndirectAccessUnit::executeInstruction() {
             context = SoaJitContext();
         soa_jit_result_pipeline.reset(curTick());
         soa_jit_scalar_broadcast.reset();
+        panic_if(fused_p16_operation_active,
+                 "I[%d] retained a live fused-p16 operation at decode\n",
+                 my_indirect_id);
+        fused_p16_operation_active = isFusedP16Product();
+        fused_p16_generation = 0;
+        if (fused_p16_operation_active) {
+            fused_p16_generation = ++fused_p16_generation_counter;
+            if (fused_p16_generation == 0)
+                fused_p16_generation = ++fused_p16_generation_counter;
+        }
         soa_jit_value_coalescer.configure(
-            soa_jit_value_cache_enable, soa_jit_value_prefetch_credits,
-            soa_jit_active_value_owners);
+            fused_p16_operation_active ? true : soa_jit_value_cache_enable,
+            fused_p16_operation_active
+                ? maa::FusedP16ProductContract::CoefficientPrefetchCredits
+                : soa_jit_value_prefetch_credits,
+            fused_p16_operation_active
+                ? maa::FusedP16ProductContract::CoefficientOwnerLines
+                : soa_jit_active_value_owners);
         soa_jit_value_coalescer.reset();
+        fused_p16_epochs = fused_p16_operation_active ? 1 : 0;
+        fused_p16_source_ordinals = 0;
+        fused_p16_coefficient_read_issues = 0;
+        fused_p16_coefficient_read_responses = 0;
+        fused_p16_coefficient_fills = 0;
+        fused_p16_coefficient_hits = 0;
+        fused_p16_coefficient_merged_waiters = 0;
+        fused_p16_coefficient_evictions = 0;
+        fused_p16_coefficient_deliveries = 0;
+        fused_p16_coefficient_stalls = 0;
+        fused_p16_alu_accepts = 0;
+        fused_p16_alu_completions = 0;
+        fused_p16_alu_backpressure = 0;
+        fused_p16_product_insertions = 0;
+        fused_p16_product_write_completions = 0;
         soa_jit_value_prefetch_cursor = SoaJitValuePrefetchCursor();
         soa_jit_apply_lane_pool.configure(soa_jit_apply_lanes);
         soa_jit_apply_lane_pool.reset();
@@ -5994,6 +6220,78 @@ void IndirectAccessUnit::executeInstruction() {
                      "I[%d] streamed-index length %d exceeds logical tile "
                      "capacity %d\n",
                      my_indirect_id, my_max, num_tile_elements);
+            if (isFusedP16Product()) {
+                using Contract = maa::FusedP16ProductContract;
+                panic_if(
+                    my_index_min != 0 ||
+                        my_index_stride != 1 ||
+                        my_max !=
+                            static_cast<int>(Contract::LogicalElements) ||
+                        num_tile_elements !=
+                            static_cast<int>(Contract::LogicalElements) ||
+                        offset_table->capacity() <
+                            static_cast<int>(Contract::LogicalElements) ||
+                        maa->num_offset_table_epoch_entries !=
+                            Contract::LogicalElements ||
+                        num_RT_slices[my_RT_config] != 32 || !reorder_RT ||
+                        direct_index_max_partitions != 1 ||
+                        maa->virtual_index_range_passes ||
+                        maa->virtual_index_descriptor_spool ||
+                        maa->virtual_bounded_global_merge ||
+                        virtual_response_slots.size() !=
+                            Contract::ResponseSlots ||
+                        virtual_response_words != 0 ||
+                        virtual_response_word_pool_limit != 0 ||
+                        virtual_combine_slots.size() !=
+                            Contract::CombinerSlots ||
+                        virtual_combine_ways != Contract::CombinerWays ||
+                        virtual_combine_banks != Contract::CombinerBanks ||
+                        virtual_words_per_cycle_limit !=
+                            Contract::WordsPerCycle ||
+                        virtual_max_outstanding_writes_limit !=
+                            Contract::OutstandingWrites ||
+                        !soa_jit_value_cache_enable ||
+                        soa_jit_active_value_owners !=
+                            Contract::CoefficientOwnerLines ||
+                        soa_jit_value_prefetch_credits !=
+                            Contract::CoefficientPrefetchCredits,
+                    "I[%d] fused-p16 requires exact 0:16384:1, one 16K "
+                    "Offset epoch, 32 Row slices, 8 full-line responses, "
+                    "16x4-way/4-bank combining, one word/cycle, 32 write "
+                    "credits, and the cache-on 32-owner/no-prefetch "
+                    "coefficient pool\n",
+                    my_indirect_id);
+                DPRINTF(MAAVirtualTrace,
+                        "event=fused_p16_product_begin schema=1 unit=%d "
+                        "operation_tick=%lu generation=%lu logical=%u "
+                        "epochs=1 offset_capacity=%d epoch_capacity=%u "
+                        "row_slices=%d response_slots=%zu "
+                        "response_payload_bytes=%lu combiner_slots=%zu "
+                        "combiner_payload_bytes=%lu combiner_ways=%d "
+                        "combiner_banks=%d words_per_cycle=%d "
+                        "write_credits=%d coefficient_owners=%lu "
+                        "coefficient_payload_bytes=%lu prefetch_credits=%lu "
+                        "response_substate_bytes=%lu alu_state_bytes=%lu "
+                        "external_ports_added=0 hidden_spill_bytes=0 "
+                        "fallbacks=0\n",
+                        my_indirect_id, my_decode_start_tick,
+                        fused_p16_generation, Contract::LogicalElements,
+                        offset_table->capacity(),
+                        maa->num_offset_table_epoch_entries,
+                        num_RT_slices[my_RT_config],
+                        virtual_response_slots.size(),
+                        Contract::ResponsePayloadBytesPerUnit,
+                        virtual_combine_slots.size(),
+                        Contract::CombinerPayloadBytesPerUnit,
+                        virtual_combine_ways, virtual_combine_banks,
+                        virtual_words_per_cycle_limit,
+                        virtual_max_outstanding_writes_limit,
+                        soa_jit_value_coalescer.activeOwnerCount(),
+                        Contract::ActiveCoefficientPayloadBytesPerUnit,
+                        soa_jit_value_coalescer.activePrefetchCreditCount(),
+                        Contract::ResponseSubstateBytesPerUnit,
+                        Contract::TaggedAluStateBytesPerLane);
+            }
             if (isSoaJitRmw()) {
                 panic_if(!my_instruction->hasValidSoaJitRmwOperands(),
                          "I[%d] malformed SoA/JIT RMW reached decode\n",
@@ -6320,6 +6618,11 @@ void IndirectAccessUnit::executeInstruction() {
         fillRowTable(finished, waitForFinish, waitForElement, needDrain,
                      num_spd_read_condidx_accesses, num_rowtable_accesses,
                      num_direct_index_filter_words);
+        panic_if(isFusedP16Product() && needDrain,
+                 "I[%d] fused-p16 Row/Offset pressure before ordinal "
+                 "%d/%u is terminal; epoch drain/fallback is forbidden\n",
+                 my_indirect_id, my_i,
+                 maa::FusedP16ProductContract::LogicalElements);
         panic_if(isSoaJitRmw() && needDrain &&
                      (!soa_jit_retry_valid ||
                       soa_jit_retry_ordinal != my_i ||
@@ -7026,6 +7329,12 @@ void IndirectAccessUnit::executeInstruction() {
                          num_spd_read_condidx_accesses,
                          num_rowtable_accesses,
                          num_direct_index_filter_words);
+            panic_if(isFusedP16Product() && needDrain,
+                     "I[%d] fused-p16 refill pressure before ordinal "
+                     "%d/%u is terminal; epoch drain/fallback is "
+                     "forbidden\n",
+                     my_indirect_id, my_i,
+                     maa::FusedP16ProductContract::LogicalElements);
             if (usesBoundedSourceResponses()) {
                 if (finished)
                     my_fill_finished = true;
@@ -7134,6 +7443,8 @@ void IndirectAccessUnit::executeInstruction() {
                     maa->getTicksToCycles(virtual_all_pages_ready_tick -
                                           virtual_first_page_ready_tick);
             }
+            if (isFusedP16Product())
+                checkFusedP16Terminal();
             if (usesBoundedDirectIndexPasses()) {
                 if (maa->virtual_bounded_global_merge) {
                     panic_if(bounded_global_merge_phase !=
@@ -8423,6 +8734,19 @@ void IndirectAccessUnit::createSoaJitReadPacket(Addr addr, int latency)
     maa->sendPacket(FuncUnitType::INDIRECT, my_indirect_id, pkt,
                     maa->getClockEdge(Cycles(latency)), true);
 }
+void
+IndirectAccessUnit::createFusedP16CoefficientReadPacket(Addr addr,
+                                                        int latency)
+{
+    RequestPtr req = std::make_shared<Request>(
+        addr, block_size, flags, maa->requestorId);
+    req->setRegion(my_predicate_addr_range_id);
+    PacketPtr pkt = new Packet(req, MemCmd::ReadReq);
+    pkt->headerDelay = pkt->payloadDelay = 0;
+    pkt->allocate();
+    maa->sendPacket(FuncUnitType::INDIRECT, my_indirect_id, pkt,
+                    maa->getClockEdge(Cycles(latency)), true);
+}
 void IndirectAccessUnit::createDescriptorSpoolReadPacket(
     Addr vaddr, uint32_t pass, uint32_t line, bool read_ahead)
 {
@@ -8694,6 +9018,8 @@ IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr,
         return true;
     if (receiveSoaPredicate(addr, dataptr, is_block_cached))
         return true;
+    if (receiveFusedP16Coefficient(addr, dataptr, is_block_cached))
+        return true;
     if (receiveSoaJitData(addr, dataptr, is_block_cached))
         return true;
     std::vector addr_vec = maa->map_addr(addr);
@@ -8801,6 +9127,11 @@ IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr,
                 itr = entry.next_itr;
             }
         }
+        if (isFusedP16Product())
+            panic_if(!beginFusedP16ResponseHead(slot_idx, *slot),
+                     "I[%d] fused-p16 source response could not bind "
+                     "response slot %lu\n",
+                     my_indirect_id, slot_idx);
         my_received_responses++;
         virtual_source_received++;
         macro_a_last_response_tick = curTick();
@@ -9496,6 +9827,218 @@ bool IndirectAccessUnit::drainVirtualResponses() {
     for (size_t slot_idx = 0;
          slot_idx < virtual_response_slots.size(); ++slot_idx) {
         auto &slot = virtual_response_slots[slot_idx];
+        if (isFusedP16Product()) {
+            panic_if(virtual_response_words != 0 ||
+                         virtual_response_word_pool_limit != 0,
+                     "I[%d] fused-p16 may not use packed response payloads\n",
+                     my_indirect_id);
+            bool capacity_stalled = false;
+            while (slot.valid) {
+                panic_if(!slot.fusedProduct.isActive() ||
+                             !slot.fusedProduct.assertInvariants(),
+                         "I[%d] fused-p16 response slot %lu lost its "
+                         "Offset-head owner\n",
+                         my_indirect_id, slot_idx);
+                const OffsetTableEntry entry =
+                    offset_table->peek_entry(slot.next_itr);
+                const uint64_t coefficient_offset =
+                    static_cast<uint64_t>(entry.itr) * my_word_size;
+                panic_if(my_predicate_addr < my_predicate_min_addr ||
+                             my_predicate_addr >= my_predicate_max_addr ||
+                             my_predicate_max_addr - my_predicate_addr <
+                                 my_word_size ||
+                             coefficient_offset >
+                                 my_predicate_max_addr - my_predicate_addr -
+                                     my_word_size,
+                         "I[%d] fused-p16 coefficient ordinal %d escaped "
+                         "its registered span\n",
+                         my_indirect_id, entry.itr);
+                const Addr coefficient_vaddr =
+                    my_predicate_addr + coefficient_offset;
+                const Addr coefficient_block_vaddr =
+                    addrBlockAligner(coefficient_vaddr, block_size);
+                const Addr coefficient_paddr = addrBlockAligner(
+                    translatePacket(coefficient_block_vaddr), block_size);
+                const uint16_t waiter = static_cast<uint16_t>(slot_idx);
+
+                if (slot.fusedProduct.currentState() ==
+                    maa::FusedP16ResponseState::NeedCoefficient) {
+                    const auto request =
+                        soa_jit_value_coalescer.requestAlias(
+                            fused_p16_generation, coefficient_paddr,
+                            waiter);
+                    if (request.result ==
+                        SoaJitValueCoalescer::AliasResult::Stall) {
+                        fused_p16_coefficient_stalls++;
+                        return finish_drain(true);
+                    }
+                    panic_if(
+                        request.result ==
+                                SoaJitValueCoalescer::AliasResult::Duplicate ||
+                            request.result ==
+                                SoaJitValueCoalescer::AliasResult::Stale ||
+                            request.result ==
+                                SoaJitValueCoalescer::AliasResult::Invalid ||
+                            !slot.fusedProduct.requestCoefficient(),
+                        "I[%d] fused-p16 invalid coefficient owner "
+                        "slot=%lu offset=%d logical=%d paddr=0x%lx "
+                        "result=%d\n",
+                        my_indirect_id, slot_idx, slot.next_itr, entry.itr,
+                        coefficient_paddr,
+                        static_cast<int>(request.result));
+                    if (request.evicted)
+                        fused_p16_coefficient_evictions++;
+                    const char *action = nullptr;
+                    if (request.result ==
+                        SoaJitValueCoalescer::AliasResult::Fill) {
+                        action = "fill";
+                        my_expected_responses++;
+                        fused_p16_coefficient_read_issues++;
+                        createFusedP16CoefficientReadPacket(
+                            coefficient_paddr, rowtable_latency);
+                    } else if (request.result ==
+                               SoaJitValueCoalescer::AliasResult::Merge) {
+                        action = "merge";
+                        fused_p16_coefficient_merged_waiters++;
+                    } else {
+                        panic_if(request.result !=
+                                     SoaJitValueCoalescer::AliasResult::Hit,
+                                 "I[%d] fused-p16 unknown coefficient "
+                                 "request result\n",
+                                 my_indirect_id);
+                        action = "hit";
+                        fused_p16_coefficient_hits++;
+                    }
+                    DPRINTF(MAAVirtualTrace,
+                            "event=fused_p16_coefficient_request schema=1 "
+                            "unit=%d operation_tick=%lu generation=%lu "
+                            "response_slot=%lu offset_slot=%d logical=%d "
+                            "vaddr=0x%lx paddr=0x%lx action=%s "
+                            "owners=%lu\n",
+                            my_indirect_id, my_decode_start_tick,
+                            fused_p16_generation, slot_idx, slot.next_itr,
+                            entry.itr, coefficient_vaddr,
+                            coefficient_paddr, action,
+                            soa_jit_value_coalescer.cacheOccupancy());
+                }
+
+                if (slot.fusedProduct.currentState() ==
+                    maa::FusedP16ResponseState::AwaitCoefficient) {
+                    if (!maa->fusedP16ProductALUAvailable(
+                            my_indirect_id)) {
+                        fused_p16_alu_backpressure++;
+                        break;
+                    }
+                    SoaJitValueCoalescer::Delivery delivery;
+                    const auto delivered = soa_jit_value_coalescer.deliver(
+                        fused_p16_generation, waiter, curTick(), delivery, 1);
+                    panic_if(
+                        delivered ==
+                                SoaJitValueCoalescer::DeliveryResult::Stale ||
+                            delivered == SoaJitValueCoalescer::
+                                             DeliveryResult::Invalid,
+                        "I[%d] fused-p16 stale/invalid coefficient "
+                        "delivery slot=%lu\n",
+                        my_indirect_id, slot_idx);
+                    if (delivered == SoaJitValueCoalescer::
+                                         DeliveryResult::NotReady)
+                        break;
+                    if (delivered == SoaJitValueCoalescer::
+                                         DeliveryResult::CycleLimited)
+                        return finish_drain(true);
+                    const size_t coefficient_byte =
+                        coefficient_vaddr - coefficient_block_vaddr;
+                    panic_if(coefficient_byte + sizeof(uint32_t) >
+                                 delivery.data.size(),
+                             "I[%d] fused-p16 coefficient word escaped "
+                             "delivered line\n",
+                             my_indirect_id);
+                    uint32_t coefficient_bits = 0;
+                    std::memcpy(&coefficient_bits,
+                                delivery.data.data() + coefficient_byte,
+                                sizeof(coefficient_bits));
+                    std::byte *source = reinterpret_cast<std::byte *>(
+                        virtual_response_line_payloads.lineData(slot_idx) +
+                        entry.wid * my_word_size);
+                    const maa::FusedP16AluToken token{
+                        fused_p16_generation,
+                        static_cast<uint16_t>(my_indirect_id),
+                        static_cast<uint8_t>(slot_idx),
+                        static_cast<uint16_t>(slot.next_itr)};
+                    panic_if(
+                        !maa->startFusedP16ProductALU(
+                            my_indirect_id, static_cast<uint8_t>(slot_idx),
+                            static_cast<uint16_t>(slot.next_itr), source,
+                            coefficient_bits, fused_p16_generation) ||
+                            !slot.fusedProduct.issueMultiply(token, token),
+                        "I[%d] fused-p16 could not atomically claim the "
+                        "ordinary ALU\n",
+                        my_indirect_id);
+                    fused_p16_coefficient_deliveries++;
+                    fused_p16_alu_accepts++;
+                    DPRINTF(MAAVirtualTrace,
+                            "event=fused_p16_mul_accept schema=1 unit=%d "
+                            "operation_tick=%lu generation=%lu "
+                            "response_slot=%lu offset_slot=%d logical=%d "
+                            "alu_latency_cycles=1\n",
+                            my_indirect_id, my_decode_start_tick,
+                            fused_p16_generation, slot_idx, slot.next_itr,
+                            entry.itr);
+                    break;
+                }
+
+                if (slot.fusedProduct.currentState() ==
+                    maa::FusedP16ResponseState::AwaitMultiply)
+                    break;
+
+                panic_if(slot.fusedProduct.currentState() !=
+                             maa::FusedP16ResponseState::ProductReady,
+                         "I[%d] fused-p16 response slot %lu has invalid "
+                         "substate\n",
+                         my_indirect_id, slot_idx);
+                if (budget_exhausted())
+                    return finish_drain(true);
+                virtual_word_attempts_this_cycle++;
+                if (!reserveVirtualCombineBank(entry.itr)) {
+                    virtual_word_attempts_this_cycle--;
+                    bank_stalled = true;
+                    break;
+                }
+                const uint8_t *product =
+                    virtual_response_line_payloads.lineData(slot_idx) +
+                    entry.wid * my_word_size;
+                if (!insertVirtualCombineWord(entry.itr, product)) {
+                    capacity_stalled = true;
+                    break;
+                }
+                panic_if(!slot.fusedProduct.consumeProduct(),
+                         "I[%d] fused-p16 product owner could not retire\n",
+                         my_indirect_id);
+                const OffsetTableEntry consumed =
+                    offset_table->consume_entry(slot.next_itr);
+                panic_if(consumed.itr != entry.itr ||
+                             consumed.wid != entry.wid,
+                         "I[%d] fused-p16 Offset head changed at product "
+                         "retirement\n",
+                         my_indirect_id);
+                recordReorderSurvivalIssuedEntries(1);
+                fused_p16_source_ordinals++;
+                fused_p16_product_insertions++;
+                if (slot.next_itr == -1) {
+                    release_native_claim(slot);
+                    slot = VirtualResponseSlot();
+                    virtual_reserved_responses--;
+                } else {
+                    panic_if(!beginFusedP16ResponseHead(slot_idx, slot),
+                             "I[%d] fused-p16 could not advance response "
+                             "slot %lu\n",
+                             my_indirect_id, slot_idx);
+                }
+            }
+            if (capacity_stalled)
+                break;
+            continue;
+        }
         if (virtual_response_words != 0 ||
             virtual_response_word_pool_limit != 0) {
             bool capacity_stalled = false;
@@ -9618,6 +10161,38 @@ bool IndirectAccessUnit::drainVirtualResponses() {
     if (virtual_load)
         drainVirtualCombiner(false);
     return finish_drain(bank_stalled);
+}
+
+void
+IndirectAccessUnit::completeFusedP16Multiply(uint64_t generation,
+                                             uint8_t response_slot,
+                                             uint16_t offset_slot)
+{
+    panic_if(!isFusedP16Product() || !fused_p16_operation_active ||
+                 generation != fused_p16_generation ||
+                 response_slot >= virtual_response_slots.size(),
+             "I[%d] stale/unmatched fused-p16 ALU callback generation=%lu "
+             "slot=%u offset=%u active=%lu\n",
+             my_indirect_id, generation, response_slot, offset_slot,
+             fused_p16_generation);
+    VirtualResponseSlot &slot = virtual_response_slots[response_slot];
+    const maa::FusedP16AluToken token{
+        generation, static_cast<uint16_t>(my_indirect_id), response_slot,
+        offset_slot};
+    panic_if(!slot.valid || slot.next_itr != offset_slot ||
+                 !slot.fusedProduct.completeMultiply(token, token),
+             "I[%d] fused-p16 ALU callback lost exact response/Offset "
+             "ownership generation=%lu slot=%u offset=%u\n",
+             my_indirect_id, generation, response_slot, offset_slot);
+    const OffsetTableEntry entry = offset_table->peek_entry(offset_slot);
+    fused_p16_alu_completions++;
+    DPRINTF(MAAVirtualTrace,
+            "event=fused_p16_mul_complete schema=1 unit=%d "
+            "operation_tick=%lu generation=%lu response_slot=%u "
+            "offset_slot=%u logical=%d\n",
+            my_indirect_id, my_decode_start_tick, generation,
+            response_slot, offset_slot, entry.itr);
+    scheduleNextExecution(true);
 }
 
 bool IndirectAccessUnit::reserveVirtualCombineBank(int itr) {

@@ -551,6 +551,15 @@ public:
                                      uint64_t generation,
                                      uint64_t incarnation,
                                      uint64_t transactionID);
+    bool fusedP16ProductALUAvailable(int indirectUnit) const;
+    bool startFusedP16ProductALU(int indirectUnit, uint8_t responseSlot,
+                                 uint16_t offsetSlot, std::byte *source,
+                                 uint32_t coefficientBits,
+                                 uint64_t generation);
+    void completeFusedP16ProductALU(int maaID, uint16_t indirectUnit,
+                                    uint8_t responseSlot,
+                                    uint16_t offsetSlot,
+                                    uint64_t generation);
 
 protected:
     std::vector<RequestorID> my_instruction_RIDs;
@@ -1179,6 +1188,30 @@ public:
         std::vector<statistics::Scalar *> IND_VirtIndexFilterCycles;
         std::vector<statistics::Scalar *> IND_VirtIndexFilterWaitEvents;
         std::vector<statistics::Scalar *> IND_VirtIndexFilterWaitCycles;
+        std::vector<statistics::Scalar *> IND_FusedP16Operations;
+        std::vector<statistics::Scalar *> IND_FusedP16Epochs;
+        std::vector<statistics::Scalar *> IND_FusedP16SourceOrdinals;
+        std::vector<statistics::Scalar *> IND_FusedP16CoefficientReadIssues;
+        std::vector<statistics::Scalar *>
+            IND_FusedP16CoefficientReadResponses;
+        std::vector<statistics::Scalar *> IND_FusedP16CoefficientFills;
+        std::vector<statistics::Scalar *> IND_FusedP16CoefficientHits;
+        std::vector<statistics::Scalar *>
+            IND_FusedP16CoefficientMergedWaiters;
+        std::vector<statistics::Scalar *> IND_FusedP16CoefficientEvictions;
+        std::vector<statistics::Scalar *>
+            IND_FusedP16CoefficientDeliveries;
+        std::vector<statistics::Scalar *> IND_FusedP16CoefficientStalls;
+        std::vector<statistics::Scalar *> IND_FusedP16MulAccepts;
+        std::vector<statistics::Scalar *> IND_FusedP16MulCompletions;
+        std::vector<statistics::Scalar *> IND_FusedP16MulBackpressure;
+        std::vector<statistics::Scalar *> IND_FusedP16ProductInsertions;
+        std::vector<statistics::Scalar *>
+            IND_FusedP16ProductWriteCompletions;
+        std::vector<statistics::Scalar *> IND_FusedP16EpochDrains;
+        std::vector<statistics::Scalar *> IND_FusedP16Fallbacks;
+        std::vector<statistics::Scalar *> IND_FusedP16PublisherLines;
+        std::vector<statistics::Scalar *> IND_FusedP16VirtualPBytes;
         std::vector<statistics::Scalar *> IND_SoaJitInstructions;
         std::vector<statistics::Scalar *> IND_SoaJitSelected;
         std::vector<statistics::Scalar *> IND_SoaJitPredicateRejected;
