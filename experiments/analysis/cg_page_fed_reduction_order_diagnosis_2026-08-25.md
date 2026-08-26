@@ -53,11 +53,18 @@ indirect units, and no debug trace flags or wall timeout.
 Each arm must have a zero wrapper return code, one ROI terminal, one exact
 `m5_exit`, one passing treatment terminal, one passing fingerprint, the exact
 eleven-record reduction-evidence shape, nonempty final stats, resolved config
-closure, publication/value/A-line closure, and zero fallback/epoch drains.
+closure, publication/A-line closure, and zero fallback/epoch drains. Value
+traffic must have positive matched issue/response/fill totals, cached responses
+no greater than fills, and issue + ready-cache hit + merged-waiter totals equal
+selected values. Logical value delivery and aliases must each equal selected
+values; a physical value-read issue is never treated as one logical delivery.
+This permits legal cache/coalescer reuse while rejecting missing delivery.
 Checkpoint, immutable-artifact, source-status, and source-commit ledgers must
-match before/after. Only after those checks does the runner seal `result.json`,
-`raw_root.sha256`, and `gate.complete`. A cross-arm bit difference is archived
-as `outcome=DIFFER`, not discarded as a process failure.
+match before/after. The immutable ledger covers the compiled guest, its direct
+API/ABI inputs, and the runner/config modules that construct the treatment.
+Only after those checks does the runner seal `result.json`, `raw_root.sha256`,
+and `gate.complete`. A cross-arm bit difference is archived as `outcome=DIFFER`,
+not discarded as a process failure.
 
 ## Interpretation
 
@@ -76,12 +83,13 @@ as `outcome=DIFFER`, not discarded as a process failure.
 
 ## Static validation
 
-The focused contract suite contains 18 tests. It adversarially checks the four
+The focused contract suite contains 20 tests. It adversarially checks the four
 FP32 tail guards, both ordered reducers, post-combine barriers before every
 consumer, preservation of ordinary reductions, compact evidence shapes, the
 single-guest/single-checkpoint runner, frozen geometry, non-full/no-native/no-
-timeout constraints, exact terminal/stat closure, and before/after artifact
-sealing. C++ syntax checks pass with ordinary flags, deterministic-only flags,
+timeout constraints, exact terminal/stat closure, legal cache/coalescer reuse,
+missing delivery, and before/after artifact sealing. C++ syntax checks pass
+with ordinary flags, deterministic-only flags,
 and deterministic-plus-evidence flags; deterministic-plus-evidence also
 compiles to an object. The focused and adjacent static CG suite passes 76
 tests. No simulator validation has been run; launch remains explicitly
