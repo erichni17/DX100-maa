@@ -2,7 +2,8 @@
 
 ## Decision
 
-**ACCEPT for bounded CG_NA=256 evidence; full promotion remains pending.**
+**ACCEPT for bounded CG_NA=256 and 1024 evidence; full promotion remains
+pending.**
 
 The direct4/q16 path published each 4K product page coherently, then reread
 almost every selected product as a separate cache-line request because the
@@ -57,8 +58,39 @@ four physical p gathers and therefore retains the explicit
 
 ## Promotion gate
 
-The same cache-off/on pair is running at CG_NA=1024. A candidate-only full
-cache-on run is also active; it may be compared only to the separately running
-cache-off direct4 full candidate after both pass their own numerical,
-mechanism, provenance, and immutable-ledger gates. No native result is rerun or
-claimed.
+### CG_NA=1024 confirmation
+
+Accepted raw root:
+
+`/data1/nier/dx100-runs/2026-08-26-cg-direct4-q16-value-cache-na1024-r2`
+
+The fresh immutable-source pair uses selected integration commit `4438c917`.
+Its 56-entry ledger revalidates, both restores exit zero, and its completion
+gate reports exact correctness and `ACCEPT_TRAFFIC_AND_PERFORMANCE`. Raw and
+quantized fingerprints and all 11 deterministic reductions are byte-identical.
+
+| Metric | Cache off | Cache on | Change |
+|---|---:|---:|---:|
+| `simTicks` | 3,768,724,702 | 837,625,247 | 4.499296930x; 77.7743% lower |
+| SoA/JIT value-line reads | 1,064,960 | 66,862 | 93.7216% fewer |
+| Internal ready-line hits | 0 | 998,098 | exact issue + hit = 1,064,960 deliveries |
+| Total MAA cache-read packets | 1,220,982 | 222,884 | 81.7455% fewer |
+
+The cache-off arm differs by only 0.0182% from the earlier accepted
+`3,769,410,485`-tick direct4/q16 result, providing a stable reproduction. The
+new cache-on result is also 6.3253x faster than the separately accepted
+`5,298,227,998`-tick page-fed control, but that larger ratio combines direct4's
+removal of virtual-p materialization with value retention and is not used for
+single-mechanism attribution.
+
+The earlier
+`/data1/nier/dx100-runs/2026-08-26-cg-direct4-q16-value-cache-na1024-r1`
+raw arms both reached exact terminal output, but the wrapper correctly rejected
+the root after the lead committed an unrelated full-run provenance fix in its
+live worktree. It has no result or gate and is retained as
+`REJECT_SOURCE_IDENTITY_CHANGED`, not as architecture evidence.
+
+A candidate-only full cache-on run remains active. It may be compared only to
+the accepted cache-off direct4 full candidate after its own numerical,
+mechanism, provenance, and immutable-ledger gates pass. No native result is
+rerun or claimed.
