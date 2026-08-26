@@ -113,9 +113,23 @@ def test_product_responses_close_before_q16_open_and_ordered_admits() -> None:
     admit_loop = q_path.index(
         "for (int page_offset = 0; page_offset < TILE_SIZE", open_q16
     )
+    ready = q_path.index("wait_ready(t0);", admit_loop)
     admit = q_path.index("cg_page_fed_admit_q_index_page", admit_loop)
     close = q_path.index("cg_page_fed_q16_close", admit)
-    assert publish < open_q16 < admit_loop < admit < close
+    assert publish < open_q16 < admit_loop < ready < admit < close
+    assert q_path[open_q16:close].count("wait_ready(t0);") == 1
+    residual_start = SOURCE.index(
+        "cg_page_fed_q16_open(tid, curr_r, t6)", q_end
+    )
+    residual_end = SOURCE.index(
+        "cg_page_fed_q16_close(tid, t6)", residual_start
+    )
+    residual_q16 = SOURCE[residual_start:residual_end]
+    assert (
+        residual_q16.index("maa_range_loop<int>")
+        < residual_q16.index("wait_ready(t0);")
+        < residual_q16.index("cg_page_fed_admit_q_index_page")
+    )
     helper = SOURCE[
         SOURCE.index("cg_direct4_publish_product_page(") : SOURCE.index(
             "cg_page_fed_admit_q_index_page("

@@ -2203,6 +2203,7 @@ if (!cg_uses_page_fed_product_soa_jit())
                         for (int page_offset = 0; page_offset < TILE_SIZE;
                              page_offset += MAA_CONSUMER_TILE_SIZE) {
                             maa_range_loop<int>(r6, r7, t2, t3, r1, t0, t1);
+                            wait_ready(t0);
                             cg_page_fed_admit_q_index_page(
                                 tid, page_offset, t0);
                         }
@@ -2699,6 +2700,7 @@ if (!cg_uses_page_fed_product_soa_jit())
                     for (int page_offset = 0; page_offset < TILE_SIZE;
                          page_offset += MAA_CONSUMER_TILE_SIZE) {
                         maa_range_loop<int>(r6, r7, t2, t3, r1, t0, t1);
+                        wait_ready(t0);
                         cg_page_fed_admit_q_index_page(tid, page_offset, t0);
                     }
                     cg_page_fed_q16_close(tid, t6);
