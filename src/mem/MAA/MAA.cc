@@ -7320,7 +7320,6 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
         (*IND_NumUniqueRowsInserted[indirect_id]).flags(statistics::nozero);
         (*IND_NumRTFull[indirect_id]).flags(statistics::nozero);
         (*IND_NumOTFull[indirect_id]).flags(statistics::nozero);
-        (*IND_NumOTEpochDrain[indirect_id]).flags(statistics::nozero);
         (*IND_CyclesFill[indirect_id]).flags(statistics::nozero);
         (*IND_CyclesBuild[indirect_id]).flags(statistics::nozero);
         (*IND_CyclesRequest[indirect_id]).flags(statistics::nozero);
@@ -8365,10 +8364,8 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
         (*STR_NumWordsInserted[stream_id]).flags(statistics::nozero);
         (*STR_NumCacheLineInserted[stream_id]).flags(statistics::nozero);
         (*STR_NumRTFull[stream_id]).flags(statistics::nozero);
-        (*STR_PublishIssues[stream_id]).flags(statistics::nozero);
         (*STR_PublishAccepts[stream_id]).flags(statistics::nozero);
         (*STR_PublishRetries[stream_id]).flags(statistics::nozero);
-        (*STR_PublishWriteResponses[stream_id]).flags(statistics::nozero);
         (*STR_PublishCreditHWM[stream_id]).flags(statistics::nozero);
         (*STR_PublishCreditStalls[stream_id]).flags(statistics::nozero);
         (*STR_PublishOverlapIssues[stream_id]).flags(statistics::nozero);

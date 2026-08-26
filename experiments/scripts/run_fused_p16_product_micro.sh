@@ -13,8 +13,23 @@ required_stat_sum() {
         END {if (section == 0 || !found) exit 2}' "$stats"
 }
 
+required_stat_eq() {
+    local stats=$1
+    local suffix=$2
+    local expected=$3
+    local actual
+    if ! actual=$(required_stat_sum "$stats" "$suffix"); then
+        return 2
+    fi
+    [[ $actual -eq $expected ]]
+}
+
 if [[ $# -eq 3 && $1 == --require-stat ]]; then
     required_stat_sum "$2" "$3"
+    exit
+fi
+if [[ $# -eq 4 && $1 == --require-stat-eq ]]; then
+    required_stat_eq "$2" "$3" "$4"
     exit
 fi
 
@@ -201,7 +216,7 @@ coefficient_issues=$(stat_sum IND_FusedP16CoefficientReadIssues)
 for forbidden in IND_FusedP16EpochDrains IND_FusedP16Fallbacks \
     IND_FusedP16PublisherLines IND_FusedP16VirtualPBytes \
     IND_BoundedGlobalMergeFallbacks IND_NumOTEpochDrain STR_PublishIssues; do
-    [[ $(stat_sum "$forbidden") -eq 0 ]]
+    required_stat_eq "$stats" "$forbidden" 0
 done
 [[ $(stat_sum IND_SoaJitPageFedOperations) -eq 1 ]]
 [[ $(stat_sum IND_SoaJitPageFedAdmitCommands) -eq 4 ]]
