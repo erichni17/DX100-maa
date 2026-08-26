@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Run the exact cache-on CG_NA=256 p16/q16 control/fused pair.
+"""Run the exact cache-on bounded p16/q16 control/fused pair.
 
 One deterministic guest and one immutable checkpoint feed two serial restores.
-No native or full workload is accepted.  Correctness, mechanism ledgers, and
-the exact config delta close before first-ROI simTicks is compared.
+CG_NA=256 is the accepted successor screen.  CG_NA=1024 is available only when
+``--confirm-from`` revalidates that exact successor raw root, authority, and
+source schema.  No native or full workload is accepted.  Correctness,
+mechanism ledgers, and the exact config delta close before first-ROI simTicks
+is compared.
 """
 
 from __future__ import annotations
@@ -26,8 +29,35 @@ direct = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(direct)
 base = direct.base
 
-CG_NA = 256
-GEM5 = ROOT / "build/X86/gem5.opt"
+SCREEN_CG_NA = 256
+CONFIRM_CG_NA = 1024
+CG_NA = SCREEN_CG_NA
+ACTIVE_CG_NA = SCREEN_CG_NA
+EXPECTED_WINDOWS = {SCREEN_CG_NA: 10, CONFIRM_CG_NA: 65}
+SUCCESSOR_AUTHORITY = (
+    ROOT / "experiments/analysis/fused_p16_product_successor_2026-08-26.json"
+)
+SUCCESSOR_AUTHORITY_SHA256 = (
+    "10cd9cf72458f9e8abf2ac1d399abdd9dba171b46d5ba8938a44704d14be9a7d"
+)
+SUCCESSOR_SOURCE_COMMIT = "4a4d91b8f176c33779804fbd163014593d89e737"
+SUCCESSOR_GEM5_SHA256 = (
+    "271836b58d02d9d50a658cd5c7628e15559ca22d3a04477ab15475e3744dfd2e"
+)
+SUCCESSOR_GEM5 = Path(
+    "/data1/nier/worktrees/codex-sessions/"
+    "hybrid-fused-p16-product-evidence-repair-2026082-20260826-160656-"
+    "c4f154c5/DX100-virtualization-selected-integration-cont-20260826/"
+    "build/X86/gem5.opt"
+)
+SUCCESSOR_SOURCE_SCHEMA_PATHS = (
+    "src",
+    "configs",
+    "benchmarks",
+    "include",
+    "util",
+)
+GEM5 = SUCCESSOR_GEM5
 RAMULATOR = base.RAMULATOR
 ARMS = (
     ("control", "page_fed_product_soa_jit"),
@@ -91,6 +121,27 @@ FUSED_STAT_SCHEMA = (
     "IND_FusedP16PublisherLines",
     "IND_FusedP16VirtualPBytes",
 )
+REQUIRED_STAT_SCHEMA = (*COMMON_STAT_SCHEMA, *FUSED_STAT_SCHEMA)
+REQUIRED_STAT_SCHEMA_SIZE = 43
+HARDWARE_ACCOUNTING = {
+    "selected_indirect_units": 4,
+    "selected_if_slots": 32,
+    "response_substate_bytes_total": 32,
+    "lifecycle_semantic_bytes_total": 68,
+    "lifecycle_cpp_bound_bytes_total": 96,
+    "descriptor_closure_semantic_bytes_total": 32,
+    "descriptor_closure_cpp_bound_bytes_total": 256,
+    "tagged_alu_state_bytes": 8,
+    "candidate_control_state_semantic_bytes_total": 140,
+    "candidate_control_state_conservative_bytes_total": 392,
+    "descriptor_payload_bytes_delta": 0,
+    "row_offset_payload_bytes_delta": 0,
+    "external_ports_delta": 0,
+    "new_multipliers": 0,
+    "guest_coherent_backing_bytes_delta": -262144,
+    "virtual_p_write_bytes_removed_per_window": 65536,
+    "virtual_p_read_bytes_removed_per_window": 65536,
+}
 
 
 def require(condition: bool, message: str) -> None:
@@ -107,6 +158,205 @@ def integer(fields: dict[str, str], name: str) -> int:
         return int(fields[name])
     except (KeyError, ValueError) as error:
         raise RuntimeError(f"missing integer terminal field {name}") from error
+
+
+def verify_raw_root(root: Path, expected_digest: str) -> str:
+    """Rehash the accepted root and bind its immutable ledger to its gate."""
+    root = root.resolve()
+    ledger = root / "raw_root.sha256"
+    gate = root / "gate.complete"
+    require(
+        ledger.is_file() and gate.is_file(), f"incomplete raw root: {root}"
+    )
+    seen: set[Path] = set()
+    for number, line in enumerate(
+        ledger.read_text(encoding="utf-8").splitlines(), 1
+    ):
+        match = re.fullmatch(r"([0-9a-f]{64})  (.+)", line)
+        require(match is not None, f"malformed raw ledger line {number}")
+        relative = Path(match.group(2))  # type: ignore[union-attr]
+        require(
+            not relative.is_absolute()
+            and ".." not in relative.parts
+            and relative not in seen,
+            "unsafe or duplicate raw ledger path",
+        )
+        seen.add(relative)
+        artifact = root / relative
+        require(
+            artifact.is_file()
+            and not artifact.is_symlink()
+            and base.sha256_file(artifact) == match.group(1),  # type: ignore[union-attr]
+            f"raw ledger mismatch for {relative}",
+        )
+    require(len(seen) == 54, f"successor raw ledger has {len(seen)}/54 files")
+    require(
+        {
+            Path("result.json"),
+            Path("input/artifact_sha256.before"),
+            Path("input/artifact_sha256.after"),
+            Path("input/checkpoint_files.before"),
+            Path("input/checkpoint_files.after"),
+            Path("control/stats.txt"),
+            Path("candidate/stats.txt"),
+        }.issubset(seen),
+        "successor raw ledger omits required evidence",
+    )
+    digest = base.sha256_file(ledger)
+    require(digest == expected_digest, "successor raw ledger digest changed")
+    gate_lines = gate.read_text(encoding="utf-8").splitlines()
+    require(
+        gate_lines.count("COMPLETE_CG_FUSED_P16_PRODUCT_Q16") == 1
+        and gate_lines.count("decision=ACCEPT") == 1
+        and gate_lines.count("correctness=EXACT_MATCH") == 1
+        and gate_lines.count(f"raw_root_sha256={digest}") == 1,
+        "successor gate does not bind an exact accepted raw ledger",
+    )
+    return digest
+
+
+def validate_current_source_schema(source_commit: str) -> None:
+    """Require content identity to the accepted source, not branch identity."""
+    object_check = subprocess.run(
+        ["git", "cat-file", "-e", f"{source_commit}^{{commit}}"],
+        cwd=ROOT,
+        check=False,
+    )
+    require(object_check.returncode == 0, "successor source commit is absent")
+    source_diff = subprocess.run(
+        [
+            "git",
+            "diff",
+            "--quiet",
+            source_commit,
+            "--",
+            *SUCCESSOR_SOURCE_SCHEMA_PATHS,
+        ],
+        cwd=ROOT,
+        check=False,
+    )
+    require(
+        source_diff.returncode == 0,
+        "current simulator/guest/config source differs from successor schema",
+    )
+
+
+def validate_confirmation_document(
+    root: Path, authority: dict, result: dict, ledger_sha: str
+) -> None:
+    """Validate the pinned authority and its terminal NA=256 result schema."""
+    accepted = authority.get("cg_na256", {})
+    performance = result.get("performance", {})
+    require(
+        authority.get("schema")
+        == "dx100.analysis.fused_p16_product_successor.v1"
+        and authority.get("decision") == "ACCEPT_BOUNDED_SUCCESSOR"
+        and authority.get("bounded_successor_authority") is True
+        and authority.get("general_promotion") is False
+        and authority.get("native_runs") == 0
+        and authority.get("full_cg_runs") == 0
+        and authority.get("source_commit") == SUCCESSOR_SOURCE_COMMIT
+        and authority.get("gem5_sha256") == SUCCESSOR_GEM5_SHA256
+        and accepted.get("root") == str(root.resolve())
+        and accepted.get("raw_root_sha256") == ledger_sha
+        and accepted.get("required_stat_schema_fields")
+        == REQUIRED_STAT_SCHEMA_SIZE
+        and accepted.get("required_stat_schema_present") is True
+        and accepted.get("fingerprints_exact_equal") is True
+        and accepted.get("deterministic_reductions_exact_equal") is True
+        and accepted.get("decision") == "ACCEPT",
+        "successor authority does not authorize this NA=256 root",
+    )
+    require(
+        result.get("schema") == "dx100.cg.fused_p16_product_q16.v1"
+        and result.get("terminal") is True
+        and result.get("decision") == "ACCEPT"
+        and result.get("native_runs") == 0
+        and result.get("full_cg_runs") == 0
+        and result.get("cg_na") == SCREEN_CG_NA
+        and result.get("source_commit") == SUCCESSOR_SOURCE_COMMIT
+        and result.get("gem5_sha256") == SUCCESSOR_GEM5_SHA256
+        and result.get("ramulator_sha256") == authority.get("ramulator_sha256")
+        and result.get("fingerprints_exact_equal") is True
+        and result.get("deterministic_reductions_exact_equal") is True
+        and result.get("p16_epochs") == EXPECTED_WINDOWS[SCREEN_CG_NA]
+        and result.get("required_stat_schema") == list(REQUIRED_STAT_SCHEMA)
+        and len(result.get("required_stat_schema", []))
+        == REQUIRED_STAT_SCHEMA_SIZE
+        and result.get("required_stat_schema_present") is True
+        and result.get("virtual_p_bytes") == 0
+        and result.get("publisher_lines") == 0
+        and result.get("fallbacks") == 0
+        and performance.get("metric") == "simTicks"
+        and performance.get("control")
+        == accepted.get("performance", {}).get("control")
+        and performance.get("candidate")
+        == accepted.get("performance", {}).get("candidate")
+        and performance.get("candidate", 0) < performance.get("control", 0),
+        "successor result is not the exact/faster 43-field NA=256 gate",
+    )
+
+
+def require_confirmation(
+    root: Path, authority_path: Path = SUCCESSOR_AUTHORITY
+) -> dict[str, str]:
+    """Authorize NA=1024 only from the hardened successor NA=256 root."""
+    require(
+        base.sha256_file(authority_path) == SUCCESSOR_AUTHORITY_SHA256,
+        "successor authority JSON changed",
+    )
+    authority = json.loads(authority_path.read_text(encoding="utf-8"))
+    expected_digest = authority.get("cg_na256", {}).get("raw_root_sha256")
+    require(
+        isinstance(expected_digest, str)
+        and re.fullmatch(r"[0-9a-f]{64}", expected_digest) is not None,
+        "successor authority has no valid NA=256 raw-root digest",
+    )
+    root = root.resolve()
+    ledger_sha = verify_raw_root(root, expected_digest)
+    result = json.loads((root / "result.json").read_text(encoding="utf-8"))
+    validate_confirmation_document(root, authority, result, ledger_sha)
+
+    require(
+        (root / "input/source_commit.before")
+        .read_text(encoding="utf-8")
+        .strip()
+        == SUCCESSOR_SOURCE_COMMIT,
+        "successor root source identity changed",
+    )
+    artifact_before = root / "input/artifact_sha256.before"
+    artifact_after = root / "input/artifact_sha256.after"
+    checkpoint_before = root / "input/checkpoint_files.before"
+    checkpoint_after = root / "input/checkpoint_files.after"
+    require(
+        artifact_before.read_bytes() == artifact_after.read_bytes()
+        and base.sha256_file(artifact_before)
+        == authority["cg_na256"]["artifact_ledger_sha256"],
+        "successor artifact ledger is not immutable",
+    )
+    require(
+        checkpoint_before.read_bytes() == checkpoint_after.read_bytes()
+        and base.sha256_file(checkpoint_before)
+        == authority["cg_na256"]["checkpoint_ledger_sha256"],
+        "successor checkpoint ledger is not immutable",
+    )
+    for relative in (
+        "checkpoint.log.exit",
+        "control/restore.log.exit",
+        "candidate/restore.log.exit",
+    ):
+        require(
+            (root / relative).read_text(encoding="utf-8").strip() == "0",
+            f"successor child failed: {relative}",
+        )
+    validate_current_source_schema(SUCCESSOR_SOURCE_COMMIT)
+    return {
+        "root": str(root),
+        "raw_root_sha256": ledger_sha,
+        "authority_sha256": SUCCESSOR_AUTHORITY_SHA256,
+        "source_commit": SUCCESSOR_SOURCE_COMMIT,
+        "gem5_sha256": SUCCESSOR_GEM5_SHA256,
+    }
 
 
 def require_config(config: Path) -> None:
@@ -189,8 +439,9 @@ def require_terminal(fields: dict[str, str], treatment: str) -> int:
     windows = values["full_windows"]
     words = windows * 16384
     pages = windows * 4
+    expected = EXPECTED_WINDOWS[ACTIVE_CG_NA]
     common = (
-        windows == 10
+        windows == expected
         and values["staged_index_words"] == words
         and values["staged_value_words"] == 0
         and values["product_words"] == words
@@ -251,7 +502,10 @@ def require_terminal(fields: dict[str, str], treatment: str) -> int:
             and values["virtual_backing_traffic_eliminated"] == 1
             and values["external_coherent_backing_bytes"] == 262144
         )
-    require(common and exact, f"terminal closure failed: {fields}")
+    require(
+        common and windows == expected and exact,
+        f"terminal closure failed: {fields}",
+    )
     return windows
 
 
@@ -264,8 +518,10 @@ def require_stats(stats: Path, windows: int, treatment: str) -> dict[str, int]:
     values = require_stat_schema(stats, COMMON_STAT_SCHEMA)
     words = windows * 16384
     pages = windows * 4
+    expected = EXPECTED_WINDOWS[ACTIVE_CG_NA]
     q_closed = (
-        values["simTicks"] > 0
+        windows == expected
+        and values["simTicks"] > 0
         and values["IND_SoaJitInstructions"] == windows
         and values["IND_SoaJitSelected"] == words
         and values["IND_SoaJitAliasesApplied"] == words
@@ -372,11 +628,20 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("out", type=Path)
     parser.add_argument("--cg-na", type=int, default=CG_NA)
+    parser.add_argument("--confirm-from", type=Path)
     args = parser.parse_args(argv)
-    if args.cg_na != CG_NA:
+    global ACTIVE_CG_NA
+    if args.cg_na not in (SCREEN_CG_NA, CONFIRM_CG_NA):
         parser.error(
-            "this gate accepts only CG_NA=256; native/full are forbidden"
+            "this gate accepts only CG_NA=256 or confirmed CG_NA=1024; native/full are forbidden"
         )
+    if args.cg_na == CONFIRM_CG_NA and args.confirm_from is None:
+        parser.error("CG_NA=1024 requires --confirm-from accepted NA=256 root")
+    if args.cg_na == SCREEN_CG_NA and args.confirm_from is not None:
+        parser.error("--confirm-from is valid only with CG_NA=1024")
+    ACTIVE_CG_NA = args.cg_na
+    if ACTIVE_CG_NA == CONFIRM_CG_NA:
+        require_confirmation(args.confirm_from)
     out = args.out.resolve()
     require(
         out != ROOT and ROOT not in out.parents,
@@ -431,7 +696,7 @@ def main(argv: list[str] | None = None) -> int:
         "-DCG_FP_ENABLE",
         "-DCG_DETERMINISTIC_REDUCTIONS",
         "-DCG_REDUCTION_EVIDENCE",
-        f"-DCG_NA={CG_NA}",
+        f"-DCG_NA={ACTIVE_CG_NA}",
         "-DNUM_CORES=4",
         "-DNUM_TILES_PER_CORE=8",
         "-DTILE_SIZE=16384",
@@ -530,7 +795,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         fingerprint = base.exactly_one(
             lines,
-            rf"^CG_FINGERPRINT mode=MAA elements={CG_NA} .* result=PASS$",
+            rf"^CG_FINGERPRINT mode=MAA elements={ACTIVE_CG_NA} .* result=PASS$",
             f"{name} fingerprint",
         )
         terminal_line = base.exactly_one(
@@ -602,7 +867,7 @@ def main(argv: list[str] | None = None) -> int:
         "decision": decision,
         "native_runs": 0,
         "full_cg_runs": 0,
-        "cg_na": CG_NA,
+        "cg_na": ACTIVE_CG_NA,
         "source_commit": before_commit,
         "gem5_sha256": base.sha256_file(GEM5),
         "ramulator_sha256": base.sha256_file(RAMULATOR),
