@@ -71,6 +71,7 @@ class FusedP16ProductMicroContract(unittest.TestCase):
         self.assertIn("c_issue == c_response", RUNNER)
         self.assertIn('addresses("source_issue", operation_tick)', RUNNER)
         self.assertIn("expected 256 dump records", RUNNER)
+        self.assertIn('"$out/checkpoint.log"', RUNNER)
 
 
 if __name__ == "__main__":

@@ -90,7 +90,7 @@ restore="$out/run/restore.log"
 stats="$out/run/stats.txt"
 trace="$out/run/fused_p16_trace.log"
 [[ -s $restore && -s $stats && -s $trace ]]
-[[ $(grep -Ec '^FUSED_P16_PRODUCT_LAYOUT .*virtual_p_allocation_bytes=0 .*product_publisher_lines=0 .*global_fallbacks=0$' "$restore" || true) -eq 1 ]]
+[[ $(grep -Ec '^FUSED_P16_PRODUCT_LAYOUT .*virtual_p_allocation_bytes=0 .*product_publisher_lines=0 .*global_fallbacks=0$' "$out/checkpoint.log" || true) -eq 1 ]]
 [[ $(grep -Fxc 'FUSED_P16_PRODUCT_PROGRESS producer_complete=1' "$restore" || true) -eq 1 ]]
 [[ $(grep -Fxc 'FUSED_P16_PRODUCT_PROGRESS q16_complete=1' "$restore" || true) -eq 1 ]]
 [[ $(grep -Fxc 'FUSED_P16_PRODUCT_SENTINELS count=0' "$restore" || true) -eq 1 ]]
