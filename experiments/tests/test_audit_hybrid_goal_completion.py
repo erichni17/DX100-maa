@@ -279,6 +279,56 @@ class HybridGoalAuditTest(unittest.TestCase):
             "failed",
         )
 
+    def test_lane4_successor_certificate_is_accepted(self) -> None:
+        root = self.base / "lane4-certificate"
+        root.mkdir()
+        root.joinpath("manifest.json").write_text("{}")
+        cert = {
+            "schema": "dx100.cg.direct4_product_page_fed_q16_lane4_full_successor_certificate.v1",
+            "verdict": "PASS_NUMERICAL_MECHANISM_CORRECT",
+            "native_speedup_claim": False,
+            "iso_area_claim": False,
+            "full_promotion_claim": False,
+            "candidate": {
+                "first_roi_simTicks": 111116739967,
+                "stats": {
+                    "IND_SoaJitInstructions": 10960,
+                    "IND_SoaJitActiveApplyLanes": 43840,
+                    "IND_SoaJitApplyLaneHighWater": 43242,
+                },
+                "terminal": {
+                    "p16_reorder_preserved": 0,
+                    "q16_reorder_preserved": 1,
+                    "physical_spd_payload_bytes": 524288,
+                    "external_coherent_backing_bytes": 262144,
+                },
+            },
+            "accepted_lane_1_control": {
+                "first_roi_simTicks": 123968991971,
+                "certificate_verified": True,
+            },
+            "lane_accounting": {
+                "at_least_one_operation_used_four_lanes": True
+            },
+            "hardware_accounting": {
+                "new_payload_bytes": 0,
+                "new_control_bytes": 0,
+                "new_ports": 0,
+                "physical_spd_payload_bytes": 524288,
+                "fixed_apply_lanes_per_indirect_unit": 4,
+                "incremental_apply_lane_pool_bytes_vs_lane_1": 0,
+            },
+        }
+        root.joinpath("certificate.json").write_text(json.dumps(cert))
+        root.joinpath("gate.complete").write_text(
+            "PASS_NUMERICAL_MECHANISM_CORRECT\n"
+        )
+        self._input(root)
+        self.assertEqual(
+            AUDIT.audit_cg(self.roots["cg_certificate"], root)["status"],
+            "passed",
+        )
+
     def test_hidden_hardware_bytes_are_rejected(self) -> None:
         self.roots["sssp"].joinpath("candidate.manifest").write_text(
             "native_arms=0\nlogical_elements=16384\nphysical_tile_elements=4096\nactive_contexts=8\nhidden_payload_bytes=4\n"

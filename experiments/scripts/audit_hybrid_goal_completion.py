@@ -19,7 +19,7 @@ from typing import Any
 
 DEFAULTS = {
     "cg_certificate": "/data1/nier/dx100-runs/2026-08-26-cg-page-fed-full-reclassification-r1",
-    "cg_direct4": "/data1/nier/dx100-runs/2026-08-26-cg-direct4-product-page-fed-q16-value-cache-full-r2",
+    "cg_direct4": "/data1/nier/dx100-runs/2026-08-26-cg-direct4-product-page-fed-q16-lane4-full-certificate-r1",
     "is_certificate": "/data1/nier/dx100-runs/2026-08-26-is-scalar-soa-full-certificate-r1",
     "hashjoin_pro": "/data1/nier/dx100-runs/2026-08-24-hashjoin-pro-hardened-r1",
     "hashjoin_prh": "/data1/nier/dx100-runs/2026-08-24-hashjoin-prh-hardened-r1",
@@ -233,6 +233,93 @@ def audit_cg(
             "CG: tolerant evidence overclaims performance",
             failures,
         )
+
+    lane4_certificate = json_file(direct4_root / "certificate.json")
+    if lane4_certificate is not None:
+        lane4_certificate = certificate_gate(
+            direct4_root,
+            "PASS_NUMERICAL_MECHANISM_CORRECT",
+            failures,
+            "CG lane4 certificate",
+        )
+        candidate = (
+            lane4_certificate.get("candidate", {})
+            if isinstance(lane4_certificate, dict)
+            else {}
+        )
+        stats = (
+            candidate.get("stats", {}) if isinstance(candidate, dict) else {}
+        )
+        terminal = (
+            candidate.get("terminal", {}) if isinstance(candidate, dict) else {}
+        )
+        accounting = (
+            lane4_certificate.get("hardware_accounting", {})
+            if isinstance(lane4_certificate, dict)
+            else {}
+        )
+        lanes = (
+            lane4_certificate.get("lane_accounting", {})
+            if isinstance(lane4_certificate, dict)
+            else {}
+        )
+        lane1 = (
+            lane4_certificate.get("accepted_lane_1_control", {})
+            if isinstance(lane4_certificate, dict)
+            else {}
+        )
+        check(
+            lane4_certificate is not None
+            and lane4_certificate.get("schema")
+            == "dx100.cg.direct4_product_page_fed_q16_lane4_full_successor_certificate.v1"
+            and lane4_certificate.get("native_speedup_claim") is False
+            and lane4_certificate.get("iso_area_claim") is False
+            and lane4_certificate.get("full_promotion_claim") is False,
+            "CG lane4: claim boundary is absent",
+            failures,
+        )
+        check(
+            candidate.get("first_roi_simTicks") == 111116739967
+            and lane1.get("first_roi_simTicks") == 123968991971
+            and lane1.get("certificate_verified") is True,
+            "CG lane4: certified lane comparison is absent",
+            failures,
+        )
+        check(
+            terminal.get("p16_reorder_preserved") == 0
+            and terminal.get("q16_reorder_preserved") == 1
+            and terminal.get("physical_spd_payload_bytes") == 524288
+            and terminal.get("external_coherent_backing_bytes") == 262144,
+            "CG lane4: reorder/storage terminal is absent",
+            failures,
+        )
+        instructions = stats.get("IND_SoaJitInstructions")
+        active = stats.get("IND_SoaJitActiveApplyLanes")
+        high_water = stats.get("IND_SoaJitApplyLaneHighWater")
+        check(
+            instructions == 10960
+            and active == 4 * instructions
+            and 3 * instructions < high_water <= 4 * instructions
+            and lanes.get("at_least_one_operation_used_four_lanes") is True,
+            "CG lane4: bounded four-lane use is absent",
+            failures,
+        )
+        check(
+            accounting.get("new_payload_bytes") == 0
+            and accounting.get("new_control_bytes") == 0
+            and accounting.get("new_ports") == 0
+            and accounting.get("physical_spd_payload_bytes") == 524288
+            and accounting.get("fixed_apply_lanes_per_indirect_unit") == 4
+            and accounting.get("incremental_apply_lane_pool_bytes_vs_lane_1")
+            == 0,
+            "CG lane4: fixed hardware accounting is absent",
+            failures,
+        )
+        return {
+            "status": "passed" if not failures else "failed",
+            "failures": failures,
+            "validator": verifier,
+        }
 
     manifest = json_file(direct4_root / "manifest.json")
     if manifest is None:
