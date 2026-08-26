@@ -69,6 +69,7 @@ class FusedP16ProductMicroContract(unittest.TestCase):
             self.assertIn(stat, RUNNER)
         self.assertIn("p_issue == p_response", RUNNER)
         self.assertIn("c_issue == c_response", RUNNER)
+        self.assertIn('addresses("source_issue", operation_tick)', RUNNER)
         self.assertIn("expected 256 dump records", RUNNER)
 
 

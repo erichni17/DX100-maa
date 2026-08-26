@@ -164,19 +164,28 @@ import sys
 from pathlib import Path
 
 lines = Path(sys.argv[1]).read_text().splitlines()
+begin = next(
+    line for line in lines if "event=fused_p16_product_begin " in line
+)
+operation = re.search(r"operation_tick=(\d+)", begin)
+if operation is None:
+    raise SystemExit("fused producer trace lacks operation identity")
+operation_tick = operation.group(1)
 
-def addresses(event):
+def addresses(event, operation_tick=None):
     result = []
     for line in lines:
         if f"event={event} " not in line:
+            continue
+        if operation_tick is not None and f"operation_tick={operation_tick} " not in line:
             continue
         match = re.search(r"(?:addr|paddr)=0x([0-9a-f]+)", line)
         if match:
             result.append(int(match.group(1), 16))
     return result
 
-p_issue = addresses("source_issue")
-p_response = addresses("source_response")
+p_issue = addresses("source_issue", operation_tick)
+p_response = addresses("source_response", operation_tick)
 c_issue = [
     int(m.group(1), 16)
     for line in lines
