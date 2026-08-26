@@ -62,6 +62,7 @@ Authors of the OpenMP code:
 #include <cinttypes>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -112,6 +113,11 @@ static_assert(MAA_CONSUMER_TILE_SIZE <= TILE_SIZE,
               "consumer tile cannot exceed the logical gather tile");
 static_assert(TILE_SIZE % MAA_CONSUMER_TILE_SIZE == 0,
               "logical gather tile must contain whole consumer pages");
+
+#if defined(CG_REDUCTION_EVIDENCE) && \
+    !defined(CG_DETERMINISTIC_REDUCTIONS)
+#error "CG reduction evidence requires deterministic reductions"
+#endif
 
 #ifdef CG_LOGICAL16_RMW
 #if !defined(GEM5) || !defined(MAA) || !defined(MAA_GENERAL_VIRTUAL_CONSUMER)
@@ -602,6 +608,140 @@ static bool print_cg_fingerprint(const std::string &mode, const float x[],
            x_sum, x_norm_sq, z_sum, z_norm_sq, rnorm, zeta, nonfinite_x,
            nonfinite_z, pass ? "PASS" : "FAIL");
     return pass;
+}
+#endif
+
+#ifdef CG_DETERMINISTIC_REDUCTIONS
+static_assert(NUM_CORES == 4,
+              "CG deterministic reductions are bounded to four threads");
+
+enum class CgReductionDownstream
+{
+    None,
+    NumeratorOverReduction,
+    ReductionOverDenominator,
+};
+
+alignas(64) static float cg_reduction_partials[NUM_CORES];
+alignas(64) static double cg_outer_reduction_partials[NUM_CORES][2];
+
+#ifdef CG_REDUCTION_EVIDENCE
+static uint32_t
+cg_reduction_float_bits(float value)
+{
+    uint32_t bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+static uint64_t
+cg_reduction_double_bits(double value)
+{
+    uint64_t bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+#endif
+
+static void
+cg_deterministic_reduce(float partial, float *destination,
+                        const char *phase, int cgit,
+                        CgReductionDownstream downstream,
+                        float downstream_operand)
+{
+    const int tid = omp_get_thread_num();
+    if (omp_get_num_threads() != NUM_CORES || tid < 0 || tid >= NUM_CORES)
+        std::abort();
+
+    cg_reduction_partials[tid] = partial;
+#pragma omp barrier
+    if (tid == 0) {
+        float total = 0.0;
+        for (int reduction_tid = 0; reduction_tid < NUM_CORES;
+             ++reduction_tid)
+            total += cg_reduction_partials[reduction_tid];
+        *destination = total;
+#ifdef CG_REDUCTION_EVIDENCE
+        std::printf(
+            "CG_REDUCTION_EVIDENCE phase=%s cgit=%d order=0,1,2,3 "
+            "p0=%08" PRIx32 " p1=%08" PRIx32 " p2=%08" PRIx32
+            " p3=%08" PRIx32 " result=%08" PRIx32,
+            phase, cgit, cg_reduction_float_bits(cg_reduction_partials[0]),
+            cg_reduction_float_bits(cg_reduction_partials[1]),
+            cg_reduction_float_bits(cg_reduction_partials[2]),
+            cg_reduction_float_bits(cg_reduction_partials[3]),
+            cg_reduction_float_bits(total));
+        if (downstream == CgReductionDownstream::NumeratorOverReduction) {
+            const float value = downstream_operand / total;
+            std::printf(" alpha=%08" PRIx32,
+                        cg_reduction_float_bits(value));
+        } else if (downstream ==
+                   CgReductionDownstream::ReductionOverDenominator) {
+            const float value = total / downstream_operand;
+            std::printf(" beta=%08" PRIx32,
+                        cg_reduction_float_bits(value));
+        }
+        std::printf("\n");
+#else
+        (void)phase;
+        (void)cgit;
+        (void)downstream;
+        (void)downstream_operand;
+#endif
+    }
+}
+
+static void
+cg_deterministic_outer_reduce(double xz_partial, double zz_partial,
+                              double *xz, double *zz, int iteration,
+                              double shift)
+{
+    const int tid = omp_get_thread_num();
+    if (omp_get_num_threads() != NUM_CORES || tid < 0 || tid >= NUM_CORES)
+        std::abort();
+
+    cg_outer_reduction_partials[tid][0] = xz_partial;
+    cg_outer_reduction_partials[tid][1] = zz_partial;
+#pragma omp barrier
+    if (tid == 0) {
+        double xz_total = 0.0;
+        double zz_total = 0.0;
+        for (int reduction_tid = 0; reduction_tid < NUM_CORES;
+             ++reduction_tid) {
+            xz_total += cg_outer_reduction_partials[reduction_tid][0];
+            zz_total += cg_outer_reduction_partials[reduction_tid][1];
+        }
+        *xz = xz_total;
+        *zz = zz_total;
+#ifdef CG_REDUCTION_EVIDENCE
+        const double norm_scale = 1.0 / std::sqrt(zz_total);
+        const double zeta_value = shift + 1.0 / xz_total;
+        std::printf(
+            "CG_OUTER_REDUCTION_EVIDENCE it=%d order=0,1,2,3 "
+            "xz0=%016" PRIx64 " zz0=%016" PRIx64
+            " xz1=%016" PRIx64 " zz1=%016" PRIx64
+            " xz2=%016" PRIx64 " zz2=%016" PRIx64
+            " xz3=%016" PRIx64 " zz3=%016" PRIx64
+            " xz_result=%016" PRIx64 " zz_result=%016" PRIx64
+            " norm_scale=%016" PRIx64 " zeta=%016" PRIx64 "\n",
+            iteration,
+            cg_reduction_double_bits(cg_outer_reduction_partials[0][0]),
+            cg_reduction_double_bits(cg_outer_reduction_partials[0][1]),
+            cg_reduction_double_bits(cg_outer_reduction_partials[1][0]),
+            cg_reduction_double_bits(cg_outer_reduction_partials[1][1]),
+            cg_reduction_double_bits(cg_outer_reduction_partials[2][0]),
+            cg_reduction_double_bits(cg_outer_reduction_partials[2][1]),
+            cg_reduction_double_bits(cg_outer_reduction_partials[3][0]),
+            cg_reduction_double_bits(cg_outer_reduction_partials[3][1]),
+            cg_reduction_double_bits(xz_total),
+            cg_reduction_double_bits(zz_total),
+            cg_reduction_double_bits(norm_scale),
+            cg_reduction_double_bits(zeta_value));
+#else
+        (void)iteration;
+        (void)shift;
+#endif
+    }
 }
 #endif
 
@@ -1118,12 +1258,6 @@ int main(int argc, char **argv) {
 #endif
             }
 
-#pragma omp single
-            {
-                norm_temp1 = 0.0;
-                norm_temp2 = 0.0;
-            }
-
             /*
 			 * --------------------------------------------------------------------
 			 * zeta = shift + 1/(x.z)
@@ -1132,11 +1266,30 @@ int main(int argc, char **argv) {
 			 * so, first: (z.z)
 			 * --------------------------------------------------------------------
 			 */
+#ifdef CG_DETERMINISTIC_REDUCTIONS
+            double norm_temp1_partial = 0.0;
+            double norm_temp2_partial = 0.0;
+#pragma omp for schedule(static) nowait
+            for (j = 0; j < lastcol - firstcol + 1; j++) {
+                norm_temp1_partial += x[j] * z[j];
+                norm_temp2_partial += z[j] * z[j];
+            }
+            cg_deterministic_outer_reduce(
+                norm_temp1_partial, norm_temp2_partial, &norm_temp1,
+                &norm_temp2, it, SHIFT);
+#pragma omp barrier
+#else
+#pragma omp single
+            {
+                norm_temp1 = 0.0;
+                norm_temp2 = 0.0;
+            }
 #pragma omp for reduction(+ : norm_temp1, norm_temp2)
             for (j = 0; j < lastcol - firstcol + 1; j++) {
                 norm_temp1 += x[j] * z[j];
                 norm_temp2 += z[j] * z[j];
             }
+#endif
 #pragma omp single
             {
                 norm_temp2 = 1.0 / sqrt(norm_temp2);
@@ -1534,10 +1687,37 @@ static void conj_grad_maa(int colidx[],
         rho_tmp += my_r[j + 6] * my_r[j + 6];
         rho_tmp += my_r[j + 7] * my_r[j + 7];
     }
+#ifdef CG_DETERMINISTIC_REDUCTIONS
+#pragma omp for schedule(static) nowait
+#else
 #pragma omp for schedule(dynamic) nowait
-    for (j = lastcol_firstcol_plus1_divisible_by_32; j < lastcol_firstcol_plus1; j++) {
+#endif
+    for (j = lastcol_firstcol_plus1_divisible_by_32;
+         j < lastcol_firstcol_plus1; j++) {
         rho_tmp += r[j] * r[j];
     }
+#ifdef CG_DETERMINISTIC_REDUCTIONS
+    cg_deterministic_reduce(
+        rho_tmp, &rho, "initial_rho", 0, CgReductionDownstream::None, 0.0);
+#pragma omp critical
+    {
+        t0 = get_new_tile<int>();
+        t1 = get_new_tile<int>();
+        t2 = get_new_tile<int>();
+        t3 = get_new_tile<int>();
+        t4 = get_new_tile<int>();
+        t5 = get_new_tile<int>();
+        t6 = get_new_tile<int>();
+        t7 = get_new_tile<int>();
+        r1 = get_new_reg<int>(1);
+        r2 = get_new_reg<int>();
+        r3 = get_new_reg<int>();
+        r4 = get_new_reg<int>();
+        r5 = get_new_reg<int>();
+        r6 = get_new_reg<int>();
+        r7 = get_new_reg<int>();
+    }
+#else
 #pragma omp critical
     {
         rho += rho_tmp;
@@ -1557,6 +1737,7 @@ static void conj_grad_maa(int colidx[],
         r6 = get_new_reg<int>();
         r7 = get_new_reg<int>();
     }
+#endif
 
 #pragma omp barrier
 #ifdef MAA_GENERAL_VIRTUAL_CONSUMER
@@ -1908,14 +2089,25 @@ static void conj_grad_maa(int colidx[],
             d_tmp += my_p[j + 6] * my_q[j + 6];
             d_tmp += my_p[j + 7] * my_q[j + 7];
         }
+#ifdef CG_DETERMINISTIC_REDUCTIONS
+#pragma omp for schedule(static) nowait
+#else
 #pragma omp for schedule(dynamic) nowait
-        for (j = lastcol_firstcol_plus1_divisible_by_32; j < lastcol_firstcol_plus1; j++) {
+#endif
+        for (j = lastcol_firstcol_plus1_divisible_by_32;
+             j < lastcol_firstcol_plus1; j++) {
             d_tmp += p[j] * q[j];
         }
+#ifdef CG_DETERMINISTIC_REDUCTIONS
+        cg_deterministic_reduce(
+            d_tmp, &d, "d", cgit,
+            CgReductionDownstream::NumeratorOverReduction, rho0);
+#else
 #pragma omp critical
         {
             d += d_tmp;
         }
+#endif
 #pragma omp barrier
         /*
 		 * --------------------------------------------------------------------
@@ -1959,16 +2151,27 @@ static void conj_grad_maa(int colidx[],
             rho_tmp += my_r[j + 6] * my_r[j + 6];
             rho_tmp += my_r[j + 7] * my_r[j + 7];
         }
+#ifdef CG_DETERMINISTIC_REDUCTIONS
+#pragma omp for schedule(static) nowait
+#else
 #pragma omp for schedule(dynamic) nowait
-        for (j = lastcol_firstcol_plus1_divisible_by_32; j < lastcol_firstcol_plus1; j++) {
+#endif
+        for (j = lastcol_firstcol_plus1_divisible_by_32;
+             j < lastcol_firstcol_plus1; j++) {
             z[j] += alpha * p[j];
             r[j] -= alpha * q[j];
             rho_tmp += r[j] * r[j];
         }
+#ifdef CG_DETERMINISTIC_REDUCTIONS
+        cg_deterministic_reduce(
+            rho_tmp, &rho, "rho", cgit,
+            CgReductionDownstream::ReductionOverDenominator, rho0);
+#else
 #pragma omp critical
         {
             rho += rho_tmp;
         }
+#endif
 #pragma omp barrier
 
         beta = rho / rho0;
@@ -2437,15 +2640,25 @@ static void conj_grad_maa(int colidx[],
         suml = x[j + 7] - r[j + 7];
         sum_tmp += suml * suml;
     }
+#ifdef CG_DETERMINISTIC_REDUCTIONS
+#pragma omp for schedule(static) nowait
+#else
 #pragma omp for schedule(dynamic) nowait
-    for (j = lastcol_firstcol_plus1_divisible_by_32; j < lastcol_firstcol_plus1; j++) {
+#endif
+    for (j = lastcol_firstcol_plus1_divisible_by_32;
+         j < lastcol_firstcol_plus1; j++) {
         suml = x[j] - r[j];
         sum_tmp += suml * suml;
     }
+#ifdef CG_DETERMINISTIC_REDUCTIONS
+    cg_deterministic_reduce(
+        sum_tmp, &sum, "final_sum", 0, CgReductionDownstream::None, 0.0);
+#else
 #pragma omp critical
     {
         sum += sum_tmp;
     }
+#endif
 #pragma omp barrier
 
 #pragma omp single
