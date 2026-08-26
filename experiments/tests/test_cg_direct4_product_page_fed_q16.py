@@ -201,7 +201,20 @@ def test_cg_na_default_and_explicit_4096_are_selected() -> None:
             "/tmp/cg-apply-sweep",
         ]
     )
-    assert apply_confirm.apply_lane_confirm == 2
+    assert apply_confirm.apply_lane_confirm == [2]
+    apply_confirm_both = runner.parse_args(
+        [
+            "/tmp/cg-apply-confirm-both",
+            "--cg-na",
+            "1024",
+            "--apply-lane-confirm",
+            "2",
+            "4",
+            "--confirm-from",
+            "/tmp/cg-apply-sweep",
+        ]
+    )
+    assert apply_confirm_both.apply_lane_confirm == [2, 4]
     with unittest.TestCase().assertRaises(SystemExit):
         runner.parse_args(
             [
@@ -222,6 +235,19 @@ def test_cg_na_default_and_explicit_4096_are_selected() -> None:
                 "1024",
                 "--apply-lane-confirm",
                 "4",
+            ]
+        )
+    with unittest.TestCase().assertRaises(SystemExit):
+        runner.parse_args(
+            [
+                "/tmp/cg-duplicate-confirm",
+                "--cg-na",
+                "1024",
+                "--apply-lane-confirm",
+                "2",
+                "2",
+                "--confirm-from",
+                "/tmp/cg-apply-sweep",
             ]
         )
 
