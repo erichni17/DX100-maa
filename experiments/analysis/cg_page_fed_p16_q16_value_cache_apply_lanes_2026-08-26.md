@@ -29,6 +29,46 @@ this p16-preserving experiment.
 
 ## Result
 
-Pending the required `CG_NA=256` screen. This report will record either the
-accepted raw-root hash (and the conditional 1024 confirmation, if authorized)
-or the rejected screen root. Neither outcome promotes a native/full result.
+**ACCEPT lane 4 for the bounded cache-on p16/q16 configuration.** Both accepted
+roots have exact raw/quantized fingerprints, all 11 deterministic reductions,
+zero wrapper/restore failures, immutable artifact/checkpoint ledgers, and the
+required full mechanism closure.
+
+Accepted roots:
+
+- `CG_NA=256`:
+  `/data1/nier/dx100-runs/2026-08-26-cg-page-fed-p16q16-apply-lanes-na256-r5`,
+  raw ledger `6e90f5ae...aebf`;
+- `CG_NA=1024`:
+  `/data1/nier/dx100-runs/2026-08-26-cg-page-fed-p16q16-apply-lanes-na1024-r1`,
+  raw ledger `78c38caf...4dc`.
+
+| CG_NA | Lane 1 `simTicks` | Lane 4 `simTicks` | Lane 1 / lane 4 | Lower latency |
+|---:|---:|---:|---:|---:|
+| 256 | 422,359,383 | 399,729,170 | 1.056613864x | 5.3580% |
+| 1024 | 2,363,188,186 | 2,282,467,051 | 1.035365739x | 3.4158% |
+
+At 256, lane 4 reduces INDRMW cycles from 323,512 to 254,384, request cycles
+from 422,491 to 355,400, and context stalls from 5,098 to 1,608. At 1024,
+context stalls are already zero in both arms, but INDRMW/request cycles still
+fall from 2,071,657/2,739,256 to 1,797,897/2,464,848. Exact lane high-water is
+1 versus 4 in every operation (`10/40` at 256 and `65/260` at 1024).
+
+All logical and traffic ledgers are conserved: p16/q16 windows, selected/value
+deliveries, A reads/writes, product publisher traffic, page-fed admissions,
+cache reads/writes, and zero drains/fallbacks. Context stalls are deliberately
+reported as a performance/backpressure effect, not a conserved work counter.
+The fixed four-lane pool is present in both arms, so lane 4 adds zero payload,
+control bytes, or ports at this modeled configuration.
+
+Excluded roots:
+
+- `...na256-r2` reached exact arms but its original policy incorrectly treated
+  context stalls as conserved work and wrote no result/gate;
+- `...na256-r4` reached exact arms but exposed a parser omission before writing
+  a result/gate;
+- the earlier r1/r3 preflight/duplicate attempts remain non-evidence.
+
+This bounded selection does not authorize a native or full-CG claim. The
+running full p16/q16 lane-1 candidate remains a separate baseline observation;
+any lane-4 full successor requires its own candidate-only gate.
