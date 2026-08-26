@@ -162,7 +162,7 @@ manifest's predeclared bounds:
 | `z_sum` | `1.1530e-10` | `1e-8` |
 | `z_norm_sq` | `2.1246e-10` | `1e-8` |
 | `rnorm` | `2.2664e-4` | `1e-3` |
-| `zeta` | `5.1676e-16` | `1e-10` |
+| `zeta` | `4.5455e-16` | `1e-10` |
 
 Both vectors contain zero nonfinite elements; x norm-square is within the
 custom sanity bound. These aggregates do not prove elementwise equality and
