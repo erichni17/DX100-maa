@@ -22,3 +22,18 @@ The one-shot classifier returns `terminal-valid` with no rejection reasons.
 The recovered executable manifest binds the launched binary after the lead
 build path was replaced; it explicitly records that simulation state did not
 change.
+
+## Successor certificate (2026-08-26)
+
+The external, read-only successor certificate at
+`/data1/nier/dx100-runs/2026-08-26-is-scalar-soa-full-certificate-r1` records
+`PASS_FULL_IS_CORRECTNESS`. It independently invokes the prior hybrid result
+classifier and then checks pinned raw artifacts, the complete checkpoint tree,
+the archived gem5/guest/input/baseline identities, and the IS source rebuilt
+from commit `f7d268fff1e6a86d0d61bab86d546bb677f9b68b`.
+
+It reports the first-ROI `379831843258 simTicks` only as correctness
+provenance. `performance_promoted=false`, `native_rerun=false`, and
+`official_nas_verification=true`. The configuration accounts for 524,288 B of
+physical SPD payload (4 cores × 8 tiles/core × 4,096 words/tile × 4 B/word)
+and zero staging payload.
