@@ -123,3 +123,38 @@ fingerprint or make a full-workload performance claim. The next causal arm is
 the same deterministic pair at `CG_NA=4096`, where the untreated treatments
 already have different raw fingerprints despite identical normalized MAA
 source order and matching quantized fingerprints.
+
+## Accepted `CG_NA=4096` causal intervention
+
+The decisive matched pair completed at
+`/data1/nier/dx100-runs/2026-08-26-cg-reduction-order-na4096-r1`.
+Its completion gate reports `MATCH`; all 56 raw-ledger entries revalidate.
+Physical and page-fed have byte-identical 11-record FP32/FP64 reduction
+evidence and byte-identical complete raw and quantized fingerprints, with no
+first differing partial or downstream bit.
+
+This result must be interpreted with the untreated matched schedule root
+`/data1/nier/dx100-runs/2026-08-25-cg-page-fed-schedule-diagnosis-4096-r1`:
+
+- untreated physical and page-fed have identical normalized MAA source-order
+  digests, RowTable admission, aliases, A-line closure, value delivery, and
+  zero drains;
+- their quantized fingerprints match, but untreated raw `x/z` fingerprints
+  differ;
+- under fixed work ownership and deterministic thread-ID reduction order, all
+  per-thread partials and final raw words become exactly equal;
+- the deterministic raw fingerprint is the same raw fingerprint observed by
+  the untreated page-fed arm. The physical arm is the one changed by fixing
+  reduction order.
+
+This is direct causal evidence that the untreated raw mismatch at 4096 comes
+from timing-dependent OpenMP reduction arrival order, not from page-fed
+Row/Offset semantics. It also demonstrates why an exact final raw fingerprint
+is not a valid cross-architecture correctness oracle when the architecture
+changes thread timing; exact mechanism closure plus the algorithm's numerical
+tolerance is required instead.
+
+Physical takes `29,895,584,337 simTicks`; page-fed takes
+`25,103,505,822 simTicks`, a diagnostic `1.190892800x` ratio or 16.03% lower
+latency. This is medium-size causal and performance evidence, not a native or
+full-CG run.
