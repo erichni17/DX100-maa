@@ -414,7 +414,7 @@ def run(argv: list[str] | None = None) -> int:
     ldd = subprocess.check_output(
         ["ldd", str(base.base.GEM5)], env=environment, text=True
     )
-    match = re.search(r"^[ \t]*libramulator\\.so => (\\S+)", ldd, re.M)
+    match = re.search(r"^[ \t]*libramulator\.so => (\S+)", ldd, re.M)
     require(
         match is not None
         and Path(match.group(1)).resolve() == base.base.RAMULATOR.resolve(),
