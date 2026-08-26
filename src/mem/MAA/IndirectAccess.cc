@@ -3427,6 +3427,50 @@ IndirectAccessUnit::pageFedActiveForCore(int core_id) const
         soa_jit_page_fed_state.active();
 }
 
+void
+IndirectAccessUnit::signalPageFedSoaJitProductReady(
+    int core_id, uint64_t generation, uint8_t page, Addr page_backing,
+    int backing_range_id, uint8_t word_bytes)
+{
+    panic_if(!pageFedActiveForCore(core_id),
+             "I[%d] product-ready notification has no active owner\n",
+             my_indirect_id);
+    const auto identity = gem5::maa::PageFedProductReadyIdentity::validate(
+        static_cast<uint32_t>(my_instruction->core_id),
+        soa_jit_page_fed_state.currentGeneration(), my_backing_addr,
+        my_backing_addr_range_id, static_cast<uint8_t>(my_word_size),
+        static_cast<uint32_t>(core_id), generation, page, page_backing,
+        backing_range_id);
+    panic_if(identity !=
+                 gem5::maa::PageFedProductReadyIdentity::Result::Accepted ||
+                 word_bytes != static_cast<uint8_t>(my_word_size),
+             "I[%d] rejected stale product-ready identity core=%d "
+             "generation=%lu page=%u backing=0x%lx region=%d "
+             "word_bytes=%u result=%u\n",
+             my_indirect_id, core_id, generation, page, page_backing,
+             backing_range_id, word_bytes, static_cast<unsigned>(identity));
+    const auto ready = soa_jit_page_fed_state.signalProductReady(
+        generation, page);
+    panic_if(ready != gem5::maa::PageFedSoaJitState::Result::Accepted,
+             "I[%d] product-ready page %u rejected: %s\n",
+             my_indirect_id, page,
+             gem5::maa::PageFedSoaJitState::resultName(ready));
+    ++soa_jit_page_fed_product_ready_signals;
+    if (soa_jit_page_fed_first_ready_tick == 0)
+        soa_jit_page_fed_first_ready_tick = curTick();
+    soa_jit_page_fed_last_ready_tick = curTick();
+    DPRINTF(MAAVirtualTrace,
+            "event=soa_jit_page_fed_product_ready schema=1 unit=%d "
+            "operation_tick=%lu core=%d generation=%lu page=%u "
+            "backing=0x%lx region=%d ready_mask=0x%x ready_pages=%u "
+            "write_responses=complete tick=%lu\n",
+            my_indirect_id, my_decode_start_tick, core_id, generation, page,
+            page_backing, backing_range_id,
+            soa_jit_page_fed_state.productReadyMask(),
+            soa_jit_page_fed_state.productReadyPages(), curTick());
+    scheduleNextExecution(true);
+}
+
 Cycles
 IndirectAccessUnit::admitPageFedSoaJitIndexPage(
     uint64_t generation, uint8_t page, uint8_t index_tile)
@@ -3565,6 +3609,17 @@ void IndirectAccessUnit::fillRowTable(
                  "I[%d] page-fed early execution rejected: %s\n",
                  my_indirect_id,
                  gem5::maa::PageFedSoaJitState::resultName(authorized));
+        if (!soa_jit_page_fed_state.allProductsReady()) {
+            ++soa_jit_page_fed_execution_before_all_ready;
+            DPRINTF(MAAVirtualTrace,
+                    "event=soa_jit_page_fed_execution_overlap schema=1 "
+                    "unit=%d operation_tick=%lu generation=%lu "
+                    "ready_mask=0x%x ready_pages=%u all_ready=0\n",
+                    my_indirect_id, my_decode_start_tick,
+                    soa_jit_generation,
+                    soa_jit_page_fed_state.productReadyMask(),
+                    soa_jit_page_fed_state.productReadyPages());
+        }
         panic_if(my_i != static_cast<int>(
                              gem5::maa::PageFedSoaJitABI::LogicalElements) ||
                      soa_jit_next_source_ordinal !=
@@ -4478,6 +4533,16 @@ IndirectAccessUnit::serviceSoaJitValuePrefetch()
 {
     if (isSoaJitScalarRmw() || soa_jit_value_prefetch_credits == 0)
         return false;
+    if (isSoaJitPageFedRmw() && !soa_jit_page_fed_state.closed()) {
+        DPRINTF(MAAVirtualTrace,
+                "event=soa_jit_page_fed_value_ready_stall schema=1 "
+                "unit=%d operation_tick=%lu generation=%lu "
+                "kind=prefetch_preclose logical_itr=%u ready_mask=0x%x\n",
+                my_indirect_id, my_decode_start_tick, soa_jit_generation,
+                soa_jit_value_prefetch_cursor.nextLogical,
+                soa_jit_page_fed_state.productReadyMask());
+        return false;
+    }
     panic_if(!isSoaJitRmw() || soa_jit_generation == 0 || my_max < 0 ||
                  (my_word_size != 4 && my_word_size != 8) ||
                  soa_jit_value_prefetch_cursor.nextLogical >
@@ -4504,6 +4569,26 @@ IndirectAccessUnit::serviceSoaJitValuePrefetch()
            scans++ < SoaJitValuePrefetchMaxScans) {
         const uint32_t logical =
             soa_jit_value_prefetch_cursor.nextLogical;
+        if (isSoaJitPageFedRmw()) {
+            panic_if(logical >=
+                         gem5::maa::PageFedSoaJitABI::LogicalElements,
+                     "I[%d] page-fed prefetch logical %u is out of range\n",
+                     my_indirect_id, logical);
+            const uint8_t page = logical /
+                gem5::maa::PageFedSoaJitABI::PageElements;
+            if (!soa_jit_page_fed_state.productReady(page)) {
+                ++soa_jit_page_fed_value_readiness_stalls;
+                DPRINTF(MAAVirtualTrace,
+                        "event=soa_jit_page_fed_value_ready_stall "
+                        "schema=1 unit=%d operation_tick=%lu "
+                        "generation=%lu kind=prefetch logical_itr=%u "
+                        "page=%u ready_mask=0x%x\n",
+                        my_indirect_id, my_decode_start_tick,
+                        soa_jit_generation, logical, page,
+                        soa_jit_page_fed_state.productReadyMask());
+                break;
+            }
+        }
         const int64_t source = soaSourcePosition(logical);
         panic_if(source < 0,
                  "I[%d] negative SoA/JIT prefetch source position %ld\n",
@@ -4826,6 +4911,27 @@ IndirectAccessUnit::issueSoaJitValueRead(
              my_indirect_id);
     const OffsetTableEntry entry =
         offset_table->peek_entry(offset);
+    if (isSoaJitPageFedRmw()) {
+        panic_if(entry.itr < 0 ||
+                     entry.itr >= static_cast<int>(
+                         gem5::maa::PageFedSoaJitABI::LogicalElements),
+                 "I[%d] page-fed value logical %d is out of range\n",
+                 my_indirect_id, entry.itr);
+        const uint8_t page = static_cast<uint32_t>(entry.itr) /
+            gem5::maa::PageFedSoaJitABI::PageElements;
+        if (!soa_jit_page_fed_state.productReady(page)) {
+            ++soa_jit_page_fed_value_readiness_stalls;
+            DPRINTF(MAAVirtualTrace,
+                    "event=soa_jit_page_fed_value_ready_stall schema=1 "
+                    "unit=%d operation_tick=%lu generation=%lu "
+                    "kind=ordered logical_itr=%d page=%u "
+                    "offset_head=%d ready_mask=0x%x\n",
+                    my_indirect_id, my_decode_start_tick,
+                    soa_jit_generation, entry.itr, page, offset,
+                    soa_jit_page_fed_state.productReadyMask());
+            return false;
+        }
+    }
     const int64_t source = soaSourcePosition(entry.itr);
     panic_if(source < 0,
              "I[%d] negative SoA/JIT value position %ld\n",
@@ -5430,6 +5536,13 @@ void IndirectAccessUnit::checkSoaJitTerminal()
              gem5::maa::PageFedSoaJitABI::Pages &&
          soa_jit_page_fed_state.admitted() ==
              gem5::maa::PageFedSoaJitABI::LogicalElements &&
+         soa_jit_page_fed_state.allProductsReady() &&
+         soa_jit_page_fed_product_ready_signals ==
+             gem5::maa::PageFedSoaJitABI::Pages &&
+         soa_jit_page_fed_first_ready_tick != 0 &&
+         soa_jit_page_fed_last_ready_tick >=
+             soa_jit_page_fed_first_ready_tick &&
+         soa_jit_page_fed_execution_before_all_ready <= 1 &&
          soa_jit_page_fed_open_commands == 1 &&
          soa_jit_page_fed_admit_commands == 4 &&
          soa_jit_page_fed_close_commands == 1 &&
@@ -5962,6 +6075,12 @@ void IndirectAccessUnit::executeInstruction() {
         soa_jit_page_fed_admission_cycles = 0;
         soa_jit_page_fed_coherent_index_read_lines = 0;
         soa_jit_page_fed_coherent_index_write_lines = 0;
+        soa_jit_page_fed_product_ready_signals = 0;
+        soa_jit_page_fed_value_readiness_stalls = 0;
+        soa_jit_page_fed_execution_before_all_ready = 0;
+        soa_jit_page_fed_terminal_closures = 0;
+        soa_jit_page_fed_first_ready_tick = 0;
+        soa_jit_page_fed_last_ready_tick = 0;
         panic_if(soa_jit_operation_active,
                  "I[%d] retained a live SoA/JIT operation at decode\n",
                  my_indirect_id);
@@ -7195,6 +7314,12 @@ void IndirectAccessUnit::executeInstruction() {
                 direct_index_max_words;
         }
         if (isSoaJitRmw()) {
+            if (isSoaJitPageFedRmw()) {
+                panic_if(soa_jit_page_fed_terminal_closures != 0,
+                         "I[%d] duplicate page-fed terminal closure\n",
+                         my_indirect_id);
+                soa_jit_page_fed_terminal_closures = 1;
+            }
             checkSoaJitTerminal();
             (*maa->stats.IND_SoaJitInstructions[my_indirect_id])++;
             (*maa->stats.IND_SoaJitSelected[my_indirect_id]) +=
@@ -7353,6 +7478,22 @@ void IndirectAccessUnit::executeInstruction() {
                 (*maa->stats.IND_SoaJitPageFedStateByteOperations[
                     my_indirect_id]) +=
                     gem5::maa::PageFedSoaJitState::HardwareBytes;
+                (*maa->stats.IND_SoaJitPageFedProductReadySignals[
+                    my_indirect_id]) +=
+                    soa_jit_page_fed_product_ready_signals;
+                (*maa->stats.IND_SoaJitPageFedValueReadinessStalls[
+                    my_indirect_id]) +=
+                    soa_jit_page_fed_value_readiness_stalls;
+                (*maa->stats.IND_SoaJitPageFedFirstReadyTicks[
+                    my_indirect_id]) += soa_jit_page_fed_first_ready_tick;
+                (*maa->stats.IND_SoaJitPageFedLastReadyTicks[
+                    my_indirect_id]) += soa_jit_page_fed_last_ready_tick;
+                (*maa->stats.IND_SoaJitPageFedExecutionBeforeAllReady[
+                    my_indirect_id]) +=
+                    soa_jit_page_fed_execution_before_all_ready;
+                (*maa->stats.IND_SoaJitPageFedTerminalClosures[
+                    my_indirect_id]) +=
+                    soa_jit_page_fed_terminal_closures;
             }
             DPRINTF(MAAVirtualTrace,
                     "event=soa_jit_epoch_summary schema=1 unit=%d "
@@ -7767,7 +7908,14 @@ void IndirectAccessUnit::executeInstruction() {
                         "coherent_index_read_lines=%lu "
                         "coherent_index_write_lines=%lu "
                         "index_payload_bytes=0 descriptor_payload_bytes=0 "
-                        "persistent_state_bytes=%lu value_read_lines=%lu "
+                        "new_product_payload_bytes=0 "
+                        "persistent_state_bytes=%lu "
+                        "additional_fixed_control_bytes=0 "
+                        "product_ready_mask=0x%x product_ready_signals=%lu "
+                        "value_readiness_stalls=%lu first_ready_tick=%lu "
+                        "last_ready_tick=%lu "
+                        "execution_before_all_ready=%lu "
+                        "terminal_closures=%lu value_read_lines=%lu "
                         "value_read_responses=%lu a_read_lines=%lu "
                         "a_write_lines=%lu capacity_drains=0 missing=0 "
                         "duplicates=0 stale=0 early_execution=0 "
@@ -7785,6 +7933,13 @@ void IndirectAccessUnit::executeInstruction() {
                         soa_jit_page_fed_coherent_index_read_lines,
                         soa_jit_page_fed_coherent_index_write_lines,
                         gem5::maa::PageFedSoaJitState::HardwareBytes,
+                        soa_jit_page_fed_state.productReadyMask(),
+                        soa_jit_page_fed_product_ready_signals,
+                        soa_jit_page_fed_value_readiness_stalls,
+                        soa_jit_page_fed_first_ready_tick,
+                        soa_jit_page_fed_last_ready_tick,
+                        soa_jit_page_fed_execution_before_all_ready,
+                        soa_jit_page_fed_terminal_closures,
                         soa_jit_value_read_issues,
                         soa_jit_value_read_responses,
                         soa_jit_a_read_issues,

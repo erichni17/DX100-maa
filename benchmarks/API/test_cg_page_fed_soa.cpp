@@ -89,11 +89,11 @@ initializeInputs()
 void
 publishProductPage(std::size_t page, int productTile,
                    int completionTile, int pageReg, int offsetReg,
-                   int generationReg, uint32_t &publishGeneration)
+                   int generationReg)
 {
     maa_const<uint32_t>(page, pageReg);
     maa_const<uint32_t>(page * PageElements, offsetReg);
-    maa_const<uint32_t>(++publishGeneration, generationReg);
+    maa_const<uint32_t>(static_cast<uint32_t>(Generation), generationReg);
     maa_publish_spd_page_logical16_response_bearing<float>(
         productBacking.data(), page, productTile, completionTile, pageReg,
         offsetReg, generationReg);
@@ -126,7 +126,6 @@ runThreeWayCollisionProbe()
         pageFedCompletionTile, Operation_t::ADD_OP, Generation);
     std::cout << "CG_PAGE_FED_SOA_PROGRESS open_response=1" << std::endl;
 
-    uint32_t publishGeneration = 0;
     for (std::size_t page = 0; page < Pages; ++page) {
         const std::size_t offset = page * PageElements;
         maa_stream_load<uint32_t>(producerPageIndices.data() + offset,
@@ -154,8 +153,7 @@ runThreeWayCollisionProbe()
         // Row/Offset resources.  The admission response is timed while the
         // product WriteReq/WriteResp stream remains live.
         publishProductPage(page, productTile, publishCompletionTile,
-                           pageReg, offsetReg, publishGenerationReg,
-                           publishGeneration);
+                           pageReg, offsetReg, publishGenerationReg);
         maa_soa_jit_page_fed_admit(Generation, page, indexTile);
         std::cout << "CG_PAGE_FED_SOA_PROGRESS admitted_page=" << page
                   << std::endl;

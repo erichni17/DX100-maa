@@ -4,6 +4,7 @@
 import ast
 import importlib.util
 import re
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -40,6 +41,10 @@ def require_runner_contract(text: str) -> None:
         "source_status.after",
         "fingerprint_exact_equal",
         "reduction_partial_and_downstream_bits_exact_equal",
+        "IND_SoaJitValueDeliveries",
+        "IND_SoaJitValueFills",
+        "IND_SoaJitValueHits",
+        "IND_SoaJitValueMergedWaiters",
         "raw_root.sha256",
         "gate.complete",
     )
@@ -310,6 +315,87 @@ class CgReductionRunnerContract(unittest.TestCase):
             self.text.index('(out / "gate.complete").write_text'),
         )
 
+    def test_value_cache_reuse_closes_without_one_issue_per_delivery(self):
+        values = {
+            "simTicks": 1,
+            "IND_SoaJitInstructions": 1,
+            "IND_SoaJitTerminalCompletions": 1,
+            "IND_SoaJitSelected": 16384,
+            "IND_SoaJitAliasesApplied": 16384,
+            "IND_SoaJitValueReadIssues": 16128,
+            "IND_SoaJitValueReadResponses": 16128,
+            "IND_SoaJitValueFills": 16128,
+            "IND_SoaJitValueCachedResponses": 12,
+            "IND_SoaJitValueHits": 256,
+            "IND_SoaJitValueMergedWaiters": 0,
+            "IND_SoaJitValueDeliveries": 16384,
+            "IND_SoaJitAReadIssues": 1,
+            "IND_SoaJitAReadResponses": 1,
+            "IND_SoaJitAWriteIssues": 1,
+            "IND_SoaJitAWriteResponses": 1,
+            "IND_SoaJitPageFedOperations": 1,
+            "IND_SoaJitPageFedAdmitCommands": 4,
+            "IND_SoaJitPageFedCloseCommands": 1,
+            "IND_SoaJitEpochDrains": 0,
+            "IND_BoundedGlobalMergeFallbacks": 0,
+            "STR_PublishIssues": 1024,
+            "STR_PublishAccepts": 1024,
+            "STR_PublishWriteResponses": 1024,
+            "STR_PublishTerminals": 4,
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            stats = Path(temporary) / "stats.txt"
+            stats.write_text(
+                "---------- Begin Simulation Statistics ----------\n"
+                + "".join(
+                    f"system.maa.I0_{name} {value}\n"
+                    for name, value in values.items()
+                )
+                + "---------- End Simulation Statistics   ----------\n"
+            )
+            self.assertEqual(
+                self.runner.require_stats(stats, windows=1, page_fed=True),
+                values,
+            )
+            values["IND_SoaJitValueDeliveries"] -= 1
+            stats.write_text(
+                "---------- Begin Simulation Statistics ----------\n"
+                + "".join(
+                    f"system.maa.I0_{name} {value}\n"
+                    for name, value in values.items()
+                )
+                + "---------- End Simulation Statistics   ----------\n"
+            )
+            with self.assertRaisesRegex(RuntimeError, "stats closure failed"):
+                self.runner.require_stats(stats, windows=1, page_fed=True)
+
+    def test_artifact_ledger_covers_guest_api_abi_and_config_inputs(self):
+        for token in (
+            "GUEST_COMPILE_INPUTS",
+            "benchmarks/API/MAA.hpp",
+            "benchmarks/API/MAA_gem5.hpp",
+            "benchmarks/API/MAA_virtual_materialize.hpp",
+            "include/gem5/m5ops.h",
+            "include/gem5/asm/generic/m5ops.h",
+            "include/gem5/maa_logical_spd_cache_abi.hh",
+            "include/gem5/maa_page_fed_soa_abi.hh",
+            "util/m5/src/abi/x86/m5op.S",
+            "RUNNER_CONFIG_INPUTS",
+            "configs/common/Benchmarks.py",
+            "configs/common/MAAConfig.py",
+            "configs/common/MemConfig.py",
+            "configs/common/Simulation.py",
+            "configs/ruby/Ruby.py",
+        ):
+            self.assertIn(token, self.text)
+
+    def test_ramulator_linkage_accepts_ldd_indentation_but_pins_path(self):
+        self.assertIn('r"^[ \\t]*libramulator\\.so => (\\S+)"', self.text)
+        self.assertIn(
+            "Path(resolved_match.group(1)).resolve() != RAMULATOR.resolve()",
+            self.text,
+        )
+
     def test_adversarial_removal_of_each_core_guard_fails_contract(self):
         guards = (
             "MAX_DIAGNOSTIC_CG_NA = 32768",
@@ -319,6 +405,7 @@ class CgReductionRunnerContract(unittest.TestCase):
             "artifact_sha256.after",
             "reduction_partial_and_downstream_bits_exact_equal",
             "gate.complete",
+            "IND_SoaJitValueDeliveries",
         )
         require_runner_contract(self.text)
         for guard in guards:

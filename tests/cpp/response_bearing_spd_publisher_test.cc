@@ -6,6 +6,7 @@
 #include <iostream>
 #include <type_traits>
 
+#include "gem5/maa_page_fed_soa_abi.hh"
 #include "mem/MAA/ResponseBearingSpdPublisher.hh"
 
 namespace
@@ -417,6 +418,29 @@ testSourceReuseWaitsForFinalAckAndReset()
     CHECK(publisher.sourceReusable());
 }
 
+void
+testPageFedTerminalNotificationIdentity()
+{
+    using Identity = gem5::maa::PageFedProductReadyIdentity;
+    constexpr uint64_t backing = 0xa00000;
+    constexpr int16_t region = 7;
+    CHECK(Identity::validate(3, 91, backing, region, 4, 3, 91, 2,
+                             backing + 2 * 4096 * 4, region) ==
+          Identity::Result::Accepted);
+    CHECK(Identity::validate(3, 91, backing, region, 4, 2, 91, 2,
+                             backing + 2 * 4096 * 4, region) ==
+          Identity::Result::Core);
+    CHECK(Identity::validate(3, 91, backing, region, 4, 3, 90, 2,
+                             backing + 2 * 4096 * 4, region) ==
+          Identity::Result::Generation);
+    CHECK(Identity::validate(3, 91, backing, region, 4, 3, 91, 2,
+                             backing + 4096 * 4, region) ==
+          Identity::Result::Backing);
+    CHECK(Identity::validate(3, 91, backing, region, 4, 3, 91, 2,
+                             backing + 2 * 4096 * 4, region + 1) ==
+          Identity::Result::Region);
+}
+
 } // anonymous namespace
 
 int
@@ -430,6 +454,7 @@ main()
     testFp32FourPageIdentityAndChargedByteAccounting();
     testFp64GeometryAlignmentCompletionAndAccounting();
     testSourceReuseWaitsForFinalAckAndReset();
+    testPageFedTerminalNotificationIdentity();
     std::cout << "response-bearing SPD publisher tests passed\n";
     return 0;
 }

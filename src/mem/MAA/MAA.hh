@@ -514,6 +514,9 @@ public:
     const AddrRangeList &getAddrRanges(int core_id) const { return cpuPortAddrRanges[core_id]; }
     void setTileReady(int tileID, int wordSize);
     void signalPageFedSoaJitOpen(int coreID, uint64_t generation);
+    void signalPageFedSoaJitProductReady(
+        int coreID, uint64_t generation, uint8_t page,
+        Addr pageBacking, int backingRangeID, uint8_t wordBytes);
     void resetVirtualPageReady(int tokenTileID, Addr backingAddr,
                                int backingRangeID, int wordSize);
     void setVirtualPageReady(int tokenTileID, int pageID,
@@ -1259,6 +1262,18 @@ public:
             IND_SoaJitPageFedCoherentIndexWriteLines;
         std::vector<statistics::Scalar *>
             IND_SoaJitPageFedStateByteOperations;
+        std::vector<statistics::Scalar *>
+            IND_SoaJitPageFedProductReadySignals;
+        std::vector<statistics::Scalar *>
+            IND_SoaJitPageFedValueReadinessStalls;
+        std::vector<statistics::Scalar *>
+            IND_SoaJitPageFedFirstReadyTicks;
+        std::vector<statistics::Scalar *>
+            IND_SoaJitPageFedLastReadyTicks;
+        std::vector<statistics::Scalar *>
+            IND_SoaJitPageFedExecutionBeforeAllReady;
+        std::vector<statistics::Scalar *>
+            IND_SoaJitPageFedTerminalClosures;
         std::vector<statistics::Scalar *> IND_BoundedSummaryLineReads;
         std::vector<statistics::Scalar *> IND_BoundedSummaryWords;
         std::vector<statistics::Scalar *> IND_BoundedSummaryRecords;

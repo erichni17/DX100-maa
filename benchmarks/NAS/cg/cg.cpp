@@ -142,6 +142,7 @@ enum class CgRmwTreatment
     LogicalPageSoaJit,
     PhysicalPageProductSoaJit,
     PageFedProductSoaJit,
+    PageFedProductOverlapSoaJit,
 };
 
 struct CgTreatmentSelector
@@ -178,6 +179,9 @@ static uint64_t cg_value_publish_pages[NUM_CORES] = {};
 static uint64_t cg_product_publish_pages[NUM_CORES] = {};
 static uint64_t cg_page_fed_index_admit_pages[NUM_CORES] = {};
 static uint64_t cg_page_fed_close_commands[NUM_CORES] = {};
+static uint64_t cg_page_fed_overlap_windows[NUM_CORES] = {};
+static uint64_t cg_page_fed_gather_completion_waits[NUM_CORES] = {};
+static uint64_t cg_page_fed_gather_q_overlap_attempts[NUM_CORES] = {};
 static uint64_t cg_q_spmv_eligible_windows[NUM_CORES] = {};
 static uint64_t cg_q_spmv_routed_windows[NUM_CORES] = {};
 static uint64_t cg_residual_spmv_eligible_windows[NUM_CORES] = {};
@@ -230,6 +234,8 @@ cg_rmw_treatment_name(CgRmwTreatment treatment)
         return "physical_page_product_soa_jit";
       case CgRmwTreatment::PageFedProductSoaJit:
         return "page_fed_product_soa_jit";
+      case CgRmwTreatment::PageFedProductOverlapSoaJit:
+        return "page_fed_product_overlap_soa_jit";
     }
     std::abort();
 }
@@ -268,23 +274,28 @@ read_cg_treatment_selector(const std::string &path)
         rmw = CgRmwTreatment::PhysicalPageProductSoaJit;
     else if (treatment == "page_fed_product_soa_jit")
         rmw = CgRmwTreatment::PageFedProductSoaJit;
+    else if (treatment == "page_fed_product_overlap_soa_jit")
+        rmw = CgRmwTreatment::PageFedProductOverlapSoaJit;
     else
         throw std::runtime_error(
             "CG RMW treatment must be legacy_4k, residual_soa_jit, or "
             "logical_page_soa_jit, physical_page_product_soa_jit, or "
-            "page_fed_product_soa_jit");
+            "page_fed_product_soa_jit, or "
+            "page_fed_product_overlap_soa_jit");
 #ifndef CG_LOGICAL_PAGE_RMW
     if (rmw == CgRmwTreatment::LogicalPageSoaJit ||
         rmw == CgRmwTreatment::PhysicalPageProductSoaJit ||
-        rmw == CgRmwTreatment::PageFedProductSoaJit)
+        rmw == CgRmwTreatment::PageFedProductSoaJit ||
+        rmw == CgRmwTreatment::PageFedProductOverlapSoaJit)
         throw std::runtime_error(
             "logical_page_soa_jit requires the opt-in CG logical-page build");
 #endif
 #ifdef CG_PHYSICAL_PAGE_PRODUCT_ONLY
 #ifdef CG_PAGE_FED_SOA_ONLY
-    if (rmw != CgRmwTreatment::PageFedProductSoaJit)
+    if (rmw != CgRmwTreatment::PageFedProductSoaJit &&
+        rmw != CgRmwTreatment::PageFedProductOverlapSoaJit)
         throw std::runtime_error(
-            "page-fed-only build requires page_fed_product_soa_jit");
+            "page-fed-only build requires a page-fed product treatment");
 #else
     if (rmw != CgRmwTreatment::PhysicalPageProductSoaJit)
         throw std::runtime_error(
@@ -292,6 +303,11 @@ read_cg_treatment_selector(const std::string &path)
             "physical_page_product_soa_jit");
 #endif
 #endif
+    if (rmw == CgRmwTreatment::PageFedProductOverlapSoaJit &&
+        NUM_TILES_PER_CORE < 9)
+        throw std::runtime_error(
+            "page-fed product overlap requires one distinct physical "
+            "completion token (at least nine per-core tiles)");
     return {consumer_mode, rmw};
 }
 
@@ -316,7 +332,15 @@ cg_uses_physical_page_product_soa_jit()
 static bool
 cg_uses_page_fed_product_soa_jit()
 {
-    return cg_rmw_treatment == CgRmwTreatment::PageFedProductSoaJit;
+    return cg_rmw_treatment == CgRmwTreatment::PageFedProductSoaJit ||
+        cg_rmw_treatment == CgRmwTreatment::PageFedProductOverlapSoaJit;
+}
+
+static bool
+cg_uses_page_fed_product_overlap_soa_jit()
+{
+    return cg_rmw_treatment ==
+        CgRmwTreatment::PageFedProductOverlapSoaJit;
 }
 
 static size_t
@@ -474,10 +498,7 @@ cg_page_fed_product_open(int tid, float *destination, int completion_tile)
 }
 
 static void
-cg_page_fed_admit_product_page(
-    int tid, int page_offset, int index_tile, int product_tile,
-    int product_completion_tile, int logical_page_reg,
-    int logical_offset_reg, int generation_reg)
+cg_page_fed_admit_index_page(int tid, int page_offset, int index_tile)
 {
     const uint32_t logical_page =
         static_cast<uint32_t>(page_offset / MAA_CONSUMER_TILE_SIZE);
@@ -487,21 +508,67 @@ cg_page_fed_admit_product_page(
         cg_page_fed_active_generations[tid] == 0)
         std::abort();
 
+    maa_soa_jit_page_fed_admit(
+        cg_page_fed_active_generations[tid], logical_page, index_tile);
+    cg_page_fed_index_admit_pages[tid]++;
+    cg_soa_index_words[tid] += MAA_CONSUMER_TILE_SIZE;
+}
+
+static void
+cg_page_fed_publish_product_page(
+    int tid, int page_offset, int product_tile,
+    int product_completion_tile, int logical_page_reg,
+    int logical_offset_reg, int generation_reg)
+{
+    const uint32_t logical_page =
+        static_cast<uint32_t>(page_offset / MAA_CONSUMER_TILE_SIZE);
+    const uint64_t generation = cg_page_fed_active_generations[tid];
+    if (logical_page >= 4 ||
+        page_offset != static_cast<int>(logical_page) *
+                           MAA_CONSUMER_TILE_SIZE ||
+        generation == 0 || generation > UINT32_MAX)
+        std::abort();
     maa_const<uint32_t>(logical_page, logical_page_reg);
     maa_const<uint32_t>(static_cast<uint32_t>(page_offset),
                         logical_offset_reg);
-    const uint32_t product_generation = ++cg_publish_generations[tid];
-    if (product_generation == 0)
-        std::abort();
-    maa_const<uint32_t>(product_generation, generation_reg);
+    // The publisher's existing uint32 generation field is the exact active
+    // page-fed generation.  Its terminal WriteResp identity is therefore
+    // sufficient for the internal, payload-free readiness notification.
+    maa_const<uint32_t>(static_cast<uint32_t>(generation), generation_reg);
     maa_publish_spd_page_logical16_response_bearing<float>(
         cg_soa_products[tid], logical_page, product_tile,
         product_completion_tile, logical_page_reg, logical_offset_reg,
         generation_reg);
-    // The publisher uses the stream/cache path while this command consumes
-    // the disjoint physical index SPD and Row/Offset ports.
-    maa_soa_jit_page_fed_admit(
-        cg_page_fed_active_generations[tid], logical_page, index_tile);
+    wait_ready(product_completion_tile);
+    cg_product_publish_pages[tid]++;
+    cg_logical_product_words[tid] += MAA_CONSUMER_TILE_SIZE;
+}
+
+static void
+cg_page_fed_admit_product_page(
+    int tid, int page_offset, int index_tile, int product_tile,
+    int product_completion_tile, int logical_page_reg,
+    int logical_offset_reg, int generation_reg)
+{
+    const uint32_t logical_page =
+        static_cast<uint32_t>(page_offset / MAA_CONSUMER_TILE_SIZE);
+    const uint64_t generation = cg_page_fed_active_generations[tid];
+    if (logical_page >= 4 ||
+        page_offset != static_cast<int>(logical_page) *
+                           MAA_CONSUMER_TILE_SIZE ||
+        generation == 0 || generation > UINT32_MAX)
+        std::abort();
+    maa_const<uint32_t>(logical_page, logical_page_reg);
+    maa_const<uint32_t>(static_cast<uint32_t>(page_offset),
+                        logical_offset_reg);
+    maa_const<uint32_t>(static_cast<uint32_t>(generation), generation_reg);
+    maa_publish_spd_page_logical16_response_bearing<float>(
+        cg_soa_products[tid], logical_page, product_tile,
+        product_completion_tile, logical_page_reg, logical_offset_reg,
+        generation_reg);
+    // Preserve the old serial treatment's per-page publisher/admission
+    // overlap and its publication fence before advancing to the next page.
+    maa_soa_jit_page_fed_admit(generation, logical_page, index_tile);
     wait_ready(product_completion_tile);
     cg_page_fed_index_admit_pages[tid]++;
     cg_product_publish_pages[tid]++;
@@ -510,17 +577,89 @@ cg_page_fed_admit_product_page(
 }
 
 static void
-cg_page_fed_product_close(int tid, int completion_tile)
+cg_page_fed_close_admission(int tid)
 {
     const uint64_t generation = cg_page_fed_active_generations[tid];
     if (generation == 0)
         std::abort();
     maa_soa_jit_page_fed_close(generation);
+    cg_page_fed_close_commands[tid]++;
+}
+
+static void
+cg_page_fed_product_finish(int tid, int completion_tile)
+{
+    if (cg_page_fed_active_generations[tid] == 0)
+        std::abort();
     wait_ready(completion_tile);
     cg_page_fed_active_generations[tid] = 0;
-    cg_page_fed_close_commands[tid]++;
     cg_soa_full_windows[tid]++;
     cg_page_fed_product_windows[tid]++;
+}
+
+static void
+cg_page_fed_product_close(int tid, int completion_tile)
+{
+    cg_page_fed_close_admission(tid);
+    cg_page_fed_product_finish(tid, completion_tile);
+}
+
+static void
+cg_page_fed_product_overlap_window(
+    int tid, float *destination, float *a, int k_base,
+    MAAVirtualConsumerMode consumer_mode, int gather_token,
+    int page_fed_completion_token, int row_min_reg, int row_max_reg,
+    int row_start_tile, int row_end_tile, int stride_reg, int index_tile,
+    int unused_range_tile, int gather_page_tile, int a_page_tile,
+    int product_tile, int product_completion_tile, int page_min_reg,
+    int page_max_reg, int page_stride_reg, int scratch_min_reg,
+    int scratch_max_reg, int logical_page_reg, int logical_offset_reg,
+    int generation_reg)
+{
+    // Four 16K gathers already occupy all four indirect units in the fixed
+    // four-core geometry.  The caller must wait for the gather before open;
+    // a distinct completion token makes accidental token reuse fail here.
+    if (NUM_CORES != 4 || gather_token == page_fed_completion_token ||
+        page_fed_completion_token < 0)
+        std::abort();
+    cg_page_fed_product_open(tid, destination, page_fed_completion_token);
+
+    // Pass 1: admit all four q destination-index pages in exact ordinal
+    // order.  No gather-backing, a, product, or apply access occurs here.
+    for (int page_offset = 0; page_offset < TILE_SIZE;
+         page_offset += MAA_CONSUMER_TILE_SIZE) {
+        maa_range_loop<int>(row_min_reg, row_max_reg, row_start_tile,
+                            row_end_tile, stride_reg, index_tile,
+                            unused_range_tile);
+        wait_ready(index_tile);
+        cg_page_fed_admit_index_page(tid, page_offset, index_tile);
+    }
+    cg_page_fed_close_admission(tid);
+
+    // Pass 2: the closed Row/Offset operation may run ready page chains while
+    // the existing virtual-page consumer, sequential a stream, physical MUL,
+    // and exact response-bearing product publisher produce later pages.
+    for (int page_offset = 0; page_offset < TILE_SIZE;
+         page_offset += MAA_CONSUMER_TILE_SIZE) {
+        maa_virtual_consumer_load_page<float>(
+            consumer_mode,
+            virtual_gather_backing_for_thread(tid) + page_offset,
+            gather_token, page_offset / MAA_CONSUMER_TILE_SIZE,
+            page_min_reg, page_max_reg, page_stride_reg, gather_page_tile);
+        maa_const<int>(0, scratch_min_reg);
+        maa_const<int>(MAA_CONSUMER_TILE_SIZE, scratch_max_reg);
+        maa_stream_load<float>(&a[k_base + page_offset], scratch_min_reg,
+                               scratch_max_reg, stride_reg, a_page_tile);
+        maa_alu_vector<float>(gather_page_tile, a_page_tile, product_tile,
+                              Operation_t::MUL_OP);
+        wait_ready(product_tile);
+        cg_page_fed_publish_product_page(
+            tid, page_offset, product_tile, product_completion_tile,
+            logical_page_reg, logical_offset_reg, generation_reg);
+        cg_physical_alu_vectors[tid]++;
+    }
+    cg_page_fed_product_finish(tid, page_fed_completion_token);
+    cg_page_fed_overlap_windows[tid]++;
 }
 #endif
 #endif
@@ -1172,7 +1311,9 @@ int main(int argc, char **argv) {
                       : "residual_spmv")
               << " producer="
               << (cg_uses_page_fed_product_soa_jit()
-                      ? "physical_page_mul_direct_index_admit"
+                      ? (cg_uses_page_fed_product_overlap_soa_jit()
+                             ? "two_pass_index_close_product_response_overlap"
+                             : "physical_page_mul_direct_index_admit")
                       : cg_uses_physical_page_product_soa_jit()
                       ? "physical_page_mul_response_publish"
                       : (cg_rmw_treatment ==
@@ -1198,6 +1339,12 @@ int main(int argc, char **argv) {
               << " coherent_index_backing_bytes="
               << (cg_uses_page_fed_product_soa_jit()
                       ? 0 : sizeof(cg_soa_indices))
+              << " gather_rowtable_overlap="
+              << (cg_uses_page_fed_product_overlap_soa_jit()
+                      ? "excluded_indirect_occupancy" : "not_applicable")
+              << " product_rmw_overlap="
+              << (cg_uses_page_fed_product_overlap_soa_jit()
+                      ? "enabled" : "disabled")
               << " performance_promotable=0" << std::endl;
 #endif
 #endif
@@ -1336,6 +1483,9 @@ int main(int argc, char **argv) {
             uint64_t product_pages = 0;
             uint64_t page_fed_admit_pages = 0;
             uint64_t page_fed_closes = 0;
+            uint64_t page_fed_overlap_windows = 0;
+            uint64_t page_fed_gather_completion_waits = 0;
+            uint64_t page_fed_gather_q_overlap_attempts = 0;
             uint64_t q_spmv_eligible_windows = 0;
             uint64_t q_spmv_routed_windows = 0;
             uint64_t residual_spmv_eligible_windows = 0;
@@ -1360,6 +1510,12 @@ int main(int argc, char **argv) {
                 page_fed_admit_pages +=
                     cg_page_fed_index_admit_pages[core];
                 page_fed_closes += cg_page_fed_close_commands[core];
+                page_fed_overlap_windows +=
+                    cg_page_fed_overlap_windows[core];
+                page_fed_gather_completion_waits +=
+                    cg_page_fed_gather_completion_waits[core];
+                page_fed_gather_q_overlap_attempts +=
+                    cg_page_fed_gather_q_overlap_attempts[core];
                 q_spmv_eligible_windows +=
                     cg_q_spmv_eligible_windows[core];
                 q_spmv_routed_windows += cg_q_spmv_routed_windows[core];
@@ -1423,6 +1579,12 @@ int main(int argc, char **argv) {
                     product_pages == full_windows * 4 &&
                     page_fed_admit_pages == full_windows * 4 &&
                     page_fed_closes == full_windows &&
+                    page_fed_gather_q_overlap_attempts == 0 &&
+                    (cg_uses_page_fed_product_overlap_soa_jit()
+                         ? (page_fed_overlap_windows == full_windows &&
+                            page_fed_gather_completion_waits == full_windows)
+                         : (page_fed_overlap_windows == 0 &&
+                            page_fed_gather_completion_waits == 0)) &&
                     q_spmv_eligible_windows > 0 &&
                     q_spmv_eligible_windows == q_spmv_routed_windows &&
                     residual_spmv_eligible_windows > 0 &&
@@ -1454,6 +1616,12 @@ int main(int argc, char **argv) {
                       << page_fed_product_windows
                       << " page_fed_admit_pages=" << page_fed_admit_pages
                       << " page_fed_closes=" << page_fed_closes
+                      << " page_fed_overlap_windows="
+                      << page_fed_overlap_windows
+                      << " gather_completion_waits="
+                      << page_fed_gather_completion_waits
+                      << " gather_q_overlap_attempts="
+                      << page_fed_gather_q_overlap_attempts
                       << " q_spmv_eligible_windows="
                       << q_spmv_eligible_windows
                       << " q_spmv_routed_windows=" << q_spmv_routed_windows
@@ -1472,7 +1640,10 @@ int main(int argc, char **argv) {
                       << cg_logical_scheduler_reserved_lane_payload_bytes
                       << " producer="
                       << (cg_uses_page_fed_product_soa_jit()
-                              ? "physical_page_mul_direct_index_admit"
+                              ? (cg_uses_page_fed_product_overlap_soa_jit()
+                                     ? "two_pass_index_close_product_"
+                                       "response_overlap"
+                                     : "physical_page_mul_direct_index_admit")
                               : cg_uses_physical_page_product_soa_jit()
                               ? "physical_page_mul_response_publish"
                               : (cg_rmw_treatment ==
@@ -1489,6 +1660,13 @@ int main(int argc, char **argv) {
                       << " coherent_index_backing_bytes="
                       << (cg_uses_page_fed_product_soa_jit()
                               ? 0 : sizeof(cg_soa_indices))
+                      << " gather_rowtable_overlap="
+                      << (cg_uses_page_fed_product_overlap_soa_jit()
+                              ? "excluded_indirect_occupancy"
+                              : "not_applicable")
+                      << " product_rmw_overlap="
+                      << (cg_uses_page_fed_product_overlap_soa_jit()
+                              ? "enabled" : "disabled")
                       << " performance_promotable=0 result="
                       << (treatment_used ? "PASS" : "FAIL") << std::endl;
             if (!treatment_used)
@@ -1550,6 +1728,9 @@ static void conj_grad_maa(int colidx[],
     float alpha, beta, suml;
     static float d, sum, rho, rho0;
     int t0, t1, t2, t3, t4, t5, t6, t7;
+#ifdef CG_LOGICAL_PAGE_RMW
+    int t8 = -1;
+#endif
     int r1, r2, r3, r4, r5, r6, r7;
 #ifdef MAA_GENERAL_VIRTUAL_CONSUMER
     // The MAA scalar register file is shared by all four OpenMP issuers.
@@ -1709,6 +1890,10 @@ static void conj_grad_maa(int colidx[],
         t5 = get_new_tile<int>();
         t6 = get_new_tile<int>();
         t7 = get_new_tile<int>();
+#ifdef CG_LOGICAL_PAGE_RMW
+        if (cg_uses_page_fed_product_overlap_soa_jit())
+            t8 = get_new_tile<int>();
+#endif
         r1 = get_new_reg<int>(1);
         r2 = get_new_reg<int>();
         r3 = get_new_reg<int>();
@@ -1729,6 +1914,10 @@ static void conj_grad_maa(int colidx[],
         t5 = get_new_tile<int>();
         t6 = get_new_tile<int>();
         t7 = get_new_tile<int>();
+#ifdef CG_LOGICAL_PAGE_RMW
+        if (cg_uses_page_fed_product_overlap_soa_jit())
+            t8 = get_new_tile<int>();
+#endif
         r1 = get_new_reg<int>(1);
         r2 = get_new_reg<int>();
         r3 = get_new_reg<int>();
@@ -1904,6 +2093,20 @@ static void conj_grad_maa(int colidx[],
                         virtual_gather_backing_for_thread(tid), r2, r3, r1);
                     if (logical_page_full_window) {
                         wait_ready(t6);
+                        if (cg_uses_page_fed_product_overlap_soa_jit()) {
+                            // This wait is the explicit occupancy barrier:
+                            // four gathers consume the four indirect units,
+                            // so q construction cannot overlap the gather.
+                            cg_page_fed_gather_completion_waits[tid]++;
+                            cg_page_fed_product_overlap_window(
+                                tid, curr_q, a, k_base,
+                                virtual_consumer_mode, t6, t8, r6, r7,
+                                t2, t3, r1, t0, t1, t4, t5, t7, t0,
+                                page_min_reg, page_max_reg,
+                                page_stride_reg, r2, r3, r4, r5, r2);
+                            cg_q_spmv_routed_windows[tid]++;
+                            continue;
+                        }
                         if (cg_uses_page_fed_product_soa_jit())
                             cg_page_fed_product_open(tid, curr_q, t6);
                     } else {
@@ -2336,6 +2539,17 @@ static void conj_grad_maa(int colidx[],
                     virtual_gather_backing_for_thread(tid), r2, r3, r1);
                 if (logical_page_full_window) {
                     wait_ready(t6);
+                    if (cg_uses_page_fed_product_overlap_soa_jit()) {
+                        cg_page_fed_gather_completion_waits[tid]++;
+                        cg_page_fed_product_overlap_window(
+                            tid, curr_r, a, k_base,
+                            virtual_consumer_mode, t6, t8, r6, r7,
+                            t2, t3, r1, t0, t1, t4, t5, t7, t0,
+                            page_min_reg, page_max_reg,
+                            page_stride_reg, r2, r3, r4, r5, r2);
+                        cg_residual_spmv_routed_windows[tid]++;
+                        continue;
+                    }
                     if (cg_uses_page_fed_product_soa_jit())
                         cg_page_fed_product_open(tid, curr_r, t6);
                 } else {

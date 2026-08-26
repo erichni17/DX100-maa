@@ -174,7 +174,7 @@ class CgPageFedSoaContract(unittest.TestCase):
             self.assertIn(token, self.cg + self.cg_makefile)
         self.assertEqual(
             self.cg.count("cg_page_fed_product_open(tid,"),
-            2,
+            3,
         )
         self.assertEqual(
             self.cg.count("cg_page_fed_product_close(tid, t6)"),

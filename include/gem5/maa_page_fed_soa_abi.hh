@@ -79,6 +79,53 @@ class PageFedSoaJitABI
 };
 
 /**
+ * Stateless validation for the internal product-ready notification.
+ *
+ * This is not a guest-visible command and carries no product payload.  The
+ * response-bearing publisher presents its terminal identity to the owning
+ * indirect unit only after every exact WriteResp for the page has returned.
+ */
+class PageFedProductReadyIdentity
+{
+  public:
+    enum class Result : uint8_t
+    {
+        Accepted,
+        Core,
+        Generation,
+        Page,
+        Region,
+        Backing,
+        WordSize,
+    };
+
+    static Result
+    validate(uint32_t expectedCore, uint64_t expectedGeneration,
+             uint64_t productBacking, int16_t expectedRegion,
+             uint8_t wordBytes, uint32_t core, uint64_t generation,
+             uint8_t page, uint64_t pageBacking, int16_t region)
+    {
+        if (core != expectedCore)
+            return Result::Core;
+        if (generation != expectedGeneration)
+            return Result::Generation;
+        if (page >= PageFedSoaJitABI::Pages)
+            return Result::Page;
+        if (region != expectedRegion)
+            return Result::Region;
+        if (wordBytes != 4 && wordBytes != 8)
+            return Result::WordSize;
+        const uint64_t pageBytes =
+            static_cast<uint64_t>(PageFedSoaJitABI::PageElements) *
+            wordBytes;
+        if (productBacking > UINT64_MAX - pageBytes * page ||
+            pageBacking != productBacking + pageBytes * page)
+            return Result::Backing;
+        return Result::Accepted;
+    }
+};
+
+/**
  * Exact persistent state for one bounded page-fed operation.
  *
  * admittedCount is also the next required logical ordinal, so no ordinal
@@ -104,12 +151,16 @@ class PageFedSoaJitState
         EarlyExecution,
         AlreadyExecuting,
         NotExecuting,
+        DuplicateProductReady,
+        MissingProducts,
     };
 
     static constexpr uint8_t Active = 1U << 0;
     static constexpr uint8_t Closure = 1U << 1;
     static constexpr uint8_t Failed = 1U << 2;
     static constexpr uint8_t Executing = 1U << 3;
+    static constexpr uint16_t ProductReadyMask =
+        (uint16_t{1} << PageFedSoaJitABI::Pages) - 1;
     static constexpr std::size_t HardwareBytes = 16;
 
     Result
@@ -216,10 +267,30 @@ class PageFedSoaJitState
             return reject(Result::StaleGeneration);
         if (!executing())
             return reject(Result::NotExecuting);
+        if (!allProductsReady())
+            return reject(Result::MissingProducts);
         flags = 0;
         admittedCount = 0;
         nextPage = 0;
         reserved = 0;
+        return Result::Accepted;
+    }
+
+    Result
+    signalProductReady(uint64_t candidateGeneration, uint8_t page)
+    {
+        if (!active())
+            return reject(Result::Inactive);
+        if (candidateGeneration != generation)
+            return reject(Result::StaleGeneration);
+        if (failed())
+            return Result::EarlyExecution;
+        if (page >= PageFedSoaJitABI::Pages)
+            return reject(Result::PageOrder);
+        const uint16_t bit = uint16_t{1} << page;
+        if (reserved & bit)
+            return reject(Result::DuplicateProductReady);
+        reserved |= bit;
         return Result::Accepted;
     }
 
@@ -236,6 +307,29 @@ class PageFedSoaJitState
     uint64_t currentGeneration() const { return generation; }
     uint32_t admitted() const { return admittedCount; }
     uint8_t expectedPage() const { return nextPage; }
+    uint8_t productReadyPages() const
+    {
+        uint16_t mask = reserved & ProductReadyMask;
+        uint8_t count = 0;
+        while (mask != 0) {
+            count += mask & 1U;
+            mask >>= 1;
+        }
+        return count;
+    }
+    uint16_t productReadyMask() const
+    {
+        return reserved & ProductReadyMask;
+    }
+    bool productReady(uint8_t page) const
+    {
+        return page < PageFedSoaJitABI::Pages &&
+            (productReadyMask() & (uint16_t{1} << page));
+    }
+    bool allProductsReady() const
+    {
+        return productReadyMask() == ProductReadyMask;
+    }
 
     static const char *resultName(Result result)
     {
@@ -254,6 +348,9 @@ class PageFedSoaJitState
           case Result::EarlyExecution: return "early_execution";
           case Result::AlreadyExecuting: return "already_executing";
           case Result::NotExecuting: return "not_executing";
+          case Result::DuplicateProductReady:
+            return "duplicate_product_ready";
+          case Result::MissingProducts: return "missing_products";
         }
         return "unknown";
     }

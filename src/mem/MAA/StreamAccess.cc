@@ -503,6 +503,13 @@ void StreamAccessUnit::executeInstruction() {
                          response_publisher.requestPrepared(),
                      "S[%d] publisher reached terminal state with live "
                      "credits/retry/request state\n", my_stream_id);
+            // This is the sole product-ready source.  complete() proves that
+            // every unique line captured from the physical SPD page has its
+            // exact WriteResp; no CPU readiness shortcut participates.
+            maa->signalPageFedSoaJitProductReady(
+                my_instruction->core_id, my_publish_guest_generation,
+                static_cast<uint8_t>(my_publish_logical_page), my_base_addr,
+                my_addr_range_id, static_cast<uint8_t>(my_word_size));
             DPRINTF(MAATrace,
                     "event=spd_publish_terminal schema=1 unit=%d source=%d "
                     "completion=%d logical_page=%u logical_offset=%u "

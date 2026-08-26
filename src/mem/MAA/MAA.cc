@@ -5728,6 +5728,33 @@ MAA::signalPageFedSoaJitOpen(int coreID, uint64_t generation)
             "generation=%lu ready_id=%d responses=1\n",
             coreID, generation, ready_id);
 }
+void
+MAA::signalPageFedSoaJitProductReady(
+    int coreID, uint64_t generation, uint8_t page, Addr pageBacking,
+    int backingRangeID, uint8_t wordBytes)
+{
+    panic_if(coreID < 0 || coreID >= static_cast<int>(num_cores) ||
+                 generation == 0,
+             "Invalid page-fed product-ready identity core=%d "
+             "generation=%lu\n",
+             coreID, generation);
+    IndirectAccessUnit *owner = nullptr;
+    for (unsigned int unit = 0; unit < num_indirect_units_total; ++unit) {
+        if (!indirectAccessUnits[unit].pageFedActiveForCore(coreID))
+            continue;
+        panic_if(owner != nullptr,
+                 "Core %d owns duplicate page-fed product contexts\n",
+                 coreID);
+        owner = &indirectAccessUnits[unit];
+    }
+    // Ordinary response-bearing publishers are unchanged.  A terminal is a
+    // page-fed product notification only while that core owns an active
+    // page-fed context; once classified, every identity mismatch fails closed.
+    if (owner == nullptr)
+        return;
+    owner->signalPageFedSoaJitProductReady(
+        coreID, generation, page, pageBacking, backingRangeID, wordBytes);
+}
 void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
                                 int backingRangeID, int wordSize) {
     panic_if(tokenTileID < 0 || tokenTileID >= num_tiles,
@@ -7675,6 +7702,51 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
                 statistics::units::Byte::get(),
                 "sum of 16-byte page-fed state capacity observations "
                 "across completed operations"));
+        IND_SoaJitPageFedProductReadySignals.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_SoaJitPageFedProductReadySignals"),
+                statistics::units::Count::get(),
+                "publisher-terminal product-ready notifications"));
+        IND_SoaJitPageFedValueReadinessStalls.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_SoaJitPageFedValueReadinessStalls"),
+                statistics::units::Count::get(),
+                "ordered value reads or prefetches blocked by page "
+                "publication readiness"));
+        IND_SoaJitPageFedFirstReadyTicks.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_SoaJitPageFedFirstReadyTicks"),
+                statistics::units::Tick::get(),
+                "sum of first product-ready ticks across operations"));
+        IND_SoaJitPageFedLastReadyTicks.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_SoaJitPageFedLastReadyTicks"),
+                statistics::units::Tick::get(),
+                "sum of last product-ready ticks across operations"));
+        IND_SoaJitPageFedExecutionBeforeAllReady.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_SoaJitPageFedExecutionBeforeAllReady"),
+                statistics::units::Count::get(),
+                "closed Row/Offset executions begun before all product "
+                "pages were response-published"));
+        IND_SoaJitPageFedTerminalClosures.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_SoaJitPageFedTerminalClosures"),
+                statistics::units::Count::get(),
+                "page-fed terminals with all products and exact traffic "
+                "closed"));
         IND_BoundedSummaryLineReads.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_BoundedSummaryLineReads"),
             statistics::units::Count::get(),

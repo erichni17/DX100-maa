@@ -6,6 +6,7 @@
 
 using gem5::maa::PageFedSoaJitABI;
 using gem5::maa::PageFedSoaJitState;
+using gem5::maa::PageFedProductReadyIdentity;
 
 namespace
 {
@@ -43,6 +44,34 @@ main()
     assert(PageFedSoaJitABI::decode(
         PageFedSoaJitABI::encodeClose(17), command));
     assert(command.action == PageFedSoaJitABI::Action::Close);
+
+    constexpr uint64_t ProductBacking = 0x400000;
+    constexpr int16_t ProductRegion = 11;
+    assert(PageFedProductReadyIdentity::validate(
+               2, 17, ProductBacking, ProductRegion, 4,
+               2, 17, 3, ProductBacking + 3 * 4096 * 4,
+               ProductRegion) ==
+           PageFedProductReadyIdentity::Result::Accepted);
+    assert(PageFedProductReadyIdentity::validate(
+               2, 17, ProductBacking, ProductRegion, 4,
+               1, 17, 3, ProductBacking + 3 * 4096 * 4,
+               ProductRegion) ==
+           PageFedProductReadyIdentity::Result::Core);
+    assert(PageFedProductReadyIdentity::validate(
+               2, 17, ProductBacking, ProductRegion, 4,
+               2, 16, 3, ProductBacking + 3 * 4096 * 4,
+               ProductRegion) ==
+           PageFedProductReadyIdentity::Result::Generation);
+    assert(PageFedProductReadyIdentity::validate(
+               2, 17, ProductBacking, ProductRegion, 4,
+               2, 17, 3, ProductBacking + 2 * 4096 * 4,
+               ProductRegion) ==
+           PageFedProductReadyIdentity::Result::Backing);
+    assert(PageFedProductReadyIdentity::validate(
+               2, 17, ProductBacking, ProductRegion, 4,
+               2, 17, 3, ProductBacking + 3 * 4096 * 4,
+               ProductRegion + 1) ==
+           PageFedProductReadyIdentity::Result::Region);
 
     PageFedSoaJitState disabled;
     assert(disabled.open(false, 1, PageFedSoaJitABI::LogicalElements) ==
@@ -96,9 +125,54 @@ main()
     assert(complete.beginExecution(6) ==
            PageFedSoaJitState::Result::Accepted);
     assert(complete.finishExecution(6) ==
+           PageFedSoaJitState::Result::MissingProducts);
+
+    PageFedSoaJitState overlap;
+    assert(overlap.open(true, 7, PageFedSoaJitABI::LogicalElements) ==
            PageFedSoaJitState::Result::Accepted);
-    assert(!complete.active());
-    assert(complete.open(true, 6, PageFedSoaJitABI::LogicalElements) ==
+    admitAll(overlap, 7);
+    assert(overlap.close(7) == PageFedSoaJitState::Result::Accepted);
+    assert(overlap.beginExecution(7) ==
+           PageFedSoaJitState::Result::Accepted);
+    assert(!overlap.allProductsReady());
+    for (uint8_t page = 0; page < PageFedSoaJitABI::Pages; ++page) {
+        assert(overlap.signalProductReady(7, page) ==
+               PageFedSoaJitState::Result::Accepted);
+        assert(overlap.productReady(page));
+    }
+    assert(overlap.productReadyMask() ==
+           PageFedSoaJitState::ProductReadyMask);
+    assert(overlap.productReadyPages() == PageFedSoaJitABI::Pages);
+    assert(overlap.allProductsReady());
+    assert(overlap.finishExecution(7) ==
+           PageFedSoaJitState::Result::Accepted);
+    assert(!overlap.active());
+
+    PageFedSoaJitState duplicate_ready;
+    assert(duplicate_ready.open(
+               true, 8, PageFedSoaJitABI::LogicalElements) ==
+           PageFedSoaJitState::Result::Accepted);
+    assert(duplicate_ready.signalProductReady(8, 0) ==
+           PageFedSoaJitState::Result::Accepted);
+    assert(duplicate_ready.signalProductReady(8, 0) ==
+           PageFedSoaJitState::Result::DuplicateProductReady);
+
+    PageFedSoaJitState serial;
+    assert(serial.open(true, 9, PageFedSoaJitABI::LogicalElements) ==
+           PageFedSoaJitState::Result::Accepted);
+    for (uint8_t page = 0; page < PageFedSoaJitABI::Pages; ++page)
+        assert(serial.signalProductReady(9, page) ==
+               PageFedSoaJitState::Result::Accepted);
+    admitAll(serial, 9);
+    assert(serial.close(9) == PageFedSoaJitState::Result::Accepted);
+    assert(serial.beginExecution(9) ==
+           PageFedSoaJitState::Result::Accepted);
+    assert(serial.finishExecution(9) ==
+           PageFedSoaJitState::Result::Accepted);
+    assert(!serial.active());
+
+    assert(complete.active() && complete.failed());
+    assert(overlap.open(true, 7, PageFedSoaJitABI::LogicalElements) ==
            PageFedSoaJitState::Result::StaleGeneration);
 
     std::cout << "PAGE_FED_SOA_JIT_STATE_TEST_PASS\n";

@@ -670,6 +670,12 @@ protected:
     uint64_t soa_jit_page_fed_admission_cycles = 0;
     uint64_t soa_jit_page_fed_coherent_index_read_lines = 0;
     uint64_t soa_jit_page_fed_coherent_index_write_lines = 0;
+    uint64_t soa_jit_page_fed_product_ready_signals = 0;
+    uint64_t soa_jit_page_fed_value_readiness_stalls = 0;
+    uint64_t soa_jit_page_fed_execution_before_all_ready = 0;
+    uint64_t soa_jit_page_fed_terminal_closures = 0;
+    Tick soa_jit_page_fed_first_ready_tick = 0;
+    Tick soa_jit_page_fed_last_ready_tick = 0;
     int my_dst_tile, my_src_tile, my_src_reg, my_cond_tile, my_max;
     int my_idx_tile;
     bool my_cond_tile_ready, my_idx_tile_ready, my_src_tile_ready;
@@ -892,6 +898,9 @@ protected:
 public:
     void createReadPacket(Addr addr, int latency);
     bool pageFedActiveForCore(int core_id) const;
+    void signalPageFedSoaJitProductReady(
+        int core_id, uint64_t generation, uint8_t page,
+        Addr page_backing, int backing_range_id, uint8_t word_bytes);
     Cycles admitPageFedSoaJitIndexPage(uint64_t generation, uint8_t page,
                                       uint8_t index_tile);
     Cycles closePageFedSoaJit(uint64_t generation);
