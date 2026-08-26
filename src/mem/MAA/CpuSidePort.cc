@@ -895,46 +895,25 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                                 current_instruction->predicateAddr,
                                 current_instruction->predicateMinAddr,
                                 current_instruction->predicateMaxAddr) ||
-                            current_instruction->baseAddr %
-                                    Contract::WordBytes !=
-                                0 ||
-                            current_instruction->baseAddr <
-                                current_instruction->minAddr ||
-                            current_instruction->baseAddr >=
-                                current_instruction->maxAddr ||
-                            current_instruction->maxAddr -
-                                    current_instruction->baseAddr <
-                                Contract::WordBytes,
-                        "Fused-p16 requires aligned registered p and full "
-                        "16K product/colidx/coefficient spans\n");
+                            !Contract::registeredWordFits(
+                                current_instruction->baseAddr,
+                                current_instruction->minAddr,
+                                current_instruction->maxAddr),
+                        "Fused-p16 requires an aligned p word in its "
+                        "registered region and full 16K aligned "
+                        "product/colidx/coefficient spans\n");
                     const Addr p_begin = current_instruction->minAddr;
-                    const Addr p_bytes = current_instruction->maxAddr -
-                        current_instruction->minAddr;
                     const Addr product = current_instruction->backingAddr;
                     const Addr index = current_instruction->indexAddr;
                     const Addr coefficient =
                         current_instruction->predicateAddr;
                     panic_if(
-                        Contract::spansOverlap(
-                            p_begin, p_bytes, product,
-                            Contract::SpanBytes) ||
-                            Contract::spansOverlap(
-                                p_begin, p_bytes, index,
-                                Contract::SpanBytes) ||
-                            Contract::spansOverlap(
-                                p_begin, p_bytes, coefficient,
-                                Contract::SpanBytes) ||
-                            Contract::spansOverlap(
-                                product, Contract::SpanBytes, index,
-                                Contract::SpanBytes) ||
-                            Contract::spansOverlap(
-                                product, Contract::SpanBytes, coefficient,
-                                Contract::SpanBytes) ||
-                            Contract::spansOverlap(
-                                index, Contract::SpanBytes, coefficient,
-                                Contract::SpanBytes),
-                        "Fused-p16 p/product/colidx/coefficient spans must "
-                        "be pairwise disjoint\n");
+                        !Contract::registeredRegionsDisjoint(
+                            p_begin, current_instruction->maxAddr,
+                            product, index, coefficient),
+                        "Fused-p16 registered p region and exact 16K "
+                        "product/colidx/coefficient spans must be pairwise "
+                        "disjoint\n");
                     current_instruction->fusedP16CoefficientWordReceived =
                         true;
                     my_instruction_recvs[instruction_id] = true;

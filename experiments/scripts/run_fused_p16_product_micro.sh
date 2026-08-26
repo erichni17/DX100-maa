@@ -1,6 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+required_stat_sum() {
+    local stats=$1
+    local suffix=$2
+    awk -v suffix="$suffix" '
+        /^---------- Begin Simulation Statistics/ {section++}
+        section == 1 && $1 ~ ("_" suffix "$") {sum += $2; found++}
+        /^---------- End Simulation Statistics/ && section == 1 {
+            if (!found) exit 2; printf "%.0f\n", sum; exit
+        }
+        END {if (section == 0 || !found) exit 2}' "$stats"
+}
+
+if [[ $# -eq 3 && $1 == --require-stat ]]; then
+    required_stat_sum "$2" "$3"
+    exit
+fi
+
 if [[ $# -ne 1 ]]; then
     echo "usage: $0 OUTDIR" >&2
     exit 2
@@ -22,6 +39,41 @@ cxx=${CXX:-g++}
     exit 2
 }
 mkdir -p "$out/bin" "$out/checkpoint" "$out/run" "$out/input"
+
+finalize_wrapper() {
+    local rc=$?
+    local ledger_rc=0
+    trap - EXIT
+    printf '%s\n' "$rc" > "$out/input/wrapper_exit"
+    if [[ $rc -eq 0 ]]; then
+        (
+            cd "$out"
+            find . -type f ! -name raw_root.sha256 \
+                ! -name gate.complete -print0 | LC_ALL=C sort -z | \
+                xargs -0 sha256sum > raw_root.sha256
+        ) || ledger_rc=$?
+        if [[ $ledger_rc -eq 0 ]]; then
+            local raw_root_sha256
+            raw_root_sha256=$(sha256sum "$out/raw_root.sha256" | \
+                awk '{print $1}') || ledger_rc=$?
+            if [[ $ledger_rc -eq 0 ]]; then
+                {
+                    printf 'schema=dx100.fused_p16_product_micro.gate.v2\n'
+                    printf 'terminal=PASS\n'
+                    printf 'wrapper_exit=0\ncheckpoint_exit=0\nrestore_exit=0\n'
+                    printf 'raw_root_sha256=%s\n' "$raw_root_sha256"
+                } > "$out/gate.complete" || ledger_rc=$?
+            fi
+        fi
+        if [[ $ledger_rc -ne 0 ]]; then
+            rc=$ledger_rc
+            printf '%s\n' "$rc" > "$out/input/wrapper_exit"
+            rm -f "$out/raw_root.sha256" "$out/gate.complete"
+        fi
+    fi
+    exit "$rc"
+}
+trap finalize_wrapper EXIT
 
 guest="$out/bin/fused_p16_product_micro"
 "$cxx" -I"$root/benchmarks/API" -I"$root/include" \
@@ -74,7 +126,8 @@ git -C "$root" status --short --branch > "$out/input/source_status.before"
 sha256sum "$gem5" "$ramulator" "$guest" "$source_file" \
     "$ramulator_config" > "$out/input/artifact_sha256.before"
 {
-    printf 'schema=dx100.fused_p16_product_micro.v1\n'
+    printf 'schema=dx100.fused_p16_product_micro.v2\n'
+    printf 'mechanism_schema=first_roi_gem5_stats_required\n'
     printf 'source_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
     printf 'gem5_sha256=%s\n' "$(sha256sum "$gem5" | awk '{print $1}')"
     printf 'guest_sha256=%s\n' "$(sha256sum "$guest" | awk '{print $1}')"
@@ -82,14 +135,28 @@ sha256sum "$gem5" "$ramulator" "$guest" "$source_file" \
     printf 'restore_command='; printf '%q ' "${restore_cmd[@]}"; printf '\n'
 } > "$out/manifest.txt"
 
+set +e
 OMP_NUM_THREADS=1 "${checkpoint_cmd[@]}" > "$out/checkpoint.log" 2>&1
+checkpoint_exit=$?
+set -e
+printf '%s\n' "$checkpoint_exit" > "$out/input/checkpoint_exit"
+[[ $checkpoint_exit -eq 0 ]]
 grep -Eq '^Exiting @ tick [0-9]+ because checkpoint$' "$out/checkpoint.log"
+printf 'terminal=checkpoint\n' > "$out/checkpoint.terminal"
+set +e
 OMP_NUM_THREADS=1 "${restore_cmd[@]}" > "$out/run/restore.log" 2>&1
+restore_exit=$?
+set -e
+printf '%s\n' "$restore_exit" > "$out/input/restore_exit"
+[[ $restore_exit -eq 0 ]]
 
 restore="$out/run/restore.log"
 stats="$out/run/stats.txt"
 trace="$out/run/fused_p16_trace.log"
 [[ -s $restore && -s $stats && -s $trace ]]
+[[ -s "$out/run/config.ini" && -s "$out/run/config.json" ]]
+[[ $(grep -Ec '^Exiting @ tick [0-9]+ because m5_exit instruction encountered$' "$restore" || true) -eq 1 ]]
+printf 'terminal=m5_exit\n' > "$out/run/restore.terminal"
 [[ $(grep -Ec '^FUSED_P16_PRODUCT_LAYOUT .*virtual_p_allocation_bytes=0 .*product_publisher_lines=0 .*global_fallbacks=0$' "$out/checkpoint.log" || true) -eq 1 ]]
 [[ $(grep -Fxc 'FUSED_P16_PRODUCT_PROGRESS producer_complete=1' "$restore" || true) -eq 1 ]]
 [[ $(grep -Fxc 'FUSED_P16_PRODUCT_PROGRESS q16_complete=1' "$restore" || true) -eq 1 ]]
@@ -118,22 +185,7 @@ for record, expected in zip(records, range(0, 16384, 64)):
         raise SystemExit(f"malformed product word at offset {expected}")
 PY
 
-stat_sum() {
-    awk -v suffix="$1" '
-        /^---------- Begin Simulation Statistics/ {section++}
-        section == 1 && $1 ~ ("_" suffix "$") {sum += $2; found++}
-        /^---------- End Simulation Statistics/ && section == 1 {
-            if (!found) exit 2; printf "%.0f\n", sum; exit
-        }' "$stats"
-}
-stat_zero() {
-    awk -v suffix="$1" '
-        /^---------- Begin Simulation Statistics/ {section++}
-        section == 1 && $1 ~ ("_" suffix "$") {sum += $2; found++}
-        /^---------- End Simulation Statistics/ && section == 1 {
-            printf "%.0f\n", sum; exit
-        }' "$stats"
-}
+stat_sum() { required_stat_sum "$stats" "$1"; }
 [[ $(stat_sum IND_FusedP16Operations) -eq 1 ]]
 [[ $(stat_sum IND_FusedP16Epochs) -eq 1 ]]
 for ledger in IND_FusedP16SourceOrdinals \
@@ -149,7 +201,7 @@ coefficient_issues=$(stat_sum IND_FusedP16CoefficientReadIssues)
 for forbidden in IND_FusedP16EpochDrains IND_FusedP16Fallbacks \
     IND_FusedP16PublisherLines IND_FusedP16VirtualPBytes \
     IND_BoundedGlobalMergeFallbacks IND_NumOTEpochDrain STR_PublishIssues; do
-    [[ $(stat_zero "$forbidden") -eq 0 ]]
+    [[ $(stat_sum "$forbidden") -eq 0 ]]
 done
 [[ $(stat_sum IND_SoaJitPageFedOperations) -eq 1 ]]
 [[ $(stat_sum IND_SoaJitPageFedAdmitCommands) -eq 4 ]]
