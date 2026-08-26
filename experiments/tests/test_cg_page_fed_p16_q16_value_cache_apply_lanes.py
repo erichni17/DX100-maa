@@ -69,6 +69,7 @@ def test_exact_lane_four_high_water_and_conserved_ledgers_fail_closed() -> (
 ):
     source = inspect.getsource(runner.parse_arm)
     assert 'ApplyLaneHighWater"] == instructions * lanes' in source
+    assert 'CONSERVE_STATS + ("IND_SoaJitContextStalls",)' in source
     for name in (
         "IND_SoaJitValueDeliveries",
         "IND_SoaJitAReadIssues",
