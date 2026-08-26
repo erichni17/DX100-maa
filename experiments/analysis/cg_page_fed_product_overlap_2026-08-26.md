@@ -5,9 +5,10 @@
 Accepted for the bounded NA=1024 diagnostic: the two-pass treatment preserved
 the exact cross-arm fingerprint and every deterministic-reduction record,
 closed its predicted readiness/terminal mechanisms, and reduced `simTicks`
-from 5,293,812,820 to 5,198,082,709.  This is 1.018416x serial/overlap, or
-1.808340% fewer ticks.  It is one small-CG observation, not a full-CG,
-original-8-tile iso-area, or promotion claim.
+from 5,293,812,820 to 5,198,082,709.  This is exactly 1.018416427x
+serial/overlap, 1.808340% lower simulated latency, and 95,730,111 ticks saved.
+It is accepted as small application evidence only: one small-CG observation,
+not a full-CG, original-8-tile iso-area, or promotion claim.
 
 ## Bounded architecture
 
@@ -86,6 +87,8 @@ claim.
 Evidence root:
 `evidence/cg-page-fed-product-overlap-na1024-r1` under coordination session
 `cg-page-fed-product-overlap-20260826-20260826-001126-188985bc`.
+The accepted raw root is
+`/data1/nier/worktrees/codex-coordination/sessions/cg-page-fed-product-overlap-20260826-20260826-001126-188985bc/evidence/cg-page-fed-product-overlap-na1024-r1`.
 
 - Source commit: `549a401ad4d1d308a552701dc09451852fc669ed`.
 - gem5 SHA-256:
@@ -98,14 +101,19 @@ Evidence root:
   `f8d5dc8e154b08b2173cd5a689a292e6bc09b9ee35407be6740730d328b5c732`.
 - Sealed raw-root ledger SHA-256:
   `b1395b7569ed9db1e09be0c42b84f8190a1c2985127c1742536767194c6bb2ff`.
+- The sealed ledger revalidates all 55 of 55 entries.  The cross-arm
+  fingerprints and all 11 deterministic reduction records are byte-identical.
+- Exact performance observation: serial 5,293,812,820 `simTicks`; overlap
+  5,198,082,709 `simTicks`; 1.018416427x serial/overlap; 1.808340% lower
+  simulated latency; 95,730,111 ticks saved.
 - Both arms closed 65 logical windows, 260 admissions/publications/readiness
   signals, 1,064,960 admitted/product words, 52 q windows, 13 residual
   windows, exact issue/response totals, and zero gather/q overlap attempts.
-- Serial signature: zero overlap windows, readiness stalls, and execution-
-  before-all-ready observations.
-- Overlap signature: 65 overlap windows, 65 post-gather completion waits, 65
-  execution-before-all-ready observations, 1,571,957 readiness stalls that
-  retained ordered heads, 260 product-ready signals, and 65 terminal closures.
+- Serial/overlap mechanism signature: product-ready signals 260/260,
+  execution-before-all-ready 0/65, readiness stalls 0/1,571,957, and terminal
+  closures 65/65.  The overlap arm also closed 65 overlap windows and 65
+  post-gather completion waits while retaining ordered heads during stalls.
+  Exact terminal closures 65/65 confirm both arms retired every window.
 - Both arms report the identical 10-tile allocation and 655,360 B physical
   SPD payload; incremental payload versus the matched serial arm is zero.
 
