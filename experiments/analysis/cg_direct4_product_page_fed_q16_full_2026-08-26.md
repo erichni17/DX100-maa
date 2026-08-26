@@ -55,8 +55,33 @@ performance arithmetic can be emitted.
 
 ## Evidence state
 
-Pre-launch implementation milestone only. No full candidate observation is
-reported in this revision. The terminal classification, first-ROI simTicks,
-and accepted-control-over-candidate ratio will be added only if the durable
-candidate produces a complete numerical-and-mechanism PASS. Exactly one full
-configuration observation will be reported.
+Accepted raw root:
+
+`/data1/nier/dx100-runs/2026-08-26-cg-direct4-product-page-fed-q16-full-r2`
+
+The sole candidate restore exits zero, has one `m5_exit`, nonempty final
+stats, and a `PASS_NUMERICAL_MECHANISM_CORRECT` completion gate. Its result
+SHA-256 is `a14e949a...f3e0`; the 6,313-byte result, checkpoint tree, complete
+artifact ledger, source commit/status, frozen input, and execution artifacts
+all revalidate through `certified_artifacts.sha256` (`6ed61405...ddfc`).
+
+The terminal closes exactly 10,960 full windows, 43,840 physical p pages and
+product publications, 43,840 q-index admissions, 10,960 q16 completions,
+179,568,640 selected aliases/value deliveries, 57,491 A-line reads/writes,
+and 11,223,040 publisher issues/accepts/WriteResps. Virtual-p backing,
+coherent q-index backing, host payload access, capacity drains, and global
+fallbacks are zero. Physical SPD remains 524,288 B and external coherent
+product backing is 262,144 B. The explicit reorder contract remains
+`p16=false`, `q16=true`.
+
+The full candidate takes `685,101,315,109 simTicks`. The accepted page-fed
+control takes `715,387,684,015`, yielding a control/candidate ratio of
+`1.044207139x` or 4.2336% lower latency. This is one candidate observation
+against the separately certified page-fed control. It is not official NAS
+verification, an iso-area result, or a native speedup.
+
+The cache-off full run exposes the product-value bottleneck directly:
+179,568,398 value-line reads serve 179,568,640 delivered words, with only 209
+ready-line hits and 33 merged waiters. A separate cache-on full candidate is
+therefore running; its result cannot be compared or promoted until its own
+terminal numerical/mechanism/provenance gate passes.
