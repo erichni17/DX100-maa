@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Iterable
 
 ROOT = Path(__file__).resolve().parents[2]
-SOURCE_BASE_COMMIT = "19223ae642d602751a301843742ebb5c4d025406"
+SOURCE_BASE_COMMIT = "e0468570481f47127bfad3af71fa3fff792950be"
 SOURCE = ROOT / "benchmarks/NAS/cg/cg.cpp"
 CONFIG = ROOT / "configs/deprecated/example/se.py"
 RAMULATOR_CONFIG = ROOT / "ext/ramulator2/ramulator2/example_gem5_config.yaml"
@@ -170,7 +170,7 @@ def validate_source_base() -> None:
         cwd=ROOT,
         check=False,
     )
-    require(completed.returncode == 0, "HEAD is not based on 19223ae6")
+    require(completed.returncode == 0, "HEAD is not based on e0468570")
 
 
 def parse_kv(line: str) -> dict[str, str]:
