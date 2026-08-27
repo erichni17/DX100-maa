@@ -268,6 +268,29 @@ def main(argv: list[str] | None = None) -> int:
         OMP_NUM_THREADS="4",
         OMP_PROC_BIND="false",
     )
+    ldd = subprocess.check_output(
+        ["ldd", str(gem5)], env=environment, text=True
+    )
+    ramulator_match = re.search(r"^[ \t]*libramulator\.so => (\S+)", ldd, re.M)
+    require(
+        ramulator_match is not None
+        and Path(ramulator_match.group(1)).resolve()
+        == fused.RAMULATOR.resolve(),
+        "gem5 did not resolve the frozen Ramulator library",
+    )
+    immutable = (
+        gem5,
+        fused.RAMULATOR,
+        guest,
+        selector,
+        Path(__file__).resolve(),
+        ROOT / "experiments/scripts/strict_two_phase/"
+        "run_cg_page_fed_p16_q16_strict.py",
+        *base.GUEST_COMPILE_INPUTS,
+        *base.RUNNER_CONFIG_INPUTS[1:],
+    )
+    artifacts_before = base.artifact_ledger(immutable)
+    (input_dir / "artifact_sha256.before").write_text(artifacts_before)
     checkpoint_command = [
         str(gem5),
         "--listener-mode=off",
@@ -517,6 +540,9 @@ def main(argv: list[str] | None = None) -> int:
     checkpoint_after = base.tree_ledger(checkpoint)
     (input_dir / "checkpoint_files.after").write_text(checkpoint_after)
     require(checkpoint_before == checkpoint_after, "checkpoint changed")
+    artifacts_after = base.artifact_ledger(immutable)
+    (input_dir / "artifact_sha256.after").write_text(artifacts_after)
+    require(artifacts_before == artifacts_after, "immutable artifact changed")
     require(
         base.source_status() == before_status
         and base.source_commit() == source_commit,
@@ -537,6 +563,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
         "source_commit": source_commit,
         "gem5_sha256": base.sha256_file(gem5),
+        "ramulator_sha256": base.sha256_file(fused.RAMULATOR),
         "guest_sha256": base.sha256_file(guest),
         "native_runs": 0,
         "direct4_runs": 0,
@@ -550,6 +577,25 @@ def main(argv: list[str] | None = None) -> int:
         "restore_commands": commands,
     }
     (out / "result.json").write_text(json.dumps(result, indent=2) + "\n")
+    ledger_targets = [
+        path
+        for path in sorted(out.rglob("*"))
+        if path.is_file()
+        and path.name not in {"raw_root.sha256", "gate.complete"}
+    ]
+    (out / "raw_root.sha256").write_text(
+        "".join(
+            f"{base.sha256_file(path)}  {path.relative_to(out)}\n"
+            for path in ledger_targets
+        )
+    )
+    ledger_sha = base.sha256_file(out / "raw_root.sha256")
+    (out / "gate.complete").write_text(
+        "COMPLETE_CG_STRICT_P16_Q16\n"
+        "decision=VALID_STRICT_REFERENCE\n"
+        "correctness=EXACT_MATCH\n"
+        f"raw_root_sha256={ledger_sha}\n"
+    )
     print(json.dumps(result, sort_keys=True))
     return 0
 
