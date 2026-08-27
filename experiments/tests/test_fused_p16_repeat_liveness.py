@@ -164,7 +164,12 @@ class FusedP16RepeatLivenessContract(unittest.TestCase):
         empty = {name: 0 for name in runner.REQUIRED_STATS}
         with tempfile.TemporaryDirectory() as tmp:
             stats = Path(tmp) / "stats.txt"
-            stats.write_text(stats_text([values, values, empty]))
+            content = stats_text([values, values, empty]).replace(
+                "---------- End Simulation Statistics ----------",
+                "system.unrelated_ratio inf\n"
+                "---------- End Simulation Statistics ----------",
+            )
+            stats.write_text(content)
             self.assertEqual(len(runner.operation_sections(stats, 2)), 2)
 
             removed = values.copy()

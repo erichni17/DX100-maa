@@ -230,7 +230,7 @@ def read_stat_sections(stats: Path) -> list[list[tuple[str, int]]]:
             continue
         try:
             value = int(float(fields[1]))
-        except ValueError:
+        except (ValueError, OverflowError):
             continue
         current.append((fields[0], value))
     require(current is None and sections, "unterminated or absent stats")
