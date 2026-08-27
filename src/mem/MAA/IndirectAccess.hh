@@ -694,6 +694,19 @@ protected:
     uint64_t soa_jit_page_fed_admission_cycles = 0;
     uint64_t soa_jit_page_fed_coherent_index_read_lines = 0;
     uint64_t soa_jit_page_fed_coherent_index_write_lines = 0;
+    Tick strict_page_fed_b_first_tick = 0;
+    Tick strict_page_fed_b_last_tick = 0;
+    Tick strict_page_fed_row_first_tick = 0;
+    Tick strict_page_fed_row_last_tick = 0;
+    Tick strict_page_fed_close_tick = 0;
+    Tick strict_page_fed_a_first_issue_tick = 0;
+    Tick strict_page_fed_a_last_issue_tick = 0;
+    Tick strict_page_fed_a_last_response_tick = 0;
+    Tick strict_page_fed_backing_first_issue_tick = 0;
+    Tick strict_page_fed_backing_last_issue_tick = 0;
+    Tick strict_page_fed_backing_last_ack_tick = 0;
+    Tick strict_page_fed_consumer_begin_tick = 0;
+    Tick strict_page_fed_consumer_end_tick = 0;
     int my_dst_tile, my_src_tile, my_src_reg, my_cond_tile, my_max;
     int my_idx_tile;
     bool my_cond_tile_ready, my_idx_tile_ready, my_src_tile_ready;
@@ -742,6 +755,8 @@ protected:
     bool isSoaJitMaskedIndexRmw() const;
     bool isSoaJitOldResultRmw() const;
     bool isSoaJitPageFedRmw() const;
+    bool strictTwoPhaseOperation() const;
+    bool strictPageFedTwoPhaseOperation() const;
     bool usesBoundedDirectIndexPasses() const;
     bool usesBoundedSourceResponses() const;
     void fillDirectIndexWindow();

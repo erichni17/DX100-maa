@@ -192,6 +192,12 @@ class MAA(ClockedObject):
         False,
         "Materialize four RowTable-sorted runs and merge four finite heads",
     )
+    virtual_strict_two_phase = Param.Bool(
+        False,
+        "Default-off diagnostic reference: ingest one 16K B/index stream "
+        "through bounded feeder state, retain all Row/Offset descriptors, "
+        "then issue A into coherent 4K-bounded result storage",
+    )
     virtual_index_range_policy = Param.Unsigned(
         0,
         "Range bounds: 0=full grow, 1=A endpoints, 2=explicit oracle, "

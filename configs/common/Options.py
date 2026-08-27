@@ -618,6 +618,15 @@ def addNoISAOptions(parser):
         ),
     )
     parser.add_argument(
+        "--maa_virtual_strict_two_phase",
+        action="store_true",
+        help=(
+            "Default-off strict reference: fetch one logical 16K B/index "
+            "stream through a <=4K feeder, retain every Row/Offset "
+            "descriptor, and fence A issue until admission closes"
+        ),
+    )
+    parser.add_argument(
         "--maa_virtual_index_range_policy",
         type=int,
         default=0,

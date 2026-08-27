@@ -868,6 +868,13 @@ bool IndirectAccessUnit::isDirectIndexLoad() const {
                 Instruction::OpcodeType::INDIR_LD_INDEX ||
             isSoaJitRmw());
 }
+bool IndirectAccessUnit::strictTwoPhaseOperation() const {
+    return maa->virtual_strict_two_phase && isVirtualLoad() &&
+           isDirectIndexLoad() && !isSoaJitRmw();
+}
+bool IndirectAccessUnit::strictPageFedTwoPhaseOperation() const {
+    return maa->virtual_strict_two_phase && isSoaJitPageFedRmw();
+}
 bool IndirectAccessUnit::isFusedP16Product() const {
     return my_instruction != nullptr &&
            my_instruction->isFusedP16Product();
@@ -3152,6 +3159,14 @@ bool IndirectAccessUnit::receiveDirectIndex(Addr addr, uint8_t *dataptr,
     accountReadResponse(addr, is_block_cached);
     if (isVirtualLoad())
         macro_b_last_response_tick = curTick();
+    if (strictTwoPhaseOperation()) {
+        const auto result = maa->strictTwoPhaseReference(
+            my_dst_tile, maa->getVirtualPageGeneration(my_dst_tile))
+                                .bFetchResponse(curTick());
+        panic_if(result != maa::StrictTwoPhaseReference::Result::Accepted,
+                 "I[%d] strict B response failed: %s\n", my_indirect_id,
+                 maa::StrictTwoPhaseReference::resultName(result));
+    }
     const auto *words = reinterpret_cast<const uint32_t *>(dataptr);
     const auto pending_words = std::move(pending->second);
     direct_index_pending_lines.erase(pending);
@@ -3465,6 +3480,12 @@ IndirectAccessUnit::admitPageFedSoaJitIndexPage(
              "completed physical-4K index page\n",
              my_indirect_id, page, index_tile);
 
+    if (strictPageFedTwoPhaseOperation()) {
+        if (strict_page_fed_b_first_tick == 0)
+            strict_page_fed_b_first_tick = curTick();
+        strict_page_fed_b_last_tick = curTick();
+    }
+
     for (uint32_t lane = 0;
          lane < gem5::maa::PageFedSoaJitABI::PageElements; ++lane) {
         const uint32_t ordinal =
@@ -3476,6 +3497,11 @@ IndirectAccessUnit::admitPageFedSoaJitIndexPage(
             panic("I[%d] page-fed page %u requires a forbidden "
                   "Row/Offset drain at ordinal %u\n",
                   my_indirect_id, page, ordinal);
+        }
+        if (strictPageFedTwoPhaseOperation()) {
+            if (strict_page_fed_row_first_tick == 0)
+                strict_page_fed_row_first_tick = curTick();
+            strict_page_fed_row_last_tick = curTick();
         }
         const auto admitted = soa_jit_page_fed_state.admitOrdinal(
             generation, page, ordinal);
@@ -3538,6 +3564,19 @@ IndirectAccessUnit::closePageFedSoaJit(uint64_t generation)
     panic_if(closed != gem5::maa::PageFedSoaJitState::Result::Accepted,
              "I[%d] page-fed close failed: %s\n", my_indirect_id,
              gem5::maa::PageFedSoaJitState::resultName(closed));
+    panic_if(strictPageFedTwoPhaseOperation() &&
+                 (strict_page_fed_b_first_tick == 0 ||
+                  strict_page_fed_b_last_tick == 0 ||
+                  strict_page_fed_row_first_tick == 0 ||
+                  strict_page_fed_row_last_tick == 0 ||
+                  soa_jit_page_fed_admitted_words !=
+                      gem5::maa::PageFedSoaJitABI::LogicalElements ||
+                  strict_page_fed_a_first_issue_tick != 0),
+             "I[%d] strict page-fed close lacks exact 16K B/Row admission "
+             "or observed an early A issue\n",
+             my_indirect_id);
+    if (strictPageFedTwoPhaseOperation())
+        strict_page_fed_close_tick = curTick();
     soa_jit_page_fed_close_commands++;
     soa_jit_page_fed_command_responses++;
     DPRINTF(MAAVirtualTrace,
@@ -3578,6 +3617,12 @@ void IndirectAccessUnit::fillRowTable(
                  "I[%d] page-fed early execution rejected: %s\n",
                  my_indirect_id,
                  gem5::maa::PageFedSoaJitState::resultName(authorized));
+        if (strictPageFedTwoPhaseOperation()) {
+            strict_page_fed_consumer_begin_tick = curTick();
+            maa->linkStrictP16ToQ16(
+                my_backing_addr, my_instruction->core_id, my_indirect_id,
+                soa_jit_generation, curTick());
+        }
         panic_if(my_i != static_cast<int>(
                              gem5::maa::PageFedSoaJitABI::LogicalElements) ||
                      soa_jit_next_source_ordinal !=
@@ -4083,6 +4128,14 @@ void IndirectAccessUnit::fillRowTable(
                 }
                 if (offset_table->occupancy() >=
                     maa->num_offset_table_epoch_entries) {
+                    panic_if(strictTwoPhaseOperation(),
+                             "I[%d] strict two-phase cannot retain all %d "
+                             "descriptors: Offset pressure at ordinal=%d "
+                             "occupancy=%d capacity=%d epoch=%u\n",
+                             my_indirect_id, my_max, logical_itr,
+                             offset_table->occupancy(),
+                             offset_table->capacity(),
+                             maa->num_offset_table_epoch_entries);
                     panic_if(resident_bucket,
                              "I[%d] resident population exceeded bounded "
                              "Offset state before its planned 4K closure\n",
@@ -4134,6 +4187,12 @@ void IndirectAccessUnit::fillRowTable(
                     first_CL_access);
                 num_rowtable_accesses++;
                 if (!inserted) {
+                    panic_if(strictTwoPhaseOperation(),
+                             "I[%d] strict two-phase physical RowTable "
+                             "cannot retain all %d descriptors: ordinal=%d "
+                             "slice=%d grow=0x%lx after %lu inserts\n",
+                             my_indirect_id, my_max, logical_itr, my_RT_idx,
+                             grow_addr, attribution_row_insert_successes);
                     panic_if(resident_bucket,
                              "I[%d] resident population exceeded bounded "
                              "RowTable state before its planned 4K closure\n",
@@ -4162,6 +4221,19 @@ void IndirectAccessUnit::fillRowTable(
                         if (macro_row_first_insert_tick == 0)
                             macro_row_first_insert_tick = curTick();
                         macro_row_last_insert_tick = curTick();
+                    }
+                    if (strictTwoPhaseOperation()) {
+                        auto &reference = maa->strictTwoPhaseReference(
+                            my_dst_tile,
+                            maa->getVirtualPageGeneration(my_dst_tile));
+                        const auto result =
+                            reference.descriptorInsert(curTick());
+                        panic_if(
+                            result != maa::StrictTwoPhaseReference::
+                                          Result::Accepted,
+                            "I[%d] strict descriptor admission failed: %s\n",
+                            my_indirect_id,
+                            maa::StrictTwoPhaseReference::resultName(result));
                     }
                     if (debug::MAAReorderTrace)
                         panic_if(!reorder_survival.admit(),
@@ -5303,6 +5375,11 @@ void IndirectAccessUnit::issueSoaJitWrite(SoaJitContext &context)
     context.state = SoaJitContextState::AwaitAWriteResp;
     observeSoaJitResultPipeline();
     soa_jit_a_write_issues++;
+    if (strictPageFedTwoPhaseOperation()) {
+        if (strict_page_fed_backing_first_issue_tick == 0)
+            strict_page_fed_backing_first_issue_tick = curTick();
+        strict_page_fed_backing_last_issue_tick = curTick();
+    }
     maa->sendPacket(FuncUnitType::INDIRECT, my_indirect_id, pkt,
                     maa->getClockEdge(Cycles(0)), true);
     DPRINTF(MAAVirtualTrace,
@@ -5383,6 +5460,8 @@ bool IndirectAccessUnit::receiveSoaJitData(
             accountReadResponse(addr, is_block_cached);
             std::memcpy(context.aLine.data(), dataptr, block_size);
             soa_jit_a_read_responses++;
+            if (strictPageFedTwoPhaseOperation())
+                strict_page_fed_a_last_response_tick = curTick();
             recordReorderSurvivalIssuedEntries(context.remaining);
             panic_if(context.preAUsesPending != 0,
                      "I[%d] retained pre-A use state before A response\n",
@@ -5481,6 +5560,8 @@ bool IndirectAccessUnit::completeSoaJitWrite(
              "I[%d] invalid exact SoA/JIT WriteResp owner\n",
              my_indirect_id);
     soa_jit_a_write_responses++;
+    if (strictPageFedTwoPhaseOperation())
+        strict_page_fed_backing_last_ack_tick = curTick();
     DPRINTF(MAAVirtualTrace,
             "event=soa_jit_a_write_response schema=1 unit=%d "
             "operation_tick=%lu generation=%lu addr=0x%lx\n",
@@ -5618,6 +5699,139 @@ void IndirectAccessUnit::checkSoaJitTerminal()
                      soa_jit_generation),
              "I[%d] SoA/JIT terminal accounting failed\n",
              my_indirect_id);
+    if (strictPageFedTwoPhaseOperation()) {
+        strict_page_fed_consumer_end_tick = curTick();
+        panic_if(
+            strict_page_fed_b_first_tick == 0 ||
+                strict_page_fed_b_last_tick < strict_page_fed_b_first_tick ||
+                strict_page_fed_row_first_tick == 0 ||
+                strict_page_fed_row_last_tick <
+                    strict_page_fed_row_first_tick ||
+                strict_page_fed_close_tick < strict_page_fed_row_last_tick ||
+                strict_page_fed_a_first_issue_tick <
+                    strict_page_fed_row_last_tick ||
+                strict_page_fed_a_first_issue_tick <
+                    strict_page_fed_close_tick ||
+                strict_page_fed_a_last_issue_tick <
+                    strict_page_fed_a_first_issue_tick ||
+                strict_page_fed_a_last_response_tick <
+                    strict_page_fed_a_first_issue_tick ||
+                strict_page_fed_backing_first_issue_tick == 0 ||
+                strict_page_fed_backing_last_issue_tick <
+                    strict_page_fed_backing_first_issue_tick ||
+                strict_page_fed_backing_last_ack_tick <
+                    strict_page_fed_backing_first_issue_tick ||
+                strict_page_fed_consumer_begin_tick == 0 ||
+                strict_page_fed_consumer_end_tick <
+                    strict_page_fed_consumer_begin_tick ||
+                soa_jit_page_fed_admitted_words !=
+                    gem5::maa::PageFedSoaJitABI::LogicalElements ||
+                soa_jit_page_fed_spd_index_reads !=
+                    gem5::maa::PageFedSoaJitABI::LogicalElements ||
+                soa_jit_page_fed_row_writes !=
+                    gem5::maa::PageFedSoaJitABI::LogicalElements ||
+                soa_jit_epoch_drains != 0 ||
+                soa_jit_a_read_issues == 0 ||
+                soa_jit_a_read_issues != soa_jit_a_read_responses ||
+                soa_jit_a_write_issues != soa_jit_a_write_responses,
+            "I[%d] strict page-fed terminal/order closure failed: "
+            "A_FIRST_ISSUE=%lu ROW_OFFSET_LAST_INSERT=%lu close=%lu\n",
+            my_indirect_id, strict_page_fed_a_first_issue_tick,
+            strict_page_fed_row_last_tick, strict_page_fed_close_tick);
+        const Tick b_fetch_ticks = strict_page_fed_b_last_tick -
+            strict_page_fed_b_first_tick;
+        const Tick row_offset_ticks = strict_page_fed_close_tick -
+            strict_page_fed_row_first_tick;
+        const Tick a_issue_ticks = strict_page_fed_a_last_response_tick -
+            strict_page_fed_a_first_issue_tick;
+        const Tick backing_ticks = strict_page_fed_backing_last_ack_tick -
+            strict_page_fed_backing_first_issue_tick;
+        const Tick page_ticks = strict_page_fed_b_last_tick -
+            strict_page_fed_b_first_tick;
+        const Tick consumer_ticks = strict_page_fed_consumer_end_tick -
+            strict_page_fed_consumer_begin_tick;
+        (*maa->stats.IND_StrictTwoPhaseOperations[my_indirect_id])++;
+        (*maa->stats.IND_StrictTwoPhaseBFetchCycles[my_indirect_id]) +=
+            maa->getTicksToCycles(b_fetch_ticks);
+        (*maa->stats.IND_StrictTwoPhaseRowOffsetCycles[my_indirect_id]) +=
+            maa->getTicksToCycles(row_offset_ticks);
+        (*maa->stats.IND_StrictTwoPhaseAIssueCycles[my_indirect_id]) +=
+            maa->getTicksToCycles(a_issue_ticks);
+        (*maa->stats.IND_StrictTwoPhaseBackingCycles[my_indirect_id]) +=
+            maa->getTicksToCycles(backing_ticks);
+        (*maa->stats.IND_StrictTwoPhasePageCycles[my_indirect_id]) +=
+            maa->getTicksToCycles(page_ticks);
+        (*maa->stats.IND_StrictTwoPhaseConsumerCycles[my_indirect_id]) +=
+            maa->getTicksToCycles(consumer_ticks);
+        (*maa->stats.IND_StrictTwoPhaseBFetchLines[my_indirect_id]) +=
+            maa::StrictTwoPhaseReference::ExpectedBFetchLines;
+        (*maa->stats.IND_StrictTwoPhaseDescriptors[my_indirect_id]) +=
+            soa_jit_page_fed_row_writes;
+        (*maa->stats.IND_StrictTwoPhaseAIssues[my_indirect_id]) +=
+            soa_jit_a_read_issues;
+        (*maa->stats.IND_StrictTwoPhaseBackingIssues[my_indirect_id]) +=
+            soa_jit_a_write_issues;
+        (*maa->stats.IND_StrictTwoPhasePagesReady[my_indirect_id]) +=
+            soa_jit_page_fed_admit_commands;
+        DPRINTF(MAAMacroEvent,
+                "event=strict_page_fed_two_phase_timing schema=2 unit=%d "
+                "generation=%lu logical=16384 physical=4096 "
+                "feeder_words=4096 result_context_words=%d "
+                "B_FETCH_BEGIN=%lu B_FETCH_END=%lu B_FETCH_TICKS=%lu "
+                "b_lines=%u b_bytes=%u b_words=%lu "
+                "ROW_OFFSET_FIRST_INSERT=%lu "
+                "ROW_OFFSET_LAST_INSERT=%lu ROW_OFFSET_CLOSE=%lu "
+                "ROW_OFFSET_TICKS=%lu descriptors=%lu "
+                "A_FIRST_ISSUE=%lu A_LAST_ISSUE=%lu "
+                "A_LAST_RESPONSE=%lu A_ISSUE_TICKS=%lu "
+                "a_issues=%lu a_responses=%lu "
+                "BACKING_FIRST_WRITE=%lu BACKING_LAST_WRITE=%lu "
+                "BACKING_LAST_ACK=%lu BACKING_TICKS=%lu "
+                "backing_issues=%lu backing_acks=%lu "
+                "backing_transport_bytes=%lu backing_semantic_bytes=%lu "
+                "PAGE_FIRST_READY=%lu PAGE_LAST_READY=%lu PAGE_TICKS=%lu "
+                "pages_ready=%lu CONSUMER_BEGIN=%lu CONSUMER_END=%lu "
+                "CONSUMER_TICKS=%lu exact_b_once=1 "
+                "raw_b_retained_bytes=0 descriptor_backing_bytes=0 "
+                "replay_passes=0 coherent_ack=1 order_ok=1 terminal=1\n",
+                my_indirect_id, soa_jit_generation,
+                maa->physical_tile_elements,
+                strict_page_fed_b_first_tick,
+                strict_page_fed_b_last_tick, b_fetch_ticks,
+                maa::StrictTwoPhaseReference::ExpectedBFetchLines,
+                maa::StrictTwoPhaseReference::LogicalElements *
+                    maa::StrictTwoPhaseReference::IndexBytes,
+                soa_jit_page_fed_admitted_words,
+                strict_page_fed_row_first_tick,
+                strict_page_fed_row_last_tick,
+                strict_page_fed_close_tick, row_offset_ticks,
+                soa_jit_page_fed_row_writes,
+                strict_page_fed_a_first_issue_tick,
+                strict_page_fed_a_last_issue_tick,
+                strict_page_fed_a_last_response_tick, a_issue_ticks,
+                soa_jit_a_read_issues, soa_jit_a_read_responses,
+                strict_page_fed_backing_first_issue_tick,
+                strict_page_fed_backing_last_issue_tick,
+                strict_page_fed_backing_last_ack_tick, backing_ticks,
+                soa_jit_a_write_issues, soa_jit_a_write_responses,
+                soa_jit_a_write_issues * block_size,
+                soa_jit_selected * my_word_size,
+                strict_page_fed_b_first_tick,
+                strict_page_fed_b_last_tick, page_ticks,
+                soa_jit_page_fed_admit_commands,
+                strict_page_fed_consumer_begin_tick,
+                strict_page_fed_consumer_end_tick, consumer_ticks);
+        maa->completeStrictP16Q16Window(
+            my_indirect_id, soa_jit_generation, curTick(),
+            strict_page_fed_row_last_tick,
+            strict_page_fed_a_first_issue_tick,
+            soa_jit_page_fed_row_writes, soa_jit_a_read_issues,
+            soa_jit_a_read_responses, soa_jit_a_write_issues,
+            soa_jit_a_write_responses, soa_jit_value_read_issues,
+            soa_jit_value_read_responses, soa_jit_value_fills,
+            soa_jit_value_deliveries,
+            soa_jit_page_fed_admit_commands);
+    }
     offset_table->check_reset();
     for (int slice = 0; slice < num_RT_slices[my_RT_config]; ++slice)
         RT[my_RT_config][slice].check_reset();
@@ -5859,6 +6073,10 @@ void IndirectAccessUnit::executeInstruction() {
             assert(false);
         }
         my_words_per_cl = 64 / my_word_size;
+        panic_if(maa->virtual_strict_two_phase && isVirtualLoad() &&
+                     !isDirectIndexLoad(),
+                 "I[%d] strict two-phase requires a direct B/index stream\n",
+                 my_indirect_id);
         virtual_combine_words_limit = virtual_combine_words_configured == 0
             ? virtual_combine_slots.size() * my_words_per_cl
             : virtual_combine_words_configured;
@@ -6188,6 +6406,19 @@ void IndirectAccessUnit::executeInstruction() {
         soa_jit_page_fed_admission_cycles = 0;
         soa_jit_page_fed_coherent_index_read_lines = 0;
         soa_jit_page_fed_coherent_index_write_lines = 0;
+        strict_page_fed_b_first_tick = 0;
+        strict_page_fed_b_last_tick = 0;
+        strict_page_fed_row_first_tick = 0;
+        strict_page_fed_row_last_tick = 0;
+        strict_page_fed_close_tick = 0;
+        strict_page_fed_a_first_issue_tick = 0;
+        strict_page_fed_a_last_issue_tick = 0;
+        strict_page_fed_a_last_response_tick = 0;
+        strict_page_fed_backing_first_issue_tick = 0;
+        strict_page_fed_backing_last_issue_tick = 0;
+        strict_page_fed_backing_last_ack_tick = 0;
+        strict_page_fed_consumer_begin_tick = 0;
+        strict_page_fed_consumer_end_tick = 0;
         panic_if(soa_jit_operation_active,
                  "I[%d] retained a live SoA/JIT operation at decode\n",
                  my_indirect_id);
@@ -6220,6 +6451,39 @@ void IndirectAccessUnit::executeInstruction() {
                      "I[%d] streamed-index length %d exceeds logical tile "
                      "capacity %d\n",
                      my_indirect_id, my_max, num_tile_elements);
+            if (strictTwoPhaseOperation()) {
+                const uint64_t row_line_slots =
+                    static_cast<uint64_t>(
+                        num_RT_slices[my_RT_config]) *
+                    num_RT_rows_per_slice *
+                    num_RT_slice_columns[my_RT_config];
+                panic_if(my_index_min != 0 || my_index_stride != 1 ||
+                             my_max != num_tile_elements ||
+                             row_line_slots < static_cast<uint64_t>(my_max) ||
+                             my_backing_addr_range_id < 0,
+                         "I[%d] strict two-phase requires exact "
+                         "0:16384:1, 16K physical Row slots, and legal "
+                         "coherent backing; got %d:%d words=%d slots=%lu "
+                         "backing_region=%d\n",
+                         my_indirect_id, my_index_min, my_index_stride,
+                         my_max, row_line_slots,
+                         my_backing_addr_range_id);
+                maa->beginStrictTwoPhaseReference(
+                    my_indirect_id, my_instruction->core_id, my_dst_tile,
+                    my_word_size, curTick());
+                DPRINTF(MAAVirtualTrace,
+                        "event=strict_two_phase_begin schema=2 unit=%d "
+                        "operation_tick=%lu token=%d generation=%lu "
+                        "logical=%d physical=%u row_line_slots=%lu "
+                        "offset_capacity=%d offset_epoch=%u "
+                        "raw_b_retained_bytes=0 descriptor_backing_bytes=0 "
+                        "replay_passes=0 coherent_backing=1\n",
+                        my_indirect_id, my_decode_start_tick, my_dst_tile,
+                        maa->getVirtualPageGeneration(my_dst_tile), my_max,
+                        maa->physical_tile_elements, row_line_slots,
+                        offset_table->capacity(),
+                        maa->num_offset_table_epoch_entries);
+            }
             if (isFusedP16Product()) {
                 using Contract = maa::FusedP16ProductContract;
                 panic_if(
@@ -6647,6 +6911,39 @@ void IndirectAccessUnit::executeInstruction() {
             DPRINTF(MAAIndirect, "I[%d] %s: fill finished %s!\n",
                     my_indirect_id, __func__, my_instruction->print());
             my_fill_finished = true;
+            if (strictTwoPhaseOperation()) {
+                panic_if(my_i != my_max ||
+                             offset_table->occupancy() != my_max ||
+                             !direct_index_pending_lines.empty() ||
+                             !direct_index_ready_lines.empty() ||
+                             !direct_index_words.empty(),
+                         "I[%d] strict admission closure incomplete: "
+                         "cursor=%d/%d offsets=%d pending=%zu ready=%zu "
+                         "words=%zu\n",
+                         my_indirect_id, my_i, my_max,
+                         offset_table->occupancy(),
+                         direct_index_pending_lines.size(),
+                         direct_index_ready_lines.size(),
+                         direct_index_words.size());
+                auto &reference = maa->strictTwoPhaseReference(
+                    my_dst_tile,
+                    maa->getVirtualPageGeneration(my_dst_tile));
+                const auto closed = reference.closeAdmission(curTick());
+                panic_if(
+                    closed != maa::StrictTwoPhaseReference::Result::Accepted,
+                    "I[%d] strict admission close failed: %s\n",
+                    my_indirect_id,
+                    maa::StrictTwoPhaseReference::resultName(closed));
+                DPRINTF(MAAVirtualTrace,
+                        "event=strict_two_phase_admission_closed schema=2 "
+                        "unit=%d operation_tick=%lu close_tick=%lu "
+                        "b_words=%lu descriptors=%lu offsets=%d "
+                        "raw_b_buffered_words=0 a_issues=0\n",
+                        my_indirect_id, my_decode_start_tick, curTick(),
+                        reference.record().bWordsAdmitted,
+                        reference.record().descriptorInsertions,
+                        offset_table->occupancy());
+            }
             buildReady = true;
         } else if (waitForElement) {
             DPRINTF(MAAVirtualTrace,
@@ -6660,6 +6957,10 @@ void IndirectAccessUnit::executeInstruction() {
                     "I[%d] %s: waiting for fill element %s!\n",
                     my_indirect_id, __func__, my_instruction->print());
         } else if (needDrain) {
+            panic_if(strictTwoPhaseOperation(),
+                     "I[%d] strict two-phase requested a drain before "
+                     "global 16K admission closed at %d/%d\n",
+                     my_indirect_id, my_i, my_max);
             DPRINTF(MAAIndirect, "I[%d] %s: fill needs to drain %s!\n",
                     my_indirect_id, __func__, my_instruction->print());
             DPRINTF(MAAVirtualTrace,
@@ -6709,6 +7010,14 @@ void IndirectAccessUnit::executeInstruction() {
     }
     case Status::Build: {
         assert(my_instruction != nullptr);
+        panic_if(strictTwoPhaseOperation() &&
+                     !maa->strictTwoPhaseReference(
+                              my_dst_tile,
+                              maa->getVirtualPageGeneration(my_dst_tile))
+                          .record().admissionClosed,
+                 "I[%d] strict A build opened before final Row/Offset "
+                 "admission\n",
+                 my_indirect_id);
         accountVirtualRequestInterval();
         DPRINTF(MAAIndirect, "I[%d] %s: Building %s requests, fill finished: %s!\n",
                 my_indirect_id, __func__, my_instruction->print(), my_fill_finished ? "true" : "false");
@@ -7497,6 +7806,17 @@ void IndirectAccessUnit::executeInstruction() {
                 (*maa->stats
                       .IND_BoundedReplayMaxEpochAdmissions[my_indirect_id]) +=
                     max_epoch_admissions;
+            }
+            if (strictTwoPhaseOperation()) {
+                const auto result = maa->strictTwoPhaseReference(
+                    my_dst_tile,
+                    maa->getVirtualPageGeneration(my_dst_tile))
+                                        .producerComplete(curTick());
+                panic_if(
+                    result != maa::StrictTwoPhaseReference::Result::Accepted,
+                    "I[%d] strict producer closure failed: %s\n",
+                    my_indirect_id,
+                    maa::StrictTwoPhaseReference::resultName(result));
             }
         }
         if (isDirectIndexLoad()) {
@@ -8618,7 +8938,33 @@ bool IndirectAccessUnit::checkAndResetAllRowTablesSent() {
     return true;
 }
 void IndirectAccessUnit::createReadPacket(Addr addr, int latency) {
+    if (strictPageFedTwoPhaseOperation()) {
+        const auto authorized = soa_jit_page_fed_state.authorizeAIssue(
+            soa_jit_generation);
+        panic_if(
+            authorized != gem5::maa::PageFedSoaJitState::Result::Accepted,
+            "I[%d] strict page-fed A packet issue rejected: %s\n",
+            my_indirect_id,
+            gem5::maa::PageFedSoaJitState::resultName(authorized));
+        panic_if(strict_page_fed_row_last_tick == 0 ||
+                     curTick() < strict_page_fed_row_last_tick,
+                 "I[%d] strict page-fed A_FIRST_ISSUE=%lu precedes "
+                 "ROW_OFFSET_LAST_INSERT=%lu\n",
+                 my_indirect_id, curTick(),
+                 strict_page_fed_row_last_tick);
+        if (strict_page_fed_a_first_issue_tick == 0)
+            strict_page_fed_a_first_issue_tick = curTick();
+        strict_page_fed_a_last_issue_tick = curTick();
+    }
     if (isVirtualLoad()) {
+        if (strictTwoPhaseOperation()) {
+            const auto result = maa->strictTwoPhaseReference(
+                my_dst_tile, maa->getVirtualPageGeneration(my_dst_tile))
+                                    .aIssue(curTick());
+            panic_if(result != maa::StrictTwoPhaseReference::Result::Accepted,
+                     "I[%d] strict A issue failed: %s\n", my_indirect_id,
+                     maa::StrictTwoPhaseReference::resultName(result));
+        }
         if (macro_a_first_issue_tick == 0)
             macro_a_first_issue_tick = curTick();
         macro_a_last_issue_tick = curTick();
@@ -8683,6 +9029,15 @@ void IndirectAccessUnit::createDirectIndexReadPacket(Addr addr, int latency) {
               my_indirect_id, addr);
     }
     if (isVirtualLoad()) {
+        if (strictTwoPhaseOperation()) {
+            const auto result = maa->strictTwoPhaseReference(
+                my_dst_tile, maa->getVirtualPageGeneration(my_dst_tile))
+                                    .bFetchIssue(curTick(), block_size);
+            panic_if(result != maa::StrictTwoPhaseReference::Result::Accepted,
+                     "I[%d] strict B fetch issue failed: %s\n",
+                     my_indirect_id,
+                     maa::StrictTwoPhaseReference::resultName(result));
+        }
         if (macro_b_first_issue_tick == 0)
             macro_b_first_issue_tick = curTick();
         macro_b_last_issue_tick = curTick();
@@ -9135,6 +9490,15 @@ IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr,
         my_received_responses++;
         virtual_source_received++;
         macro_a_last_response_tick = curTick();
+        if (strictTwoPhaseOperation()) {
+            const auto result = maa->strictTwoPhaseReference(
+                my_dst_tile, maa->getVirtualPageGeneration(my_dst_tile))
+                                    .aResponse(curTick());
+            panic_if(result != maa::StrictTwoPhaseReference::Result::Accepted,
+                     "I[%d] strict A response failed: %s\n",
+                     my_indirect_id,
+                     maa::StrictTwoPhaseReference::resultName(result));
+        }
         const bool response_throttled = drainVirtualResponses();
         accountVirtualRequestInterval();
         if (response_throttled)
@@ -9570,6 +9934,14 @@ void IndirectAccessUnit::markVirtualPageReadyIfComplete(
             (static_cast<Addr>(my_indirect_id) << 8) - page;
     }
     maa->setVirtualPageReady(my_dst_tile, page, final_write_key);
+    if (strictTwoPhaseOperation()) {
+        const auto result = maa->strictTwoPhaseReference(
+            my_dst_tile, maa->getVirtualPageGeneration(my_dst_tile))
+                                .pageReady(curTick());
+        panic_if(result != maa::StrictTwoPhaseReference::Result::Accepted,
+                 "I[%d] strict page-ready failed: %s\n", my_indirect_id,
+                 maa::StrictTwoPhaseReference::resultName(result));
+    }
     if (idealized_visibility) {
         (*maa->stats.IND_VirtIdealizedAckPages[my_indirect_id])++;
         DPRINTF(MAAVirtualTrace,
@@ -9756,8 +10128,19 @@ bool IndirectAccessUnit::createRetirementWrite(Addr vaddr, unsigned size,
         macro_backing_first_issue_tick = curTick();
     macro_backing_last_issue_tick = curTick();
     macro_backing_transport_bytes += size;
-    macro_backing_semantic_bytes += valid_words == 0
+    const uint32_t semantic_bytes = valid_words == 0
         ? size : __builtin_popcount(valid_words) * my_word_size;
+    macro_backing_semantic_bytes += semantic_bytes;
+    if (strictTwoPhaseOperation()) {
+        const auto result = maa->strictTwoPhaseReference(
+            my_dst_tile, maa->getVirtualPageGeneration(my_dst_tile))
+                                .backingIssue(curTick(), size,
+                                              semantic_bytes);
+        panic_if(result != maa::StrictTwoPhaseReference::Result::Accepted,
+                 "I[%d] strict backing issue failed: %s\n",
+                 my_indirect_id,
+                 maa::StrictTwoPhaseReference::resultName(result));
+    }
     if (size == block_size)
         macro_backing_line_issues++;
     else
@@ -11038,6 +11421,14 @@ void IndirectAccessUnit::retirementWriteComplete(
     (*maa->stats.IND_VirtWriteCompletions[my_indirect_id])++;
     attribution_write_completions++;
     macro_backing_last_ack_tick = curTick();
+    if (strictTwoPhaseOperation()) {
+        const auto result = maa->strictTwoPhaseReference(
+            my_dst_tile, maa->getVirtualPageGeneration(my_dst_tile))
+                                .backingAck(curTick());
+        panic_if(result != maa::StrictTwoPhaseReference::Result::Accepted,
+                 "I[%d] strict backing ACK failed: %s\n", my_indirect_id,
+                 maa::StrictTwoPhaseReference::resultName(result));
+    }
     DPRINTF(MAAVirtualTrace,
             "event=backing_write_complete schema=2 unit=%d occurrence=%lu "
             "operation_tick=%lu key=0x%lx outstanding=%d\n",

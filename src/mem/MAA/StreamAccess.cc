@@ -517,6 +517,10 @@ void StreamAccessUnit::executeInstruction() {
                         response_publisher.creditHighWater()),
                     my_publish_credit_stall_observations);
             (*maa->stats.STR_PublishTerminals[my_stream_id])++;
+            maa->recordStrictProductPageResponse(
+                my_instruction->core_id, my_base_addr,
+                my_publish_logical_page, my_publish_guest_generation,
+                curTick());
             panic_if(response_publisher.reset() !=
                          ResponsePublisher::ResetResult::Reset,
                      "S[%d] could not reset completed publisher\n",
