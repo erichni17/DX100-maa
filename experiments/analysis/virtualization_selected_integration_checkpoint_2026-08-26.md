@@ -29,9 +29,11 @@ between virtual-p and products. Direct4 is 23.8750% lower latency, but that
 delta combines p-backing removal with loss of p16 reorder and must not be
 attributed to either alone.
 
-A candidate-only p16/q16 cache-on lane-4 full run is active at
-`/data1/nier/dx100-runs/2026-08-26-cg-page-fed-p16q16-value-cache-lane4-full-r1`
-under `dx100-cg-page-fed-p16q16-value-cache-lane4-full-r1.service`.
+The p16/q16 cache-on lane-4 full successor is accepted at
+`158,381,418,273 simTicks`, 2.7436% below lane 1. Its certificate root is
+`/data1/nier/dx100-runs/2026-08-26-cg-page-fed-p16q16-value-cache-lane4-full-certificate-r3`.
+The modest full gain confirms that virtual-p materialization, not q apply-lane
+occupancy alone, dominates this design point.
 
 ## Accepted optimizations
 
@@ -57,9 +59,12 @@ bytes / 392 conservative bytes of system control state, zero payload queues,
 zero external ports, and no new multiplier. Hardened micro/CG ledgers close
 every formerly missing zero-stat and immutable-root requirement.
 
-One guarded NA=1024 confirmation is active at
+One guarded NA=1024 confirmation remains active at
 `/data1/nier/dx100-runs/2026-08-26-cg-fused-p16-q16-na1024-r1` under
-`dx100-cg-fused-p16-q16-na1024-r1.service`. No full fused run is authorized.
+`dx100-cg-fused-p16-q16-na1024-r1.service`. It is executing normal gem5 O3
+events but has exceeded expected bounded scaling by more than an order of
+magnitude, so no liveness or performance result is claimed. No full fused run
+is authorized.
 
 ## Rejected optimization
 
