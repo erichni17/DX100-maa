@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <deque>
+#include <map>
 #include <memory>
 #include <queue>
 #include <string>
@@ -26,6 +27,7 @@
 #include "mem/MAA/LogicalSPDCacheGem5Bridge.hh"
 #include "mem/MAA/LogicalSPDCacheLiveAdapterState.hh"
 #include "mem/MAA/LogicalTilePageScheduler.hh"
+#include "mem/MAA/StrictTwoPhaseReference.hh"
 #include "mem/cache/tags/base.hh"
 #include "mem/packet.hh"
 #include "mem/packet_queue.hh"
@@ -458,6 +460,7 @@ public:
     unsigned int virtual_descriptor_spool_write_credits;
     bool virtual_descriptor_spool_source_bypass_cache;
     bool virtual_bounded_global_merge;
+    bool virtual_strict_two_phase;
     unsigned int virtual_index_range_policy;
     std::vector<Addr> virtual_index_range_boundaries;
     unsigned int virtual_index_filter_words_per_cycle;
@@ -529,6 +532,28 @@ public:
                                             int pageID) const;
     uint64_t getVirtualPageGeneration(int tokenTileID) const;
     Tick getVirtualProducerRegistrationTick(int tokenTileID) const;
+    void beginStrictTwoPhaseReference(int unit, int coreID, int tokenTileID,
+                                      int resultWordBytes, Tick tick);
+    maa::StrictTwoPhaseReference &strictTwoPhaseReference(
+        int tokenTileID, uint64_t generation);
+    void observeStrictTwoPhaseConsumerBegin(int tokenTileID,
+                                            uint64_t generation, Tick tick);
+    void completeStrictTwoPhaseConsumer(int tokenTileID,
+                                        uint64_t generation, Tick tick);
+    void linkStrictP16ToQ16(Addr productBacking, int coreID, int qUnit,
+                            uint64_t qGeneration, Tick tick);
+    void recordStrictProductPageResponse(int coreID, Addr productBacking,
+                                         uint32_t page,
+                                         uint64_t guestGeneration,
+                                         Tick tick);
+    void completeStrictP16Q16Window(
+        int qUnit, uint64_t qGeneration, Tick tick,
+        Tick qRowLastInsert, Tick qFirstAIssue,
+        uint64_t qDescriptors, uint64_t qAReadIssues,
+        uint64_t qAReadResponses, uint64_t qBackingIssues,
+        uint64_t qBackingAcks, uint64_t qValueReadIssues,
+        uint64_t qValueReadResponses, uint64_t qValueFills,
+        uint64_t qProductDeliveries, uint64_t qPages);
     bool transparentControllerOwnsTile(int maaID, int tileID) const;
     bool transparentControllerUsesRegister(int maaID, int firstRegister,
                                            int registerWords) const;
@@ -589,6 +614,28 @@ protected:
     std::vector<int> virtualPageWordSize;
     std::vector<Tick> virtualProducerRegistrationTick;
     std::vector<Tick> virtualPageLastReadyTick;
+    using StrictTwoPhaseKey = std::pair<int, uint64_t>;
+    std::map<StrictTwoPhaseKey, maa::StrictTwoPhaseReference>
+        strictTwoPhaseReferences;
+    std::map<StrictTwoPhaseKey, Tick> strictTwoPhasePendingConsumerBegins;
+    struct StrictP16Q16Link
+    {
+        StrictTwoPhaseKey pKey{};
+        int core = -1;
+        Addr productBacking = 0;
+        uint64_t productPageResponses = 0;
+        bool fused = false;
+    };
+    std::map<std::pair<int, uint64_t>, StrictP16Q16Link> strictP16ByQ16;
+    struct StrictProductPageResponses
+    {
+        std::bitset<4> pages{};
+        std::array<uint64_t, 4> generations{};
+        Tick firstTick = 0;
+        Tick lastTick = 0;
+    };
+    std::map<std::pair<int, Addr>, StrictProductPageResponses>
+        strictProductPageResponses;
     // One bounded owner entry per configured SPD tile.  Publisher payload is
     // retained only in StreamAccess's eight line credits.
     std::vector<int> responseBearingPublishCompletionOwner;
@@ -1192,6 +1239,18 @@ public:
         std::vector<statistics::Scalar *> IND_VirtIndexFilterCycles;
         std::vector<statistics::Scalar *> IND_VirtIndexFilterWaitEvents;
         std::vector<statistics::Scalar *> IND_VirtIndexFilterWaitCycles;
+        std::vector<statistics::Scalar *> IND_StrictTwoPhaseOperations;
+        std::vector<statistics::Scalar *> IND_StrictTwoPhaseBFetchCycles;
+        std::vector<statistics::Scalar *> IND_StrictTwoPhaseRowOffsetCycles;
+        std::vector<statistics::Scalar *> IND_StrictTwoPhaseAIssueCycles;
+        std::vector<statistics::Scalar *> IND_StrictTwoPhaseBackingCycles;
+        std::vector<statistics::Scalar *> IND_StrictTwoPhasePageCycles;
+        std::vector<statistics::Scalar *> IND_StrictTwoPhaseConsumerCycles;
+        std::vector<statistics::Scalar *> IND_StrictTwoPhaseBFetchLines;
+        std::vector<statistics::Scalar *> IND_StrictTwoPhaseDescriptors;
+        std::vector<statistics::Scalar *> IND_StrictTwoPhaseAIssues;
+        std::vector<statistics::Scalar *> IND_StrictTwoPhaseBackingIssues;
+        std::vector<statistics::Scalar *> IND_StrictTwoPhasePagesReady;
         std::vector<statistics::Scalar *> IND_FusedP16Operations;
         std::vector<statistics::Scalar *> IND_FusedP16Epochs;
         std::vector<statistics::Scalar *> IND_FusedP16SourceOrdinals;

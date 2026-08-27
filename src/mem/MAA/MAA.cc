@@ -180,6 +180,7 @@ MAA::MAA(const MAAParams &p)
       virtual_descriptor_spool_source_bypass_cache(
           p.virtual_descriptor_spool_source_bypass_cache),
       virtual_bounded_global_merge(p.virtual_bounded_global_merge),
+      virtual_strict_two_phase(p.virtual_strict_two_phase),
       virtual_index_range_policy(p.virtual_index_range_policy),
       virtual_index_range_boundaries(p.virtual_index_range_boundaries),
       virtual_index_filter_words_per_cycle(
@@ -380,6 +381,42 @@ MAA::MAA(const MAAParams &p)
                   virtual_descriptor_spool_read_ahead),
              "Bounded global merge requires descriptor spooling and "
              "disallows paged replay read-ahead\n");
+    if (virtual_strict_two_phase) {
+        panic_if(num_tile_elements !=
+                         maa::StrictTwoPhaseReference::LogicalElements ||
+                     physical_tile_elements !=
+                         maa::StrictTwoPhaseReference::PhysicalElements,
+                 "Strict two-phase reference requires logical16K/physical4K, "
+                 "got %u/%u\n", num_tile_elements,
+                 physical_tile_elements);
+        panic_if(!reorder_row_table || reconfigure_row_table,
+                 "Strict two-phase reference requires one fixed reordered "
+                 "RowTable configuration\n");
+        panic_if(num_offset_table_entries < num_tile_elements ||
+                     num_offset_table_epoch_entries < num_tile_elements,
+                 "Strict two-phase reference cannot retain all %u "
+                 "descriptors in Offset state %u/%u\n",
+                 num_tile_elements, num_offset_table_entries,
+                 num_offset_table_epoch_entries);
+        panic_if(virtual_index_buffer_lines *
+                         maa::StrictTwoPhaseReference::IndexesPerLine >
+                     physical_tile_elements,
+                 "Strict two-phase B feeder exposes %u words, exceeding "
+                 "physical 4K capacity\n",
+                 virtual_index_buffer_lines *
+                     maa::StrictTwoPhaseReference::IndexesPerLine);
+        panic_if(virtual_index_partitions != 1 ||
+                     virtual_index_range_passes ||
+                     virtual_index_descriptor_spool ||
+                     virtual_descriptor_spool_read_ahead ||
+                     virtual_bounded_global_merge ||
+                     virtual_native_issue_order ||
+                     virtual_idealized_write_ack,
+                 "Strict two-phase is one exact B admission followed by "
+                 "globally Row/Offset-informed A issue with exact coherent "
+                 "WriteResp; replay, native-order attribution, and idealized "
+                 "ACKs are forbidden\n");
+    }
     panic_if(virtual_index_range_policy != 2 &&
                  !virtual_index_range_boundaries.empty(),
              "Explicit range boundaries require range policy 2\n");
@@ -1195,6 +1232,8 @@ bool MAA::submitTransparentDescriptor(InstructionPtr instruction,
         getClockEdge(Cycles(TransparentSPDController::ControllerLookupCycles));
     panic_if(!transparentMacroTracker.begin(curTick()),
              "Transparent macro tracker was active at descriptor submit\n");
+    observeStrictTwoPhaseConsumerBegin(
+        descriptor.tokenTile, descriptor.generation, curTick());
     transparentMacroAllReadyRecord = {};
     transparentMacroAllReadyTick = 0;
     transparentMacroAllReadySampled = false;
@@ -5694,6 +5733,8 @@ void MAA::finishInstructionCompute(Instruction *instruction) {
             finishTransparentBlockerTracking(descriptor.generation);
             panic_if(!transparentMacroTracker.finish(curTick()),
                      "Transparent macro tracker did not finish cleanly\n");
+            completeStrictTwoPhaseConsumer(
+                descriptor.tokenTile, descriptor.generation, curTick());
             emitTransparentMacroSummary(
                 descriptor.generation,
                 virtualProducerRegistrationTick[descriptor.tokenTile]);
@@ -5798,6 +5839,23 @@ void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
                                 int backingRangeID, int wordSize) {
     panic_if(tokenTileID < 0 || tokenTileID >= num_tiles,
              "invalid virtual completion token tile %d\n", tokenTileID);
+    if (virtual_strict_two_phase) {
+        panic_if(std::any_of(
+                     strictTwoPhaseReferences.begin(),
+                     strictTwoPhaseReferences.end(),
+                     [tokenTileID](const auto &entry) {
+                         return entry.first.first == tokenTileID;
+                     }) ||
+                     std::any_of(
+                         strictTwoPhasePendingConsumerBegins.begin(),
+                         strictTwoPhasePendingConsumerBegins.end(),
+                         [tokenTileID](const auto &entry) {
+                             return entry.first.first == tokenTileID;
+                         }),
+                 "strict two-phase token %d reused before producer/consumer "
+                 "terminal closure\n",
+                 tokenTileID);
+    }
     panic_if(findDirectRetirementExecution(
                  tokenTileID, virtualPageGeneration[tokenTileID]) != nullptr,
              "virtual completion token %d reused by a live direct consumer\n",
@@ -6108,6 +6166,380 @@ Tick MAA::getVirtualProducerRegistrationTick(int tokenTileID) const {
              "invalid virtual page token=%d\n", tokenTileID);
     return virtualProducerRegistrationTick[tokenTileID];
 }
+
+void
+MAA::beginStrictTwoPhaseReference(int unit, int coreID, int tokenTileID,
+                                  int resultWordBytes, Tick tick)
+{
+    if (!virtual_strict_two_phase)
+        return;
+    panic_if(unit < 0 || unit >= static_cast<int>(num_indirect_units_total) ||
+                 coreID < 0 || coreID >= static_cast<int>(num_cores) ||
+                 tokenTileID < 0 ||
+                 tokenTileID >= static_cast<int>(num_tiles) ||
+                 resultWordBytes <= 0 ||
+                 HybridConsumerPipeline::LineBytes % resultWordBytes != 0,
+             "invalid strict two-phase identity unit=%d token=%d word=%d\n",
+             unit, tokenTileID, resultWordBytes);
+    const uint64_t generation = virtualPageGeneration[tokenTileID];
+    const StrictTwoPhaseKey key{tokenTileID, generation};
+    panic_if(generation == 0 || strictTwoPhaseReferences.count(key) != 0,
+             "strict two-phase token=%d generation=%lu is stale/duplicate\n",
+             tokenTileID, generation);
+    const uint32_t resultWordsPerLine =
+        HybridConsumerPipeline::LineBytes / resultWordBytes;
+    const uint64_t combineCapacity = virtual_combine_words == 0
+        ? static_cast<uint64_t>(virtual_combine_slots) * resultWordsPerLine
+        : virtual_combine_words;
+    const uint64_t responseCapacity = virtual_response_word_pool != 0
+        ? virtual_response_word_pool
+        : virtual_response_words != 0
+            ? static_cast<uint64_t>(virtual_response_slots) *
+                  virtual_response_words
+            : static_cast<uint64_t>(virtual_response_slots) *
+                  resultWordsPerLine;
+    const uint64_t resultCapacity = combineCapacity + responseCapacity;
+    panic_if(resultCapacity > std::numeric_limits<uint32_t>::max(),
+             "strict two-phase result capacity overflow\n");
+    auto [it, inserted] = strictTwoPhaseReferences.emplace(
+        key, maa::StrictTwoPhaseReference{});
+    panic_if(!inserted, "strict two-phase timeline insertion failed\n");
+    const auto begun = it->second.begin(
+        true, static_cast<uint16_t>(unit),
+        static_cast<uint16_t>(tokenTileID), static_cast<uint16_t>(coreID),
+        generation, num_tile_elements,
+        physical_tile_elements,
+        virtual_index_buffer_lines *
+            maa::StrictTwoPhaseReference::IndexesPerLine,
+        static_cast<uint32_t>(resultCapacity), resultWordBytes,
+        virtualPageBackingAddr[tokenTileID], tick);
+    panic_if(begun != maa::StrictTwoPhaseReference::Result::Accepted,
+             "strict two-phase begin failed: %s (feeder=%u result=%lu)\n",
+             maa::StrictTwoPhaseReference::resultName(begun),
+             virtual_index_buffer_lines *
+                 maa::StrictTwoPhaseReference::IndexesPerLine,
+             resultCapacity);
+    auto pending = strictTwoPhasePendingConsumerBegins.find(key);
+    if (pending != strictTwoPhasePendingConsumerBegins.end()) {
+        const auto consumer = it->second.consumerBegin(pending->second);
+        panic_if(consumer != maa::StrictTwoPhaseReference::Result::Accepted,
+                 "strict two-phase pending consumer begin failed: %s\n",
+                 maa::StrictTwoPhaseReference::resultName(consumer));
+        strictTwoPhasePendingConsumerBegins.erase(pending);
+    }
+}
+
+maa::StrictTwoPhaseReference &
+MAA::strictTwoPhaseReference(int tokenTileID, uint64_t generation)
+{
+    const StrictTwoPhaseKey key{tokenTileID, generation};
+    auto timeline = strictTwoPhaseReferences.find(key);
+    panic_if(!virtual_strict_two_phase ||
+                 timeline == strictTwoPhaseReferences.end(),
+             "missing strict two-phase token=%d generation=%lu\n",
+             tokenTileID, generation);
+    return timeline->second;
+}
+
+void
+MAA::observeStrictTwoPhaseConsumerBegin(int tokenTileID,
+                                        uint64_t generation, Tick tick)
+{
+    if (!virtual_strict_two_phase)
+        return;
+    const StrictTwoPhaseKey key{tokenTileID, generation};
+    auto timeline = strictTwoPhaseReferences.find(key);
+    if (timeline == strictTwoPhaseReferences.end()) {
+        const bool inserted =
+            strictTwoPhasePendingConsumerBegins.emplace(key, tick).second;
+        panic_if(!inserted,
+                 "duplicate pending strict consumer token=%d generation=%lu\n",
+                 tokenTileID, generation);
+        return;
+    }
+    const auto result = timeline->second.consumerBegin(tick);
+    panic_if(result != maa::StrictTwoPhaseReference::Result::Accepted,
+             "strict consumer begin token=%d generation=%lu failed: %s\n",
+             tokenTileID, generation,
+             maa::StrictTwoPhaseReference::resultName(result));
+}
+
+void
+MAA::completeStrictTwoPhaseConsumer(int tokenTileID, uint64_t generation,
+                                    Tick tick)
+{
+    if (!virtual_strict_two_phase)
+        return;
+    const StrictTwoPhaseKey key{tokenTileID, generation};
+    auto timeline = strictTwoPhaseReferences.find(key);
+    panic_if(timeline == strictTwoPhaseReferences.end(),
+             "strict consumer terminal lacks token=%d generation=%lu\n",
+             tokenTileID, generation);
+    const auto result = timeline->second.consumerEnd(tick);
+    panic_if(result != maa::StrictTwoPhaseReference::Result::Accepted,
+             "strict consumer terminal token=%d generation=%lu failed: %s\n",
+             tokenTileID, generation,
+             maa::StrictTwoPhaseReference::resultName(result));
+    const auto record = timeline->second.record();
+    panic_if(record.aFirstIssueTick < record.rowOffsetLastInsertTick,
+             "strict invariant failed: A_FIRST_ISSUE=%lu < "
+             "ROW_OFFSET_LAST_INSERT=%lu\n",
+             record.aFirstIssueTick, record.rowOffsetLastInsertTick);
+    const auto duration = [](Tick first, Tick last) {
+        return first == 0 || last < first ? Tick{0} : last - first;
+    };
+    const Tick bFetchTicks = duration(
+        record.bFetchFirstIssueTick, record.bFetchLastResponseTick);
+    const Tick rowOffsetTicks = duration(
+        record.rowOffsetFirstInsertTick, record.admissionCloseTick);
+    const Tick aIssueTicks = duration(
+        record.aFirstIssueTick, record.aLastResponseTick);
+    const Tick backingTicks = duration(
+        record.backingFirstIssueTick, record.backingLastAckTick);
+    const Tick pageTicks = duration(
+        record.pageFirstReadyTick, record.pageLastReadyTick);
+    const Tick consumerTicks = duration(
+        record.consumerBeginTick, record.consumerEndTick);
+    const int unit = record.unit;
+    (*stats.IND_StrictTwoPhaseOperations[unit])++;
+    (*stats.IND_StrictTwoPhaseBFetchCycles[unit]) +=
+        getTicksToCycles(bFetchTicks);
+    (*stats.IND_StrictTwoPhaseRowOffsetCycles[unit]) +=
+        getTicksToCycles(rowOffsetTicks);
+    (*stats.IND_StrictTwoPhaseAIssueCycles[unit]) +=
+        getTicksToCycles(aIssueTicks);
+    (*stats.IND_StrictTwoPhaseBackingCycles[unit]) +=
+        getTicksToCycles(backingTicks);
+    (*stats.IND_StrictTwoPhasePageCycles[unit]) +=
+        getTicksToCycles(pageTicks);
+    (*stats.IND_StrictTwoPhaseConsumerCycles[unit]) +=
+        getTicksToCycles(consumerTicks);
+    (*stats.IND_StrictTwoPhaseBFetchLines[unit]) += record.bFetchLines;
+    (*stats.IND_StrictTwoPhaseDescriptors[unit]) +=
+        record.descriptorInsertions;
+    (*stats.IND_StrictTwoPhaseAIssues[unit]) += record.aIssues;
+    (*stats.IND_StrictTwoPhaseBackingIssues[unit]) += record.backingIssues;
+    (*stats.IND_StrictTwoPhasePagesReady[unit]) += record.pagesReady;
+    DPRINTF(MAAMacroEvent,
+            "event=strict_two_phase_timing schema=2 unit=%u token=%u "
+            "generation=%lu logical=%u physical=%u feeder_words=%u "
+            "result_words=%u B_FETCH_BEGIN=%lu B_FETCH_END=%lu "
+            "B_FETCH_TICKS=%lu b_lines=%lu b_responses=%lu b_bytes=%lu "
+            "b_words=%lu ROW_OFFSET_FIRST_INSERT=%lu "
+            "ROW_OFFSET_LAST_INSERT=%lu ROW_OFFSET_CLOSE=%lu "
+            "ROW_OFFSET_TICKS=%lu descriptors=%lu A_FIRST_ISSUE=%lu "
+            "A_LAST_ISSUE=%lu A_LAST_RESPONSE=%lu A_ISSUE_TICKS=%lu "
+            "a_issues=%lu a_responses=%lu BACKING_FIRST_WRITE=%lu "
+            "BACKING_LAST_WRITE=%lu BACKING_LAST_ACK=%lu "
+            "BACKING_TICKS=%lu backing_issues=%lu backing_acks=%lu "
+            "backing_transport_bytes=%lu backing_semantic_bytes=%lu "
+            "PAGE_FIRST_READY=%lu PAGE_LAST_READY=%lu PAGE_TICKS=%lu "
+            "pages_ready=%lu CONSUMER_BEGIN=%lu CONSUMER_END=%lu "
+            "CONSUMER_TICKS=%lu exact_b_once=1 raw_b_retained_bytes=0 "
+            "descriptor_backing_bytes=0 replay_passes=0 coherent_ack=1 "
+            "order_ok=1 terminal=1\n",
+            record.unit, record.token, record.generation,
+            record.logicalElements, record.physicalElements,
+            record.feederCapacityWords, record.resultCapacityWords,
+            record.bFetchFirstIssueTick, record.bFetchLastResponseTick,
+            bFetchTicks, record.bFetchLines, record.bFetchResponses,
+            record.bFetchBytes, record.bWordsAdmitted,
+            record.rowOffsetFirstInsertTick,
+            record.rowOffsetLastInsertTick, record.admissionCloseTick,
+            rowOffsetTicks, record.descriptorInsertions,
+            record.aFirstIssueTick, record.aLastIssueTick,
+            record.aLastResponseTick, aIssueTicks, record.aIssues,
+            record.aResponses, record.backingFirstIssueTick,
+            record.backingLastIssueTick, record.backingLastAckTick,
+            backingTicks, record.backingIssues, record.backingAcks,
+            record.backingTransportBytes, record.backingSemanticBytes,
+            record.pageFirstReadyTick, record.pageLastReadyTick, pageTicks,
+            record.pagesReady, record.consumerBeginTick,
+            record.consumerEndTick, consumerTicks);
+    strictTwoPhaseReferences.erase(timeline);
+}
+
+void
+MAA::recordStrictProductPageResponse(int coreID, Addr productBacking,
+                                     uint32_t page,
+                                     uint64_t guestGeneration, Tick tick)
+{
+    if (!virtual_strict_two_phase)
+        return;
+    panic_if(coreID < 0 || coreID >= static_cast<int>(num_cores) ||
+                 productBacking == 0 || page >= 4 || guestGeneration == 0,
+             "invalid strict product-page response core=%d backing=0x%lx "
+             "page=%u generation=%lu\n",
+             coreID, productBacking, page, guestGeneration);
+    auto &record = strictProductPageResponses[{coreID, productBacking}];
+    panic_if(record.pages.test(page),
+             "duplicate strict product-page response core=%d page=%u\n",
+             coreID, page);
+    record.pages.set(page);
+    record.generations[page] = guestGeneration;
+    if (record.firstTick == 0)
+        record.firstTick = tick;
+    record.lastTick = tick;
+    DPRINTF(MAAVirtualTrace,
+            "event=strict_product_page_response schema=1 core=%d "
+            "backing=0x%lx page=%u generation=%lu pages=%lu/4 tick=%lu\n",
+            coreID, productBacking, page, guestGeneration,
+            record.pages.count(), tick);
+}
+
+void
+MAA::linkStrictP16ToQ16(Addr productBacking, int coreID, int qUnit,
+                        uint64_t qGeneration, Tick tick)
+{
+    if (!virtual_strict_two_phase)
+        return;
+    const std::pair<int, uint64_t> qKey{qUnit, qGeneration};
+    panic_if(coreID < 0 || coreID >= static_cast<int>(num_cores) ||
+                 qUnit < 0 ||
+                 qUnit >= static_cast<int>(num_indirect_units_total) ||
+                 qGeneration == 0 || productBacking == 0 ||
+                 strictP16ByQ16.count(qKey) != 0,
+             "invalid/duplicate strict q16 link unit=%d generation=%lu "
+             "backing=0x%lx\n",
+             qUnit, qGeneration, productBacking);
+    auto exact = strictTwoPhaseReferences.end();
+    size_t exactMatches = 0;
+    auto core = strictTwoPhaseReferences.end();
+    size_t coreMatches = 0;
+    for (auto timeline = strictTwoPhaseReferences.begin();
+         timeline != strictTwoPhaseReferences.end(); ++timeline) {
+        const auto &record = timeline->second.record();
+        if (!record.active || !record.producerClosed ||
+            record.consumerStarted || record.core != coreID)
+            continue;
+        core = timeline;
+        ++coreMatches;
+        if (record.backingAddress == productBacking) {
+            exact = timeline;
+            ++exactMatches;
+        }
+    }
+    const bool fused = exactMatches == 1;
+    auto match = fused ? exact : core;
+    panic_if((exactMatches != 0 && exactMatches != 1) ||
+                 (!fused && coreMatches != 1) ||
+                 match == strictTwoPhaseReferences.end(),
+             "strict q16 generation=%lu found exact/core p16 owners "
+             "%lu/%lu for core=%d product=0x%lx "
+             "(direct4/q16-only has no retained p16 owner)\n",
+             qGeneration, exactMatches, coreMatches, coreID,
+             productBacking);
+    uint64_t productPageResponses = match->second.record().pagesReady;
+    if (!fused) {
+        const auto pages = strictProductPageResponses.find(
+            {coreID, productBacking});
+        panic_if(pages == strictProductPageResponses.end() ||
+                     !pages->second.pages.all() ||
+                     std::any_of(
+                         pages->second.generations.begin(),
+                         pages->second.generations.end(),
+                         [](uint64_t generation) {
+                             return generation == 0;
+                         }),
+                 "strict non-fused q16 generation=%lu lacks four exact "
+                 "response-bearing product pages for core=%d backing=0x%lx\n",
+                 qGeneration, coreID, productBacking);
+        productPageResponses = pages->second.pages.count();
+    }
+    const auto begun = match->second.consumerBegin(tick);
+    panic_if(begun != maa::StrictTwoPhaseReference::Result::Accepted,
+             "strict p16/q16 consumer link failed: %s\n",
+             maa::StrictTwoPhaseReference::resultName(begun));
+    strictP16ByQ16.emplace(
+        qKey, StrictP16Q16Link{match->first, coreID, productBacking,
+                              productPageResponses, fused});
+    DPRINTF(MAAVirtualTrace,
+            "event=strict_p16_q16_link schema=1 p_token=%d "
+            "p_generation=%lu p_backing=0x%lx product_backing=0x%lx "
+            "p_terminal=%d product_page_responses=%lu "
+            "p_mode=%s q_unit=%d q_generation=%lu\n",
+            match->first.first, match->first.second,
+            match->second.record().backingAddress, productBacking,
+            match->second.record().producerClosed,
+            productPageResponses, fused ? "fused" : "nonfused",
+            qUnit, qGeneration);
+}
+
+void
+MAA::completeStrictP16Q16Window(
+    int qUnit, uint64_t qGeneration, Tick tick, Tick qRowLastInsert,
+    Tick qFirstAIssue, uint64_t qDescriptors, uint64_t qAReadIssues,
+    uint64_t qAReadResponses, uint64_t qBackingIssues,
+    uint64_t qBackingAcks, uint64_t qValueReadIssues,
+    uint64_t qValueReadResponses, uint64_t qValueFills,
+    uint64_t qProductDeliveries, uint64_t qPages)
+{
+    if (!virtual_strict_two_phase)
+        return;
+    const std::pair<int, uint64_t> qKey{qUnit, qGeneration};
+    auto link = strictP16ByQ16.find(qKey);
+    panic_if(link == strictP16ByQ16.end(),
+             "strict q16 terminal lacks a linked p16 generation\n");
+    auto p = strictTwoPhaseReferences.find(link->second.pKey);
+    panic_if(p == strictTwoPhaseReferences.end(),
+             "strict q16 terminal lost linked p16 generation\n");
+    const auto pRecord = p->second.record();
+    panic_if(!pRecord.producerClosed || pRecord.pagesReady != 4 ||
+                 pRecord.bWordsAdmitted !=
+                     maa::StrictTwoPhaseReference::LogicalElements ||
+                 pRecord.descriptorInsertions !=
+                     maa::StrictTwoPhaseReference::LogicalElements ||
+                 link->second.productPageResponses != 4 ||
+                 pRecord.aFirstIssueTick < pRecord.rowOffsetLastInsertTick ||
+                 qRowLastInsert == 0 || qFirstAIssue < qRowLastInsert ||
+                 qDescriptors !=
+                     maa::StrictTwoPhaseReference::LogicalElements ||
+                 qAReadIssues == 0 || qAReadIssues != qAReadResponses ||
+                 qBackingIssues == 0 || qBackingIssues != qBackingAcks ||
+                 qValueReadIssues != qValueReadResponses ||
+                 qValueReadResponses != qValueFills ||
+                 qProductDeliveries !=
+                     maa::StrictTwoPhaseReference::LogicalElements ||
+                 qPages != 4,
+             "strict p16/q16 whole-window closure failed p=%lu/%lu/%lu "
+             "q=%lu/%lu/%lu/%lu/%lu pages=%lu\n",
+             pRecord.bWordsAdmitted, pRecord.descriptorInsertions,
+             pRecord.pagesReady, qDescriptors, qAReadIssues,
+             qAReadResponses, qBackingIssues, qBackingAcks, qPages);
+    completeStrictTwoPhaseConsumer(
+        link->second.pKey.first, link->second.pKey.second, tick);
+    DPRINTF(MAAMacroEvent,
+            "event=strict_cg_p16_q16_window schema=1 p_token=%u "
+            "p_generation=%lu p_terminal=1 p_b_words=%lu "
+            "p_descriptors=%lu p_A_FIRST_ISSUE=%lu "
+            "p_ROW_OFFSET_LAST_INSERT=%lu p_product_page_responses=%lu "
+            "p_mode=%s p_core=%d product_backing=0x%lx "
+            "q_unit=%d q_generation=%lu q_terminal=1 "
+            "q_descriptors=%lu q_A_FIRST_ISSUE=%lu "
+            "q_ROW_OFFSET_LAST_INSERT=%lu q_a_issues=%lu "
+            "q_a_responses=%lu q_backing_issues=%lu q_backing_acks=%lu "
+            "q_value_read_issues=%lu q_value_read_responses=%lu "
+            "q_value_fills=%lu q_product_deliveries=%lu q_pages=%lu "
+            "p16_reorder=1 "
+            "q16_reorder=1 direct4=0 drains=0 fallbacks=0 "
+            "order_ok=1 cg_numerical_terminal=runner_join_required "
+            "terminal=1\n",
+            pRecord.token, pRecord.generation, pRecord.bWordsAdmitted,
+            pRecord.descriptorInsertions, pRecord.aFirstIssueTick,
+            pRecord.rowOffsetLastInsertTick,
+            link->second.productPageResponses,
+            link->second.fused ? "fused" : "nonfused",
+            link->second.core, link->second.productBacking, qUnit,
+            qGeneration, qDescriptors, qFirstAIssue, qRowLastInsert,
+            qAReadIssues, qAReadResponses, qBackingIssues, qBackingAcks,
+            qValueReadIssues, qValueReadResponses, qValueFills,
+            qProductDeliveries, qPages);
+    if (!link->second.fused)
+        strictProductPageResponses.erase(
+            {link->second.core, link->second.productBacking});
+    strictP16ByQ16.erase(link);
+}
+
 void
 MAA::setVirtualLineWordsReady(int tokenTileID, Addr backingAddr,
                               uint64_t generation, int lineID,
@@ -7422,6 +7854,64 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtIndexFilterWaitCycles"),
             statistics::units::Cycle::get(),
             "non-overlapped scheduler cycles caused by index filtering"));
+        auto addStrictStat = [this, indirect_id](
+                                 std::vector<statistics::Scalar *> &target,
+                                 const char *name,
+                                 const statistics::units::Base *unit,
+                                 const char *description) {
+            const std::string fullName =
+                std::string("I") + std::to_string(indirect_id) + "_" + name;
+            target.push_back(new statistics::Scalar(
+                this, fullName.c_str(), unit, description));
+        };
+        addStrictStat(IND_StrictTwoPhaseOperations,
+                      "IND_StrictTwoPhaseOperations",
+                      statistics::units::Count::get(),
+                      "completed strict two-phase references");
+        addStrictStat(IND_StrictTwoPhaseBFetchCycles,
+                      "IND_StrictTwoPhaseBFetchCycles",
+                      statistics::units::Cycle::get(),
+                      "strict B_FETCH begin-to-last-response cycles");
+        addStrictStat(IND_StrictTwoPhaseRowOffsetCycles,
+                      "IND_StrictTwoPhaseRowOffsetCycles",
+                      statistics::units::Cycle::get(),
+                      "strict ROW_OFFSET first-insert-to-close cycles");
+        addStrictStat(IND_StrictTwoPhaseAIssueCycles,
+                      "IND_StrictTwoPhaseAIssueCycles",
+                      statistics::units::Cycle::get(),
+                      "strict A_ISSUE first-issue-to-last-response cycles");
+        addStrictStat(IND_StrictTwoPhaseBackingCycles,
+                      "IND_StrictTwoPhaseBackingCycles",
+                      statistics::units::Cycle::get(),
+                      "strict BACKING first-write-to-last-ACK cycles");
+        addStrictStat(IND_StrictTwoPhasePageCycles,
+                      "IND_StrictTwoPhasePageCycles",
+                      statistics::units::Cycle::get(),
+                      "strict PAGE first-ready-to-last-ready cycles");
+        addStrictStat(IND_StrictTwoPhaseConsumerCycles,
+                      "IND_StrictTwoPhaseConsumerCycles",
+                      statistics::units::Cycle::get(),
+                      "strict CONSUMER begin-to-end cycles");
+        addStrictStat(IND_StrictTwoPhaseBFetchLines,
+                      "IND_StrictTwoPhaseBFetchLines",
+                      statistics::units::Count::get(),
+                      "strict B/index lines fetched exactly once");
+        addStrictStat(IND_StrictTwoPhaseDescriptors,
+                      "IND_StrictTwoPhaseDescriptors",
+                      statistics::units::Count::get(),
+                      "strict descriptors admitted to retained Row/Offset");
+        addStrictStat(IND_StrictTwoPhaseAIssues,
+                      "IND_StrictTwoPhaseAIssues",
+                      statistics::units::Count::get(),
+                      "strict A-source line issues");
+        addStrictStat(IND_StrictTwoPhaseBackingIssues,
+                      "IND_StrictTwoPhaseBackingIssues",
+                      statistics::units::Count::get(),
+                      "strict coherent backing write issues");
+        addStrictStat(IND_StrictTwoPhasePagesReady,
+                      "IND_StrictTwoPhasePagesReady",
+                      statistics::units::Count::get(),
+                      "strict 4K pages made coherently ready");
         auto addFusedCount = [this, indirect_id](
                                  std::vector<statistics::Scalar *> &target,
                                  const char *name,

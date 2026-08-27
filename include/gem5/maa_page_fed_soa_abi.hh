@@ -207,6 +207,23 @@ class PageFedSoaJitState
         return Result::Accepted;
     }
 
+    // Recheck the barrier where an A-line packet is actually issued.  The
+    // Fill-to-Build transition is not trusted as the sole guard because a
+    // later scheduler refactor must fail closed too.
+    Result
+    authorizeAIssue(uint64_t candidateGeneration)
+    {
+        if (!active())
+            return reject(Result::Inactive);
+        if (candidateGeneration != generation)
+            return reject(Result::StaleGeneration);
+        if (failed() || !closed() || !executing() ||
+            nextPage != PageFedSoaJitABI::Pages ||
+            admittedCount != PageFedSoaJitABI::LogicalElements)
+            return reject(Result::EarlyExecution);
+        return Result::Accepted;
+    }
+
     Result
     finishExecution(uint64_t candidateGeneration)
     {
