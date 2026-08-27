@@ -517,8 +517,16 @@ void StreamAccessUnit::executeInstruction() {
                         response_publisher.creditHighWater()),
                     my_publish_credit_stall_observations);
             (*maa->stats.STR_PublishTerminals[my_stream_id])++;
+            const uint64_t logical_byte_offset =
+                static_cast<uint64_t>(my_publish_logical_element_offset) *
+                my_word_size;
+            panic_if(my_base_addr < logical_byte_offset,
+                     "S[%d] publisher page base 0x%lx precedes logical "
+                     "offset %lu\n",
+                     my_stream_id, my_base_addr, logical_byte_offset);
             maa->recordStrictProductPageResponse(
-                my_instruction->core_id, my_base_addr,
+                my_instruction->core_id,
+                my_base_addr - logical_byte_offset,
                 my_publish_logical_page, my_publish_guest_generation,
                 curTick());
             panic_if(response_publisher.reset() !=
