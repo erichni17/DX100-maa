@@ -4,25 +4,27 @@ Audit time: 2026-08-26 (read-only; no signal, attach, edit, or new gem5 run).
 
 ## Recommendation
 
-**STOP / recover; do not call r2 complete and do not restart it as a continuation.**
-The recorded wrapper and gem5 PIDs were observed with the exact requested root
-and command, then both disappeared.  The retained log has no exit status,
-`m5_exit`, ROI end, hybrid terminal record, oracle output, or nonempty final
-stats.  It therefore cannot establish completion or correctness, whatever the
-reason for disappearance.  The marker trace was healthy-looking up to its last
-flush, but that is not a terminal result.
+**CONTINUE the existing r2 service; do not call it complete and do not launch a
+duplicate.** Host-level inspection by the lead at 2026-08-26 21:24 EDT confirms
+the exact wrapper and gem5 processes remain active under the registered user
+service. The worker's later inability to see `/proc` entries was a managed
+sandbox namespace limitation, not process disappearance. The retained log has
+no `m5_exit`, ROI end, hybrid terminal record, oracle output, or nonempty final
+stats, so completion/correctness remain pending. The marker trace is consistent
+with the authoritative native convergence shape and has passed every previous
+explicit bounds failure.
 
 ## Active-root identity and evidence
 
 Root: `/data1/nier/dx100-runs/2026-08-25-sssp-coherent-full-s22-r2`
 
-* Observed before disappearance: wrapper PID `2635394`, command
+* Host-visible wrapper PID `2635394`, command
   `run_sssp_old_result_hybrid_full.sh ROOT`; gem5 PID `2637298`, exactly using
   `ROOT/run`, `ROOT/checkpoint`, and `ROOT/bin/sssp_maa_2G_old_result_hybrid_fp`.
-  A later read found both `/proc` entries absent.  User-service inspection was
-  unavailable to this session (`systemctl --user` could not connect to that
-  user's bus), so no unit/cgroup identity is claimed beyond that PID/command
-  evidence.
+  Lead inspection confirms service
+  `dx100-sssp-coherent-full-s22-20260825-r2.service` active/running with both
+  processes. User-service inspection was unavailable only inside the worker's
+  sandbox.
 * Candidate provenance: source commit `e152d6922e48ca0342f170e3e73f267d297c315d`;
   `sssp.cc` SHA-256
   `07b8a02cc96ef8bf42ab2c9622de8da7c99efc8b2fdac257ef355168dbadd116`;
@@ -65,7 +67,7 @@ both fail at the first 1K tiled boundary:
 | --- | --- | ---: | --- |
 | `/data1/nier/dx100-runs/2026-08-24-sssp-old-result-full-e690867f-r1/run/restore.log` (SHA-256 `fefb97aa3363b9334437c58d6d781528f002fc968a841c0ec1a768c633386f88`) | `sssp.cc` `71cef23d49cba69b15d9dc9747822e14ef823d687fd8865574fa4528a62ec4f1`; guest `8992340c6a39738c66227e58b22dca1c55e61bd0d2170ac86860d1938c6a490f` | 76, 4,133, `maa-1024` | exit 134; panic: SPD element 4096 exceeds physical capacity 4096 |
 | `/data1/nier/dx100-runs/2026-08-24-sssp-aperture-full-s22-r1/run/restore.log` (SHA-256 `830694c4a48b8da3043e0fa009929266d86f242a43c9885f241d8a4b3d523da7`) | same source hash; guest `b92252492af0fbae8b3a27d2e57d403cbbc2f03b830090ae767f50cac8904c3c` | 76, 4,132, `maa-1024` | exit 134; panic: physical-out-of-range aperture access at tile 28, offset 16384 |
-| `/data1/nier/dx100-runs/2026-08-25-sssp-coherent-full-s22-r2/run/restore.log` | `sssp.cc` `07b8a02cc96ef8bf42ab2c9622de8da7c99efc8b2fdac257ef355168dbadd116`; guest `3719bf7812a67681c8087887af306ab66c813da77e75678e3d818406c7d4fa17` | 107, 103,006, `maa-4096` | process gone; no terminal evidence |
+| `/data1/nier/dx100-runs/2026-08-25-sssp-coherent-full-s22-r2/run/restore.log` | `sssp.cc` `07b8a02cc96ef8bf42ab2c9622de8da7c99efc8b2fdac257ef355168dbadd116`; guest `3719bf7812a67681c8087887af306ab66c813da77e75678e3d818406c7d4fa17` | 107, 103,006, `maa-4096` | active; no terminal evidence yet |
 
 The r2 marker text through marker 76 exactly matches the `e690867f` failure,
 then continues through both the 2K and 4K phases.  It has therefore passed all
@@ -121,7 +123,8 @@ At native4 markers 96--107, the frontier follows the same rising 4K-phase
 shape (39,268 to 103,020) as r2 (39,264 to 103,006), then completes.  It is a
 useful convergence-shape control only: its source/binary cohort (`1ff4a396...`)
 is not r2's, so neither its 364-marker total nor its ticks is a valid r2
-remaining-work or performance estimate.
+remaining-work or performance estimate. It does establish that marker 107 is
+normal mid-run work rather than a repeated-state divergence signature.
 
 ## Required future instrumentation
 
