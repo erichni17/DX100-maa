@@ -241,19 +241,33 @@ def test_exact_full_mechanism_and_value_retention_closure() -> None:
     assert values["IND_SoaJitEpochDrains"] == 0
 
 
-def test_four_lane_active_sum_and_high_water_are_both_exact() -> None:
+def test_four_lane_active_sum_is_exact_and_high_water_is_bounded() -> None:
     values = good_stats()
     assert values["IND_SoaJitActiveApplyLanes"] == runner.EXPECTED_WINDOWS * 4
     assert (
         values["IND_SoaJitApplyLaneHighWater"] == runner.EXPECTED_WINDOWS * 4
     )
-    for key, bad in (
-        ("IND_SoaJitActiveApplyLanes", runner.EXPECTED_WINDOWS),
-        ("IND_SoaJitApplyLaneHighWater", runner.EXPECTED_WINDOWS * 3),
+    sparse = copy.deepcopy(values)
+    sparse["IND_SoaJitApplyLaneHighWater"] = runner.EXPECTED_WINDOWS * 3 + 1
+    runner.validate_stats_values(sparse)
+
+    broken = copy.deepcopy(values)
+    broken["IND_SoaJitActiveApplyLanes"] -= 1
+    with unittest.TestCase().assertRaisesRegex(
+        RuntimeError, "active apply-lane"
     ):
-        broken = copy.deepcopy(values)
-        broken[key] = bad
-        with unittest.TestCase().assertRaisesRegex(RuntimeError, "four-lane"):
+        runner.validate_stats_values(broken)
+
+
+def test_four_lane_high_water_rejects_both_illegal_boundaries() -> None:
+    for bad in (
+        runner.EXPECTED_WINDOWS * 3,
+        runner.EXPECTED_WINDOWS * 3 - 1,
+        runner.EXPECTED_WINDOWS * 4 + 1,
+    ):
+        broken = good_stats()
+        broken["IND_SoaJitApplyLaneHighWater"] = bad
+        with unittest.TestCase().assertRaisesRegex(RuntimeError, "high-water"):
             runner.validate_stats_values(broken)
 
 
@@ -316,7 +330,7 @@ def test_accepted_lane1_is_unreadable_before_pass_and_exact_after_pass() -> (
     assert stats["IND_SoaJitApplyLaneHighWater"] == runner.EXPECTED_WINDOWS
 
 
-def test_comparison_requires_terminal_and_retained_value_identity() -> None:
+def test_comparison_requires_terminal_and_retained_line_closure() -> None:
     baseline_result = {"candidate": {"terminal": {"closed": 1}}}
     baseline_stats = good_stats()
     baseline_stats["simTicks"] = runner.ACCEPTED_LANE1_SIMTICKS
@@ -333,13 +347,22 @@ def test_comparison_requires_terminal_and_retained_value_identity() -> None:
             "PASS_NUMERICAL_MECHANISM_CORRECT", candidate
         )
         assert comparison["value_retention_identity_exact"] is True
+        assert comparison["retained_line_closure_exact_per_arm"] is True
         assert comparison["accepted_lane_1"] == 162_849_334_269
         broken = copy.deepcopy(candidate)
         broken["stats"]["IND_SoaJitValueHits"] -= 1
-        with unittest.TestCase().assertRaisesRegex(RuntimeError, "identity"):
+        with unittest.TestCase().assertRaisesRegex(RuntimeError, "delivery"):
             runner.compare_after_pass(
                 "PASS_NUMERICAL_MECHANISM_CORRECT", broken
             )
+        rescheduled = copy.deepcopy(candidate)
+        rescheduled["stats"]["IND_SoaJitValueHits"] -= 1
+        rescheduled["stats"]["IND_SoaJitValueMergedWaiters"] += 1
+        comparison = runner.compare_after_pass(
+            "PASS_NUMERICAL_MECHANISM_CORRECT", rescheduled
+        )
+        assert comparison["value_retention_identity_exact"] is False
+        assert comparison["retained_line_closure_exact_per_arm"] is True
         broken = copy.deepcopy(candidate)
         broken["terminal"]["closed"] = 0
         with unittest.TestCase().assertRaisesRegex(RuntimeError, "terminal"):

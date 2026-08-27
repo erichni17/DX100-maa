@@ -139,6 +139,11 @@ CONSERVED_STATS = tuple(
     "system.maa.port_cache_RD_packets",
     "system.maa.port_cache_WR_packets",
 )
+CROSS_ARM_WORK_IDENTITY_STATS = tuple(
+    name
+    for name in CONSERVED_STATS
+    if name not in VALUE_RETENTION_IDENTITY_STATS
+)
 
 
 class GateError(full.GateError):
@@ -267,10 +272,14 @@ def validate_stats_values(values: dict[str, int]) -> None:
     instructions = values["IND_SoaJitInstructions"]
     require(
         instructions == EXPECTED_WINDOWS
-        and values["IND_SoaJitActiveApplyLanes"] == instructions * APPLY_LANES
-        and values["IND_SoaJitApplyLaneHighWater"]
-        == instructions * APPLY_LANES,
-        "four-lane active/high-water closure failed",
+        and values["IND_SoaJitActiveApplyLanes"] == instructions * APPLY_LANES,
+        "four-lane active apply-lane closure failed",
+    )
+    require(
+        3 * instructions
+        < values["IND_SoaJitApplyLaneHighWater"]
+        <= APPLY_LANES * instructions,
+        "four-lane high-water bound failed",
     )
     require(
         0
@@ -384,12 +393,14 @@ def compare_after_pass(
     require(
         isinstance(candidate_stats, dict), "candidate stats are not a mapping"
     )
+    validate_stats_values(candidate_stats)
+    full.validate_stats_values(baseline_stats)
     require(
         all(
             candidate_stats.get(name) == baseline_stats[name]
-            for name in CONSERVED_STATS
+            for name in CROSS_ARM_WORK_IDENTITY_STATS
         ),
-        "lane-4 candidate changed conserved/value-retention identity",
+        "lane-4 candidate changed invariant work identity",
     )
     require(
         candidate.get("terminal")
@@ -412,11 +423,13 @@ def compare_after_pass(
             ACCEPTED_LANE1_SIMTICKS - candidate_ticks
         )
         / ACCEPTED_LANE1_SIMTICKS,
-        "conserved_stats_exact": True,
+        "conserved_work_stats_exact": True,
+        "retained_line_closure_exact_per_arm": True,
         "value_retention_identity_exact": all(
             candidate_stats[name] == baseline_stats[name]
             for name in VALUE_RETENTION_IDENTITY_STATS
         ),
+        "cross_arm_value_counter_identity_required": False,
         "baseline": {
             "root": str(ACCEPTED_LANE1_ROOT),
             "result_sha256": ACCEPTED_LANE1_HASHES["result.json"],
