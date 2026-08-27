@@ -59,11 +59,14 @@ bytes / 392 conservative bytes of system control state, zero payload queues,
 zero external ports, and no new multiplier. Hardened micro/CG ledgers close
 every formerly missing zero-stat and immutable-root requirement.
 
-One guarded NA=1024 confirmation remains active at
-`/data1/nier/dx100-runs/2026-08-26-cg-fused-p16-q16-na1024-r1` under
-`dx100-cg-fused-p16-q16-na1024-r1.service`. It is executing normal gem5 O3
-events but has exceeded expected bounded scaling by more than an order of
-magnitude, so no liveness or performance result is claimed. No full fused run
+The guarded NA=1024 confirmation at
+`/data1/nier/dx100-runs/2026-08-26-cg-fused-p16-q16-na1024-r1` was stopped on
+August 27 at 18:27 EDT after the service consumed 24 h 22 min of CPU time.
+The candidate entered ROI but produced no terminal stats, `m5_exit`, output
+fingerprint, or progress marker; its log had not advanced since August 26 at
+18:23 EDT. It is **rejected as nonterminal diagnostic evidence**, not treated
+as a correctness or performance result. The accepted NA=256 point therefore
+remains the only CG evidence for this fused successor, and no full fused run
 is authorized.
 
 ## Rejected optimization
