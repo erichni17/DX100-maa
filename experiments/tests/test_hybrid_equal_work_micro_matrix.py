@@ -160,6 +160,31 @@ class EqualWorkContractTest(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.MatrixError, "write closure"):
             MODULE.validate_masked_retirement(bad, "hybrid")
 
+    def test_strict_b_fetch_allows_one_unaligned_extra_line(self) -> None:
+        MODULE.validate_strict_fetch_lines(
+            1024, {"b_lines": "1024", "b_responses": "1024"}, "aligned"
+        )
+        MODULE.validate_strict_fetch_lines(
+            1025, {"b_lines": "1025", "b_responses": "1025"}, "unaligned"
+        )
+        with self.assertRaisesRegex(MODULE.MatrixError, "outside aligned"):
+            MODULE.validate_strict_fetch_lines(
+                1026,
+                {"b_lines": "1026", "b_responses": "1026"},
+                "invalid",
+            )
+
+    def test_transport_fragmentation_is_not_semantic_work(self) -> None:
+        self.assertIn(
+            "strict_backing_semantic_bytes",
+            MODULE.HYBRID_SEMANTIC_WORK_FIELDS,
+        )
+        self.assertNotIn("write_issues", MODULE.HYBRID_SEMANTIC_WORK_FIELDS)
+        self.assertNotIn(
+            "strict_backing_transport_bytes",
+            MODULE.HYBRID_SEMANTIC_WORK_FIELDS,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

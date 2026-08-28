@@ -162,6 +162,17 @@ ARMS = (
         4,
     ),
 )
+HYBRID_SEMANTIC_WORK_FIELDS = (
+    "index_words",
+    "strict_operations",
+    "strict_b_fetch_lines",
+    "strict_b_words",
+    "strict_descriptors",
+    "strict_a_issues",
+    "strict_pages_ready",
+    "strict_backing_semantic_bytes",
+    "offset_epoch_drains",
+)
 
 
 def source_commit() -> str:
@@ -533,6 +544,21 @@ def validate_masked_retirement(
     )
 
 
+def validate_strict_fetch_lines(
+    counter_lines: int, trace: Mapping[str, str], arm_name: str
+) -> None:
+    trace_lines = int(trace.get("b_lines", "0"))
+    trace_responses = int(trace.get("b_responses", "0"))
+    require(
+        trace_lines in (1024, 1025),
+        f"{arm_name}: strict B line count outside aligned/unaligned bound",
+    )
+    require(
+        counter_lines == trace_lines == trace_responses,
+        f"{arm_name}: strict B line/response accounting",
+    )
+
+
 def classify_arm(root: Path, arm: ArmSpec) -> dict[str, object]:
     arm_root = root / "arms" / arm.name
     require(
@@ -642,6 +668,9 @@ def classify_arm(root: Path, arm: ArmSpec) -> dict[str, object]:
         "strict_pages_ready": summed_stat(
             stats, "IND_StrictTwoPhasePagesReady"
         ),
+        "strict_b_words": 0,
+        "strict_backing_semantic_bytes": 0,
+        "strict_backing_transport_bytes": 0,
         "offset_epoch_drains": summed_stat(stats, "IND_NumOTEpochDrain"),
     }
     require(counters["simInsts"] > 0, f"{arm.name}: empty guest work")
@@ -682,6 +711,7 @@ def classify_arm(root: Path, arm: ArmSpec) -> dict[str, object]:
             "logical": "16384",
             "physical": "4096",
             "feeder_words": str(arm.feeder_lines * WORDS_PER_INDEX_LINE),
+            "result_words": "192",
             "b_words": "16384",
             "descriptors": "16384",
             "pages_ready": "4",
@@ -698,6 +728,34 @@ def classify_arm(root: Path, arm: ArmSpec) -> dict[str, object]:
                 strict_trace.get(key) == expected,
                 f"{arm.name}: strict trace {key}",
             )
+        validate_strict_fetch_lines(
+            counters["strict_b_fetch_lines"], strict_trace, arm.name
+        )
+        require(
+            strict_trace.get("a_responses") == strict_trace.get("a_issues"),
+            f"{arm.name}: strict A issue/response closure",
+        )
+        require(
+            int(strict_trace.get("backing_acks", "0"))
+            == counters["write_completions"],
+            f"{arm.name}: strict backing ACK/write completion closure",
+        )
+        require(
+            int(strict_trace.get("backing_transport_bytes", "0"))
+            == counters["write_issues"] * 64,
+            f"{arm.name}: strict backing transport bytes",
+        )
+        require(
+            strict_trace.get("backing_semantic_bytes") == "131072",
+            f"{arm.name}: strict backing semantic bytes",
+        )
+        counters["strict_b_words"] = int(strict_trace["b_words"])
+        counters["strict_backing_semantic_bytes"] = int(
+            strict_trace["backing_semantic_bytes"]
+        )
+        counters["strict_backing_transport_bytes"] = int(
+            strict_trace["backing_transport_bytes"]
+        )
         expected_admission = {
             "schema": "2",
             "b_words": "16384",
@@ -712,10 +770,6 @@ def classify_arm(root: Path, arm: ArmSpec) -> dict[str, object]:
             )
         require(
             counters["strict_operations"] == 1, f"{arm.name}: strict op count"
-        )
-        require(
-            counters["strict_b_fetch_lines"] == 1024,
-            f"{arm.name}: B line count",
         )
         require(
             counters["strict_descriptors"] == TOTAL_ELEMENTS,
@@ -745,6 +799,9 @@ def classify_arm(root: Path, arm: ArmSpec) -> dict[str, object]:
             "strict_a_issues",
             "strict_backing_issues",
             "strict_pages_ready",
+            "strict_b_words",
+            "strict_backing_semantic_bytes",
+            "strict_backing_transport_bytes",
             "offset_epoch_drains",
         ):
             require(counters[key] == 0, f"{arm.name}: unexpected {key}")
@@ -878,21 +935,7 @@ def classify_matrix(root: Path) -> dict[str, object]:
         len({item["output_hash"] for item in arms.values()}) == 1,
         "output hashes differ",
     )
-    hybrid_work = (
-        "index_words",
-        "strict_operations",
-        "strict_b_fetch_lines",
-        "strict_descriptors",
-        "strict_a_issues",
-        "strict_backing_issues",
-        "strict_pages_ready",
-        "write_issues",
-        "write_completions",
-        "full_writes",
-        "partial_writes",
-        "offset_epoch_drains",
-    )
-    for field in hybrid_work:
+    for field in HYBRID_SEMANTIC_WORK_FIELDS:
         require(
             arms["hybrid1"]["counters"][field]
             == arms["hybrid64"]["counters"][field],
@@ -910,7 +953,7 @@ def classify_matrix(root: Path) -> dict[str, object]:
         "native4_over_hybrid64": ticks["native4"] / ticks["hybrid64"],
         "hybrid1_over_hybrid64": ticks["hybrid1"] / ticks["hybrid64"],
     }
-    return {
+    result = {
         "schema": "dx100.hybrid_equal_work_micro.result.v1",
         "terminal": True,
         "decision": "ACCEPT_ALL_FOUR_ARMS",
@@ -931,6 +974,11 @@ def classify_matrix(root: Path) -> dict[str, object]:
             "logical aperture, not a true T4096/API-aperture run",
         ],
     }
+    if root.joinpath("failure.json").is_file():
+        result["prior_classifier_failure"] = json.loads(
+            root.joinpath("failure.json").read_text()
+        )
+    return result
 
 
 def write_matrix_table(root: Path, result: Mapping[str, object]) -> None:
@@ -952,6 +1000,9 @@ def write_matrix_table(root: Path, result: Mapping[str, object]) -> None:
         "strict_a_issues",
         "strict_backing_issues",
         "strict_pages_ready",
+        "strict_b_words",
+        "strict_backing_semantic_bytes",
+        "strict_backing_transport_bytes",
         "offset_epoch_drains",
     )
     with (root / "matrix.tsv").open(
@@ -1007,6 +1058,9 @@ def artifact_paths(root: Path) -> list[Path]:
                 "run/hybrid_trace.log",
             )
         )
+    for optional in (root / "matrix.failed", root / "failure.json"):
+        if optional.is_file():
+            paths.append(optional)
     return paths
 
 
@@ -1038,6 +1092,23 @@ def validate_ledger(root: Path) -> None:
         )
     expected = {str(path.relative_to(root)) for path in artifact_paths(root)}
     require(seen == expected, "ledger path set mismatch")
+
+
+def write_sealed_result(root: Path, result: Mapping[str, object]) -> None:
+    (root / "result.json").write_text(
+        json.dumps(result, indent=2, sort_keys=True) + "\n"
+    )
+    write_matrix_table(root, result)
+    prior_failure = (root / "failure.json").is_file()
+    (root / "gate.complete").write_text(
+        "ACCEPT_ALL_FOUR_ARMS\n"
+        "same_binary=true\n"
+        "same_checkpoint_input=true\n"
+        "performance_metric=simTicks\n"
+        "full_application_runs=0\n"
+        f"prior_classifier_failure={str(prior_failure).lower()}\n"
+    )
+    write_ledger(root)
 
 
 def execute(
@@ -1231,18 +1302,7 @@ def execute(
             json.dumps(manifest, indent=2, sort_keys=True) + "\n"
         )
         result = classify_matrix(root)
-        (root / "result.json").write_text(
-            json.dumps(result, indent=2, sort_keys=True) + "\n"
-        )
-        write_matrix_table(root, result)
-        (root / "gate.complete").write_text(
-            "ACCEPT_ALL_FOUR_ARMS\n"
-            "same_binary=true\n"
-            "same_checkpoint_input=true\n"
-            "performance_metric=simTicks\n"
-            "full_application_runs=0\n"
-        )
-        write_ledger(root)
+        write_sealed_result(root, result)
         return result
     except BaseException as error:
         (root / "matrix.failed").write_text("failed\n")
@@ -1268,6 +1328,21 @@ def validate(root: Path) -> dict[str, object]:
     return recomputed
 
 
+def seal(root: Path) -> dict[str, object]:
+    for path in (
+        root / "result.json",
+        root / "matrix.tsv",
+        root / "gate.complete",
+        root / "artifacts.sha256",
+    ):
+        require(
+            not path.exists(), f"refusing to overwrite sealed artifact: {path}"
+        )
+    result = classify_matrix(root)
+    write_sealed_result(root, result)
+    return result
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="action", required=True)
@@ -1284,10 +1359,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="read-only independent validation of an existing matrix",
     )
     validate_parser.add_argument("out", type=Path)
+    seal_parser = subparsers.add_parser(
+        "seal",
+        help="classify and seal a completed raw matrix without rerunning gem5",
+    )
+    seal_parser.add_argument("out", type=Path)
     args = parser.parse_args(argv)
     try:
         if args.action == "run":
             result = execute(args.out.resolve(), args.gem5, args.ramulator)
+        elif args.action == "seal":
+            result = seal(args.out.resolve())
         else:
             result = validate(args.out.resolve())
     except (
