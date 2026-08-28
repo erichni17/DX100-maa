@@ -593,7 +593,9 @@ def main() -> int:
     direct_retry_slot_cpp_bytes = 8
     direct_retry_cpp_bytes = direct_retry_slots * direct_retry_slot_cpp_bytes
     direct_early_line_ledger_bytes = 1696
-    direct_producer_metadata_bytes = indirect_units * outstanding_writes * 16
+    # Fixed scoreboard entry: valid + physical key + generation + backing
+    # line + word mask + page count + two bounded (page, words) records.
+    direct_producer_metadata_bytes = indirect_units * outstanding_writes * 36
     direct_cpp_static_bytes = (
         direct_queue_payload_bytes
         + direct_queue_control_bytes

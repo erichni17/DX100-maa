@@ -16,8 +16,17 @@ namespace gem5::maa
 class VirtualRetirementScoreboard
 {
   public:
-    static constexpr uint32_t MaxEntries = 32;
+    // Existing virtual-tile experiments use up to 64 write credits.  The
+    // configured capacity, rather than this compatibility ceiling, determines
+    // the modeled hardware state.
+    static constexpr uint32_t MaxEntries = 64;
     static constexpr uint32_t MaxPagesPerEntry = 2;
+    static constexpr uint32_t ConservativeBytesPerEntry =
+        1 + sizeof(uint64_t) + sizeof(uint64_t) + sizeof(int32_t) +
+        sizeof(uint16_t) + sizeof(uint8_t) +
+        MaxPagesPerEntry * (sizeof(int32_t) + sizeof(uint16_t));
+    static constexpr uint32_t ConservativeTotalBytes =
+        MaxEntries * ConservativeBytesPerEntry;
 
     enum class Result : uint8_t
     {

@@ -178,9 +178,12 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
         virtual_response_words != 0 ||
             virtual_response_word_pool_limit != 0);
     virtual_words_per_cycle_limit = _virtual_words_per_cycle;
-    panic_if(_virtual_max_outstanding_writes <= 0,
-             "I[%d] virtual retirement must allow at least one write\n",
-             my_indirect_id);
+    panic_if(_virtual_max_outstanding_writes <= 0 ||
+                 _virtual_max_outstanding_writes >
+                     maa::VirtualRetirementScoreboard::MaxEntries,
+             "I[%d] virtual retirement write capacity %d exceeds [1,%u]\n",
+             my_indirect_id, _virtual_max_outstanding_writes,
+             maa::VirtualRetirementScoreboard::MaxEntries);
     virtual_max_outstanding_writes_limit = _virtual_max_outstanding_writes;
     virtual_masked_writes = _virtual_masked_writes;
     panic_if(_soa_jit_predicate_active_credits != 1 &&
@@ -663,8 +666,8 @@ void IndirectAccessUnit::check_reset() {
     panic_if(virtual_native_slice_cursor != 0,
              "I[%d] native slice cursor is not reset: %d\n",
              my_indirect_id, virtual_native_slice_cursor);
-    panic_if(!virtual_outstanding_write_lines.empty(),
-             "I[%d] virtual write-line scoreboard is not empty\n",
+    panic_if(!virtual_retirement_scoreboard.empty(),
+             "I[%d] virtual retirement scoreboard is not empty\n",
              my_indirect_id);
     panic_if(!virtualCombinerEmpty(),
              "I[%d] virtual combiner is not empty at reset\n", my_indirect_id);
@@ -6148,7 +6151,14 @@ void IndirectAccessUnit::executeInstruction() {
         virtual_pending_source_grow_addr = 0;
         virtual_source_reservations.clear();
         virtual_outstanding_writes = 0;
-        virtual_retirement_write_pages.clear();
+        const auto scoreboard_reset = virtual_retirement_scoreboard.reset(
+            virtual_max_outstanding_writes_limit);
+        panic_if(scoreboard_reset !=
+                     maa::VirtualRetirementScoreboard::Result::Accepted,
+                 "I[%d] virtual retirement scoreboard reset failed: %s\n",
+                 my_indirect_id,
+                 maa::VirtualRetirementScoreboard::resultName(
+                     scoreboard_reset));
         virtual_page_logical_words.clear();
         virtual_page_scanned_words.clear();
         virtual_page_expected_words.clear();
@@ -7710,7 +7720,7 @@ void IndirectAccessUnit::executeInstruction() {
             (*maa->stats.IND_VirtPartialWrites[my_indirect_id]) +=
                 virtual_partial_word_writes;
             initializeVirtualPageTracking();
-            panic_if(!virtual_retirement_write_pages.empty(),
+            panic_if(!virtual_retirement_scoreboard.empty(),
                      "I[%d] virtual retirement metadata remains at response\n",
                      my_indirect_id);
             panic_if(virtual_pages_ready !=
@@ -9987,11 +9997,11 @@ void IndirectAccessUnit::trackVirtualRetirementWrite(Addr write_key,
     panic_if(size % my_word_size != 0,
              "I[%d] virtual write size %u is not word aligned\n",
              my_indirect_id, size);
-    panic_if(virtual_retirement_write_pages.count(write_key) != 0,
+    panic_if(virtual_retirement_scoreboard.contains(write_key),
              "I[%d] duplicate virtual write metadata for 0x%lx\n",
              my_indirect_id, write_key);
 
-    std::map<int, int> page_words;
+    maa::VirtualRetirementScoreboard::Metadata metadata;
     const unsigned words = size / my_word_size;
     for (unsigned word = 0; word < words; ++word) {
         if (valid_words != 0 && (valid_words & (1U << word)) == 0)
@@ -10007,7 +10017,20 @@ void IndirectAccessUnit::trackVirtualRetirementWrite(Addr write_key,
                  "I[%d] virtual write iteration %d exceeds [0, %d)\n",
                  my_indirect_id, itr, my_max);
         const int page = itr / maa->physical_tile_elements;
-        page_words[page]++;
+        uint32_t page_index = 0;
+        for (; page_index < metadata.pageCount; ++page_index) {
+            if (metadata.pageWords[page_index].page == page)
+                break;
+        }
+        if (page_index == metadata.pageCount) {
+            panic_if(metadata.pageCount ==
+                         maa::VirtualRetirementScoreboard::MaxPagesPerEntry,
+                     "I[%d] virtual write 0x%lx spans too many pages\n",
+                     my_indirect_id, write_key);
+            metadata.pageWords[metadata.pageCount].page = page;
+            ++metadata.pageCount;
+        }
+        ++metadata.pageWords[page_index].words;
         virtual_page_last_write_key[page] = write_key;
         virtual_page_issued_words[page]++;
         panic_if(virtual_page_issued_words[page] >
@@ -10016,11 +10039,9 @@ void IndirectAccessUnit::trackVirtualRetirementWrite(Addr write_key,
                  my_indirect_id, page, virtual_page_issued_words[page],
                  virtual_page_expected_words[page]);
     }
-    panic_if(page_words.empty(),
+    panic_if(metadata.pageCount == 0,
              "I[%d] virtual retirement write 0x%lx has no valid words\n",
              my_indirect_id, write_key);
-    auto &metadata = virtual_retirement_write_pages[write_key];
-    metadata.pageWords.assign(page_words.begin(), page_words.end());
     metadata.generation = maa->getVirtualPageGeneration(my_dst_tile);
     const Addr backing_offset = vaddr - my_backing_addr;
     panic_if(backing_offset % block_size + size > block_size,
@@ -10038,16 +10059,29 @@ void IndirectAccessUnit::trackVirtualRetirementWrite(Addr write_key,
         metadata.backingWordMask = static_cast<uint16_t>(
             ((1U << write_words) - 1) << first_word);
     }
+    const auto inserted = virtual_retirement_scoreboard.insert(
+        write_key, metadata);
+    panic_if(inserted !=
+                 maa::VirtualRetirementScoreboard::Result::Accepted,
+             "I[%d] virtual retirement scoreboard insert 0x%lx failed: %s\n",
+             my_indirect_id, write_key,
+             maa::VirtualRetirementScoreboard::resultName(inserted));
 }
 
 void IndirectAccessUnit::completeVirtualRetirementWrite(
     Addr write_key, const uint8_t *writeRespPayload,
     unsigned payloadBytes) {
-    auto metadata = virtual_retirement_write_pages.find(write_key);
-    panic_if(metadata == virtual_retirement_write_pages.end(),
-             "I[%d] completed virtual write 0x%lx has no page metadata\n",
-             my_indirect_id, write_key);
-    for (const auto &[page, words] : metadata->second.pageWords) {
+    maa::VirtualRetirementScoreboard::Metadata metadata;
+    const auto completed = virtual_retirement_scoreboard.take(
+        write_key, metadata);
+    panic_if(completed !=
+                 maa::VirtualRetirementScoreboard::Result::Accepted,
+             "I[%d] completed virtual write 0x%lx failed scoreboard: %s\n",
+             my_indirect_id, write_key,
+             maa::VirtualRetirementScoreboard::resultName(completed));
+    for (uint32_t index = 0; index < metadata.pageCount; ++index) {
+        const int page = metadata.pageWords[index].page;
+        const int words = metadata.pageWords[index].words;
         virtual_page_completed_words[page] += words;
         panic_if(virtual_page_completed_words[page] >
                      virtual_page_expected_words[page],
@@ -10056,16 +10090,15 @@ void IndirectAccessUnit::completeVirtualRetirementWrite(
                  virtual_page_expected_words[page]);
     }
     maa->setVirtualLineWordsReady(my_dst_tile, my_backing_addr,
-                                  metadata->second.generation,
-                                  metadata->second.backingLine,
-                                  metadata->second.backingWordMask,
+                                  metadata.generation,
+                                  metadata.backingLine,
+                                  metadata.backingWordMask,
                                   write_key, writeRespPayload,
                                   payloadBytes);
-    for (const auto &[page, words] : metadata->second.pageWords) {
-        (void)words;
+    for (uint32_t index = 0; index < metadata.pageCount; ++index) {
+        const int page = metadata.pageWords[index].page;
         markVirtualPageReadyIfComplete(page, write_key);
     }
-    virtual_retirement_write_pages.erase(metadata);
 }
 
 bool IndirectAccessUnit::createRetirementWrite(int itr, const uint8_t *data) {
@@ -10081,8 +10114,12 @@ bool IndirectAccessUnit::createRetirementWrite(Addr vaddr, unsigned size,
     Addr paddr = translatePacket(vaddr, BaseMMU::Write, size);
     const Addr write_key = size == block_size
         ? paddr & ~(block_size - 1) : paddr;
-    if (virtual_outstanding_write_lines.count(write_key) != 0) {
+    if (virtual_retirement_scoreboard.contains(write_key)) {
         macro_backing_address_retries++;
+        return false;
+    }
+    if (virtual_retirement_scoreboard.full()) {
+        macro_backing_credit_stalls++;
         return false;
     }
     if (maa->hasOutstandingPacket(paddr)) {
@@ -10112,17 +10149,16 @@ bool IndirectAccessUnit::createRetirementWrite(Addr vaddr, unsigned size,
     pkt->setData(data);
     if (!byte_enable.empty())
         req->setByteEnable(byte_enable);
+    trackVirtualRetirementWrite(write_key, vaddr, size, valid_words);
     my_expected_responses++;
     virtual_outstanding_writes++;
-    virtual_outstanding_write_lines.insert(write_key);
-    trackVirtualRetirementWrite(write_key, vaddr, size, valid_words);
     if (maa->virtual_idealized_write_ack) {
-        const auto metadata = virtual_retirement_write_pages.find(write_key);
-        panic_if(metadata == virtual_retirement_write_pages.end(),
+        const auto *metadata = virtual_retirement_scoreboard.find(write_key);
+        panic_if(metadata == nullptr,
                  "I[%d] idealized write 0x%lx lacks page metadata\n",
                  my_indirect_id, write_key);
-        for (const auto &[page, words] : metadata->second.pageWords) {
-            (void)words;
+        for (uint32_t index = 0; index < metadata->pageCount; ++index) {
+            const int page = metadata->pageWords[index].page;
             markVirtualPageReadyIfComplete(page, write_key);
         }
     }
@@ -11433,10 +11469,12 @@ void IndirectAccessUnit::retirementWriteComplete(
              "I[%d] %s: no outstanding retirement write!\n",
              my_indirect_id, __func__);
     virtual_outstanding_writes--;
-    panic_if(virtual_outstanding_write_lines.erase(addr) != 1,
-             "I[%d] %s: completed address 0x%lx was not outstanding\n",
-             my_indirect_id, __func__, addr);
     completeVirtualRetirementWrite(addr, writeRespPayload, payloadBytes);
+    panic_if(virtual_retirement_scoreboard.size() !=
+                 static_cast<uint32_t>(virtual_outstanding_writes),
+             "I[%d] retirement scoreboard/outstanding mismatch %u/%d\n",
+             my_indirect_id, virtual_retirement_scoreboard.size(),
+             virtual_outstanding_writes);
     (*maa->stats.IND_VirtWriteCompletions[my_indirect_id])++;
     attribution_write_completions++;
     macro_backing_last_ack_tick = curTick();

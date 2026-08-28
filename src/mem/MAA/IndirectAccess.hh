@@ -32,6 +32,7 @@
 #include "mem/MAA/VirtualCombinePayloadStore.hh"
 #include "mem/MAA/VirtualCombinerPageOrder.hh"
 #include "mem/MAA/VirtualResponsePayloadStore.hh"
+#include "mem/MAA/VirtualRetirementScoreboard.hh"
 #include "mem/packet.hh"
 #include "mem/request.hh"
 #include "sim/system.hh"
@@ -157,15 +158,7 @@ protected:
     int virtual_max_combine_words = 0;
     int virtual_max_outstanding_writes_limit = 0;
     bool virtual_masked_writes = false;
-    std::set<Addr> virtual_outstanding_write_lines;
-    struct VirtualRetirementWriteMetadata {
-        std::vector<std::pair<int, int>> pageWords;
-        uint64_t generation = 0;
-        int backingLine = -1;
-        uint16_t backingWordMask = 0;
-    };
-    std::map<Addr, VirtualRetirementWriteMetadata>
-        virtual_retirement_write_pages;
+    maa::VirtualRetirementScoreboard virtual_retirement_scoreboard;
     std::vector<int> virtual_page_logical_words;
     std::vector<int> virtual_page_scanned_words;
     std::vector<int> virtual_page_expected_words;
@@ -268,8 +261,7 @@ public:
     ~IndirectAccessUnit();
     static constexpr size_t lineHandoffMetadataBytesPerWrite()
     {
-        return sizeof(VirtualRetirementWriteMetadata) -
-            sizeof(std::vector<std::pair<int, int>>);
+        return maa::VirtualRetirementScoreboard::ConservativeBytesPerEntry;
     }
     void allocate(int _my_indirect_id,
                   int _num_tile_elements,
@@ -947,7 +939,7 @@ public:
                                   uint16_t offset_slot);
 };
 
-static_assert(IndirectAccessUnit::lineHandoffMetadataBytesPerWrite() == 16);
+static_assert(IndirectAccessUnit::lineHandoffMetadataBytesPerWrite() == 36);
 
 } // namespace gem5
 

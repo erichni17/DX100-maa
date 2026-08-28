@@ -203,15 +203,15 @@ class StorageReportTest(unittest.TestCase):
             self.assertEqual(hardware["per_port_retry_slots"], 4)
             self.assertEqual(hardware["retry_slot_bytes_64_bit_abi"], 8)
             self.assertEqual(hardware["early_line_ledger_bytes"], 1696)
-            self.assertEqual(hardware["producer_line_metadata_bytes"], 1024)
-            self.assertEqual(hardware["total_bytes"], 10496)
+            self.assertEqual(hardware["producer_line_metadata_bytes"], 2304)
+            self.assertEqual(hardware["total_bytes"], 11776)
             cpp = state["conservative_cpp_static_view"]
             self.assertEqual(cpp["queue_payload_bytes"], 4096)
             self.assertEqual(cpp["queue_control_bytes"], 17728)
             self.assertEqual(cpp["execution_bytes_per_record"], 456)
             self.assertEqual(cpp["request_bytes_per_record"], 72)
             self.assertEqual(cpp["retry_slots_bytes"], 32)
-            self.assertEqual(cpp["total_bytes"], 31008)
+            self.assertEqual(cpp["total_bytes"], 32288)
             self.assertEqual(
                 report["bounded_state_lower_bound"][
                     "physical_spd_virtual_payload_and_control_bytes"
@@ -219,7 +219,7 @@ class StorageReportTest(unittest.TestCase):
                 - disabled_report["bounded_state_lower_bound"][
                     "physical_spd_virtual_payload_and_control_bytes"
                 ],
-                10496,
+                11776,
             )
 
     def test_inactive_masked_retention_valid_capacities_and_exact_totals(
@@ -233,9 +233,9 @@ class StorageReportTest(unittest.TestCase):
                 "control_bytes": 21296,
                 "combined_total_bits": 436840,
                 "combined_total_bytes": 54605,
-                "bounded_state": 647058,
-                "comparable": 917906,
-                "allocated": 1522514,
+                "bounded_state": 648338,
+                "comparable": 919186,
+                "allocated": 1523794,
             },
             1024: {
                 "payload_bits": 524288,
@@ -244,9 +244,9 @@ class StorageReportTest(unittest.TestCase):
                 "control_bytes": 40816,
                 "combined_total_bits": 855148,
                 "combined_total_bytes": 106894,
-                "bounded_state": 699347,
-                "comparable": 970195,
-                "allocated": 1574803,
+                "bounded_state": 700627,
+                "comparable": 971475,
+                "allocated": 1576083,
             },
             2048: {
                 "payload_bits": 1048576,
@@ -255,9 +255,9 @@ class StorageReportTest(unittest.TestCase):
                 "control_bytes": 79857,
                 "combined_total_bits": 1691760,
                 "combined_total_bytes": 211470,
-                "bounded_state": 803923,
-                "comparable": 1074771,
-                "allocated": 1679379,
+                "bounded_state": 805203,
+                "comparable": 1076051,
+                "allocated": 1680659,
             },
             4096: {
                 "payload_bits": 2097152,
@@ -266,9 +266,9 @@ class StorageReportTest(unittest.TestCase):
                 "control_bytes": 157937,
                 "combined_total_bits": 3364980,
                 "combined_total_bytes": 420623,
-                "bounded_state": 1013076,
-                "comparable": 1283924,
-                "allocated": 1888532,
+                "bounded_state": 1014356,
+                "comparable": 1285204,
+                "allocated": 1889812,
             },
         }
         with tempfile.TemporaryDirectory() as directory:
