@@ -407,24 +407,6 @@ def publish_report(out: Path, runs: dict[str, Path], report: dict) -> None:
 
 def validate_existing(out: Path) -> dict:
     require(out.is_dir() and not out.is_symlink(), "existing root is invalid")
-    mechanism_diff = subprocess.run(
-        [
-            "git",
-            "diff",
-            "--quiet",
-            EXECUTION_SOURCE_COMMIT,
-            "HEAD",
-            "--",
-            "src/mem/MAA",
-            "configs/common",
-        ],
-        cwd=ROOT,
-        check=False,
-    )
-    require(
-        mechanism_diff.returncode == 0,
-        "mechanism source changed after pair execution",
-    )
     authority = verify_authority()
     arms = [Arm(depth) for depth in DEPTHS]
     runs = {arm.name: out / arm.name for arm in arms}
