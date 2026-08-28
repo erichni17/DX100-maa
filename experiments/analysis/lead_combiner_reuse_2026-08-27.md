@@ -58,6 +58,17 @@ Tree-PLRU would require only three bits per 4-way set (12 bits total), but the
 exact replay shows no transaction reduction. It is therefore rejected before
 implementation.
 
+### Set-index hashing
+
+Simple XOR-folded set indices were replayed over all 65 windows to test a
+zero-storage conflict reduction. With the most-filled victim policy, the
+current low-bit mapping needs 349,673 writes; XOR shifts 6 and 8 need 349,471
+and 349,241 respectively. The best mapping removes only 432 transactions
+(0.124%). Belady changes by just 45 transactions across the same mappings.
+Address hashing is therefore also rejected before implementation. The sealed
+set-hash report is `combiner_set_hash.json` in the run root, SHA-256
+`37b85c284f7680120a1cb288f884e2d3796e6fa2841e638740fb579d49a0d006`.
+
 ## End-to-end priority
 
 Changing 1,064,960 word writes into 358,114 line writes saved 172,311,821

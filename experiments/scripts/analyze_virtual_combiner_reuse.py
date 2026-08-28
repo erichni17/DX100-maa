@@ -136,7 +136,11 @@ def plru_touch(bits: int, way: int, ways: int) -> int:
 
 
 def replay_operation(
-    events: list[tuple[int, int]], policy: str, capacity: int, ways: int = 4
+    events: list[tuple[int, int]],
+    policy: str,
+    capacity: int,
+    ways: int = 4,
+    set_xor_shift: int = 0,
 ) -> ReplayResult:
     require(capacity > 0, "capacity must be positive")
     if ways == 0:
@@ -170,7 +174,11 @@ def replay_operation(
         require(future[line].popleft() == position, "future queue diverged")
 
         index = by_line.get(line)
-        set_id = (line // 64) % num_sets
+        line_number = line // 64
+        if set_xor_shift:
+            require(set_xor_shift > 0, "set XOR shift must be nonnegative")
+            line_number ^= line_number >> set_xor_shift
+        set_id = line_number % num_sets
         set_begin = set_id * ways
         set_end = set_begin + ways
         if index is None:
@@ -247,6 +255,7 @@ def main() -> int:
     parser.add_argument("trace", type=Path)
     parser.add_argument("--capacity", type=int, default=16)
     parser.add_argument("--ways", type=int, default=4)
+    parser.add_argument("--set-xor-shift", type=int, default=0)
     parser.add_argument("--expected-operations", type=int)
     parser.add_argument("--expected-words", type=int, default=16_384)
     parser.add_argument("--expected-round-robin-writes", type=int)
@@ -282,6 +291,7 @@ def main() -> int:
         "trace": str(args.trace.resolve()),
         "capacity_lines": args.capacity,
         "ways": args.ways,
+        "set_xor_shift": args.set_xor_shift,
         "operations": len(operations),
         "semantic_words": sum(len(events) for events in operations.values()),
         "policies": {},
@@ -290,7 +300,13 @@ def main() -> int:
     for policy in policies:
         aggregate = ReplayResult()
         for events in operations.values():
-            result = replay_operation(events, policy, args.capacity, args.ways)
+            result = replay_operation(
+                events,
+                policy,
+                args.capacity,
+                args.ways,
+                args.set_xor_shift,
+            )
             for field in ReplayResult.__dataclass_fields__:
                 setattr(
                     aggregate,
