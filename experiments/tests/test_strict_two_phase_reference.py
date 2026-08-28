@@ -27,6 +27,18 @@ def test_default_off_and_actual_p16_q16_issue_boundaries() -> None:
     assert "!closed() || !executing()" in page_state
     assert "strict_page_fed_terminal_recorded" in indirect
     assert "!strict_page_fed_terminal_recorded" in indirect
+    terminal_begin = indirect.index(
+        "void IndirectAccessUnit::checkSoaJitTerminal()"
+    )
+    terminal_end = indirect.index(
+        "void\nIndirectAccessUnit::checkFusedP16Terminal()",
+        terminal_begin,
+    )
+    terminal = indirect[terminal_begin:terminal_end]
+    guard = terminal.index("!strict_page_fed_terminal_recorded")
+    complete = terminal.index("completeStrictP16Q16Window")
+    latch = terminal.index("strict_page_fed_terminal_recorded = true")
+    assert guard < complete < latch
 
 
 def test_exact_admission_backing_and_compact_timing_are_fail_closed() -> None:
