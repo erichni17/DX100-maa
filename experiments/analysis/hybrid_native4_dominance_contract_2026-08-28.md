@@ -93,12 +93,20 @@ At matched one-line feeder depth, the retained-16K hybrid is 21.866% faster
 than native4x4 and 13.487% slower than native16. This satisfies the professor's
 expected middle-point ordering.
 
-Hybrid64 is provisionally fastest, but native controls were not given the same
-64-line feeder. Two feeder64 native control arms are therefore required before
-claiming that virtualization beats native16 or before assigning the entire
-hybrid1-to64 gain uniquely to the virtual architecture. The native4 arm also
-uses four 4K operations under a shared logical16 aperture; it is timing/reorder
-evidence, not a true logical4 hardware-cost point.
+The feeder-matched successor resolves the provisional comparison:
+
+| Arm | `simTicks` |
+|---|---:|
+| Native16, feeder64 | 48,487,143 |
+| Hybrid, feeder64 | 57,330,645 |
+| Native4x4, feeder64 | 77,011,459 |
+
+At equal feeder depth, hybrid64 is 25.556% faster than native4x4 and 18.239%
+slower than native16. This is the professor's expected middle point. Feeder64
+also helps both native controls, so the unmatched claim that virtualization
+itself beats native16 is rejected. The native4 arm still uses four 4K
+operations under a shared logical16 aperture; it is timing/reorder evidence,
+not a true logical4 hardware-cost point.
 
 The selected hybrid64 full-CG pair is final application verification only; it
 cannot replace the equal-work native comparison because no provenance-matched

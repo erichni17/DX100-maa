@@ -139,7 +139,12 @@ The equal-work API micro confirms the expected ordering at matched one-line
 feeder depth: native16 63,325,847 ticks, hybrid1 71,866,678, and native4x4
 91,978,180. Hybrid64 takes 57,330,645 ticks, but feeder-matched native controls
 are pending before interpreting that point as a virtualization advantage over
-native16. See `hybrid_equal_work_micro_matrix_2026-08-28.md`.
+native16. Feeder-matched controls close the stronger comparison: native16_f64
+48,487,143 ticks, hybrid64 57,330,645, and native4x4_f64 77,011,459. Thus the
+hybrid is 25.556% faster than native4x4 but 18.239% slower than native16, as
+expected for a cost/performance middle point. Feeder64 is a generally useful
+optimization, not a virtualization-only gain. See
+`hybrid_feeder_matched_native_controls_2026-08-28.md`.
 
 1. Keep IS/HashJoin out of this optimization and keep SSSP on its distinct
    old-result path unless a new producer/consumer proof changes the matrix.
