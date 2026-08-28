@@ -39,12 +39,26 @@ Focused validation completed before the workload replay:
 - a clean 16-way gem5 build, binary SHA-256
   `4c07d55ffb8528483f1b7cfe629301b23ac23c4c4679a15bfc7b1972c54f2ccd`.
 
-The same-checkpoint NA1024 replay with this binary is running at
-`/data1/nier/dx100-runs/2026-08-27-lead-fixed-scoreboard-na1024-r1`.  Promotion
-requires exact output and reduction equality, 65 complete windows, 358,114
-64-byte P writes, no fatal/fallback path, terminal `m5_exit`, and exactly
-2,213,855,573 `simTicks`.  Any timing change means the replacement was not
-semantically neutral and must be explained before acceptance.
+The same-checkpoint NA1024 replay with this binary is **accepted** at
+`/data1/nier/dx100-runs/2026-08-27-lead-fixed-scoreboard-na1024-r1`.  It closes
+with wrapper exit 0 and terminal `m5_exit`; preserves the exact output,
+11 deterministic reductions, 65 complete P/Q/whole windows, and 260 product
+pages; issues and completes 358,114 64-byte P writes; takes exactly
+2,213,855,573 `simTicks`; and reports zero Row/Offset drains, SoA/JIT drains,
+or bounded-merge fallbacks.  Replacing dynamic bookkeeping with the fixed
+scoreboard is therefore timing- and behavior-neutral for the accepted arm.
+
+The sealed artifact hashes are:
+
+- `result.json`:
+  `e30fdcc732f1854c7fe4983b05bba5e46e22f3e4e6eeb00689050916b1cd00e3`;
+- `stats.txt`:
+  `117ee90fb528967853f2ca2f3194e4f31937db72704da7c34218720f80954547`;
+- `restore.log`:
+  `ce0e40c756ff540754f3f704bcb34e11ecf32aae871bc9184aa7a8ff0808077f`;
+  and
+- `strict_trace.log`:
+  `77bdcd044c462529d79f3a9b829271beeaa8c77cdb6b48a3e01b8f70cfe95704`.
 
 ## Cross-application boundary
 
@@ -74,15 +88,13 @@ rejected; only the zero-new-state most-filled policy merits a live test.
 
 ## Remaining promotion gates
 
-1. Accept or reject the fixed-scoreboard NA1024 replay against the exact
-   frozen result.
-2. Accept or reject the existing most-filled live test on measured
+1. Accept or reject the existing most-filled live test on measured
    `simTicks`; transaction count alone is insufficient.
-3. Accept or reject the separately authorized full-CG candidate with exact
+2. Accept or reject the separately authorized full-CG candidate with exact
    official output and complete mechanism ledgers.
-4. Keep IS/HashJoin out of this optimization and keep SSSP on its distinct
+3. Keep IS/HashJoin out of this optimization and keep SSSP on its distinct
    old-result path unless a new producer/consumer proof changes the matrix.
-5. Before hardware or iso-area claims, add transaction identity for delayed or
+4. Before hardware or iso-area claims, add transaction identity for delayed or
    duplicate ACKs, directed coherence tests, calibrated lookup/mask/port
    timing, and synthesis-based area/Fmax evidence.
 
