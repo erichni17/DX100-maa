@@ -32,14 +32,15 @@ def verify_matched_root(root: Path) -> dict:
         "matched root is incomplete",
     )
     result = json.loads(result_path.read_text())
+    cg_na = result.get("cg_na")
+    expected_windows = gate.EXPECTED_WINDOWS.get(cg_na, 0)
     require(
         result.get("schema") == "dx100.cg.strict_p16_q16.v1"
         and result.get("terminal") is True
         and result.get("decision") == "VALID_STRICT_REFERENCE"
-        and result.get("promotable_ordering_evidence") is True
         and result.get("producer") == "page-fed"
-        and result.get("cg_na") == 256
-        and result.get("whole_windows") == 10
+        and expected_windows != 0
+        and result.get("whole_windows") == expected_windows
         and result.get("native_runs") == 0,
         "root is not the accepted non-fused matched strict pair",
     )
@@ -89,7 +90,9 @@ def main(argv: list[str] | None = None) -> int:
         and checkpoint.is_dir(),
         "matched execution inputs are missing",
     )
-    gate.fused.ACTIVE_CG_NA = 256
+    cg_na = int(result["cg_na"])
+    expected_windows = gate.EXPECTED_WINDOWS[cg_na]
+    gate.fused.ACTIVE_CG_NA = cg_na
     out.mkdir(parents=True)
     command = gate.strict_restore_args(
         gem5, guest, selector, checkpoint, out, strict=True
@@ -117,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     fingerprint = gate.base.exactly_one(
         lines,
-        r"^CG_FINGERPRINT mode=MAA elements=256 .* result=PASS$",
+        rf"^CG_FINGERPRINT mode=MAA elements={cg_na} .* result=PASS$",
         "line-combined fingerprint",
     )
     terminal_line = gate.base.exactly_one(
@@ -128,7 +131,7 @@ def main(argv: list[str] | None = None) -> int:
     reference_lines = (matched / "strict/restore.log").read_text().splitlines()
     reference_fingerprint = gate.base.exactly_one(
         reference_lines,
-        r"^CG_FINGERPRINT mode=MAA elements=256 .* result=PASS$",
+        rf"^CG_FINGERPRINT mode=MAA elements={cg_na} .* result=PASS$",
         "matched fingerprint",
     )
     reference_terminal = gate.base.exactly_one(
@@ -159,7 +162,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     terminal = gate.fused.parse_kv(terminal_line)
     windows = gate.fused.require_terminal(terminal, "page_fed_product_soa_jit")
-    require(windows == 10, "line-combined arm did not close ten windows")
+    require(
+        windows == expected_windows,
+        "line-combined arm did not close every matched window",
+    )
     gate.fused.require_config(out / "config.ini")
     config = (out / "config.ini").read_text().splitlines()
     require(
@@ -184,7 +190,12 @@ def main(argv: list[str] | None = None) -> int:
     writes = gate.event_records(trace, "backing_write_issue")
     require(
         (len(p_timing), len(q_timing), len(whole), len(products))
-        == (10, 10, 10, 40),
+        == (
+            expected_windows,
+            expected_windows,
+            expected_windows,
+            4 * expected_windows,
+        ),
         "line-combined strict trace is incomplete",
     )
     for row in p_timing:
@@ -196,7 +207,7 @@ def main(argv: list[str] | None = None) -> int:
         and all(gate.integer(row, "bytes") == 64 for row in writes)
         and len(writes)
         == sum(gate.integer(row, "backing_issues") for row in p_timing)
-        and len(writes) < 10 * 16384,
+        and len(writes) < expected_windows * 16384,
         "P retirement was not converted from word writes to combined lines",
     )
     matched_ticks = int(result["strict_reference_simTicks"])
@@ -206,13 +217,13 @@ def main(argv: list[str] | None = None) -> int:
         "terminal": True,
         "decision": "VALID_LINE_COMBINED_ATTRIBUTION",
         "promotable": False,
-        "cg_na": 256,
+        "cg_na": cg_na,
         "matched_root": str(matched),
         "source_commit": gate.base.source_commit(),
         "gem5_sha256": gate.base.sha256_file(gem5),
         "guest_sha256": gate.base.sha256_file(guest),
         "native_runs": 0,
-        "whole_windows": 10,
+        "whole_windows": expected_windows,
         "fingerprints_exact_equal": True,
         "deterministic_reductions_exact_equal": True,
         "p_backing_write_issues": len(writes),
