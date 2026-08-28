@@ -94,6 +94,9 @@ class EqualWorkContractTest(unittest.TestCase):
                 for command in commands.values()
             )
         )
+        self.assertTrue(
+            all("--mem-channels=2" in command for command in commands.values())
+        )
 
     def test_legacy_attribution_binary_mismatch_is_source_grounded(
         self,
