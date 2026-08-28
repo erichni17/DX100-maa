@@ -167,15 +167,33 @@ checkGlobalFullCurrentSetEmptyMaskedAckClosure()
         {true, 0x0001}, {true, 0x0002}, {false, 0}, {false, 0}}};
     const auto decision = Selector::select(
         [&candidates](int index) { return candidates[index]; },
-        4, 2, 1, 2, true, false, 0, 0, 0);
+        4, 2, 1, -1, true, false, 0, 0, 0);
     CHECK(decision.globalPayloadVictim);
     CHECK(decision.victim == 0);
     CHECK(decision.victimSet == 0);
+    CHECK(!decision.freesIncomingSlot);
     CHECK(decision.nextVictimSet == 1);
     CHECK(decision.nextGlobal == 1);
     std::array<int, 2> set_victims{{0, 0}};
     set_victims[decision.victimSet] = decision.nextVictimSet;
     CHECK(set_victims[0] == 1 && set_victims[1] == 0);
+    // Production retains the already-free slot in incoming set one; the
+    // non-local payload victim must not be treated as its insertion slot.
+    int incoming_free_slot = 2;
+    if (!decision.globalPayloadVictim && decision.freesIncomingSlot)
+        incoming_free_slot = decision.victim;
+    CHECK(incoming_free_slot == 2);
+
+    candidates[2] = {true, 0x0004};
+    candidates[3] = {true, 0x0008};
+    const auto local = Selector::select(
+        [&candidates](int index) { return candidates[index]; },
+        4, 2, 1, -1, false, true, 0, 0, 0);
+    CHECK(!local.globalPayloadVictim);
+    CHECK(local.victimSet == 1);
+    CHECK(local.freesIncomingSlot);
+    candidates[2] = {};
+    candidates[3] = {};
 
     VirtualCombinePayloadStore::LineData masked{};
     CHECK(store.copyLine(refs[0], candidates[0].validWords, 8, masked) ==

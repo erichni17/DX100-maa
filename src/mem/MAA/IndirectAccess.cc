@@ -10804,10 +10804,10 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
         if (victim_is_target) {
             target = nullptr;
             free_slot = &victim;
-        } else if (target == nullptr) {
+        } else if (target == nullptr && free_slot == nullptr) {
             // A line-capacity victim is necessarily in the incoming set.
             panic_if(decision.globalPayloadVictim ||
-                         decision.victimSet != set,
+                         !decision.freesIncomingSlot,
                      "I[%d] non-local victim %d cannot free incoming set %d\n",
                      my_indirect_id, victim_idx, set);
             free_slot = &victim;

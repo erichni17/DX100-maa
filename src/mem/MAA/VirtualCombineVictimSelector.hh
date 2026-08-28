@@ -26,6 +26,7 @@ class VirtualCombineVictimSelector
         int nextGlobal = 0;
         int nextVictimSet = 0;
         bool globalPayloadVictim = false;
+        bool freesIncomingSlot = false;
     };
 
     template <typename CandidateAt>
@@ -78,6 +79,8 @@ class VirtualCombineVictimSelector
             return decision;
 
         decision.victimSet = decision.victim / ways;
+        decision.freesIncomingSlot =
+            decision.victimSet == incoming_set;
         decision.nextGlobal = (decision.victim + 1) % slots;
         decision.nextVictimSet =
             (decision.victim - decision.victimSet * ways + 1) % ways;
