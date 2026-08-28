@@ -95,6 +95,20 @@ def main(argv: list[str] | None = None) -> int:
         help="bounded destination-combiner cache-line slots",
     )
     parser.add_argument(
+        "--combine-words",
+        type=int,
+        default=0,
+        help=(
+            "shared destination payload words; zero derives full payload "
+            "from line slots"
+        ),
+    )
+    parser.add_argument(
+        "--classify-existing",
+        action="store_true",
+        help="classify an already completed output without rerunning gem5",
+    )
+    parser.add_argument(
         "--word-writes",
         action="store_true",
         help="retain baseline 4-byte P retirement instead of masked lines",
@@ -103,7 +117,18 @@ def main(argv: list[str] | None = None) -> int:
     matched = args.matched_root.resolve()
     out = args.out.resolve()
     result = verify_matched_root(matched)
-    require(not out.exists(), f"output exists: {out}")
+    require(
+        out.is_dir() if args.classify_existing else not out.exists(),
+        (
+            f"existing output is missing: {out}"
+            if args.classify_existing
+            else f"output exists: {out}"
+        ),
+    )
+    require(
+        0 <= args.combine_words <= 4096,
+        "combiner payload words must be in [0,4096]",
+    )
     require(
         len(gate.base.source_status().splitlines()) == 1, "source is dirty"
     )
@@ -122,7 +147,8 @@ def main(argv: list[str] | None = None) -> int:
     cg_na = int(result["cg_na"])
     expected_windows = gate.EXPECTED_WINDOWS[cg_na]
     gate.fused.ACTIVE_CG_NA = cg_na
-    out.mkdir(parents=True)
+    if not args.classify_existing:
+        out.mkdir(parents=True)
     command = gate.strict_restore_args(
         gem5, guest, selector, checkpoint, out, strict=True
     )
@@ -136,7 +162,16 @@ def main(argv: list[str] | None = None) -> int:
         f"{args.index_issue_lines_per_cycle}"
     )
     command.append(f"--maa_virtual_combine_slots={args.combine_slots}")
-    (out / "command.json").write_text(json.dumps(command, indent=2) + "\n")
+    if args.combine_words != 0:
+        command.append(f"--maa_virtual_combine_words={args.combine_words}")
+    command_json = json.dumps(command, indent=2) + "\n"
+    if args.classify_existing:
+        require(
+            (out / "command.json").read_text() == command_json,
+            "existing command does not match requested treatment",
+        )
+    else:
+        (out / "command.json").write_text(command_json)
     environment = dict(
         os.environ,
         LD_LIBRARY_PATH=str(gate.fused.RAMULATOR.parent)
@@ -145,7 +180,8 @@ def main(argv: list[str] | None = None) -> int:
         OMP_NUM_THREADS="4",
         OMP_PROC_BIND="false",
     )
-    gate.base.run_logged(command, out / "restore.log", environment)
+    if not args.classify_existing:
+        gate.base.run_logged(command, out / "restore.log", environment)
     lines = (out / "restore.log").read_text(errors="replace").splitlines()
     require(
         not any(gate.base.FATAL_RE.search(line) for line in lines),
@@ -204,7 +240,7 @@ def main(argv: list[str] | None = None) -> int:
         windows == expected_windows,
         "line-combined arm did not close every matched window",
     )
-    gate.fused.require_config(out / "config.ini")
+    gate.fused.require_config(out / "config.ini", args.combine_slots)
     config = (out / "config.ini").read_text().splitlines()
     expected_masked = (
         "virtual_masked_writes=false"
@@ -220,7 +256,8 @@ def main(argv: list[str] | None = None) -> int:
             f"{args.index_issue_lines_per_cycle}"
         )
         in config
-        and f"virtual_combine_slots={args.combine_slots}" in config,
+        and f"virtual_combine_slots={args.combine_slots}" in config
+        and f"virtual_combine_words={args.combine_words}" in config,
         "strict feeder/retirement treatment did not resolve",
     )
     stats = gate.fused.require_stats(
@@ -335,6 +372,7 @@ def main(argv: list[str] | None = None) -> int:
             args.index_issue_lines_per_cycle
         ),
         "virtual_combine_slots": args.combine_slots,
+        "virtual_combine_words": args.combine_words,
         "matched_strict_simTicks": matched_ticks,
         "line_combined_simTicks": combined_ticks,
         "matched_over_line_combined": matched_ticks / combined_ticks,

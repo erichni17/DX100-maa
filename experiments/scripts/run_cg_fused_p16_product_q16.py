@@ -359,7 +359,7 @@ def require_confirmation(
     }
 
 
-def require_config(config: Path) -> None:
+def require_config(config: Path, combine_slots: int = 16) -> None:
     lines = config.read_text(errors="replace").splitlines()
     required = {
         "page_fed_soa_jit=true",
@@ -371,7 +371,7 @@ def require_config(config: Path) -> None:
         "num_offset_table_entries=16384",
         "num_offset_table_epoch_entries=16384",
         "num_initial_row_table_slices=32",
-        "virtual_combine_slots=16",
+        f"virtual_combine_slots={combine_slots}",
         "virtual_combine_ways=4",
         "virtual_combine_banks=4",
         "virtual_words_per_cycle=1",
