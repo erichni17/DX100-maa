@@ -4,6 +4,8 @@
 #include <iostream>
 
 #include "mem/MAA/VirtualCombinePayloadStore.hh"
+#include "mem/MAA/VirtualCombineVictimSelector.hh"
+#include "mem/MAA/VirtualRetirementScoreboard.hh"
 
 using gem5::VirtualCombinePayloadStore;
 
@@ -17,6 +19,8 @@ using gem5::VirtualCombinePayloadStore;
     } while (false)
 
 using Result = VirtualCombinePayloadStore::Result;
+using Selector = gem5::maa::VirtualCombineVictimSelector;
+using Scoreboard = gem5::maa::VirtualRetirementScoreboard;
 
 static std::array<uint8_t, 8>
 word(uint8_t base)
@@ -142,11 +146,89 @@ checkErrorsFailClosed()
     CHECK(store.release(reused) == Result::Ok);
 }
 
+static void
+checkGlobalFullCurrentSetEmptyMaskedAckClosure()
+{
+    // Two packed words globally fill the pool while both slots in the
+    // incoming set remain empty.  A set-local victim search has no legal
+    // candidate and formerly panicked here.
+    VirtualCombinePayloadStore store;
+    CHECK(store.reset(2) == Result::Ok);
+    std::array<VirtualCombinePayloadStore::LineRefs, 4> refs{};
+    for (auto &line_refs : refs)
+        line_refs = VirtualCombinePayloadStore::emptyLineRefs();
+    const auto first = word(0x10);
+    const auto second = word(0x20);
+    CHECK(store.allocate(first.data(), 8, refs[0][0]) == Result::Ok);
+    CHECK(store.allocate(second.data(), 8, refs[1][1]) == Result::Ok);
+    CHECK(store.full());
+
+    std::array<Selector::Candidate, 4> candidates{{
+        {true, 0x0001}, {true, 0x0002}, {false, 0}, {false, 0}}};
+    const auto decision = Selector::select(
+        [&candidates](int index) { return candidates[index]; },
+        4, 2, 1, 2, true, false, 0, 0, 0);
+    CHECK(decision.globalPayloadVictim);
+    CHECK(decision.victim == 0);
+    CHECK(decision.victimSet == 0);
+    CHECK(decision.nextVictimSet == 1);
+    CHECK(decision.nextGlobal == 1);
+    std::array<int, 2> set_victims{{0, 0}};
+    set_victims[decision.victimSet] = decision.nextVictimSet;
+    CHECK(set_victims[0] == 1 && set_victims[1] == 0);
+
+    VirtualCombinePayloadStore::LineData masked{};
+    CHECK(store.copyLine(refs[0], candidates[0].validWords, 8, masked) ==
+          Result::Ok);
+    for (size_t byte = 0; byte < 8; ++byte)
+        CHECK(masked[byte] == first[byte]);
+
+    // Model the exact masked WriteReq identity and require the matching ACK
+    // before closure.  Payload ownership transfers only after issue accepts.
+    Scoreboard scoreboard;
+    CHECK(scoreboard.reset(1) == Scoreboard::Result::Accepted);
+    Scoreboard::Metadata metadata;
+    metadata.generation = 9;
+    metadata.backingLine = 0;
+    metadata.backingWordMask = candidates[0].validWords;
+    metadata.pageCount = 1;
+    metadata.pageWords[0] = {0, 1};
+    Scoreboard::Identity identity;
+    CHECK(scoreboard.insert(0x1000, metadata, identity) ==
+          Scoreboard::Result::Accepted);
+    CHECK(store.releaseMasked(refs[0], candidates[0].validWords) ==
+          Result::Ok);
+    candidates[0] = {};
+    CHECK(store.used() == 1);
+
+    const auto incoming = word(0x80);
+    CHECK(store.allocate(incoming.data(), 8, refs[2][2]) == Result::Ok);
+    candidates[2] = {true, 0x0004};
+    CHECK(store.full());
+    Scoreboard::Metadata retired;
+    auto wrong = identity;
+    ++wrong.transaction;
+    CHECK(scoreboard.take(wrong, retired) ==
+          Scoreboard::Result::WrongTransaction);
+    CHECK(scoreboard.take(identity, retired) ==
+          Scoreboard::Result::Accepted);
+    CHECK(retired.backingWordMask == 0x0001);
+    CHECK(retired.pageWords[0].words == 1);
+    CHECK(scoreboard.empty());
+
+    CHECK(store.release(refs[1][1]) == Result::Ok);
+    CHECK(store.release(refs[2][2]) == Result::Ok);
+    CHECK(store.empty());
+    static_assert(Selector::packedGlobalPointerBits(4) == 2);
+    static_assert(Selector::packedGlobalPointerBits(384) == 9);
+}
+
 int
 main()
 {
     checkFp32AllocateUpdateMaskedDrainAndReuse();
     checkFullFp32AndFp64Drains();
     checkErrorsFailClosed();
+    checkGlobalFullCurrentSetEmptyMaskedAckClosure();
     return 0;
 }

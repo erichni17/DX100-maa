@@ -115,6 +115,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
                                   bool _virtual_masked_writes,
                                   int _soa_jit_predicate_active_credits,
                                   int _virtual_index_buffer_lines,
+                                  int _virtual_index_issue_lines_per_cycle,
                                   bool _virtual_index_force_cache,
                                   int _virtual_index_partitions,
                                   int _virtual_index_filter_words_per_cycle,
@@ -195,10 +196,24 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
     soa_jit_predicate_active_credits =
         _soa_jit_predicate_active_credits;
     panic_if(_virtual_index_buffer_lines <= 0 ||
-                 _virtual_index_buffer_lines > 1024,
-             "I[%d] direct-index buffer lines (%d) must be in [1,1024]\n",
-             my_indirect_id, _virtual_index_buffer_lines);
+                 _virtual_index_buffer_lines >
+                     static_cast<int>(maa::DirectIndexFeeder::MaxLines),
+             "I[%d] direct-index buffer lines (%d) must be in [1,%u]\n",
+             my_indirect_id, _virtual_index_buffer_lines,
+             static_cast<unsigned>(maa::DirectIndexFeeder::MaxLines));
     direct_index_buffer_lines = _virtual_index_buffer_lines;
+    panic_if(!maa::DirectIndexFeeder::validIssueWidth(
+                 _virtual_index_issue_lines_per_cycle),
+             "I[%d] direct-index issue width (%d) must be 1, 2, or 4\n",
+             my_indirect_id, _virtual_index_issue_lines_per_cycle);
+    direct_index_issue_lines_per_cycle =
+        _virtual_index_issue_lines_per_cycle;
+    const auto feeder_configured = direct_index_feeder.configure(
+        direct_index_buffer_lines, direct_index_issue_lines_per_cycle);
+    panic_if(feeder_configured != maa::DirectIndexFeeder::Result::Accepted,
+             "I[%d] direct-index feeder configuration failed: %s\n",
+             my_indirect_id,
+             maa::DirectIndexFeeder::resultName(feeder_configured));
     direct_index_force_cache = _virtual_index_force_cache;
     panic_if(_virtual_index_partitions <= 0 ||
                  _virtual_index_partitions > 64,
@@ -717,7 +732,7 @@ void IndirectAccessUnit::check_reset() {
                              attribution_stage_ticks.end(),
                              [](Tick ticks) { return ticks != 0; }),
              "I[%d] stage attribution is still active\n", my_indirect_id);
-    panic_if(!direct_index_pending_lines.empty() ||
+    panic_if(!direct_index_feeder.empty() ||
                  std::any_of(descriptor_spool_read_slots.begin(),
                              descriptor_spool_read_slots.end(),
                              [](const auto &slot) {
@@ -726,9 +741,7 @@ void IndirectAccessUnit::check_reset() {
                  std::any_of(descriptor_spool_write_slots.begin(),
                              descriptor_spool_write_slots.end(),
                              [](const auto &slot) { return slot.valid; }) ||
-                 descriptor_spool_current_valid ||
-                 !direct_index_ready_lines.empty() ||
-                 !direct_index_words.empty(),
+                 descriptor_spool_current_valid,
              "I[%d] direct-index buffer is not empty at reset\n",
              my_indirect_id);
     panic_if(!soaPredicateLinesEmpty(),
@@ -948,13 +961,10 @@ void IndirectAccessUnit::fillDirectIndexWindow() {
     // The B-stream feeder and descriptor replay use separate state.  Keep
     // the configured B feeder depth even when descriptor spooling is active;
     // descriptor replay remains independently bounded by its read credits.
-    const size_t line_capacity =
-        static_cast<size_t>(direct_index_buffer_lines);
-    panic_if(line_capacity == 0,
+    panic_if(direct_index_feeder.capacity() == 0,
              "I[%d] direct-index feeder has zero line capacity\n",
              my_indirect_id);
-    while (direct_index_pending_lines.size() +
-               direct_index_ready_lines.size() < line_capacity) {
+    while (!direct_index_feeder.full()) {
         const int itr = direct_index_next_prefetch_itr;
         if (itr >= my_max)
             return;
@@ -993,7 +1003,9 @@ void IndirectAccessUnit::fillDirectIndexWindow() {
             return;
         }
 
-        std::vector<std::pair<int, uint16_t>> pending_words;
+        std::array<maa::DirectIndexFeeder::Reservation,
+                   maa::DirectIndexFeeder::WordsPerLine> pending_words{};
+        size_t pending_word_count = 0;
         int candidate = itr;
         for (; candidate < my_max; ++candidate) {
             const int64_t candidate_source =
@@ -1009,33 +1021,40 @@ void IndirectAccessUnit::fillDirectIndexWindow() {
             const Addr candidate_vaddr = my_index_addr + candidate_offset;
             if (addrBlockAligner(candidate_vaddr, block_size) != block_vaddr)
                 break;
-            pending_words.emplace_back(
-                candidate,
-                static_cast<uint16_t>((candidate_vaddr - block_vaddr) /
-                                      sizeof(uint32_t)));
+            panic_if(pending_word_count >= pending_words.size(),
+                     "I[%d] direct-index line reservation overflow\n",
+                     my_indirect_id);
+            pending_words[pending_word_count++] = {
+                static_cast<uint32_t>(candidate),
+                static_cast<uint8_t>((candidate_vaddr - block_vaddr) /
+                                     sizeof(uint32_t))};
         }
-        panic_if(pending_words.empty(),
+        panic_if(pending_word_count == 0,
                  "I[%d] direct-index request at itr %d captured no words\n",
                  my_indirect_id, itr);
-        panic_if(direct_index_pending_lines.find(block_paddr) !=
-                     direct_index_pending_lines.end() ||
-                     direct_index_ready_lines.find(block_paddr) !=
-                         direct_index_ready_lines.end(),
-                 "I[%d] direct-index line 0x%lx is already buffered\n",
-                 my_indirect_id, block_paddr);
-        const int pending_word_count = pending_words.size();
-        direct_index_pending_lines.emplace(
-            block_paddr, std::move(pending_words));
+        const auto allocated = direct_index_feeder.allocate(
+            block_paddr, direct_index_phase, pending_words,
+            pending_word_count, curTick());
+        if (allocated ==
+            maa::DirectIndexFeeder::Result::IssueWidthLimited) {
+            (*maa->stats
+                  .IND_VirtIndexIssueWidthStalls[my_indirect_id])++;
+            scheduleExecuteInstructionEvent(1);
+            return;
+        }
+        panic_if(allocated != maa::DirectIndexFeeder::Result::Accepted,
+                 "I[%d] direct-index line 0x%lx allocation failed: %s\n",
+                 my_indirect_id, block_paddr,
+                 maa::DirectIndexFeeder::resultName(allocated));
         direct_index_next_prefetch_itr = candidate;
-        direct_index_max_lines = std::max(
-            direct_index_max_lines,
-            static_cast<int>(direct_index_pending_lines.size() +
-                             direct_index_ready_lines.size()));
+        direct_index_max_lines = static_cast<int>(
+            direct_index_feeder.maxLinesUsed());
+        direct_index_max_words = static_cast<int>(
+            direct_index_feeder.maxWordsValid());
         if (isVirtualLoad()) {
             macro_b_queue_high_water = std::max<uint64_t>(
                 macro_b_queue_high_water,
-                direct_index_pending_lines.size() +
-                    direct_index_ready_lines.size());
+                direct_index_feeder.linesUsed());
         }
         DPRINTF(MAAVirtualTrace,
                 "event=index_line_issue schema=2 unit=%d occurrence=%lu "
@@ -1043,7 +1062,7 @@ void IndirectAccessUnit::fillDirectIndexWindow() {
                 "first_itr=%d words=%d merged=%d\n",
                 my_indirect_id, attribution_event_occurrence++,
                 my_decode_start_tick, block_paddr, itr,
-                pending_word_count, merge_outstanding);
+                static_cast<int>(pending_word_count), merge_outstanding);
         if (merge_outstanding)
             (*maa->stats.IND_VirtIndexOutstandingMerges[my_indirect_id])++;
         createDirectIndexReadPacket(block_paddr, rowtable_latency);
@@ -1330,7 +1349,10 @@ bool IndirectAccessUnit::ensureDirectIndex(int itr) {
     fillDirectIndexWindow();
     if (descriptor_spool_replay_active)
         return loadDescriptorSpoolCurrent(itr);
-    return direct_index_words.find(itr) != direct_index_words.end();
+    maa::DirectIndexFeeder::Word word{};
+    return direct_index_feeder.read(
+               static_cast<uint32_t>(itr), direct_index_phase, word) ==
+           maa::DirectIndexFeeder::Result::Accepted;
 }
 int64_t IndirectAccessUnit::soaSourcePosition(int logical_itr) const
 {
@@ -1778,17 +1800,16 @@ uint32_t IndirectAccessUnit::peekDirectIndex(int itr) const {
                  my_indirect_id, itr);
         return descriptor_spool_current_descriptor.value;
     }
-    auto entry = direct_index_words.find(itr);
-    panic_if(entry == direct_index_words.end(),
-             "I[%d] streamed index %d is not buffered\n",
-             my_indirect_id, itr);
-    panic_if(entry->second.phase != direct_index_phase,
-             "I[%d] streamed index %d has stale phase %u (expected %u)\n",
-             my_indirect_id, itr, entry->second.phase,
-             direct_index_phase);
-    return entry->second.value;
+    maa::DirectIndexFeeder::Word word{};
+    const auto result = direct_index_feeder.read(
+        static_cast<uint32_t>(itr), direct_index_phase, word);
+    panic_if(result != maa::DirectIndexFeeder::Result::Accepted,
+             "I[%d] streamed index %d cannot be read: %s\n",
+             my_indirect_id, itr,
+             maa::DirectIndexFeeder::resultName(result));
+    return word.value;
 }
-const IndirectAccessUnit::DirectIndexWord &
+IndirectAccessUnit::DirectIndexWord
 IndirectAccessUnit::currentDirectIndexWord(int itr) const
 {
     if (descriptor_spool_replay_active) {
@@ -1799,11 +1820,15 @@ IndirectAccessUnit::currentDirectIndexWord(int itr) const
                  my_indirect_id, itr);
         return descriptor_spool_current_word;
     }
-    const auto word = direct_index_words.find(itr);
-    panic_if(word == direct_index_words.end(),
-             "I[%d] streamed index %d is not buffered\n",
-             my_indirect_id, itr);
-    return word->second;
+    maa::DirectIndexFeeder::Word word{};
+    const auto result = direct_index_feeder.read(
+        static_cast<uint32_t>(itr), direct_index_phase, word);
+    panic_if(result != maa::DirectIndexFeeder::Result::Accepted,
+             "I[%d] streamed index %d cannot provide metadata: %s\n",
+             my_indirect_id, itr,
+             maa::DirectIndexFeeder::resultName(result));
+    return DirectIndexWord{word.value, word.lineTag, word.wordAddress,
+                           word.phase, word.logical};
 }
 uint32_t IndirectAccessUnit::directIndexPassForGrow(Addr grow_addr) const {
     if (!usesBoundedDirectIndexPasses())
@@ -1828,9 +1853,7 @@ void IndirectAccessUnit::finishAdaptiveSummary()
 {
     panic_if(!direct_index_summary_active || !offset_table->summaryActive(),
              "I[%d] adaptive summary is not active\n", my_indirect_id);
-    panic_if(!direct_index_pending_lines.empty() ||
-                 !direct_index_ready_lines.empty() ||
-                 !direct_index_words.empty(),
+    panic_if(!direct_index_feeder.empty(),
              "I[%d] adaptive summary ended with buffered B data\n",
              my_indirect_id);
     panic_if(direct_index_summary_next_iteration !=
@@ -3091,20 +3114,19 @@ void IndirectAccessUnit::discardDirectIndex(
         releaseDescriptorSpoolReadLines(itr + 1);
         return;
     }
-    auto word = direct_index_words.find(itr);
-    panic_if(word == direct_index_words.end(),
-             "I[%d] streamed index %d cannot be consumed\n",
-             my_indirect_id, itr);
-    panic_if(word->second.value != expected_value,
+    maa::DirectIndexFeeder::Word word{};
+    const auto read = direct_index_feeder.read(
+        static_cast<uint32_t>(itr), direct_index_phase, word);
+    panic_if(read != maa::DirectIndexFeeder::Result::Accepted,
+             "I[%d] streamed index %d cannot be consumed: %s\n",
+             my_indirect_id, itr,
+             maa::DirectIndexFeeder::resultName(read));
+    panic_if(word.value != expected_value,
              "I[%d] streamed index %d changed from %u to %u before discard\n",
-             my_indirect_id, itr, expected_value, word->second.value);
-    panic_if(word->second.phase != direct_index_phase,
-             "I[%d] stale streamed index %d phase %u (expected %u)\n",
-             my_indirect_id, itr, word->second.phase, direct_index_phase);
-    const Addr line_addr = word->second.line_addr;
+             my_indirect_id, itr, expected_value, word.value);
 
-    // direct_index_words is a private feeder copy populated from the B memory
-    // stream.  For a selected iteration, the Row/Offset insertion has already
+    // The fixed feeder is a private B-line copy populated from memory.  For a
+    // selected iteration, the Row/Offset insertion has already
     // retained the A cache-line address, logical destination iteration, and
     // response word ID.  Poison only this private copy before erasing it.  The
     // architectural index memory and the ordinary SPD index-tile path are
@@ -3114,11 +3136,7 @@ void IndirectAccessUnit::discardDirectIndex(
     uint32_t observed_poison = 0;
     switch (reason) {
       case DirectIndexDiscardReason::DescriptorInserted:
-        word->second.value = feeder_poison;
-        observed_poison = word->second.value;
-        panic_if(observed_poison != feeder_poison,
-                 "I[%d] streamed index %d private poison did not stick\n",
-                 my_indirect_id, itr);
+        observed_poison = feeder_poison;
         reason_name = "descriptor_inserted";
         break;
       case DirectIndexDiscardReason::PredicateRejected:
@@ -3137,28 +3155,32 @@ void IndirectAccessUnit::discardDirectIndex(
     DPRINTF(MAAVirtualTrace,
             "event=index_feeder_discard unit=%d itr=%d value=%u "
             "poisoned=%d poison=0x%x reason=%s "
-            "private=direct_index_words\n",
+            "private=direct_index_feeder\n",
             my_indirect_id, itr, expected_value,
             reason == DirectIndexDiscardReason::DescriptorInserted
                 ? 1
                 : 0,
             observed_poison,
             reason_name);
-    direct_index_words.erase(word);
-    auto line = direct_index_ready_lines.find(line_addr);
-    panic_if(line == direct_index_ready_lines.end() || line->second <= 0,
-             "I[%d] streamed index %d has no ready line 0x%lx\n",
-             my_indirect_id, itr, line_addr);
-    if (--line->second == 0)
-        direct_index_ready_lines.erase(line);
+    const auto consumed = direct_index_feeder.consume(
+        static_cast<uint32_t>(itr), expected_value, direct_index_phase,
+        reason == DirectIndexDiscardReason::DescriptorInserted);
+    panic_if(consumed != maa::DirectIndexFeeder::Result::Accepted,
+             "I[%d] streamed index %d consume failed: %s\n",
+             my_indirect_id, itr,
+             maa::DirectIndexFeeder::resultName(consumed));
 }
 bool IndirectAccessUnit::receiveDirectIndex(Addr addr, uint8_t *dataptr,
                                             bool is_block_cached) {
     if (!isDirectIndexLoad())
         return false;
-    auto pending = direct_index_pending_lines.find(addr);
-    if (pending == direct_index_pending_lines.end())
+    if (!direct_index_feeder.hasPending(addr))
         return false;
+    const size_t pending_word_count =
+        direct_index_feeder.wordsForTag(addr);
+    panic_if(pending_word_count == 0,
+             "I[%d] pending direct-index line 0x%lx has no owners\n",
+             my_indirect_id, addr);
     accountReadResponse(addr, is_block_cached);
     if (isVirtualLoad())
         macro_b_last_response_tick = curTick();
@@ -3170,43 +3192,26 @@ bool IndirectAccessUnit::receiveDirectIndex(Addr addr, uint8_t *dataptr,
                  "I[%d] strict B response failed: %s\n", my_indirect_id,
                  maa::StrictTwoPhaseReference::resultName(result));
     }
-    const auto *words = reinterpret_cast<const uint32_t *>(dataptr);
-    const auto pending_words = std::move(pending->second);
-    direct_index_pending_lines.erase(pending);
-    panic_if(!direct_index_ready_lines.emplace(
-                  addr, static_cast<int>(pending_words.size())).second,
-             "I[%d] duplicate ready direct-index line 0x%lx\n",
-             my_indirect_id, addr);
-    for (const auto &[itr, wid] : pending_words) {
-        panic_if(wid >= block_size / sizeof(uint32_t),
-                 "I[%d] invalid streamed-index word %u\n",
-                 my_indirect_id, wid);
-        panic_if(!direct_index_words
-                      .emplace(itr, DirectIndexWord{
-                                        words[wid], addr,
-                                        addr + wid * sizeof(uint32_t),
-                                        direct_index_phase,
-                                        static_cast<uint32_t>(itr)})
-                      .second,
-                 "I[%d] duplicate streamed index %d\n",
-                 my_indirect_id, itr);
-    }
+    const auto response = direct_index_feeder.respond(
+        addr, dataptr, block_size);
+    panic_if(response != maa::DirectIndexFeeder::Result::Accepted,
+             "I[%d] direct-index response 0x%lx failed: %s\n",
+             my_indirect_id, addr,
+             maa::DirectIndexFeeder::resultName(response));
     (*maa->stats.IND_VirtIndexWords[my_indirect_id]) +=
-        pending_words.size();
+        pending_word_count;
     DPRINTF(MAAVirtualTrace,
             "event=index_line_response schema=2 unit=%d occurrence=%lu "
             "operation_tick=%lu line=0x%lx "
             "words=%d cached=%d\n",
             my_indirect_id, attribution_event_occurrence++,
             my_decode_start_tick, addr,
-            static_cast<int>(pending_words.size()),
+            static_cast<int>(pending_word_count),
             is_block_cached);
-    direct_index_max_lines = std::max(
-        direct_index_max_lines,
-        static_cast<int>(direct_index_pending_lines.size() +
-                         direct_index_ready_lines.size()));
-    direct_index_max_words = std::max(
-        direct_index_max_words, static_cast<int>(direct_index_words.size()));
+    direct_index_max_lines = static_cast<int>(
+        direct_index_feeder.maxLinesUsed());
+    direct_index_max_words = static_cast<int>(
+        direct_index_feeder.maxWordsValid());
     scheduleNextExecution(true);
     return true;
 }
@@ -3668,11 +3673,9 @@ void IndirectAccessUnit::fillRowTable(
                          "I[%d] sorter run %u does not match pass %d\n",
                          my_indirect_id, bounded_global_merge_run,
                          direct_index_partition);
-                panic_if(!direct_index_pending_lines.empty() ||
+                panic_if(!direct_index_feeder.empty() ||
                              descriptorSpoolReadSlotsUsed() != 0 ||
-                             descriptor_spool_current_valid ||
-                             !direct_index_ready_lines.empty() ||
-                             !direct_index_words.empty(),
+                             descriptor_spool_current_valid,
                          "I[%d] sorter run %u reached its drain with "
                          "buffered descriptor input\n",
                          my_indirect_id, bounded_global_merge_run);
@@ -3681,11 +3684,9 @@ void IndirectAccessUnit::fillRowTable(
             }
             if (isVirtualLoad() && isDirectIndexLoad() &&
                 direct_index_partition + 1 < direct_index_partitions) {
-                panic_if(!direct_index_pending_lines.empty() ||
+                panic_if(!direct_index_feeder.empty() ||
                              descriptorSpoolReadSlotsUsed() != 0 ||
-                             descriptor_spool_current_valid ||
-                             !direct_index_ready_lines.empty() ||
-                             !direct_index_words.empty(),
+                             descriptor_spool_current_valid,
                          "I[%d] direct-index partition %d ended with buffered "
                          "index data\n",
                          my_indirect_id, direct_index_partition);
@@ -3794,8 +3795,10 @@ void IndirectAccessUnit::fillRowTable(
             waitForElement = true;
             break;
         }
+        const DirectIndexWord direct_word_value = isDirectIndexLoad()
+            ? currentDirectIndexWord(my_i) : DirectIndexWord{};
         const DirectIndexWord *direct_word = isDirectIndexLoad()
-            ? &currentDirectIndexWord(my_i) : nullptr;
+            ? &direct_word_value : nullptr;
         const int logical_itr = descriptor_spool_replay_active
             ? static_cast<int>(direct_word->logical_itr) : my_i;
         if (isVirtualLoad() && !isDirectIndexLoad() && my_max == -1) {
@@ -6265,7 +6268,7 @@ void IndirectAccessUnit::executeInstruction() {
         direct_index_summary_probes = 0;
         direct_index_summary_reduction_visits = 0;
         offset_table_drain = false;
-        direct_index_pending_lines.clear();
+        direct_index_feeder.reset();
         for (auto &slot : descriptor_spool_read_slots)
             slot = DescriptorSpoolPendingLine();
         for (auto &slot : descriptor_spool_write_slots)
@@ -6296,8 +6299,6 @@ void IndirectAccessUnit::executeInstruction() {
         descriptor_spool_boundary_demand_wait_ticks = 0;
         descriptor_spool_within_pass_demand_wait_events = 0;
         descriptor_spool_within_pass_demand_wait_ticks = 0;
-        direct_index_ready_lines.clear();
-        direct_index_words.clear();
         direct_index_max_lines = 0;
         direct_index_max_words = 0;
         for (auto &line : soa_predicate_lines)
@@ -6928,17 +6929,15 @@ void IndirectAccessUnit::executeInstruction() {
             if (strictTwoPhaseOperation()) {
                 panic_if(my_i != my_max ||
                              offset_table->occupancy() != my_max ||
-                             !direct_index_pending_lines.empty() ||
-                             !direct_index_ready_lines.empty() ||
-                             !direct_index_words.empty(),
+                             !direct_index_feeder.empty(),
                          "I[%d] strict admission closure incomplete: "
                          "cursor=%d/%d offsets=%d pending=%zu ready=%zu "
                          "words=%zu\n",
                          my_indirect_id, my_i, my_max,
                          offset_table->occupancy(),
-                         direct_index_pending_lines.size(),
-                         direct_index_ready_lines.size(),
-                         direct_index_words.size());
+                         direct_index_feeder.pendingLines(),
+                         direct_index_feeder.readyLines(),
+                         direct_index_feeder.wordsOwned());
                 auto &reference = maa->strictTwoPhaseReference(
                     my_dst_tile,
                     maa->getVirtualPageGeneration(my_dst_tile));
@@ -7838,6 +7837,24 @@ void IndirectAccessUnit::executeInstruction() {
                 direct_index_max_lines;
             (*maa->stats.IND_VirtIndexWordHighWater[my_indirect_id]) +=
                 direct_index_max_words;
+            const auto &issue = direct_index_feeder.counters();
+            (*maa->stats.IND_VirtIndexIssueCycles[my_indirect_id]) +=
+                issue.issueCycles;
+            (*maa->stats.IND_VirtIndexIssuePeak[my_indirect_id]) +=
+                issue.maxLinesIssuedPerCycle;
+            DPRINTF(MAAVirtualTrace,
+                    "event=index_feeder_summary schema=1 unit=%d "
+                    "operation_tick=%lu capacity=%d issue_width=%d "
+                    "lines_issued=%lu issue_cycles=%lu width_stalls=%lu "
+                    "peak_lines_per_cycle=%u line_hwm=%d word_hwm=%d "
+                    "terminal=1\n",
+                    my_indirect_id, my_decode_start_tick,
+                    direct_index_buffer_lines,
+                    direct_index_issue_lines_per_cycle,
+                    issue.linesIssued, issue.issueCycles,
+                    issue.issueWidthLimited,
+                    issue.maxLinesIssuedPerCycle,
+                    direct_index_max_lines, direct_index_max_words);
         }
         if (isSoaJitRmw()) {
             checkSoaJitTerminal();
@@ -10693,34 +10710,26 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
     const bool word_capacity_full = virtual_combine_payload.full();
     const bool line_capacity_full = target == nullptr && free_slot == nullptr;
     if (word_capacity_full || line_capacity_full) {
-        int victim_idx = -1;
-        const int victim_start = virtual_combine_ways == 0
+        const int target_idx = target == nullptr
+            ? -1 : target - virtual_combine_slots.data();
+        const int incoming_set_start = virtual_combine_ways == 0
             ? virtual_combine_victim
             : virtual_combine_set_victims[set];
-        int victim_words = 0;
-        for (int offset = 0; offset < ways; ++offset) {
-            const int idx = set_begin + (victim_start + offset) % ways;
-            const auto &candidate = virtual_combine_slots[idx];
-            if (!candidate.valid || &candidate == target)
-                continue;
-            const int candidate_words =
-                __builtin_popcount(candidate.valid_words);
-            if (victim_idx == -1 ||
-                (virtual_combine_victim_policy == 1 &&
-                 candidate_words < victim_words) ||
-                (virtual_combine_victim_policy == 2 &&
-                 candidate_words > victim_words)) {
-                victim_idx = idx;
-                victim_words = candidate_words;
-                if (virtual_combine_victim_policy == 0)
-                    break;
-            }
-        }
-        if (victim_idx == -1 && target != nullptr)
-            victim_idx = target - virtual_combine_slots.data();
+        const auto decision = maa::VirtualCombineVictimSelector::select(
+            [this](int index) {
+                const auto &slot = virtual_combine_slots[index];
+                return maa::VirtualCombineVictimSelector::Candidate{
+                    slot.valid, slot.valid_words};
+            },
+            virtual_combine_slots.size(), ways, set, target_idx,
+            word_capacity_full, line_capacity_full,
+            virtual_combine_victim_policy, virtual_combine_victim,
+            incoming_set_start);
+        const int victim_idx = decision.victim;
         panic_if(victim_idx == -1,
                  "I[%d] virtual combiner has no valid victim\n", my_indirect_id);
         auto &victim = virtual_combine_slots[victim_idx];
+        const bool victim_is_target = target == &victim;
         const bool victim_was_full =
             victim.valid_words == ((1U << my_words_per_cl) - 1);
         bool victim_page_ready = maa->virtual_page_ordered_combiner_drain &&
@@ -10791,15 +10800,28 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
         }
         if (victim.valid_words != 0)
             return false;
-        if (target == &victim)
-            target = nullptr;
         victim = VirtualCombineSlot();
-        free_slot = &victim;
-        if (virtual_combine_ways == 0)
-            virtual_combine_victim = (victim_idx + 1) % ways;
-        else
-            virtual_combine_set_victims[set] =
-                (victim_idx - set_begin + 1) % ways;
+        if (victim_is_target) {
+            target = nullptr;
+            free_slot = &victim;
+        } else if (target == nullptr) {
+            // A line-capacity victim is necessarily in the incoming set.
+            panic_if(decision.globalPayloadVictim ||
+                         decision.victimSet != set,
+                     "I[%d] non-local victim %d cannot free incoming set %d\n",
+                     my_indirect_id, victim_idx, set);
+            free_slot = &victim;
+        }
+        if (decision.globalPayloadVictim)
+            virtual_combine_victim = decision.nextGlobal;
+        if (virtual_combine_ways == 0) {
+            virtual_combine_victim = decision.nextGlobal;
+        } else {
+            // Update the victim's actual set.  For shared-payload pressure it
+            // can differ from the incoming address's set.
+            virtual_combine_set_victims[decision.victimSet] =
+                decision.nextVictimSet;
+        }
     }
     if (target == nullptr)
         target = free_slot;

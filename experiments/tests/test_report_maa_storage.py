@@ -23,6 +23,8 @@ class StorageReportTest(unittest.TestCase):
         inactive_masked_retention_lines: int = 0,
         inactive_payload_capture_lines: int = 0,
         outstanding_writes: int = 64,
+        index_lines: int = 8,
+        index_issue_width: int = 1,
     ) -> Path:
         values = {
             "num_cores": "4",
@@ -41,7 +43,8 @@ class StorageReportTest(unittest.TestCase):
             "virtual_response_slots": "128",
             "virtual_response_words": str(response_words),
             "virtual_response_word_pool": str(response_pool),
-            "virtual_index_buffer_lines": "8",
+            "virtual_index_buffer_lines": str(index_lines),
+            "virtual_index_issue_lines_per_cycle": str(index_issue_width),
             "virtual_max_outstanding_writes": str(outstanding_writes),
             "virtual_native_issue_order": str(native_order).lower(),
             "direct_retirement_line_handoff": (
@@ -94,7 +97,7 @@ class StorageReportTest(unittest.TestCase):
             report = json.loads((output / "maa_storage.json").read_text())
             control = report["incremental_virtual_control_lower_bound"]
             self.assertEqual(
-                control["metadata_bytes_per_indirect_unit"], 22841
+                control["metadata_bytes_per_indirect_unit"], 23072
             )
             self.assertEqual(
                 control["virtual_retirement_metadata_bytes_per_entry"], 44
@@ -106,21 +109,23 @@ class StorageReportTest(unittest.TestCase):
                 8,
             )
             self.assertEqual(
-                control["virtual_retirement_scoreboard_bytes_per_indirect_unit"],
+                control[
+                    "virtual_retirement_scoreboard_bytes_per_indirect_unit"
+                ],
                 2824,
             )
             self.assertEqual(
                 report["bounded_state_lower_bound"][
                     "physical_spd_virtual_payload_and_control_bytes"
                 ],
-                584261,
+                584492,
             )
             comparable = report["comparable_storage_lower_bound"]
             self.assertEqual(
                 comparable["retained_shared_descriptor_bytes"], 254464
             )
             self.assertEqual(comparable["native_total_bytes"], 2417152)
-            self.assertEqual(comparable["configured_total_bytes"], 855109)
+            self.assertEqual(comparable["configured_total_bytes"], 855340)
             buffers = report["virtual_data_buffers"]
             self.assertEqual(
                 buffers["source_response_storage_mode"], "packed-word-pool"
@@ -152,6 +157,13 @@ class StorageReportTest(unittest.TestCase):
                 128 * 190,
             )
             self.assertEqual(
+                control[
+                    "destination_combiner_global_payload_"
+                    "victim_bits_per_indirect_unit"
+                ],
+                9,
+            )
+            self.assertEqual(
                 buffers["inactive_cpp_response_line_bytes_per_indirect_unit"],
                 0,
             )
@@ -159,16 +171,16 @@ class StorageReportTest(unittest.TestCase):
             self.assertEqual(
                 conservative["inactive_fixed_response_line_bytes"], 0
             )
-            self.assertEqual(conservative["bounded_state_bytes"], 584261)
+            self.assertEqual(conservative["bounded_state_bytes"], 584492)
             self.assertEqual(
-                conservative["comparable_configured_bytes"], 855109
+                conservative["comparable_configured_bytes"], 855340
             )
             allocated = report["allocated_model_storage_lower_bound"]
             self.assertEqual(
                 allocated["retained_shared_descriptor_bytes"], 861120
             )
             self.assertEqual(allocated["native_total_bytes"], 3023808)
-            self.assertEqual(allocated["configured_total_bytes"], 1459717)
+            self.assertEqual(allocated["configured_total_bytes"], 1459948)
             metadata = report["retained_logical_metadata"]
             self.assertEqual(
                 metadata["allocated_row_entry_capacity_per_indirect_unit"],
@@ -280,6 +292,88 @@ class StorageReportTest(unittest.TestCase):
                 29984,
             )
 
+    def test_fixed_direct_index_packed_storage_and_bounds(self) -> None:
+        expected = {
+            1: (358, 64 * 8),
+            64: (20650, 64 * 64 * 8),
+            128: (41259, 128 * 64 * 8),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for lines, (control_bits, payload_bits) in expected.items():
+                with self.subTest(lines=lines):
+                    case = root / str(lines)
+                    case.mkdir()
+                    config = self.write_config(
+                        case,
+                        4096,
+                        True,
+                        index_lines=lines,
+                        index_issue_width=4,
+                    )
+                    result, output = self.run_report(
+                        case, config, "direct-index"
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    report = json.loads(
+                        (output / "maa_storage.json").read_text()
+                    )
+                    control = report["incremental_virtual_control_lower_bound"]
+                    self.assertEqual(
+                        control["index_feeder_metadata_bits_per_line"], 322
+                    )
+                    self.assertEqual(
+                        control[
+                            "index_feeder_metadata_bits_per_indirect_unit"
+                        ],
+                        control_bits,
+                    )
+                    self.assertEqual(
+                        control["index_feeder_logical_owner_bits_per_word"],
+                        14,
+                    )
+                    self.assertEqual(
+                        report["virtual_data_buffers"][
+                            "configured_index_feeder_bytes_per_indirect_unit"
+                        ]
+                        * 8,
+                        payload_bits,
+                    )
+                    self.assertEqual(
+                        control["index_feeder_supported_capacity_lines"],
+                        128,
+                    )
+                    self.assertEqual(
+                        control["index_feeder_fixed_max_payload_bits"],
+                        65536,
+                    )
+                    self.assertEqual(
+                        control["index_feeder_fixed_max_control_bits"],
+                        41259,
+                    )
+                    self.assertIn(
+                        "excludes C++ sizeof",
+                        control["index_feeder_packed_accounting_note"],
+                    )
+
+            invalid_lines = root / "invalid-lines"
+            invalid_lines.mkdir()
+            config = self.write_config(
+                invalid_lines, 4096, True, index_lines=129
+            )
+            result, _ = self.run_report(invalid_lines, config, "direct-index")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("must be in [1,128]", result.stderr)
+
+            invalid_width = root / "invalid-width"
+            invalid_width.mkdir()
+            config = self.write_config(
+                invalid_width, 4096, True, index_issue_width=3
+            )
+            result, _ = self.run_report(invalid_width, config, "direct-index")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("must be 1, 2, or 4", result.stderr)
+
     def test_inactive_masked_retention_valid_capacities_and_exact_totals(
         self,
     ) -> None:
@@ -291,9 +385,9 @@ class StorageReportTest(unittest.TestCase):
                 "control_bytes": 21296,
                 "combined_total_bits": 436840,
                 "combined_total_bytes": 54605,
-                "bounded_state": 648338,
-                "comparable": 919186,
-                "allocated": 1523794,
+                "bounded_state": 648569,
+                "comparable": 919417,
+                "allocated": 1524025,
             },
             1024: {
                 "payload_bits": 524288,
@@ -302,9 +396,9 @@ class StorageReportTest(unittest.TestCase):
                 "control_bytes": 40816,
                 "combined_total_bits": 855148,
                 "combined_total_bytes": 106894,
-                "bounded_state": 700627,
-                "comparable": 971475,
-                "allocated": 1576083,
+                "bounded_state": 700858,
+                "comparable": 971706,
+                "allocated": 1576314,
             },
             2048: {
                 "payload_bits": 1048576,
@@ -313,9 +407,9 @@ class StorageReportTest(unittest.TestCase):
                 "control_bytes": 79857,
                 "combined_total_bits": 1691760,
                 "combined_total_bytes": 211470,
-                "bounded_state": 805203,
-                "comparable": 1076051,
-                "allocated": 1680659,
+                "bounded_state": 805434,
+                "comparable": 1076282,
+                "allocated": 1680890,
             },
             4096: {
                 "payload_bits": 2097152,
@@ -324,9 +418,9 @@ class StorageReportTest(unittest.TestCase):
                 "control_bytes": 157937,
                 "combined_total_bits": 3364980,
                 "combined_total_bytes": 420623,
-                "bounded_state": 1014356,
-                "comparable": 1285204,
-                "allocated": 1889812,
+                "bounded_state": 1014587,
+                "comparable": 1285435,
+                "allocated": 1890043,
             },
         }
         with tempfile.TemporaryDirectory() as directory:

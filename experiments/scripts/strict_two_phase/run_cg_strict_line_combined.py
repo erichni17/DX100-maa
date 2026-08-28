@@ -81,6 +81,13 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--index-issue-lines-per-cycle",
+        type=int,
+        choices=(1, 2, 4),
+        default=1,
+        help="finite direct-index request-generation width",
+    )
+    parser.add_argument(
         "--word-writes",
         action="store_true",
         help="retain baseline 4-byte P retirement instead of masked lines",
@@ -116,6 +123,10 @@ def main(argv: list[str] | None = None) -> int:
         command.append("--maa_virtual_masked_writes")
     command.append(
         f"--maa_virtual_index_buffer_lines={args.index_buffer_lines}"
+    )
+    command.append(
+        "--maa_virtual_index_issue_lines_per_cycle="
+        f"{args.index_issue_lines_per_cycle}"
     )
     (out / "command.json").write_text(json.dumps(command, indent=2) + "\n")
     environment = dict(
@@ -195,7 +206,12 @@ def main(argv: list[str] | None = None) -> int:
     require(
         "virtual_strict_two_phase=true" in config
         and expected_masked in config
-        and f"virtual_index_buffer_lines={args.index_buffer_lines}" in config,
+        and f"virtual_index_buffer_lines={args.index_buffer_lines}" in config
+        and (
+            "virtual_index_issue_lines_per_cycle="
+            f"{args.index_issue_lines_per_cycle}"
+        )
+        in config,
         "strict feeder/retirement treatment did not resolve",
     )
     stats = gate.fused.require_stats(
@@ -207,6 +223,34 @@ def main(argv: list[str] | None = None) -> int:
             for name in gate.STRICT_STATS
         }
     )
+    issue_stats = {
+        name: gate.base.stat_sum(out / "stats.txt", name)
+        for name in (
+            "IND_VirtIndexLineReads",
+            "IND_VirtIndexIssueCycles",
+            "IND_VirtIndexIssueWidthStalls",
+            "IND_VirtIndexIssuePeak",
+        )
+    }
+    direct_instructions = stats["IND_SoaJitInstructions"]
+    require(
+        issue_stats["IND_VirtIndexLineReads"] > 0
+        and issue_stats["IND_VirtIndexIssueCycles"]
+        >= (
+            issue_stats["IND_VirtIndexLineReads"]
+            + args.index_issue_lines_per_cycle
+            - 1
+        )
+        // args.index_issue_lines_per_cycle
+        and issue_stats["IND_VirtIndexIssueCycles"]
+        <= issue_stats["IND_VirtIndexLineReads"]
+        and issue_stats["IND_VirtIndexIssueWidthStalls"] > 0
+        and 0
+        < issue_stats["IND_VirtIndexIssuePeak"]
+        <= direct_instructions * args.index_issue_lines_per_cycle,
+        "finite direct-index issue-width counters are inconsistent",
+    )
+    stats.update(issue_stats)
     trace = out / "strict_trace.log"
     p_timing = gate.event_records(trace, "strict_two_phase_timing")
     q_timing = gate.event_records(trace, "strict_page_fed_two_phase_timing")
@@ -278,6 +322,9 @@ def main(argv: list[str] | None = None) -> int:
         "all_p_writes_64_bytes": not args.word_writes,
         "retirement_mode": "word" if args.word_writes else "masked_line",
         "virtual_index_buffer_lines": args.index_buffer_lines,
+        "virtual_index_issue_lines_per_cycle": (
+            args.index_issue_lines_per_cycle
+        ),
         "matched_strict_simTicks": matched_ticks,
         "line_combined_simTicks": combined_ticks,
         "matched_over_line_combined": matched_ticks / combined_ticks,

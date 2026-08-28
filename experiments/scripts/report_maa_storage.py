@@ -254,6 +254,14 @@ def main() -> int:
     response_words = integer(maa, "virtual_response_words")
     response_pool = integer(maa, "virtual_response_word_pool")
     index_lines = integer(maa, "virtual_index_buffer_lines")
+    try:
+        index_issue_lines_per_cycle = int(
+            maa.get("virtual_index_issue_lines_per_cycle", "1")
+        )
+    except ValueError:
+        fail(
+            "invalid system.maa value for virtual_index_issue_lines_per_cycle"
+        )
     outstanding_writes = integer(maa, "virtual_max_outstanding_writes")
     native_issue_order = maa.getboolean("virtual_native_issue_order")
     direct_retirement_line_handoff = maa.getboolean(
@@ -329,6 +337,10 @@ def main() -> int:
         fail("Offset-Table capacity must be within the logical tile capacity")
     if not 1 <= offset_epoch_entries <= offset_entries:
         fail("Offset-Table epoch capacity must be within table capacity")
+    if not 1 <= index_lines <= 128:
+        fail("virtual_index_buffer_lines must be in [1,128]")
+    if index_issue_lines_per_cycle not in (1, 2, 4):
+        fail("virtual_index_issue_lines_per_cycle must be 1, 2, or 4")
     if args.dram_subslices % initial_slices:
         fail(
             "DRAM subslices must divide evenly across initial Row-Table slices"
@@ -435,6 +447,7 @@ def main() -> int:
     # tags and essential control, but not SRAM periphery, ports, or wiring.
     words_per_line = 64 // args.word_bytes
     index_words_per_line = 64 // 4
+    index_owner_bits = bits_for_values(logical)
     row_slice_bits = bits_for_values(initial_slices)
     row_id_bits = bits_for_values(rows_per_slice)
     row_entry_bits = bits_for_values(entries_per_row)
@@ -446,11 +459,20 @@ def main() -> int:
     effective_combine_words = combine_words or (combine_slots * words_per_line)
     combine_reference_bits = bits_for_values(effective_combine_words)
 
-    index_metadata_bits_per_unit = index_lines * (
-        args.address_bits
-        + iteration_bits
-        + index_words_per_line
+    index_line_metadata_bits = (
+        args.address_bits  # physical response-match tag
         + 2  # empty, pending, or ready
+        + index_words_per_line  # reserved/owned words while pending or ready
+        + index_words_per_line  # response payload-valid words
+        + index_words_per_line * index_owner_bits
+    )
+    index_global_control_bits = (
+        bits_for_values(index_lines + 1)  # occupied-line count
+        + bits_for_values(5)  # current-cycle issue count, width <= 4
+        + 32  # phase shared by all live lines; phase advances only when empty
+    )
+    index_metadata_bits_per_unit = (
+        index_lines * index_line_metadata_bits + index_global_control_bits
     )
     response_metadata_bits_per_unit = response_slots * (
         1  # valid
@@ -483,6 +505,9 @@ def main() -> int:
     combine_replacement_bits_per_unit = combine_sets * bits_for_values(
         combine_ways
     )
+    combine_global_payload_victim_bits_per_unit = (
+        bits_for_values(combine_slots) if combine_words else 0
+    )
     virtual_retirement_metadata_bytes_per_entry = 44
     virtual_retirement_identity_allocator_bytes_per_unit = 8
     virtual_retirement_scoreboard_bytes_per_unit = (
@@ -514,6 +539,7 @@ def main() -> int:
             combine_metadata_bits_per_unit
             + combine_allocator_bits_per_unit
             + combine_replacement_bits_per_unit
+            + combine_global_payload_victim_bits_per_unit
         )
         active_write_metadata_bits = outstanding_write_bits_per_unit
         active_page_counter_bits = page_counter_bits_per_unit
@@ -693,6 +719,10 @@ def main() -> int:
             "inactive_page_masked_fragment_retention_lines": (
                 inactive_masked_retention_entries
             ),
+            "virtual_index_buffer_lines": index_lines,
+            "virtual_index_issue_lines_per_cycle": (
+                index_issue_lines_per_cycle
+            ),
         },
         "scratchpad": {
             "native_logical_payload_bytes": native_spd_bytes,
@@ -835,6 +865,38 @@ def main() -> int:
             "index_feeder_metadata_bits_per_indirect_unit": (
                 active_index_metadata_bits
             ),
+            "index_feeder_metadata_bits_per_line": (
+                index_line_metadata_bits
+                if args.mechanism == "direct-index"
+                else 0
+            ),
+            "index_feeder_global_control_bits_per_indirect_unit": (
+                index_global_control_bits
+                if args.mechanism == "direct-index"
+                else 0
+            ),
+            "index_feeder_logical_owner_bits_per_word": (
+                index_owner_bits if args.mechanism == "direct-index" else 0
+            ),
+            "index_feeder_supported_capacity_lines": (
+                128 if args.mechanism == "direct-index" else 0
+            ),
+            "index_feeder_fixed_max_payload_bits": (
+                128 * 64 * 8 if args.mechanism == "direct-index" else 0
+            ),
+            "index_feeder_fixed_max_control_bits": (
+                128 * index_line_metadata_bits
+                + bits_for_values(128 + 1)
+                + bits_for_values(5)
+                + 32
+                if args.mechanism == "direct-index"
+                else 0
+            ),
+            "index_feeder_packed_accounting_note": (
+                "Semantic packed bits for fixed line payload/tag/state, "
+                "per-word reservation/validity/ownership, shared phase, and "
+                "finite issue control; excludes C++ sizeof and host padding."
+            ),
             "source_response_metadata_bits_per_indirect_unit": (
                 active_response_metadata_bits
             ),
@@ -843,6 +905,14 @@ def main() -> int:
             ),
             "destination_combiner_allocator_bits_per_indirect_unit": (
                 combine_allocator_bits_per_unit
+                if args.mechanism != "native"
+                else 0
+            ),
+            (
+                "destination_combiner_global_payload_"
+                "victim_bits_per_indirect_unit"
+            ): (
+                combine_global_payload_victim_bits_per_unit
                 if args.mechanism != "native"
                 else 0
             ),
