@@ -625,6 +625,8 @@ def classify_arm(root: Path, arm: ArmSpec) -> dict[str, object]:
         "virtual_index_descriptor_spool": "false",
         "virtual_descriptor_spool_read_ahead": "false",
         "virtual_bounded_global_merge": "false",
+        "virtual_idealized_write_ack": "false",
+        "virtual_native_issue_order": "false",
         "virtual_combine_slots": "16",
         "virtual_combine_words": "0",
         "virtual_combine_ways": "0",
@@ -632,6 +634,7 @@ def classify_arm(root: Path, arm: ArmSpec) -> dict[str, object]:
         "virtual_response_word_pool": "0",
         "virtual_words_per_cycle": "1",
         "virtual_max_outstanding_writes": "32",
+        "no_reorder": "false",
         "reconfigure_row_table": "false",
     }
     for key, expected in expected_config.items():
