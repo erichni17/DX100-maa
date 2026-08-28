@@ -53,7 +53,7 @@ RAW_HASHES = {
         "782a54492de250c9d8f43ed39361126681beb2a0d9c19c17f0b2f5f2f59125ed"
     ),
     "run/restore.log.exit": (
-        "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3ab86aa"
+        "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
     ),
     "run/stats.txt": (
         "486414f1d68a16d1b28b283bdd45433f4d84b5a8a300b831aa7439b82d87ad57"

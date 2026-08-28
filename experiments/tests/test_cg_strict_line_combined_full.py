@@ -318,6 +318,11 @@ def test_successor_pins_exact_obsolete_gate_and_launches_no_gem5() -> None:
     assert '"gem5_runs_launched": 0' in source
     assert '"raw_root_modified": False' in source
     assert "subprocess.run(" not in source
+    assert all(
+        len(digest) == 64
+        and set(digest).issubset(set("0123456789abcdef"))
+        for digest in classifier.RAW_HASHES.values()
+    )
 
 
 def test_successor_creates_output_only_after_read_only_audit() -> None:
