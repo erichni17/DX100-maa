@@ -25,6 +25,7 @@ def test_default_off_and_actual_p16_q16_issue_boundaries() -> None:
     assert "strict page-fed A packet issue rejected" in indirect
     assert "my_index_min < 0 || my_index_stride != 1" in indirect
     assert "my_index_min != 0 || my_index_stride" not in indirect
+    assert "my_instruction->backingAddrRangeID < 0" in indirect
     assert "authorizeAIssue" in page_state
     assert "!closed() || !executing()" in page_state
     assert "strict_page_fed_terminal_recorded" in indirect
@@ -79,6 +80,69 @@ def test_negative_early_a_unit_is_executable() -> None:
     assert "aIssue(101) == Result::EarlyAIssue" in unit
     assert "-fsanitize=address,undefined" in runner
     assert "optimized sanitize" in runner
+
+
+def test_strict_lifecycle_uses_current_identity_and_erases_every_owner() -> (
+    None
+):
+    indirect = text("src/mem/MAA/IndirectAccess.cc")
+    maa = text("src/mem/MAA/MAA.cc")
+    header = text("src/mem/MAA/IndirectAccess.hh")
+
+    fields = (
+        "strict_page_fed_b_first_tick",
+        "strict_page_fed_b_last_tick",
+        "strict_page_fed_row_first_tick",
+        "strict_page_fed_row_last_tick",
+        "strict_page_fed_close_tick",
+        "strict_page_fed_a_first_issue_tick",
+        "strict_page_fed_a_last_issue_tick",
+        "strict_page_fed_a_last_response_tick",
+        "strict_page_fed_backing_first_issue_tick",
+        "strict_page_fed_backing_last_issue_tick",
+        "strict_page_fed_backing_last_ack_tick",
+        "strict_page_fed_consumer_begin_tick",
+        "strict_page_fed_consumer_end_tick",
+    )
+    for field in fields:
+        assert f"Tick {field} = 0" in header
+        assert f"{field} = 0;" in indirect
+    assert "bool strict_page_fed_terminal_recorded = false" in header
+    assert "strict_page_fed_terminal_recorded = false;" in indirect
+
+    decode = indirect.index("my_base_addr = my_instruction->baseAddr")
+    reset = indirect.index("strict_page_fed_b_first_tick = 0", decode)
+    direct = indirect.index("if (isDirectIndexLoad())", reset)
+    assert decode < reset < direct
+    assert "my_instruction->backingAddrRangeID < 0" in indirect
+    assert "virtualPageBackingAddr[tokenTileID]" in maa
+    assert "my_instruction->core_id" in indirect
+
+    for owner in (
+        "strictTwoPhaseReferences",
+        "strictTwoPhasePendingConsumerBegins",
+        "strictP16ByQ16",
+        "strictProductPageResponses",
+    ):
+        assert owner in maa
+    assert "coreHasUnconsumedProducer" in maa
+    assert "producerOwners != 1" in maa
+    assert "strictTwoPhaseReferences.erase(timeline)" in maa
+    assert "strictProductPageResponses.erase" in maa
+    assert "strictP16ByQ16.erase(link)" in maa
+    assert "strict p16/q16 terminal failed lifecycle erasure" in maa
+    assert "strict two-phase token %d reused before producer/consumer" in maa
+
+    # Unrelated indirect instructions cannot mutate strict state: both
+    # predicates derive from the current instruction's opcode/mode.
+    predicates = indirect[
+        indirect.index(
+            "bool IndirectAccessUnit::strictTwoPhaseOperation"
+        ) : indirect.index("void IndirectAccessUnit::accountReadResponse")
+    ]
+    assert "isVirtualLoad()" in predicates
+    assert "isDirectIndexLoad()" in predicates
+    assert "isSoaJitPageFedRmw()" in predicates
 
 
 def test_actual_cg_runner_requires_primary_nonfused_p16_q16_windows() -> None:
