@@ -506,7 +506,7 @@ def main() -> int:
         combine_ways
     )
     combine_global_payload_victim_bits_per_unit = (
-        bits_for_values(combine_slots) if combine_words else 0
+        bits_for_values(combine_slots) if effective_combine_words else 0
     )
     virtual_retirement_metadata_bytes_per_entry = 44
     virtual_retirement_identity_allocator_bytes_per_unit = 8

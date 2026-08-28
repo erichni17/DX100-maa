@@ -25,6 +25,7 @@ class StorageReportTest(unittest.TestCase):
         outstanding_writes: int = 64,
         index_lines: int = 8,
         index_issue_width: int = 1,
+        combine_words: int = 4096,
     ) -> Path:
         values = {
             "num_cores": "4",
@@ -38,7 +39,7 @@ class StorageReportTest(unittest.TestCase):
             "num_row_table_rows_per_slice": "64",
             "num_row_table_entries_per_subslice_row": "8",
             "virtual_combine_slots": "384",
-            "virtual_combine_words": "4096",
+            "virtual_combine_words": str(combine_words),
             "virtual_combine_ways": "4",
             "virtual_response_slots": "128",
             "virtual_response_words": str(response_words),
@@ -373,6 +374,24 @@ class StorageReportTest(unittest.TestCase):
             result, _ = self.run_report(invalid_width, config, "direct-index")
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("must be 1, 2, or 4", result.stderr)
+
+    def test_derived_combiner_pool_counts_global_victim_pointer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.write_config(
+                root, 4096, True, combine_words=0
+            )
+            result, output = self.run_report(root, config, "direct-index")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads((output / "maa_storage.json").read_text())
+            control = report["incremental_virtual_control_lower_bound"]
+            self.assertEqual(
+                control[
+                    "destination_combiner_global_payload_"
+                    "victim_bits_per_indirect_unit"
+                ],
+                9,
+            )
 
     def test_inactive_masked_retention_valid_capacities_and_exact_totals(
         self,
