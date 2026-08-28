@@ -97,6 +97,18 @@ class EqualWorkContractTest(unittest.TestCase):
         self.assertTrue(
             all("--mem-channels=2" in command for command in commands.values())
         )
+        for option in (
+            "--maa_virtual_combine_slots=16",
+            "--maa_virtual_combine_words=0",
+            "--maa_virtual_combine_ways=0",
+            "--maa_virtual_response_slots=8",
+            "--maa_virtual_response_word_pool=0",
+            "--maa_virtual_words_per_cycle=1",
+            "--maa_virtual_max_outstanding_writes=32",
+        ):
+            self.assertTrue(
+                all(option in command for command in commands.values())
+            )
 
     def test_legacy_attribution_binary_mismatch_is_source_grounded(
         self,
