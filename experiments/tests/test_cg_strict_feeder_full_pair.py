@@ -40,6 +40,19 @@ class StrictFeederFullPairTest(unittest.TestCase):
         with self.assertRaisesRegex(runner.PairError, "duplicate"):
             runner.set_arg(["--x=1", "--x=2"], "--x", 3)
 
+    def test_transport_closes_without_fixed_transaction_count(self) -> None:
+        values = {
+            "IND_StrictTwoPhaseBackingIssues": 103,
+            "IND_VirtWriteIssues": 100,
+            "IND_VirtWriteCompletions": 100,
+            "IND_SoaJitAWriteIssues": 3,
+            "IND_SoaJitAWriteResponses": 3,
+        }
+        runner.validate_transport(values)
+        values["IND_VirtWriteCompletions"] -= 1
+        with self.assertRaisesRegex(runner.PairError, "closure"):
+            runner.validate_transport(values)
+
 
 if __name__ == "__main__":
     unittest.main()

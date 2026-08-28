@@ -25,13 +25,13 @@ CERTIFICATE = Path(
     "2026-08-28-cg-strict-line-combined-full-certificate-r1"
 )
 DEPTHS = (1, 64)
+EXECUTION_SOURCE_COMMIT = "097adc75b5fa704b7c76470f1f7d655fcb646d45"
 
 WORK_STATS = (
     "IND_StrictTwoPhaseOperations",
     "IND_StrictTwoPhaseBFetchLines",
     "IND_StrictTwoPhaseDescriptors",
     "IND_StrictTwoPhaseAIssues",
-    "IND_StrictTwoPhaseBackingIssues",
     "IND_StrictTwoPhasePagesReady",
     "IND_NumOTEpochDrain",
     "IND_SoaJitInstructions",
@@ -56,6 +56,25 @@ WORK_STATS = (
     "STR_PublishAccepts",
     "STR_PublishWriteResponses",
     "STR_PublishTerminals",
+)
+
+TRANSPORT_STATS = (
+    "IND_StrictTwoPhaseBackingIssues",
+    "IND_VirtWriteIssues",
+    "IND_VirtWriteCompletions",
+    "IND_SoaJitAWriteIssues",
+    "IND_SoaJitAWriteResponses",
+    "system.maa.port_cache_RD_packets",
+    "system.maa.port_cache_WR_packets",
+)
+
+TIMING_STATS = (
+    "IND_StrictTwoPhaseBFetchCycles",
+    "IND_StrictTwoPhaseRowOffsetCycles",
+    "IND_StrictTwoPhaseAIssueCycles",
+    "IND_StrictTwoPhaseBackingCycles",
+    "IND_StrictTwoPhasePageCycles",
+    "IND_StrictTwoPhaseConsumerCycles",
 )
 
 
@@ -194,6 +213,8 @@ def stat_values(path: Path) -> dict[str, int]:
     values = full.lane.validate_stats(path)
     for name in full.STRICT_EXTRA_STATS:
         values[name] = full.base.first_stat_sum(path, name)
+    for name in TRANSPORT_STATS:
+        values[name] = full.base.first_stat_sum(path, name)
     return values
 
 
@@ -204,15 +225,29 @@ def validate_work(values: dict[str, int], expected: dict[str, int]) -> None:
             f"conserved full work changed for {name}: "
             f"{values.get(name)} != {expected.get(name)}",
         )
-    for name in (
-        "IND_StrictTwoPhaseBFetchCycles",
-        "IND_StrictTwoPhaseRowOffsetCycles",
-        "IND_StrictTwoPhaseAIssueCycles",
-        "IND_StrictTwoPhaseBackingCycles",
-        "IND_StrictTwoPhasePageCycles",
-        "IND_StrictTwoPhaseConsumerCycles",
-    ):
+    for name in TIMING_STATS:
         require(values.get(name, 0) > 0, f"empty timing counter {name}")
+
+
+def validate_transport(values: dict[str, int]) -> None:
+    require(
+        values["IND_VirtWriteIssues"]
+        == values["IND_VirtWriteCompletions"]
+        > 0,
+        "virtual backing issue/ACK closure failed",
+    )
+    require(
+        values["IND_SoaJitAWriteIssues"]
+        == values["IND_SoaJitAWriteResponses"]
+        > 0,
+        "q A-write issue/response closure failed",
+    )
+    require(
+        values["IND_StrictTwoPhaseBackingIssues"]
+        == values["IND_VirtWriteIssues"]
+        + values["IND_SoaJitAWriteIssues"],
+        "strict backing transactions do not reconcile",
+    )
 
 
 def validate_arm(
@@ -255,6 +290,7 @@ def validate_arm(
     values = stat_values(run / "stats.txt")
     expected = authority["certificate"]["candidate"]["stats"]
     validate_work(values, expected)
+    validate_transport(values)
     _, fingerprint = full.base.fingerprint_fields(log)
     deltas = full.base.validate_numerical(fingerprint, authority["numerical"])
     require(
@@ -270,6 +306,10 @@ def validate_arm(
         "fingerprint": fingerprint,
         "numerical_relative_deltas": deltas,
         "work_stats": {name: values[name] for name in WORK_STATS},
+        "transport_stats": {
+            name: values[name] for name in TRANSPORT_STATS
+        },
+        "timing_stats": {name: values[name] for name in TIMING_STATS},
     }
 
 
@@ -284,6 +324,142 @@ def run_arm(command: list[str], run: Path, environment: dict[str, str]) -> int:
         )
     (run / "restore.log.exit").write_text(f"{completed.returncode}\n")
     return completed.returncode
+
+
+def build_report(
+    authority: dict,
+    results: dict[str, dict],
+    execution_source_commit: str,
+    classifier_source_commit: str,
+) -> dict:
+    control = results["feeder1"]["simTicks"]
+    candidate = results["feeder64"]["simTicks"]
+    transport_delta = {
+        name: (
+            results["feeder64"]["transport_stats"][name]
+            - results["feeder1"]["transport_stats"][name]
+        )
+        for name in TRANSPORT_STATS
+    }
+    timing_delta = {
+        name: (
+            results["feeder64"]["timing_stats"][name]
+            - results["feeder1"]["timing_stats"][name]
+        )
+        for name in TIMING_STATS
+    }
+    return {
+        "schema": "dx100.cg.strict_feeder_full_pair.v1",
+        "terminal": True,
+        "decision": (
+            "ACCEPT_FASTER_64_LINE_FULL_OBSERVATION"
+            if candidate < control
+            else "REJECT_64_LINE_FULL_PERFORMANCE"
+        ),
+        "candidate_only_pair": True,
+        "native_runs": 0,
+        "direct4_runs": 0,
+        "trace_runs": 0,
+        "execution_source_commit": execution_source_commit,
+        "classifier_source_commit": classifier_source_commit,
+        "gem5_sha256": full.STRICT_GEM5_SHA256,
+        "guest_sha256": sha256_file(authority["guest"]),
+        "checkpoint_entries": authority["checkpoint_entries"],
+        "arms": results,
+        "transport_delta_64_minus_1": transport_delta,
+        "timing_delta_64_minus_1": timing_delta,
+        "control_over_candidate": control / candidate,
+        "candidate_lower_latency_pct": (
+            100 * (control - candidate) / control
+        ),
+        "mechanism_authority": str(CERTIFICATE),
+    }
+
+
+def publish_report(out: Path, runs: dict[str, Path], report: dict) -> None:
+    outputs = (
+        out / "result.json",
+        out / "artifacts.sha256",
+        out / "gate.complete",
+    )
+    require(not any(path.exists() for path in outputs), "output seal exists")
+    outputs[0].write_text(json.dumps(report, indent=2) + "\n")
+    ledger_lines = []
+    for run in runs.values():
+        for name in (
+            "command.json",
+            "config.ini",
+            "restore.log",
+            "restore.log.exit",
+            "stats.txt",
+        ):
+            path = run / name
+            ledger_lines.append(
+                f"{sha256_file(path)}  {path.relative_to(out)}"
+            )
+    outputs[1].write_text("\n".join(sorted(ledger_lines)) + "\n")
+    outputs[2].write_text(
+        f"{report['decision']}\n"
+        "correctness=PASS_NUMERICAL_MECHANISM_CORRECT\n"
+        "native_runs=0\n"
+    )
+
+
+def validate_existing(out: Path) -> dict:
+    require(out.is_dir() and not out.is_symlink(), "existing root is invalid")
+    mechanism_diff = subprocess.run(
+        [
+            "git",
+            "diff",
+            "--quiet",
+            EXECUTION_SOURCE_COMMIT,
+            "HEAD",
+            "--",
+            "src/mem/MAA",
+            "configs/common",
+        ],
+        cwd=ROOT,
+        check=False,
+    )
+    require(
+        mechanism_diff.returncode == 0,
+        "mechanism source changed after pair execution",
+    )
+    authority = verify_authority()
+    arms = [Arm(depth) for depth in DEPTHS]
+    runs = {arm.name: out / arm.name for arm in arms}
+    commands = {
+        arm.name: json.loads((runs[arm.name] / "command.json").read_text())
+        for arm in arms
+    }
+    for arm in arms:
+        require(
+            commands[arm.name] == command_for(arm, runs[arm.name]),
+            f"recorded command changed for {arm.name}",
+        )
+    require(
+        normalized_command(commands[arms[0].name])
+        == normalized_command(commands[arms[1].name]),
+        "existing pair differs by more than depth/output",
+    )
+    returncodes = {
+        arm.name: int(
+            (runs[arm.name] / "restore.log.exit").read_text().strip()
+        )
+        for arm in arms
+    }
+    results = {
+        arm.name: validate_arm(
+            arm, runs[arm.name], returncodes[arm.name], authority
+        )
+        for arm in arms
+    }
+    report = build_report(
+        authority, results, EXECUTION_SOURCE_COMMIT, full.source_commit()
+    )
+    publish_report(out, runs, report)
+    print(json.dumps(report, sort_keys=True))
+    return report
 
 
 def execute(out: Path) -> dict:
@@ -330,54 +506,10 @@ def execute(out: Path) -> dict:
         )
         for arm in arms
     }
-    control = results["feeder1"]["simTicks"]
-    candidate = results["feeder64"]["simTicks"]
-    report = {
-        "schema": "dx100.cg.strict_feeder_full_pair.v1",
-        "terminal": True,
-        "decision": (
-            "ACCEPT_FASTER_64_LINE_FULL_OBSERVATION"
-            if candidate < control
-            else "REJECT_64_LINE_FULL_PERFORMANCE"
-        ),
-        "candidate_only_pair": True,
-        "native_runs": 0,
-        "direct4_runs": 0,
-        "trace_runs": 0,
-        "source_commit": full.source_commit(),
-        "gem5_sha256": full.STRICT_GEM5_SHA256,
-        "guest_sha256": sha256_file(authority["guest"]),
-        "checkpoint_entries": authority["checkpoint_entries"],
-        "arms": results,
-        "control_over_candidate": control / candidate,
-        "candidate_lower_latency_pct": (
-            100 * (control - candidate) / control
-        ),
-        "mechanism_authority": str(CERTIFICATE),
-    }
-    (out / "result.json").write_text(json.dumps(report, indent=2) + "\n")
-    ledger_lines = []
-    for run in runs.values():
-        for name in (
-            "command.json",
-            "config.ini",
-            "restore.log",
-            "restore.log.exit",
-            "stats.txt",
-        ):
-            path = run / name
-            ledger_lines.append(
-                f"{sha256_file(path)}  {path.relative_to(out)}"
-            )
-    (out / "artifacts.sha256").write_text(
-        "\n".join(sorted(ledger_lines)) + "\n"
+    report = build_report(
+        authority, results, full.source_commit(), full.source_commit()
     )
-    gate = (
-        f"{report['decision']}\n"
-        "correctness=PASS_NUMERICAL_MECHANISM_CORRECT\n"
-        "native_runs=0\n"
-    )
-    (out / "gate.complete").write_text(gate)
+    publish_report(out, runs, report)
     print(json.dumps(report, sort_keys=True))
     return report
 
@@ -385,8 +517,12 @@ def execute(out: Path) -> dict:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("out", type=Path)
+    parser.add_argument("--validate-existing", action="store_true")
     args = parser.parse_args(argv)
-    execute(args.out.resolve())
+    if args.validate_existing:
+        validate_existing(args.out.resolve())
+    else:
+        execute(args.out.resolve())
     return 0
 
 
