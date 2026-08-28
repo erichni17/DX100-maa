@@ -18,18 +18,24 @@ class TransparentControllerContractTest(unittest.TestCase):
     def test_page_ready_follows_write_completion_accounting(self):
         source = (ROOT / "src/mem/MAA/IndirectAccess.cc").read_text()
         begin = source.index(
-            "void IndirectAccessUnit::completeVirtualRetirementWrite"
+            "IndirectAccessUnit::completeVirtualRetirementWrite"
         )
         end = source.index(
             "bool IndirectAccessUnit::createRetirementWrite", begin
         )
         completion = source[begin:end]
         self.assertLess(
+            completion.index("virtual_retirement_scoreboard.take("),
+            completion.index("virtual_page_completed_words[page] += words"),
+        )
+        self.assertLess(
             completion.index("virtual_page_completed_words[page] += words"),
             completion.index(
-                "markVirtualPageReadyIfComplete(page, write_key)"
+                "markVirtualPageReadyIfComplete(page, identity.address)"
             ),
         )
+        self.assertIn("VirtualRetirementSenderState", source)
+        self.assertIn("pkt->pushSenderState(sender)", source)
         self.assertIn(
             "setVirtualPageReady(my_dst_tile, page, final_write_key)",
             source,

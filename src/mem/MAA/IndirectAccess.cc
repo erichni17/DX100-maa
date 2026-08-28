@@ -9989,10 +9989,10 @@ void IndirectAccessUnit::markVirtualPageReadyIfComplete(
             virtual_page_completed_words[page], sources_drained);
 }
 
-void IndirectAccessUnit::trackVirtualRetirementWrite(Addr write_key,
-                                                      Addr vaddr,
-                                                      unsigned size,
-                                                      uint16_t valid_words) {
+maa::VirtualRetirementScoreboard::Identity
+IndirectAccessUnit::trackVirtualRetirementWrite(Addr write_key, Addr vaddr,
+                                                unsigned size,
+                                                uint16_t valid_words) {
     initializeVirtualPageTracking();
     panic_if(size % my_word_size != 0,
              "I[%d] virtual write size %u is not word aligned\n",
@@ -10059,25 +10059,29 @@ void IndirectAccessUnit::trackVirtualRetirementWrite(Addr write_key,
         metadata.backingWordMask = static_cast<uint16_t>(
             ((1U << write_words) - 1) << first_word);
     }
+    maa::VirtualRetirementScoreboard::Identity identity;
     const auto inserted = virtual_retirement_scoreboard.insert(
-        write_key, metadata);
+        write_key, metadata, identity);
     panic_if(inserted !=
                  maa::VirtualRetirementScoreboard::Result::Accepted,
              "I[%d] virtual retirement scoreboard insert 0x%lx failed: %s\n",
              my_indirect_id, write_key,
              maa::VirtualRetirementScoreboard::resultName(inserted));
+    return identity;
 }
 
 void IndirectAccessUnit::completeVirtualRetirementWrite(
-    Addr write_key, const uint8_t *writeRespPayload,
-    unsigned payloadBytes) {
+    const maa::VirtualRetirementScoreboard::Identity &identity,
+    const uint8_t *writeRespPayload, unsigned payloadBytes) {
     maa::VirtualRetirementScoreboard::Metadata metadata;
     const auto completed = virtual_retirement_scoreboard.take(
-        write_key, metadata);
+        identity, metadata);
     panic_if(completed !=
                  maa::VirtualRetirementScoreboard::Result::Accepted,
-             "I[%d] completed virtual write 0x%lx failed scoreboard: %s\n",
-             my_indirect_id, write_key,
+             "I[%d] rejected virtual WriteResp address=0x%lx "
+             "generation=%lu transaction=%lu: %s\n",
+             my_indirect_id, identity.address, identity.generation,
+             identity.transaction,
              maa::VirtualRetirementScoreboard::resultName(completed));
     for (uint32_t index = 0; index < metadata.pageCount; ++index) {
         const int page = metadata.pageWords[index].page;
@@ -10093,11 +10097,11 @@ void IndirectAccessUnit::completeVirtualRetirementWrite(
                                   metadata.generation,
                                   metadata.backingLine,
                                   metadata.backingWordMask,
-                                  write_key, writeRespPayload,
+                                  identity.address, writeRespPayload,
                                   payloadBytes);
     for (uint32_t index = 0; index < metadata.pageCount; ++index) {
         const int page = metadata.pageWords[index].page;
-        markVirtualPageReadyIfComplete(page, write_key);
+        markVirtualPageReadyIfComplete(page, identity.address);
     }
 }
 
@@ -10149,7 +10153,11 @@ bool IndirectAccessUnit::createRetirementWrite(Addr vaddr, unsigned size,
     pkt->setData(data);
     if (!byte_enable.empty())
         req->setByteEnable(byte_enable);
-    trackVirtualRetirementWrite(write_key, vaddr, size, valid_words);
+    const auto identity = trackVirtualRetirementWrite(
+        write_key, vaddr, size, valid_words);
+    auto *sender = new VirtualRetirementSenderState;
+    sender->identity = identity;
+    pkt->pushSenderState(sender);
     my_expected_responses++;
     virtual_outstanding_writes++;
     if (maa->virtual_idealized_write_ack) {
@@ -10186,12 +10194,14 @@ bool IndirectAccessUnit::createRetirementWrite(Addr vaddr, unsigned size,
     else
         macro_backing_word_issues++;
     DPRINTF(MAAVirtualTrace,
-            "event=backing_write_issue schema=2 unit=%d occurrence=%lu "
+            "event=backing_write_issue schema=3 unit=%d occurrence=%lu "
             "operation_tick=%lu key=0x%lx vaddr=0x%lx paddr=0x%lx "
-            "bytes=%u valid_words=0x%x outstanding=%d\n",
+            "generation=%lu transaction=%lu bytes=%u valid_words=0x%x "
+            "outstanding=%d\n",
             my_indirect_id, attribution_event_occurrence++,
             my_decode_start_tick, write_key, vaddr, paddr,
-            size, valid_words, virtual_outstanding_writes);
+            identity.generation, identity.transaction, size, valid_words,
+            virtual_outstanding_writes);
     virtual_max_outstanding_writes = std::max(
         virtual_max_outstanding_writes, virtual_outstanding_writes);
     panic_if(virtual_outstanding_writes > virtual_max_outstanding_writes_limit,
@@ -11414,6 +11424,66 @@ void IndirectAccessUnit::retirementWriteComplete(
         scheduleNextExecution(true);
         return;
     }
+    auto *virtual_peek = dynamic_cast<VirtualRetirementSenderState *>(
+        responsePacket == nullptr ? nullptr : responsePacket->senderState);
+    if (virtual_peek != nullptr) {
+        const auto identity = virtual_peek->identity;
+        panic_if(identity.address != addr,
+                 "I[%d] virtual WriteResp address 0x%lx does not match "
+                 "sender identity 0x%lx\n",
+                 my_indirect_id, addr, identity.address);
+        panic_if(virtual_outstanding_writes == 0,
+                 "I[%d] %s: no outstanding retirement write!\n",
+                 my_indirect_id, __func__);
+        accountVirtualRequestInterval();
+        completeVirtualRetirementWrite(identity, writeRespPayload,
+                                       payloadBytes);
+        auto *sender = dynamic_cast<VirtualRetirementSenderState *>(
+            responsePacket->popSenderState());
+        panic_if(sender != virtual_peek,
+                 "I[%d] virtual retirement sender-state stack diverged\n",
+                 my_indirect_id);
+        delete sender;
+        DPRINTF(MAAIndirect,
+                "I[%d] %s: backing write 0x%lx transaction %lu completed\n",
+                my_indirect_id, __func__, addr, identity.transaction);
+        my_received_responses++;
+        virtual_outstanding_writes--;
+        panic_if(virtual_retirement_scoreboard.size() !=
+                     static_cast<uint32_t>(virtual_outstanding_writes),
+                 "I[%d] retirement scoreboard/outstanding mismatch %u/%d\n",
+                 my_indirect_id, virtual_retirement_scoreboard.size(),
+                 virtual_outstanding_writes);
+        (*maa->stats.IND_VirtWriteCompletions[my_indirect_id])++;
+        attribution_write_completions++;
+        macro_backing_last_ack_tick = curTick();
+        if (strictTwoPhaseOperation()) {
+            const auto result = maa->strictTwoPhaseReference(
+                my_dst_tile, identity.generation).backingAck(curTick());
+            panic_if(result !=
+                         maa::StrictTwoPhaseReference::Result::Accepted,
+                     "I[%d] strict backing ACK failed: %s\n", my_indirect_id,
+                     maa::StrictTwoPhaseReference::resultName(result));
+        }
+        DPRINTF(MAAVirtualTrace,
+                "event=backing_write_complete schema=3 unit=%d "
+                "occurrence=%lu operation_tick=%lu key=0x%lx "
+                "generation=%lu transaction=%lu outstanding=%d\n",
+                my_indirect_id, attribution_event_occurrence++,
+                my_decode_start_tick, identity.address, identity.generation,
+                identity.transaction, virtual_outstanding_writes);
+        const bool response_throttled = drainVirtualResponses();
+        if (virtual_final_flush ||
+            (direct_index_partition_barrier &&
+             !maa->virtual_partition_keep_combiner))
+            drainVirtualCombiner(true);
+        accountVirtualRequestInterval();
+        if (response_throttled)
+            scheduleExecuteInstructionEvent(1);
+        else
+            scheduleNextExecution(true);
+        return;
+    }
     auto global_write = std::find_if(
         bounded_global_merge_write_slots.begin(),
         bounded_global_merge_write_slots.end(),
@@ -11461,47 +11531,8 @@ void IndirectAccessUnit::retirementWriteComplete(
         scheduleNextExecution(true);
         return;
     }
-    accountVirtualRequestInterval();
-    DPRINTF(MAAIndirect, "I[%d] %s: backing write 0x%lx completed\n",
-            my_indirect_id, __func__, addr);
-    my_received_responses++;
-    panic_if(virtual_outstanding_writes == 0,
-             "I[%d] %s: no outstanding retirement write!\n",
-             my_indirect_id, __func__);
-    virtual_outstanding_writes--;
-    completeVirtualRetirementWrite(addr, writeRespPayload, payloadBytes);
-    panic_if(virtual_retirement_scoreboard.size() !=
-                 static_cast<uint32_t>(virtual_outstanding_writes),
-             "I[%d] retirement scoreboard/outstanding mismatch %u/%d\n",
-             my_indirect_id, virtual_retirement_scoreboard.size(),
-             virtual_outstanding_writes);
-    (*maa->stats.IND_VirtWriteCompletions[my_indirect_id])++;
-    attribution_write_completions++;
-    macro_backing_last_ack_tick = curTick();
-    if (strictTwoPhaseOperation()) {
-        const auto result = maa->strictTwoPhaseReference(
-            my_dst_tile, maa->getVirtualPageGeneration(my_dst_tile))
-                                .backingAck(curTick());
-        panic_if(result != maa::StrictTwoPhaseReference::Result::Accepted,
-                 "I[%d] strict backing ACK failed: %s\n", my_indirect_id,
-                 maa::StrictTwoPhaseReference::resultName(result));
-    }
-    DPRINTF(MAAVirtualTrace,
-            "event=backing_write_complete schema=2 unit=%d occurrence=%lu "
-            "operation_tick=%lu key=0x%lx outstanding=%d\n",
-            my_indirect_id, attribution_event_occurrence++,
-            my_decode_start_tick, addr,
-            virtual_outstanding_writes);
-    const bool response_throttled = drainVirtualResponses();
-    if (virtual_final_flush ||
-        (direct_index_partition_barrier &&
-         !maa->virtual_partition_keep_combiner))
-        drainVirtualCombiner(true);
-    accountVirtualRequestInterval();
-    if (response_throttled)
-        scheduleExecuteInstructionEvent(1);
-    else
-        scheduleNextExecution(true);
+    panic("I[%d] indirect WriteResp at 0x%lx lacks exact sender ownership\n",
+          my_indirect_id, addr);
 }
 
 Addr IndirectAccessUnit::translatePacket(Addr vaddr, BaseMMU::Mode mode,
