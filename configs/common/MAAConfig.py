@@ -198,6 +198,11 @@ def _get_maa_opts(options):
             options, "maa_virtual_index_buffer_lines"
         )
 
+    if hasattr(options, "maa_virtual_index_issue_lines_per_cycle"):
+        opts["virtual_index_issue_lines_per_cycle"] = getattr(
+            options, "maa_virtual_index_issue_lines_per_cycle"
+        )
+
     if hasattr(options, "maa_soa_jit_active_contexts"):
         opts["soa_jit_active_contexts"] = getattr(
             options, "maa_soa_jit_active_contexts"

@@ -451,6 +451,7 @@ public:
     bool direct_retirement_line_handoff;
     unsigned int soa_jit_predicate_active_credits;
     unsigned int virtual_index_buffer_lines;
+    unsigned int virtual_index_issue_lines_per_cycle;
     bool virtual_index_force_cache;
     unsigned int virtual_index_partitions;
     bool virtual_index_range_passes;
@@ -1233,6 +1234,9 @@ public:
         std::vector<statistics::Scalar *> IND_VirtIndexOutstandingMerges;
         std::vector<statistics::Scalar *> IND_VirtIndexOutstandingWaitCycles;
         std::vector<statistics::Scalar *> IND_VirtIndexLineHighWater;
+        std::vector<statistics::Scalar *> IND_VirtIndexIssueCycles;
+        std::vector<statistics::Scalar *> IND_VirtIndexIssueWidthStalls;
+        std::vector<statistics::Scalar *> IND_VirtIndexIssuePeak;
         std::vector<statistics::Scalar *> IND_VirtIndexWords;
         std::vector<statistics::Scalar *> IND_VirtIndexWordHighWater;
         std::vector<statistics::Scalar *> IND_VirtIndexFilterWords;

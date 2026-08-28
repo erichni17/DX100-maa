@@ -22,6 +22,7 @@
 #include "mem/MAA/BoundedMetadataLedger.hh"
 #include "mem/MAA/BoundedQuantileRanges.hh"
 #include "mem/MAA/BoundedRangePass.hh"
+#include "mem/MAA/DirectIndexFeeder.hh"
 #include "mem/MAA/FusedP16ProductState.hh"
 #include "mem/MAA/ReorderSurvivalTracker.hh"
 #include "mem/MAA/SoaJitOldResultBuffer.hh"
@@ -30,6 +31,7 @@
 #include "mem/MAA/SoaJitScalarBroadcast.hh"
 #include "mem/MAA/Tables.hh"
 #include "mem/MAA/VirtualCombinePayloadStore.hh"
+#include "mem/MAA/VirtualCombineVictimSelector.hh"
 #include "mem/MAA/VirtualCombinerPageOrder.hh"
 #include "mem/MAA/VirtualResponsePayloadStore.hh"
 #include "mem/MAA/VirtualRetirementScoreboard.hh"
@@ -293,6 +295,7 @@ public:
                   bool _virtual_masked_writes,
                   int _soa_jit_predicate_active_credits,
                   int _virtual_index_buffer_lines,
+                  int _virtual_index_issue_lines_per_cycle,
                   bool _virtual_index_force_cache,
                   int _virtual_index_partitions,
                   int _virtual_index_filter_words_per_cycle,
@@ -321,8 +324,7 @@ public:
                                  unsigned payloadBytes = 0,
                                  PacketPtr responsePacket = nullptr);
     bool hasPendingDirectIndexLine(Addr addr) const {
-        return direct_index_pending_lines.find(addr) !=
-               direct_index_pending_lines.end();
+        return direct_index_feeder.hasPending(addr);
     }
 
     bool recvData(const Addr addr, uint8_t *dataptr, bool is_block_cached);
@@ -364,6 +366,7 @@ protected:
         SummaryObserved,
     };
     int direct_index_buffer_lines = 1;
+    int direct_index_issue_lines_per_cycle = 1;
     bool direct_index_force_cache = false;
     int direct_index_partitions = 1;
     int direct_index_max_partitions = 1;
@@ -498,10 +501,7 @@ protected:
     uint64_t direct_index_summary_probes = 0;
     uint64_t direct_index_summary_reduction_visits = 0;
     int direct_index_next_prefetch_itr = 0;
-    std::map<Addr, std::vector<std::pair<int, uint16_t>>>
-        direct_index_pending_lines;
-    std::map<Addr, int> direct_index_ready_lines;
-    std::map<int, DirectIndexWord> direct_index_words;
+    maa::DirectIndexFeeder direct_index_feeder;
     int direct_index_max_lines = 0;
     int direct_index_max_words = 0;
     static constexpr size_t SoaPredicateMaxLines = 16;
@@ -771,7 +771,7 @@ protected:
     void finishDescriptorSpoolDemandWait(uint32_t cursor);
     bool ensureDirectIndex(int itr);
     uint32_t peekDirectIndex(int itr) const;
-    const DirectIndexWord &currentDirectIndexWord(int itr) const;
+    DirectIndexWord currentDirectIndexWord(int itr) const;
     uint32_t directIndexPassForGrow(Addr grow_addr) const;
     uint64_t directIndexRangeKey(uint32_t index, Addr grow_addr,
                                  int iteration) const;

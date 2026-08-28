@@ -476,7 +476,18 @@ def addNoISAOptions(parser):
         "--maa_virtual_index_buffer_lines",
         type=int,
         default=1,
-        help="Cache lines buffered or in flight for direct virtual-index ingestion",
+        choices=range(1, 129),
+        help=(
+            "Cache lines buffered or in flight for direct virtual-index "
+            "ingestion"
+        ),
+    )
+    parser.add_argument(
+        "--maa_virtual_index_issue_lines_per_cycle",
+        type=int,
+        default=1,
+        choices=(1, 2, 4),
+        help="Finite direct-index request-generation width in lines per cycle",
     )
     parser.add_argument(
         "--maa_soa_jit_active_contexts",

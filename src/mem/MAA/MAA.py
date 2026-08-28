@@ -155,7 +155,13 @@ class MAA(ClockedObject):
     )
     virtual_index_buffer_lines = Param.Unsigned(
         1,
-        "Cache lines buffered or in flight for direct virtual-index ingestion",
+        "Cache lines buffered or in flight for direct virtual-index "
+        "ingestion (1..128)",
+    )
+    virtual_index_issue_lines_per_cycle = Param.Unsigned(
+        1,
+        "Direct virtual-index request-generation width "
+        "(1, 2, or 4 lines/cycle)",
     )
     virtual_index_force_cache = Param.Bool(
         False,

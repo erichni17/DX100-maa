@@ -167,6 +167,8 @@ MAA::MAA(const MAAParams &p)
       soa_jit_predicate_active_credits(
           p.soa_jit_predicate_active_credits),
       virtual_index_buffer_lines(p.virtual_index_buffer_lines),
+      virtual_index_issue_lines_per_cycle(
+          p.virtual_index_issue_lines_per_cycle),
       virtual_index_force_cache(p.virtual_index_force_cache),
       virtual_index_partitions(p.virtual_index_partitions),
       virtual_index_range_passes(p.virtual_index_range_passes),
@@ -742,6 +744,7 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
                                         virtual_masked_writes,
                                         soa_jit_predicate_active_credits,
                                         virtual_index_buffer_lines,
+                                        virtual_index_issue_lines_per_cycle,
                                         virtual_index_force_cache,
                                         virtual_index_partitions,
                                         virtual_index_filter_words_per_cycle,
@@ -7868,6 +7871,18 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtIndexLineHighWater"),
             statistics::units::Count::get(),
             "sum of per-instruction peak direct-index lines in flight"));
+        IND_VirtIndexIssueCycles.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtIndexIssueCycles"),
+            statistics::units::Cycle::get(),
+            "cycles that generated at least one direct-index line request"));
+        IND_VirtIndexIssueWidthStalls.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtIndexIssueWidthStalls"),
+            statistics::units::Count::get(),
+            "direct-index allocation attempts blocked by finite issue width"));
+        IND_VirtIndexIssuePeak.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtIndexIssuePeak"),
+            statistics::units::Count::get(),
+            "sum of per-instruction peak lines generated in one cycle"));
         IND_VirtIndexWords.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtIndexWords"),
             statistics::units::Count::get(),
