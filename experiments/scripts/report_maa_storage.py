@@ -560,7 +560,7 @@ def main() -> int:
         active_completion_increment_bits / 8
     )
 
-    combine_payload_per_unit = effective_combine_words * 8
+    combine_payload_per_unit = effective_combine_words * args.word_bytes
     if response_pool:
         response_storage_mode = "packed-word-pool"
         response_payload_per_unit = response_pool * args.word_bytes

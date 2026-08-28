@@ -66,7 +66,12 @@ class StorageReportTest(unittest.TestCase):
         return path
 
     def run_report(
-        self, root: Path, config: Path, mechanism: str, subslices: int = 32
+        self,
+        root: Path,
+        config: Path,
+        mechanism: str,
+        subslices: int = 32,
+        word_bytes: int = 8,
     ) -> tuple[subprocess.CompletedProcess[str], Path]:
         output = root / "report"
         result = subprocess.run(
@@ -79,7 +84,7 @@ class StorageReportTest(unittest.TestCase):
                 "--mechanism",
                 mechanism,
                 "--word-bytes",
-                "8",
+                str(word_bytes),
                 "--dram-subslices",
                 str(subslices),
             ],
@@ -391,6 +396,23 @@ class StorageReportTest(unittest.TestCase):
                     "victim_bits_per_indirect_unit"
                 ],
                 9,
+            )
+
+    def test_fp32_combiner_payload_uses_four_byte_words(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.write_config(root, 4096, True)
+            result, output = self.run_report(
+                root, config, "direct-index", word_bytes=4
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads((output / "maa_storage.json").read_text())
+            buffers = report["virtual_data_buffers"]
+            self.assertEqual(
+                buffers[
+                    "configured_destination_combiner_bytes_per_indirect_unit"
+                ],
+                4096 * 4,
             )
 
     def test_inactive_masked_retention_valid_capacities_and_exact_totals(
