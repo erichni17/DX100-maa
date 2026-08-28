@@ -207,11 +207,13 @@ def fixed_args(
         "--cmd",
         str(binary),
         "--options",
-        arm_dir.name,
+        str(selector),
     ]
 
 
-def checkpoint_args(gem5: Path, binary: Path, checkpoint: Path) -> list[str]:
+def checkpoint_args(
+    gem5: Path, binary: Path, checkpoint: Path, selector: Path
+) -> list[str]:
     return [
         str(gem5),
         "--listener-mode=off",
@@ -227,7 +229,7 @@ def checkpoint_args(gem5: Path, binary: Path, checkpoint: Path) -> list[str]:
         "--cmd",
         str(binary),
         "--options",
-        "neutral",
+        str(selector),
     ]
 
 
@@ -562,6 +564,7 @@ def main() -> int:
     (out / "arms").mkdir()
     checkpoint = out / "checkpoint"
     checkpoint.mkdir()
+    shared_selector = out / "input/shared.arm"
     env = dict(os.environ)
     env["LD_LIBRARY_PATH"] = (
         str(RAMULATOR.parent) + ":" + env.get("LD_LIBRARY_PATH", "")
@@ -578,7 +581,9 @@ def main() -> int:
     compile_command = compile_guest(binary)
     write_json(out / "input/compile_command.json", compile_command)
     checkpoint_process = run_logged(
-        checkpoint_args(gem5, binary, checkpoint), out / "checkpoint.log", env
+        checkpoint_args(gem5, binary, checkpoint, shared_selector),
+        out / "checkpoint.log",
+        env,
     )
     write_json(out / "checkpoint.process.json", checkpoint_process)
     checkpoint_log = (
@@ -614,7 +619,13 @@ def main() -> int:
         selector = arm_dir / "arm.txt"
         selector.write_text(arm + "\n")
         selector.chmod(0o444)
-        command = fixed_args(gem5, binary, checkpoint, arm_dir, selector)
+        if shared_selector.exists():
+            shared_selector.chmod(0o644)
+        shared_selector.write_text(arm + "\n")
+        shared_selector.chmod(0o444)
+        command = fixed_args(
+            gem5, binary, checkpoint, arm_dir, shared_selector
+        )
         write_json(arm_dir / "command.json", command)
         process = run_logged(command, arm_dir / "restore.log", env)
         write_json(arm_dir / "process.json", process)
