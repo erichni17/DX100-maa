@@ -12,15 +12,16 @@ SPEC.loader.exec_module(reuse)
 
 
 def test_compact_lines_close_once_under_every_policy() -> None:
-    events = [(line, word) for line in range(16) for word in range(16)]
+    events = [(line * 64, word) for line in range(16) for word in range(16)]
     for policy in (
         "round_robin",
         "fewest_words",
         "most_words",
         "lru",
+        "tree_plru",
         "belady",
     ):
-        result = reuse.replay_operation(events, policy, 16)
+        result = reuse.replay_operation(events, policy, 16, 4)
         assert result.writes == 16
         assert result.full_writes == 16
         assert result.eviction_writes == 0
@@ -28,10 +29,10 @@ def test_compact_lines_close_once_under_every_policy() -> None:
 
 
 def test_belady_improves_a_fixed_capacity_thrashing_sequence() -> None:
-    events = [(line, word) for word in range(16) for line in range(32)]
-    round_robin = reuse.replay_operation(events, "round_robin", 16)
-    belady = reuse.replay_operation(events, "belady", 16)
+    events = [(line * 64, word) for word in range(16) for line in range(32)]
+    round_robin = reuse.replay_operation(events, "round_robin", 16, 4)
+    belady = reuse.replay_operation(events, "belady", 16, 4)
     assert round_robin.writes == 512
-    assert belady.writes == 272
+    assert belady.writes == 304
     assert belady.writes < round_robin.writes
     assert round_robin.written_words == belady.written_words == len(events)

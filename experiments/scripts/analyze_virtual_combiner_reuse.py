@@ -57,12 +57,15 @@ class ReplayResult:
 def choose_victim(
     policy: str,
     slots: list[Slot | None],
+    valid: list[int],
     pointer: int,
     future: dict[int, collections.deque[int]],
+    plru_bits: int,
+    set_begin: int,
+    ways: int,
 ) -> int:
-    valid = [index for index, slot in enumerate(slots) if slot is not None]
     require(valid, "no valid victim")
-    order = sorted(valid, key=lambda index: (index - pointer) % len(slots))
+    order = sorted(valid, key=lambda index: (index - pointer) % ways)
     if policy == "round_robin":
         return order[0]
     if policy == "fewest_words":
@@ -79,13 +82,57 @@ def choose_victim(
             return positions[0] if positions else 1 << 62
 
         return max(order, key=next_use)
+    if policy == "tree_plru":
+        return set_begin + plru_victim(plru_bits, ways)
     raise RuntimeError(f"unknown policy: {policy}")
 
 
+def plru_victim(bits: int, ways: int) -> int:
+    require(ways > 1 and ways & (ways - 1) == 0, "PLRU ways must be power of 2")
+    node = 0
+    way = 0
+    span = ways
+    while span > 1:
+        direction = (bits >> node) & 1
+        span //= 2
+        if direction:
+            way += span
+        node = 2 * node + 1 + direction
+    return way
+
+
+def plru_touch(bits: int, way: int, ways: int) -> int:
+    require(0 <= way < ways, "PLRU way is out of range")
+    node = 0
+    base = 0
+    span = ways
+    while span > 1:
+        span //= 2
+        direction = int(way >= base + span)
+        victim_direction = 1 - direction
+        if victim_direction:
+            bits |= 1 << node
+        else:
+            bits &= ~(1 << node)
+        if direction:
+            base += span
+        node = 2 * node + 1 + direction
+    return bits
+
+
 def replay_operation(
-    events: list[tuple[int, int]], policy: str, capacity: int
+    events: list[tuple[int, int]], policy: str, capacity: int, ways: int = 4
 ) -> ReplayResult:
     require(capacity > 0, "capacity must be positive")
+    if ways == 0:
+        ways = capacity
+    require(
+        ways > 0 and capacity % ways == 0,
+        "ways must divide capacity",
+    )
+    if policy == "tree_plru":
+        require(ways > 1 and ways & (ways - 1) == 0, "invalid PLRU geometry")
+    num_sets = capacity // ways
     future: dict[int, collections.deque[int]] = collections.defaultdict(
         collections.deque
     )
@@ -94,7 +141,8 @@ def replay_operation(
 
     slots: list[Slot | None] = [None] * capacity
     by_line: dict[int, int] = {}
-    pointer = 0
+    pointers = [0] * num_sets
+    plru = [0] * num_sets
     seen_words: set[tuple[int, int]] = set()
     result = ReplayResult(semantic_words=len(events))
 
@@ -107,16 +155,31 @@ def replay_operation(
         require(future[line].popleft() == position, "future queue diverged")
 
         index = by_line.get(line)
+        set_id = (line // 64) % num_sets
+        set_begin = set_id * ways
+        set_end = set_begin + ways
         if index is None:
-            try:
-                index = slots.index(None)
-            except ValueError:
-                index = choose_victim(policy, slots, pointer, future)
+            index = next(
+                (slot for slot in range(set_begin, set_end) if slots[slot] is None),
+                None,
+            )
+            if index is None:
+                valid = list(range(set_begin, set_end))
+                index = choose_victim(
+                    policy,
+                    slots,
+                    valid,
+                    set_begin + pointers[set_id],
+                    future,
+                    plru[set_id],
+                    set_begin,
+                    ways,
+                )
                 victim = slots[index]
                 require(victim is not None, "selected empty victim")
                 result.record(victim.mask, "eviction")
                 del by_line[victim.line]
-                pointer = (index + 1) % capacity
+                pointers[set_id] = (index - set_begin + 1) % ways
             slots[index] = Slot(line=line, mask=0, last_use=position)
             by_line[line] = index
 
@@ -126,6 +189,8 @@ def replay_operation(
         require(not slot.mask & bit, "duplicate word in resident line")
         slot.mask |= bit
         slot.last_use = position
+        if policy == "tree_plru":
+            plru[set_id] = plru_touch(plru[set_id], index - set_begin, ways)
         if slot.mask == FULL_MASK:
             result.record(slot.mask, "full")
             slots[index] = None
@@ -165,6 +230,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("trace", type=Path)
     parser.add_argument("--capacity", type=int, default=16)
+    parser.add_argument("--ways", type=int, default=4)
     parser.add_argument("--expected-operations", type=int)
     parser.add_argument("--expected-words", type=int, default=16_384)
     parser.add_argument("--output", type=Path)
@@ -182,11 +248,19 @@ def main() -> int:
             f"operation {key} has {len(events)} words",
         )
 
-    policies = ("round_robin", "fewest_words", "most_words", "lru", "belady")
+    policies = (
+        "round_robin",
+        "fewest_words",
+        "most_words",
+        "lru",
+        "tree_plru",
+        "belady",
+    )
     report: dict[str, object] = {
         "schema": "dx100.virtual_combiner_reuse.v1",
         "trace": str(args.trace.resolve()),
         "capacity_lines": args.capacity,
+        "ways": args.ways,
         "operations": len(operations),
         "semantic_words": sum(len(events) for events in operations.values()),
         "policies": {},
@@ -195,7 +269,7 @@ def main() -> int:
     for policy in policies:
         aggregate = ReplayResult()
         for events in operations.values():
-            result = replay_operation(events, policy, args.capacity)
+            result = replay_operation(events, policy, args.capacity, args.ways)
             for field in ReplayResult.__dataclass_fields__:
                 setattr(
                     aggregate,
