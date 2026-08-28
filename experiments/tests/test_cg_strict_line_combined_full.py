@@ -19,15 +19,33 @@ assert SPEC is not None and SPEC.loader is not None
 runner = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(runner)
 
+CLASSIFIER_PATH = (
+    ROOT / "experiments/scripts/classify_cg_strict_line_combined_full.py"
+)
+CLASSIFIER_SPEC = importlib.util.spec_from_file_location(
+    "cg_strict_line_combined_full_classifier", CLASSIFIER_PATH
+)
+assert CLASSIFIER_SPEC is not None and CLASSIFIER_SPEC.loader is not None
+classifier = importlib.util.module_from_spec(CLASSIFIER_SPEC)
+CLASSIFIER_SPEC.loader.exec_module(classifier)
 
-def timing_line(event: str, generation: int, backing_issues: int) -> str:
+
+def timing_line(
+    event: str,
+    generation: int,
+    backing_issues: int,
+    *,
+    unit: int = 0,
+    token: int = 6,
+) -> str:
     capacity = (
         "feeder_words=4096 result_context_words=4096"
         if event == "strict_page_fed_two_phase_timing"
         else "feeder_words=16 result_words=384"
     )
     return (
-        f"1: global: event={event} generation={generation} {capacity} "
+        f"1: global: event={event} unit={unit} token={token} "
+        f"generation={generation} {capacity} "
         "terminal=1 order_ok=1 exact_b_once=1 raw_b_retained_bytes=0 "
         "descriptor_backing_bytes=0 replay_passes=0 coherent_ack=1 "
         "b_words=16384 b_lines=1024 descriptors=16384 pages_ready=4 "
@@ -37,10 +55,20 @@ def timing_line(event: str, generation: int, backing_issues: int) -> str:
     )
 
 
-def whole_line() -> str:
+def whole_line(
+    *,
+    p_token: int = 6,
+    p_generation: int = 1,
+    q_unit: int = 0,
+    q_generation: int = 2,
+    p_core: int = 0,
+    product_backing: str = "0x260000",
+) -> str:
     return (
         "9: system.maa: event=strict_cg_p16_q16_window "
-        "p_generation=1 q_generation=2 p_terminal=1 q_terminal=1 "
+        f"p_token={p_token} p_generation={p_generation} "
+        f"q_unit={q_unit} q_generation={q_generation} "
+        "p_terminal=1 q_terminal=1 "
         "p16_reorder=1 q16_reorder=1 direct4=0 p_mode=nonfused "
         "drains=0 fallbacks=0 order_ok=1 terminal=1 "
         "cg_numerical_terminal=runner_join_required "
@@ -48,7 +76,7 @@ def whole_line() -> str:
         "q_value_read_issues=3 q_value_read_responses=3 q_value_fills=3 "
         "p_A_FIRST_ISSUE=20 p_ROW_OFFSET_LAST_INSERT=19 "
         "q_A_FIRST_ISSUE=30 q_ROW_OFFSET_LAST_INSERT=29 "
-        "p_core=3 product_backing=0x260000\n"
+        f"p_core={p_core} product_backing={product_backing}\n"
     )
 
 
@@ -57,7 +85,7 @@ def good_trace(write_bytes: int = 64) -> str:
     for page in range(4):
         lines.append(
             "2: system.maa: event=strict_product_page_response "
-            f"core=3 backing=0x260000 page={page} generation={page + 1} "
+            f"core=0 backing=0x260000 page={page} generation={page + 1} "
             f"pages={page + 1}/4\n"
         )
     lines.append(timing_line("strict_page_fed_two_phase_timing", 2, 2))
@@ -143,6 +171,41 @@ def test_streaming_trace_closes_p_q_whole_pages_order_and_writes() -> None:
     assert summary["whole_windows"] == 1
     assert summary["product_pages"] == 4
     assert summary["p_backing_writes"] == 1
+    assert len(summary["trace_sha256"]) == 64
+
+
+def test_generation_reuse_is_keyed_by_token_and_unit_lifetime() -> None:
+    second = [timing_line("strict_two_phase_timing", 1, 1, unit=2, token=22)]
+    for page in range(4):
+        second.append(
+            "12: system.maa: event=strict_product_page_response "
+            f"core=2 backing=0x270000 page={page} generation={page + 1} "
+            f"pages={page + 1}/4\n"
+        )
+    second.append(
+        timing_line(
+            "strict_page_fed_two_phase_timing",
+            2,
+            2,
+            unit=1,
+        )
+    )
+    second.append(
+        whole_line(
+            p_token=22,
+            q_unit=1,
+            p_core=2,
+            product_backing="0x270000",
+        )
+    )
+    second.append("13: global: event=backing_write_issue bytes=64\n")
+    with tempfile.TemporaryDirectory() as directory:
+        trace = Path(directory) / "strict_trace.log"
+        trace.write_text(good_trace() + "".join(second), encoding="utf-8")
+        summary = runner.scan_strict_trace(trace, expected_windows=2)
+    assert summary["p_timing"] == 2
+    assert summary["q_timing"] == 2
+    assert summary["whole_windows"] == 2
 
 
 def test_streaming_trace_rejects_non_64_byte_p_write() -> None:
@@ -243,3 +306,55 @@ def test_failure_writes_terminal_rejection_without_performance() -> None:
     rejection = source.index('"accepted": False')
     assert source.index("except Exception as error") < rejection
     assert "simTicks" not in source[rejection:]
+
+
+def test_successor_pins_exact_obsolete_gate_and_launches_no_gem5() -> None:
+    raw_terminal = classifier.load_json(
+        classifier.RAW_ROOT / "runtime_terminal.json"
+    )
+    assert raw_terminal["accepted"] is False
+    assert raw_terminal["error"] == "duplicate p generation: 1"
+    source = CLASSIFIER_PATH.read_text(encoding="utf-8")
+    assert '"gem5_runs_launched": 0' in source
+    assert '"raw_root_modified": False' in source
+    assert "subprocess.run(" not in source
+
+
+def test_successor_creates_output_only_after_read_only_audit() -> None:
+    source = inspect.getsource(classifier.create_certificate)
+    assert source.index("build_documents(progress)") < source.index(
+        "output.mkdir"
+    )
+    assert source.index("output.mkdir") < source.index("write_exclusive")
+
+
+def test_successor_seal_validation_is_read_only() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        output = Path(directory) / "certificate"
+        output.mkdir()
+        manifest = "{}\n"
+        certificate = (
+            '{"gem5_runs_launched": 0, "read_only_successor": true, '
+            '"verdict": "PASS_NUMERICAL_MECHANISM_CORRECT"}\n'
+        )
+        inputs = "input\n"
+        (output / "manifest.json").write_text(manifest)
+        (output / "certificate.json").write_text(certificate)
+        (output / "input_sha256.txt").write_text(inputs)
+        gate = (
+            classifier.VERDICT
+            + "\nread_only_successor=true\nraw_root_modified=false\n"
+            + "manifest_sha256="
+            + classifier.hashlib.sha256(manifest.encode()).hexdigest()
+            + "\ncertificate_sha256="
+            + classifier.hashlib.sha256(certificate.encode()).hexdigest()
+            + "\ninput_sha256="
+            + classifier.hashlib.sha256(inputs.encode()).hexdigest()
+            + "\n"
+        )
+        (output / "gate.complete").write_text(gate)
+        before = classifier.raw_stat_state()
+        result = classifier.validate_seal(output)
+        after = classifier.raw_stat_state()
+    assert result["verdict"] == classifier.VERDICT
+    assert before == after

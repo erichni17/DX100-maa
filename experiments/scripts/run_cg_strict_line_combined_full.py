@@ -523,9 +523,11 @@ def validate_config(config: Path) -> None:
 
 def _validate_whole(
     fields: dict[str, str]
-) -> tuple[int, int, tuple[int, int]]:
+) -> tuple[tuple[int, int], tuple[int, int], tuple[int, int]]:
     try:
+        p_token = strict.integer(fields, "p_token")
         p_generation = strict.integer(fields, "p_generation")
+        q_unit = strict.integer(fields, "q_unit")
         q_generation = strict.integer(fields, "q_generation")
         product_key = (
             strict.integer(fields, "p_core"),
@@ -556,14 +558,18 @@ def _validate_whole(
         >= strict.integer(fields, "q_ROW_OFFSET_LAST_INSERT"),
         f"strict whole-window linkage failed: {fields}",
     )
-    return p_generation, q_generation, product_key
+    require(
+        p_token // 8 == strict.integer(fields, "p_core"),
+        f"p token/core identity changed: {fields}",
+    )
+    return (p_token, p_generation), (q_unit, q_generation), product_key
 
 
 def scan_strict_trace(
     trace: Path,
     expected_windows: int = EXPECTED_WINDOWS,
     progress: Callable[[int, int], None] | None = None,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     require(
         trace.is_file()
         and not trace.is_symlink()
@@ -588,15 +594,18 @@ def scan_strict_trace(
         "p_pages_ready": 0,
         "q_pages_ready": 0,
     }
-    p_generations: set[int] = set()
-    q_generations: set[int] = set()
-    consumed_p: set[int] = set()
-    consumed_q: set[int] = set()
+    p_lifetimes: set[tuple[int, int]] = set()
+    q_lifetimes: set[tuple[int, int]] = set()
+    consumed_p: set[tuple[int, int]] = set()
+    consumed_q: set[tuple[int, int]] = set()
     product_active: dict[tuple[int, int], dict[str, Any]] = {}
     product_complete: dict[tuple[int, int], int] = {}
+    trace_digest = hashlib.sha256()
 
-    with trace.open("r", encoding="utf-8", errors="replace") as stream:
-        for line in stream:
+    with trace.open("rb") as stream:
+        for raw_line in stream:
+            trace_digest.update(raw_line)
+            line = raw_line.decode("utf-8", errors="replace")
             counts["lines_scanned"] += 1
             if (
                 progress is not None
@@ -607,14 +616,17 @@ def scan_strict_trace(
                 fields = strict.parse_kv(line)
                 try:
                     strict.validate_timing(fields, page_fed=False)
-                    generation = strict.integer(fields, "generation")
+                    lifetime = (
+                        strict.integer(fields, "token"),
+                        strict.integer(fields, "generation"),
+                    )
                 except RuntimeError as error:
                     raise GateError(str(error)) from error
                 require(
-                    generation not in p_generations,
-                    f"duplicate p generation: {generation}",
+                    lifetime not in p_lifetimes,
+                    f"duplicate p lifetime: {lifetime}",
                 )
-                p_generations.add(generation)
+                p_lifetimes.add(lifetime)
                 counts["p_timing"] += 1
                 for target, field in (
                     ("p_b_lines", "b_lines"),
@@ -629,14 +641,17 @@ def scan_strict_trace(
                 fields = strict.parse_kv(line)
                 try:
                     strict.validate_timing(fields, page_fed=True)
-                    generation = strict.integer(fields, "generation")
+                    lifetime = (
+                        strict.integer(fields, "unit"),
+                        strict.integer(fields, "generation"),
+                    )
                 except RuntimeError as error:
                     raise GateError(str(error)) from error
                 require(
-                    generation not in q_generations,
-                    f"duplicate q generation: {generation}",
+                    lifetime not in q_lifetimes,
+                    f"duplicate q lifetime: {lifetime}",
                 )
-                q_generations.add(generation)
+                q_lifetimes.add(lifetime)
                 counts["q_timing"] += 1
                 for target, field in (
                     ("q_b_lines", "b_lines"),
@@ -691,12 +706,12 @@ def scan_strict_trace(
                 continue
             if "event=strict_cg_p16_q16_window " in line:
                 fields = strict.parse_kv(line)
-                p_generation, q_generation, key = _validate_whole(fields)
+                p_lifetime, q_lifetime, key = _validate_whole(fields)
                 require(
-                    p_generation in p_generations
-                    and q_generation in q_generations
-                    and p_generation not in consumed_p
-                    and q_generation not in consumed_q,
+                    p_lifetime in p_lifetimes
+                    and q_lifetime in q_lifetimes
+                    and p_lifetime not in consumed_p
+                    and q_lifetime not in consumed_q,
                     "whole window does not own unique p/q generations: "
                     f"{fields}",
                 )
@@ -706,8 +721,8 @@ def scan_strict_trace(
                     f"{fields}",
                 )
                 product_complete[key] -= 1
-                consumed_p.add(p_generation)
-                consumed_q.add(q_generation)
+                consumed_p.add(p_lifetime)
+                consumed_q.add(q_lifetime)
                 counts["whole_windows"] += 1
                 continue
             if "event=backing_write_issue " in line:
@@ -743,11 +758,13 @@ def scan_strict_trace(
         and all(value == 0 for value in product_complete.values()),
         "strict trace retained unconsumed generation/page state",
     )
+    counts["trace_bytes"] = trace.stat().st_size
+    counts["trace_sha256"] = trace_digest.hexdigest()
     return counts
 
 
 def validate_strict_stats_values(
-    values: dict[str, int], trace: dict[str, int]
+    values: dict[str, int], trace: dict[str, Any]
 ) -> None:
     exact = {
         "IND_StrictTwoPhaseOperations": 2 * EXPECTED_WINDOWS,
