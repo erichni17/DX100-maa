@@ -215,3 +215,11 @@ def test_line_combined_arm_is_strict_and_same_checkpoint_matched() -> None:
     assert "len(writes) < 10 * 16384" in runner
     assert '"native_runs": 0' in runner
     assert '"promotable": False' in runner
+    assert '"execution_source_commit"' in text(
+        "experiments/scripts/strict_two_phase/"
+        "run_cg_fused_p16_q16_strict.py"
+    )
+    assert '"promotable_ordering_evidence"' in text(
+        "experiments/scripts/strict_two_phase/"
+        "run_cg_fused_p16_q16_strict.py"
+    )
