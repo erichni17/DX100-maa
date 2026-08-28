@@ -365,7 +365,7 @@ def common_restore_command(
         "Ramulator2",
         "--ramulator-config",
         str(ramulator_yaml),
-        "--mem-channels=1",
+        "--mem-channels=2",
         "--maa",
         f"--maa_num_tile_elements={arm.logical_elements}",
         f"--maa_physical_tile_elements={arm.physical_elements}",
@@ -965,6 +965,7 @@ def write_matrix_table(root: Path, result: Mapping[str, object]) -> None:
 def artifact_paths(root: Path) -> list[Path]:
     paths = [
         root / "manifest.json",
+        root / "launch_manifest.json",
         root / "checkpoint.log",
         root / "checkpoint.exit",
         root / "checkpoint.command.json",
@@ -1130,6 +1131,33 @@ def execute(
             f"{checkpoint_identity}  checkpoint.files.sha256\n"
         )
 
+        launch_manifest = {
+            "schema": "dx100.hybrid_equal_work_micro.v1",
+            **authority,
+            "gem5_source_path": str(gem5_source.resolve()),
+            "ramulator_source_path": str(ramulator_source.resolve()),
+            "workload_source": str(
+                ROOT / "benchmarks/API/test_virtual_tile_consumer.cpp"
+            ),
+            "workload_sha256": sha256_file(workload),
+            "workload_source_sha256": sha256_file(
+                ROOT / "benchmarks/API/test_virtual_tile_consumer.cpp"
+            ),
+            "workload_build_script_sha256": sha256_file(
+                ROOT / "experiments/scripts/build_virtual_tile_consumer.sh"
+            ),
+            "ramulator_yaml_sha256": sha256_file(ramulator_yaml),
+            "checkpoint_identity": checkpoint_identity,
+            "arms": [asdict(arm) for arm in ARMS],
+            "legacy_mismatch": (
+                "run_virtual_tile_attribution_matrix.sh selects a T4096 "
+                "binary only for native_fused_4k and T16384 otherwise"
+            ),
+        }
+        (root / "launch_manifest.json").write_text(
+            json.dumps(launch_manifest, indent=2, sort_keys=True) + "\n"
+        )
+
         commands: dict[str, list[str]] = {}
         for arm in ARMS:
             arm_root = root / "arms" / arm.name
@@ -1180,29 +1208,7 @@ def execute(
             == 1,
             "generated commands differ outside declared treatments",
         )
-        manifest = {
-            "schema": "dx100.hybrid_equal_work_micro.v1",
-            **authority,
-            "gem5_source_path": str(gem5_source.resolve()),
-            "ramulator_source_path": str(ramulator_source.resolve()),
-            "workload_source": str(
-                ROOT / "benchmarks/API/test_virtual_tile_consumer.cpp"
-            ),
-            "workload_sha256": sha256_file(workload),
-            "workload_source_sha256": sha256_file(
-                ROOT / "benchmarks/API/test_virtual_tile_consumer.cpp"
-            ),
-            "workload_build_script_sha256": sha256_file(
-                ROOT / "experiments/scripts/build_virtual_tile_consumer.sh"
-            ),
-            "ramulator_yaml_sha256": sha256_file(ramulator_yaml),
-            "checkpoint_identity": checkpoint_identity,
-            "arms": [asdict(arm) for arm in ARMS],
-            "legacy_mismatch": (
-                "run_virtual_tile_attribution_matrix.sh selects a T4096 "
-                "binary only for native_fused_4k and T16384 otherwise"
-            ),
-        }
+        manifest = launch_manifest
         (root / "manifest.json").write_text(
             json.dumps(manifest, indent=2, sort_keys=True) + "\n"
         )
@@ -1220,8 +1226,16 @@ def execute(
         )
         write_ledger(root)
         return result
-    except BaseException:
+    except BaseException as error:
         (root / "matrix.failed").write_text("failed\n")
+        (root / "failure.json").write_text(
+            json.dumps(
+                {"error_type": type(error).__name__, "message": str(error)},
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
         raise
 
 
