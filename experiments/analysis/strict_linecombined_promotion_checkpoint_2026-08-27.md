@@ -146,6 +146,19 @@ expected for a cost/performance middle point. Feeder64 is a generally useful
 optimization, not a virtualization-only gain. See
 `hybrid_feeder_matched_native_controls_2026-08-28.md`.
 
+### Current cost/performance point
+
+| Design | Equal-work micro `simTicks` | Storage interpretation |
+|---|---:|---|
+| Native16, feeder64 | 48,487,143 | 3,176,448-B native comparable lower bound |
+| Hybrid logical16/physical4, feeder64 | 57,330,645 | 1,593,588-B comparable lower bound |
+| Native4x4, feeder64 | 77,011,459 | timing comparator only; shared logical16 aperture is not a true native4 cost point |
+
+Relative to native16, the hybrid trades 18.239% performance for a 49.831%
+comparable-storage reduction. Relative to native4x4, it improves performance
+25.556%. These are deterministic API-micro observations, not synthesized area
+or suite-wide averages.
+
 1. Keep IS/HashJoin out of this optimization and keep SSSP on its distinct
    old-result path unless a new producer/consumer proof changes the matrix.
 2. Before hardware or iso-area claims, add competing-agent coherence and retry
