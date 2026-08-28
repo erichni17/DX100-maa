@@ -78,9 +78,21 @@ latency can overlap.
 
 The semantic B payload is `lines * 64 B` per indirect unit. With four
 configured units, 64 lines require 16 KiB total, 16,128 B more than the
-one-line point and 14 KiB more than the eight-line knee. That one-to-64 delta
-is 1.0254% of the 1.5 MiB visible SPD payload saved by shrinking 32 tile IDs
-from 16K to 4K 32-bit words.
+one-line point and 14 KiB more than the eight-line knee. The current
+`report_maa_storage.py --mechanism direct-index` lower bound also charges line
+tag/control state:
+
+| Lines | Feeder payload | Physical SPD + active virtual payload/control |
+|---:|---:|---:|
+| 1 | 256 B | 539,636 B |
+| 8 | 2,048 B | 541,768 B |
+| 64 | 16,384 B | 558,820 B |
+
+The full one-to-64 bounded-state delta is therefore 19,184 B: 16,128 B
+payload plus a 3,056-B control lower bound. It is 1.2197% of the 1.5 MiB
+visible SPD payload saved by shrinking 32 tile IDs from 16K to 4K 32-bit
+words. The selected bounded payload/control total remains 73.3534% below the
+native SPD payload alone.
 
 This is payload accounting, not synthesis. gem5 currently represents each
 live word with a 32-byte `DirectIndexWord` inside dynamic maps; a real feeder
