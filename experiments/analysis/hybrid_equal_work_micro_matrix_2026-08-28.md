@@ -19,6 +19,16 @@ This is a microbenchmark result with one observation per arm.  It does not
 select 64 lines as a hardware-cost optimum or architecture default, and no
 full application was launched.
 
+### Lead integration caveat
+
+The native controls use the one-line direct-index feeder. Because native
+direct-index also exercises that feeder, hybrid64 versus native16 is not yet a
+feeder-matched architectural comparison. Native16+64 and native4x4+64
+successor arms are required before attributing the fastest-arm result to
+virtualization rather than to a generally applicable feeder optimization.
+The matched one-line ordering is already decisive and fair: native16 is
+fastest, hybrid1 is in the middle, and native4x4 is slowest.
+
 ## Frozen evidence
 
 Accepted raw root:
