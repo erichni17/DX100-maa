@@ -2042,6 +2042,11 @@ MAA::submitDirectRetirementDescriptor(InstructionPtr instruction)
         sizeof(directRetirementRequestRecords) +
         DirectRetirementPortRetry<Packet>::chargedControlBytes() +
         EarlyProducerLineReadinessLedger::chargedTotalBytes();
+    const uint64_t shared_virtual_retirement_scoreboard_bytes =
+        num_indirect_units_total *
+        (virtual_max_outstanding_writes *
+             IndirectAccessUnit::lineHandoffMetadataBytesPerWrite() +
+         IndirectAccessUnit::lineHandoffMetadataFixedBytes());
     stats.direct_retirement_descriptors++;
     stats.direct_retirement_context_high_water = std::max(
         stats.direct_retirement_context_high_water.value(),
@@ -2090,7 +2095,9 @@ MAA::submitDirectRetirementDescriptor(InstructionPtr instruction)
             "early_line_ledger_bytes=%lu early_entries_replayed=%u "
             "early_lines_replayed=%u early_ledger_overflowed=%d "
             "native_spd_payload_bytes=%lu "
-            "producer_line_metadata_bytes=%lu backing_span_bytes=%lu "
+            "producer_line_metadata_bytes=0 "
+            "shared_virtual_retirement_scoreboard_bytes=%lu "
+            "backing_span_bytes=%lu "
             "private_page_payload_bytes=0\n",
             directRetirementTraceOccurrence++, owner.generation,
             owner.incarnation, token_tile, descriptor.backingAddress,
@@ -2106,7 +2113,7 @@ MAA::submitDirectRetirementDescriptor(InstructionPtr instruction)
             EarlyProducerLineReadinessLedger::chargedTotalBytes(),
             early_replay.entries, early_replay.readyLines,
             early_replay.overflowed, native_spd_payload_bytes,
-            producer_line_metadata_bytes,
+            shared_virtual_retirement_scoreboard_bytes,
             static_cast<uint64_t>(descriptor.logicalElements) *
                 descriptor.wordBytes);
     scheduleDirectRetirementEvent();
