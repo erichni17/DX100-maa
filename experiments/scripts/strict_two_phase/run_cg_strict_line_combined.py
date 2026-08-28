@@ -88,6 +88,13 @@ def main(argv: list[str] | None = None) -> int:
         help="finite direct-index request-generation width",
     )
     parser.add_argument(
+        "--combine-slots",
+        type=int,
+        choices=(16, 32, 64, 128, 256, 512),
+        default=16,
+        help="bounded destination-combiner cache-line slots",
+    )
+    parser.add_argument(
         "--word-writes",
         action="store_true",
         help="retain baseline 4-byte P retirement instead of masked lines",
@@ -128,6 +135,7 @@ def main(argv: list[str] | None = None) -> int:
         "--maa_virtual_index_issue_lines_per_cycle="
         f"{args.index_issue_lines_per_cycle}"
     )
+    command.append(f"--maa_virtual_combine_slots={args.combine_slots}")
     (out / "command.json").write_text(json.dumps(command, indent=2) + "\n")
     environment = dict(
         os.environ,
@@ -211,7 +219,8 @@ def main(argv: list[str] | None = None) -> int:
             "virtual_index_issue_lines_per_cycle="
             f"{args.index_issue_lines_per_cycle}"
         )
-        in config,
+        in config
+        and f"virtual_combine_slots={args.combine_slots}" in config,
         "strict feeder/retirement treatment did not resolve",
     )
     stats = gate.fused.require_stats(
@@ -325,6 +334,7 @@ def main(argv: list[str] | None = None) -> int:
         "virtual_index_issue_lines_per_cycle": (
             args.index_issue_lines_per_cycle
         ),
+        "virtual_combine_slots": args.combine_slots,
         "matched_strict_simTicks": matched_ticks,
         "line_combined_simTicks": combined_ticks,
         "matched_over_line_combined": matched_ticks / combined_ticks,
