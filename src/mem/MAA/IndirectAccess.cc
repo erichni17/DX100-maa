@@ -3480,8 +3480,7 @@ IndirectAccessUnit::admitPageFedSoaJitIndexPage(
              "completed physical-4K index page\n",
              my_indirect_id, page, index_tile);
 
-    if (strictPageFedTwoPhaseOperation() &&
-        !strict_page_fed_terminal_recorded) {
+    if (strictPageFedTwoPhaseOperation()) {
         if (strict_page_fed_b_first_tick == 0)
             strict_page_fed_b_first_tick = curTick();
         strict_page_fed_b_last_tick = curTick();
@@ -5700,7 +5699,8 @@ void IndirectAccessUnit::checkSoaJitTerminal()
                      soa_jit_generation),
              "I[%d] SoA/JIT terminal accounting failed\n",
              my_indirect_id);
-    if (strictPageFedTwoPhaseOperation()) {
+    if (strictPageFedTwoPhaseOperation() &&
+        !strict_page_fed_terminal_recorded) {
         strict_page_fed_consumer_end_tick = curTick();
         panic_if(
             strict_page_fed_b_first_tick == 0 ||
