@@ -121,8 +121,18 @@ recorded in `cg_fixed_storage_combiner_sweep_2026-08-27.md`.
 
 ## Remaining promotion gates
 
-1. Accept or reject the separately authorized full-CG candidate with exact
-   official output and complete mechanism ledgers.
+The one-line full-CG candidate is accepted as one correctness/mechanism
+observation at 160,746,544,242 ticks: 10,960 P/Q/whole windows, 43,840 product
+pages, 147,554,350 masked P writes, frozen numerical tolerances, and zero
+drains/fallbacks. It has no native or feeder-speed comparison. See
+`cg_strict_line_combined_full_2026-08-27.md`.
+
+A trace-free same-binary, same-checkpoint full pair is now running with feeder
+depth 1 versus 64. It reuses the accepted 250-GB trace as mechanism authority
+and will compare performance only after exact numerical and conserved-work
+closure. See `cg_strict_feeder_full_pair_2026-08-28.md`.
+
+1. Accept or reject that full-CG feeder1/feeder64 performance pair.
 2. Keep IS/HashJoin out of this optimization and keep SSSP on its distinct
    old-result path unless a new producer/consumer proof changes the matrix.
 3. Before hardware or iso-area claims, add competing-agent coherence and retry
