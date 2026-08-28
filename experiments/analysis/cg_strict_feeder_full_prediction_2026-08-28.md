@@ -51,3 +51,19 @@ Main risks to the point estimate:
 - the 64-line hardware structure is not synthesized or frequency-qualified.
 
 No native4 timing or speedup is predicted by this document.
+
+## Post-result calibration
+
+The prediction missed. Feeder1 reproduced 160,746,544,242 ticks exactly, but
+feeder64 took 141,810,448,012 ticks, outside the predicted 85B-to110B range.
+The measured reduction is 11.7801%, not 43.5698%.
+
+The micro result correctly predicted direction and conserved semantic work,
+but substantially overpredicted magnitude. Full B-fetch and Row/Offset phase
+counters fall about 70%, while A, backing, page, and consumer counters rise
+slightly. Those overlapping phase counters and the full workload's different
+critical-path mix prevent direct multiplication of the NA1024 percentage.
+
+Future full predictions must estimate the fraction of end-to-end critical-path
+time attributable to the treated phase rather than scaling the complete micro
+speedup directly.

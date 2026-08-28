@@ -129,15 +129,15 @@ pages, 147,554,350 masked P writes, frozen numerical tolerances, and zero
 drains/fallbacks. It has no native or feeder-speed comparison. See
 `cg_strict_line_combined_full_2026-08-27.md`.
 
-A trace-free same-binary, same-checkpoint full pair is now running with feeder
-depth 1 versus 64. It reuses the accepted 250-GB trace as mechanism authority
-and will compare performance only after exact numerical and conserved-work
-closure. See `cg_strict_feeder_full_pair_2026-08-28.md`.
+A trace-free same-binary, same-checkpoint full pair accepts feeder64 at
+141,810,448,012 ticks versus 160,746,544,242 for feeder1: 11.7801% lower
+latency. Exact numerical and semantic-work gates pass. Feeder64 creates 1,022
+additional masked P transactions (0.000693%) with exact ACK closure. See
+`cg_strict_feeder_full_pair_2026-08-28.md`.
 
-1. Accept or reject that full-CG feeder1/feeder64 performance pair.
-2. Keep IS/HashJoin out of this optimization and keep SSSP on its distinct
+1. Keep IS/HashJoin out of this optimization and keep SSSP on its distinct
    old-result path unless a new producer/consumer proof changes the matrix.
-3. Before hardware or iso-area claims, add competing-agent coherence and retry
+2. Before hardware or iso-area claims, add competing-agent coherence and retry
    tests, calibrated lookup/mask/port timing, and synthesis-based area/Fmax
    evidence.
 
