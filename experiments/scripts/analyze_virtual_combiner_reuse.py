@@ -233,6 +233,7 @@ def main() -> int:
     parser.add_argument("--ways", type=int, default=4)
     parser.add_argument("--expected-operations", type=int)
     parser.add_argument("--expected-words", type=int, default=16_384)
+    parser.add_argument("--expected-round-robin-writes", type=int)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
 
@@ -277,6 +278,12 @@ def main() -> int:
                     getattr(aggregate, field) + getattr(result, field),
                 )
         policy_report[policy] = aggregate.__dict__
+    if args.expected_round_robin_writes is not None:
+        observed = policy_report["round_robin"]["writes"]
+        require(
+            observed == args.expected_round_robin_writes,
+            f"round-robin replay {observed} != {args.expected_round_robin_writes}",
+        )
     report["policies"] = policy_report
     report["infinite_capacity_writes"] = sum(
         len({line for line, _ in events}) for events in operations.values()
