@@ -89,7 +89,8 @@ lines. Exact output and all work ledgers remain unchanged.
 The current direct-index storage ledger charges 19,184 additional bounded
 bytes across four units versus one line; this remains a lower bound, not a
 synthesis result. Eight lines is the first cost knee, 64 the selected speed
-point, and 128 is rejected. Full evidence and scope are in
+point pending full-CG confirmation, and 128 is rejected as a cost-driven sweep
+stop rather than a measured NA1024 optimum. Full evidence and scope are in
 `strict_feeder_sweep_2026-08-28.md`.
 
 Exact response ownership is also closed. The selected replay carries

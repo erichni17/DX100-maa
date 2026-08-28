@@ -6,6 +6,22 @@ Review target: commit `8a3484fd1f7e20fed1f678defcb17f4f3472c2b1`
 (`analysis: accept strict feeder performance point`). No gem5 run was launched and
 no evidence root or mechanism source was changed.
 
+### Successor closure
+
+The lead addressed two review findings after this independent snapshot:
+
+- a 136-entry successor ledger now seals all eight raw artifacts for all 17
+  capacity, factorial, and ACK-successor roots; and
+- the runner now requires the requested `virtual_index_buffer_lines` value to
+  appear in resolved `config.ini` before accepting a result.
+
+The exact ACK-identity successor also corrects the always-active scoreboard
+charge. Its selected 64-line bounded payload/control lower bound is 563,444 B;
+the one-to-64 delta remains 19,184 B. These closures strengthen provenance and
+absolute accounting but do not change this review's main boundary: 64 is the
+fastest measured/provisional CG speed point, while eight is the first cost
+knee and neither is a synthesized architecture default.
+
 **ACCEPT the bounded simulation result and its two-factor attribution.** The
 sealed `simTicks` values and all reported one-line-relative ratios recompute.
 At NA1024, feeder depth is the larger treatment and masked-line retirement
@@ -31,11 +47,10 @@ NA256 backing phase is not literally unchanged: the sealed aggregate counter
 ranges from 281,794 to 281,819 cycles. It is materially invariant (a 25-cycle,
 0.0089% range), so the report should say "effectively unchanged."
 
-**PENDING:** seal the intermediate arms' commands, resolved configs, restore
-logs, and strict traces; run the matched full-CG gate; obtain a
-provenance-matched native4 result; and perform a real control/data storage and
-timing/power evaluation before promotion. If 64 is to be called a speed
-optimum rather than the fastest point tested at NA1024, measure 128 at NA1024.
+**PENDING:** run the matched full-CG gate; obtain a provenance-matched native4
+result; and perform a real control/data storage and timing/power evaluation
+before promotion. If 64 is to be called a speed optimum rather than the
+fastest point tested at NA1024, measure 128 at NA1024.
 
 ## Evidence integrity and comparability
 

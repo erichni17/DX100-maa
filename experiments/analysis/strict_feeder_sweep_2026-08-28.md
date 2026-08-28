@@ -23,9 +23,10 @@ fingerprint, all 11 reductions, 65 P/Q/whole windows, 260 product pages, and
 ## Capacity sweep
 
 All NA256 arms preserve 163,840 B words/descriptors, 168 A issues/responses,
-26,672 backing issues/ACKs, and 655,360 semantic backing bytes. The A,
-backing, and consumer phase times are unchanged; only B fetch and overlapping
-Row/Offset insertion shrink.
+26,672 backing issues/ACKs, and 655,360 semantic backing bytes. The A and
+consumer phase times are unchanged; backing timing is effectively invariant
+(25 aggregate cycles, 0.0089%, across the sweep). Only B fetch and overlapping
+Row/Offset insertion materially shrink.
 
 | Feeder lines | Payload/unit | NA256 `simTicks` | Lower vs. 1 | NA1024 `simTicks` | Lower vs. 1 |
 |---:|---:|---:|---:|---:|---:|
@@ -117,3 +118,8 @@ Raw roots are under `/data1/nier/dx100-runs`; the fixed-scoreboard one-line
 masked root is dated August 27 and the new sweep roots August 28. The 80-entry
 sealed ledger is `strict_feeder_sweep_artifacts_2026-08-28.sha256`, SHA-256
 `374bf24911c37cbeeb06c713f243b8011a3c1a0d6d137b8785e32e356f8cf5cd`.
+The 136-entry successor additionally seals command, resolved config, restore
+log, stats, result, gate, exit, and strict trace for all 17 capacity/factorial
+and ACK-successor roots:
+`strict_feeder_sweep_raw_successor_2026-08-28.sha256`, SHA-256
+`bcf553c0daeb310799e62a18e9a4cc7843e6b5b6e7510390cfe2c850786aabe0`.

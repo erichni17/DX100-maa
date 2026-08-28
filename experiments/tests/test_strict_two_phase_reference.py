@@ -212,6 +212,7 @@ def test_line_combined_arm_is_strict_and_same_checkpoint_matched() -> None:
     assert "--index-buffer-lines" in runner
     assert "--word-writes" in runner
     assert "--maa_virtual_index_buffer_lines=" in runner
+    assert 'f"virtual_index_buffer_lines={args.index_buffer_lines}"' in runner
     assert 'choices=(1, 2, 4, 8, 16, 32, 64, 128)' in runner
     assert '"virtual_index_buffer_lines"' in runner
     assert '"VALID_STRICT_FEEDER_ATTRIBUTION"' in runner

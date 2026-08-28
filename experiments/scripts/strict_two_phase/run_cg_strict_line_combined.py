@@ -194,7 +194,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     require(
         "virtual_strict_two_phase=true" in config
-        and expected_masked in config,
+        and expected_masked in config
+        and f"virtual_index_buffer_lines={args.index_buffer_lines}" in config,
         "strict feeder/retirement treatment did not resolve",
     )
     stats = gate.fused.require_stats(
