@@ -207,7 +207,7 @@ def fixed_args(
         "--cmd",
         str(binary),
         "--options",
-        str(selector),
+        arm_dir.name,
     ]
 
 

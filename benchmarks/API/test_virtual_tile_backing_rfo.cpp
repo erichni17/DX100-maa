@@ -68,6 +68,11 @@ bool readArm(const char *path, std::string *arm)
            (*arm == "cold" || *arm == "ideal" || *arm == "charged");
 }
 
+bool validArm(const std::string &arm)
+{
+    return arm == "cold" || arm == "ideal" || arm == "charged";
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -107,9 +112,12 @@ int main(int argc, char **argv)
               << std::endl;
     m5_checkpoint(0, 0);
 
-    std::string arm;
-    if (!readArm(argv[1], &arm)) {
-        std::cerr << "arm file must contain exactly cold, ideal, or charged"
+    std::string arm(argv[1]);
+    // se.py passes its --options string verbatim as argv[1].  Accept the
+    // explicit token used by the runner, while retaining file parsing for
+    // stand-alone replay from an immutable selector artifact.
+    if (!validArm(arm) && !readArm(argv[1], &arm)) {
+        std::cerr << "arm must be cold, ideal, charged, or a selector file"
                   << std::endl;
         return 2;
     }
