@@ -210,12 +210,16 @@ def test_line_combined_arm_is_strict_and_same_checkpoint_matched() -> None:
     assert "verify_matched_root" in runner
     assert "--maa_virtual_masked_writes" in runner
     assert "--index-buffer-lines" in runner
+    assert "--word-writes" in runner
     assert "--maa_virtual_index_buffer_lines=" in runner
     assert 'choices=(1, 2, 4, 8, 16, 32, 64, 128)' in runner
     assert '"virtual_index_buffer_lines"' in runner
+    assert '"VALID_STRICT_FEEDER_ATTRIBUTION"' in runner
+    assert '"retirement_mode"' in runner
     assert "virtual_strict_two_phase=true" in runner
     assert "virtual_masked_writes=true" in runner
-    assert 'gate.integer(row, "bytes") == 64' in runner
+    assert "expected_write_bytes = 4 if args.word_writes else 64" in runner
+    assert 'gate.integer(row, "bytes") == expected_write_bytes' in runner
     assert "len(writes) < expected_windows * 16384" in runner
     assert "gate.EXPECTED_WINDOWS[cg_na]" in runner
     assert '"native_runs": 0' in runner

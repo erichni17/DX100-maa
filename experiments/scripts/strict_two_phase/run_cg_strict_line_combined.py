@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run one strict P-result cache-line-combined arm from an accepted pair."""
+"""Run one strict P-result feeder/retirement arm from an accepted pair."""
 
 from __future__ import annotations
 
@@ -80,6 +80,11 @@ def main(argv: list[str] | None = None) -> int:
             "reference"
         ),
     )
+    parser.add_argument(
+        "--word-writes",
+        action="store_true",
+        help="retain baseline 4-byte P retirement instead of masked lines",
+    )
     args = parser.parse_args(argv)
     matched = args.matched_root.resolve()
     out = args.out.resolve()
@@ -107,7 +112,8 @@ def main(argv: list[str] | None = None) -> int:
     command = gate.strict_restore_args(
         gem5, guest, selector, checkpoint, out, strict=True
     )
-    command.append("--maa_virtual_masked_writes")
+    if not args.word_writes:
+        command.append("--maa_virtual_masked_writes")
     command.append(
         f"--maa_virtual_index_buffer_lines={args.index_buffer_lines}"
     )
@@ -181,10 +187,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     gate.fused.require_config(out / "config.ini")
     config = (out / "config.ini").read_text().splitlines()
+    expected_masked = (
+        "virtual_masked_writes=false"
+        if args.word_writes
+        else "virtual_masked_writes=true"
+    )
     require(
         "virtual_strict_two_phase=true" in config
-        and "virtual_masked_writes=true" in config,
-        "line-combined treatment did not resolve",
+        and expected_masked in config,
+        "strict feeder/retirement treatment did not resolve",
     )
     stats = gate.fused.require_stats(
         out / "stats.txt", windows, "page_fed_product_soa_jit"
@@ -215,20 +226,42 @@ def main(argv: list[str] | None = None) -> int:
         gate.validate_timing(row, page_fed=False)
     for row in q_timing:
         gate.validate_timing(row, page_fed=True)
+    expected_write_bytes = 4 if args.word_writes else 64
     require(
         writes
-        and all(gate.integer(row, "bytes") == 64 for row in writes)
+        and all(
+            gate.integer(row, "bytes") == expected_write_bytes
+            for row in writes
+        )
         and len(writes)
-        == sum(gate.integer(row, "backing_issues") for row in p_timing)
-        and len(writes) < expected_windows * 16384,
-        "P retirement was not converted from word writes to combined lines",
+        == sum(gate.integer(row, "backing_issues") for row in p_timing),
+        "P retirement write size or trace accounting changed",
     )
+    if args.word_writes:
+        require(
+            len(writes) == expected_windows * 16384,
+            "word retirement did not issue one write per logical P word",
+        )
+    else:
+        require(
+            len(writes) < expected_windows * 16384,
+            "P retirement was not converted to combined lines",
+        )
     matched_ticks = int(result["strict_reference_simTicks"])
     combined_ticks = stats["simTicks"]
+    decision = (
+        "VALID_STRICT_FEEDER_ATTRIBUTION"
+        if args.word_writes
+        else "VALID_LINE_COMBINED_ATTRIBUTION"
+    )
     combined = {
-        "schema": "dx100.cg.strict_p16_q16.line_combined.v1",
+        "schema": (
+            "dx100.cg.strict_p16_q16.feeder.v1"
+            if args.word_writes
+            else "dx100.cg.strict_p16_q16.line_combined.v1"
+        ),
         "terminal": True,
-        "decision": "VALID_LINE_COMBINED_ATTRIBUTION",
+        "decision": decision,
         "promotable": False,
         "cg_na": cg_na,
         "matched_root": str(matched),
@@ -240,7 +273,9 @@ def main(argv: list[str] | None = None) -> int:
         "fingerprints_exact_equal": True,
         "deterministic_reductions_exact_equal": True,
         "p_backing_write_issues": len(writes),
-        "all_p_writes_64_bytes": True,
+        "p_backing_write_bytes": expected_write_bytes,
+        "all_p_writes_64_bytes": not args.word_writes,
+        "retirement_mode": "word" if args.word_writes else "masked_line",
         "virtual_index_buffer_lines": args.index_buffer_lines,
         "matched_strict_simTicks": matched_ticks,
         "line_combined_simTicks": combined_ticks,
@@ -249,8 +284,12 @@ def main(argv: list[str] | None = None) -> int:
     }
     (out / "result.json").write_text(json.dumps(combined, indent=2) + "\n")
     (out / "gate.complete").write_text(
-        "COMPLETE_CG_STRICT_LINE_COMBINED\n"
-        "decision=VALID_LINE_COMBINED_ATTRIBUTION\n"
+        (
+            "COMPLETE_CG_STRICT_FEEDER\n"
+            if args.word_writes
+            else "COMPLETE_CG_STRICT_LINE_COMBINED\n"
+        )
+        + f"decision={decision}\n"
         "correctness=EXACT_MATCH\n"
     )
     print(json.dumps(combined, sort_keys=True))
