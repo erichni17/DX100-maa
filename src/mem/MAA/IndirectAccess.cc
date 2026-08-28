@@ -6463,7 +6463,7 @@ void IndirectAccessUnit::executeInstruction() {
                 panic_if(my_index_min < 0 || my_index_stride != 1 ||
                              my_max != num_tile_elements ||
                              row_line_slots < static_cast<uint64_t>(my_max) ||
-                             my_backing_addr_range_id < 0,
+                             my_instruction->backingAddrRangeID < 0,
                          "I[%d] strict two-phase requires one complete "
                          "nonnegative 16K stride-1 span, 16K physical Row "
                          "slots, and legal "
@@ -6471,7 +6471,7 @@ void IndirectAccessUnit::executeInstruction() {
                          "backing_region=%d\n",
                          my_indirect_id, my_index_min, my_index_stride,
                          my_max, row_line_slots,
-                         my_backing_addr_range_id);
+                         my_instruction->backingAddrRangeID);
                 maa->beginStrictTwoPhaseReference(
                     my_indirect_id, my_instruction->core_id, my_dst_tile,
                     my_word_size, curTick());

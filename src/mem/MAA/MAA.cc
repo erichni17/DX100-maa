@@ -5851,6 +5851,11 @@ void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
                          strictTwoPhasePendingConsumerBegins.end(),
                          [tokenTileID](const auto &entry) {
                              return entry.first.first == tokenTileID;
+                         }) ||
+                     std::any_of(
+                         strictP16ByQ16.begin(), strictP16ByQ16.end(),
+                         [tokenTileID](const auto &entry) {
+                             return entry.second.pKey.first == tokenTileID;
                          }),
                  "strict two-phase token %d reused before producer/consumer "
                  "terminal closure\n",
@@ -6183,9 +6188,16 @@ MAA::beginStrictTwoPhaseReference(int unit, int coreID, int tokenTileID,
              unit, tokenTileID, resultWordBytes);
     const uint64_t generation = virtualPageGeneration[tokenTileID];
     const StrictTwoPhaseKey key{tokenTileID, generation};
-    panic_if(generation == 0 || strictTwoPhaseReferences.count(key) != 0,
-             "strict two-phase token=%d generation=%lu is stale/duplicate\n",
-             tokenTileID, generation);
+    const bool coreHasUnconsumedProducer = std::any_of(
+        strictTwoPhaseReferences.begin(), strictTwoPhaseReferences.end(),
+        [coreID](const auto &entry) {
+            return entry.second.record().core == coreID;
+        });
+    panic_if(generation == 0 || strictTwoPhaseReferences.count(key) != 0 ||
+                 coreHasUnconsumedProducer,
+             "strict two-phase token=%d generation=%lu core=%d is "
+             "stale/duplicate/interleaved\n",
+             tokenTileID, generation, coreID);
     const uint32_t resultWordsPerLine =
         HybridConsumerPipeline::LineBytes / resultWordBytes;
     const uint64_t combineCapacity = virtual_combine_words == 0
@@ -6357,6 +6369,11 @@ MAA::completeStrictTwoPhaseConsumer(int tokenTileID, uint64_t generation,
             record.pagesReady, record.consumerBeginTick,
             record.consumerEndTick, consumerTicks);
     strictTwoPhaseReferences.erase(timeline);
+    panic_if(strictTwoPhaseReferences.count(key) != 0 ||
+                 strictTwoPhasePendingConsumerBegins.count(key) != 0,
+             "strict two-phase terminal failed to erase token=%d "
+             "generation=%lu\n",
+             tokenTileID, generation);
 }
 
 void
@@ -6371,6 +6388,17 @@ MAA::recordStrictProductPageResponse(int coreID, Addr productBacking,
              "invalid strict product-page response core=%d backing=0x%lx "
              "page=%u generation=%lu\n",
              coreID, productBacking, page, guestGeneration);
+    const size_t producerOwners = std::count_if(
+        strictTwoPhaseReferences.begin(), strictTwoPhaseReferences.end(),
+        [coreID](const auto &entry) {
+            const auto &producer = entry.second.record();
+            return producer.core == coreID && producer.producerClosed &&
+                !producer.consumerStarted;
+        });
+    panic_if(producerOwners != 1,
+             "strict product-page response core=%d has %lu completed "
+             "unconsumed p16 owners\n",
+             coreID, producerOwners);
     auto &record = strictProductPageResponses[{coreID, productBacking}];
     panic_if(record.pages.test(page),
              "duplicate strict product-page response core=%d page=%u\n",
@@ -6534,10 +6562,19 @@ MAA::completeStrictP16Q16Window(
             qAReadIssues, qAReadResponses, qBackingIssues, qBackingAcks,
             qValueReadIssues, qValueReadResponses, qValueFills,
             qProductDeliveries, qPages);
-    if (!link->second.fused)
+    const StrictTwoPhaseKey completedP = link->second.pKey;
+    const bool completedFused = link->second.fused;
+    const std::pair<int, Addr> completedProduct{
+        link->second.core, link->second.productBacking};
+    if (!completedFused)
         strictProductPageResponses.erase(
-            {link->second.core, link->second.productBacking});
+            completedProduct);
     strictP16ByQ16.erase(link);
+    panic_if(strictTwoPhaseReferences.count(completedP) != 0 ||
+                 strictP16ByQ16.count(qKey) != 0 ||
+                 (!completedFused &&
+                  strictProductPageResponses.count(completedProduct) != 0),
+             "strict p16/q16 terminal failed lifecycle erasure\n");
 }
 
 void
