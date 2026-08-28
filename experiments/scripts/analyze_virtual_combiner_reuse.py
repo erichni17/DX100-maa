@@ -257,6 +257,11 @@ def main() -> int:
     parser.add_argument("--ways", type=int, default=4)
     parser.add_argument("--words-per-line", type=int, default=16)
     parser.add_argument("--set-xor-shift", type=int, default=0)
+    parser.add_argument(
+        "--policies",
+        nargs="+",
+        help="policies to replay; defaults to the complete policy set",
+    )
     parser.add_argument("--expected-operations", type=int)
     parser.add_argument("--expected-words", type=int, default=16_384)
     parser.add_argument("--expected-round-robin-writes", type=int)
@@ -275,7 +280,7 @@ def main() -> int:
             f"operation {key} has {len(events)} words",
         )
 
-    policies = (
+    default_policies = (
         "round_robin",
         "fewest_words",
         "most_words",
@@ -287,6 +292,10 @@ def main() -> int:
         "lookahead_2048",
         "belady",
     )
+    policies = tuple(args.policies) if args.policies else default_policies
+    require(policies, "at least one policy is required")
+    unknown = sorted(set(policies) - set(default_policies))
+    require(not unknown, f"unknown policies: {', '.join(unknown)}")
     report: dict[str, object] = {
         "schema": "dx100.virtual_combiner_reuse.v1",
         "trace": str(args.trace.resolve()),
@@ -318,6 +327,10 @@ def main() -> int:
                 )
         policy_report[policy] = aggregate.__dict__
     if args.expected_round_robin_writes is not None:
+        require(
+            "round_robin" in policy_report,
+            "round-robin expectation requires round_robin policy",
+        )
         observed = policy_report["round_robin"]["writes"]
         require(
             observed == args.expected_round_robin_writes,
