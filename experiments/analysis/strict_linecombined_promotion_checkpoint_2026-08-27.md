@@ -23,21 +23,23 @@ WriteResp.  The accepted strict configuration has 32 entries.  A 64-entry
 compile-time ceiling preserves existing 64-credit experiment configurations;
 the modeled charge uses the configured capacity, not that ceiling.
 
-The packed metadata floor is 36 B/entry, or 1,152 B per indirect unit at 32
-credits.  This makes transaction ownership finite and explicitly charged, but
-does not make the complete design synthesized or hardware-timed.  Tag lookup,
-mask generation, staging muxes, port pressure, byte-enabled coherence, and
-cycle time remain implementation obligations.
+The current exact-identity packed metadata floor is 44 B/entry plus one 8-B
+allocator, or 1,416 B per indirect unit at 32 credits. This makes transaction
+ownership finite and explicitly charged, but does not make the complete design
+synthesized or hardware-timed. Tag lookup, mask generation, staging muxes,
+port pressure, byte-enabled coherence, and cycle time remain implementation
+obligations.
 
 Focused validation completed before the workload replay:
 
 - optimized and ASan/UBSan scoreboard tests;
 - duplicate insert, full-capacity, missing/stale take, invalid mask, and busy
   reset rejection;
-- 24 storage/configuration contract tests;
+- 37 storage/configuration/source contract tests;
 - gem5 style and diff checks; and
-- a clean 16-way gem5 build, binary SHA-256
-  `4c07d55ffb8528483f1b7cfe629301b23ac23c4c4679a15bfc7b1972c54f2ccd`.
+- clean predecessor and exact-identity gem5 builds. The identity-hardened
+  binary SHA-256 is
+  `f1aeb6d52eadc9888653a083558073087dc745bef0499d7c7d5ccd8a80f8c510`.
 
 The same-checkpoint NA1024 replay with this binary is **accepted** at
 `/data1/nier/dx100-runs/2026-08-27-lead-fixed-scoreboard-na1024-r1`.  It closes
