@@ -1,0 +1,38 @@
+{
+  "configured_depth": 64,
+  "initial_burst_max": 64,
+  "initial_burst_min": 64,
+  "issue_events": 66560,
+  "maximum_same_tick_burst": 64,
+  "mean_events_per_enqueue_tick": 1.480921125820447,
+  "operations": 65,
+  "operations_reaching_configured_depth": 65,
+  "schema": "dx100.direct_index_issue_width.v1",
+  "serialization_bounds": {
+    "1": {
+      "extra_generation_cycles_upper_bound": 21615,
+      "extra_sim_ticks_upper_bound": 6754687.5,
+      "share_of_observed_simTicks_pct": 0.5406853386777598
+    },
+    "2": {
+      "extra_generation_cycles_upper_bound": 9097,
+      "extra_sim_ticks_upper_bound": 2842812.5,
+      "share_of_observed_simTicks_pct": 0.22755561073104702
+    },
+    "4": {
+      "extra_generation_cycles_upper_bound": 4353,
+      "extra_sim_ticks_upper_bound": 1360312.5,
+      "share_of_observed_simTicks_pct": 0.10888749846237744
+    },
+    "8": {
+      "extra_generation_cycles_upper_bound": 2020,
+      "extra_sim_ticks_upper_bound": 631250.0,
+      "share_of_observed_simTicks_pct": 0.05052900227291579
+    }
+  },
+  "simTicks": 1249282534,
+  "ticks_per_cycle": 312.5,
+  "trace": "/data1/nier/dx100-runs/2026-08-28-lead-ack-identity-feeder64-na1024-r1/strict_trace.log",
+  "trace_sha256": "7a73d804b59e3a5b1dee939cb4a3a3b42b798d782a63d37a0cd4559c053d1031",
+  "unique_enqueue_ticks": 44945
+}
