@@ -25,6 +25,8 @@ def test_default_off_and_actual_p16_q16_issue_boundaries() -> None:
     assert "strict page-fed A packet issue rejected" in indirect
     assert "authorizeAIssue" in page_state
     assert "!closed() || !executing()" in page_state
+    assert "strict_page_fed_terminal_recorded" in indirect
+    assert "!strict_page_fed_terminal_recorded" in indirect
 
 
 def test_exact_admission_backing_and_compact_timing_are_fail_closed() -> None:

@@ -707,6 +707,7 @@ protected:
     Tick strict_page_fed_backing_last_ack_tick = 0;
     Tick strict_page_fed_consumer_begin_tick = 0;
     Tick strict_page_fed_consumer_end_tick = 0;
+    bool strict_page_fed_terminal_recorded = false;
     int my_dst_tile, my_src_tile, my_src_reg, my_cond_tile, my_max;
     int my_idx_tile;
     bool my_cond_tile_ready, my_idx_tile_ready, my_src_tile_ready;

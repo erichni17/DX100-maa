@@ -3480,7 +3480,8 @@ IndirectAccessUnit::admitPageFedSoaJitIndexPage(
              "completed physical-4K index page\n",
              my_indirect_id, page, index_tile);
 
-    if (strictPageFedTwoPhaseOperation()) {
+    if (strictPageFedTwoPhaseOperation() &&
+        !strict_page_fed_terminal_recorded) {
         if (strict_page_fed_b_first_tick == 0)
             strict_page_fed_b_first_tick = curTick();
         strict_page_fed_b_last_tick = curTick();
@@ -5831,6 +5832,7 @@ void IndirectAccessUnit::checkSoaJitTerminal()
             soa_jit_value_read_responses, soa_jit_value_fills,
             soa_jit_value_deliveries,
             soa_jit_page_fed_admit_commands);
+        strict_page_fed_terminal_recorded = true;
     }
     offset_table->check_reset();
     for (int slice = 0; slice < num_RT_slices[my_RT_config]; ++slice)
@@ -6419,6 +6421,7 @@ void IndirectAccessUnit::executeInstruction() {
         strict_page_fed_backing_last_ack_tick = 0;
         strict_page_fed_consumer_begin_tick = 0;
         strict_page_fed_consumer_end_tick = 0;
+        strict_page_fed_terminal_recorded = false;
         panic_if(soa_jit_operation_active,
                  "I[%d] retained a live SoA/JIT operation at decode\n",
                  my_indirect_id);
