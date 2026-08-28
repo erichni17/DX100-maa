@@ -8,7 +8,8 @@ its native4 arm uses a ``TILE_SIZE=4096`` executable while the other arms use
 neutral checkpoint therefore cover all four arms:
 
 * native16: one direct-index 16K gather/multiply/store operation;
-* native4: four direct-index 4K gather/multiply/store operations;
+* native4: four direct-index 4K gather/multiply/store operations in the same
+  T16K address aperture (logical16/physical4 geometry);
 * hybrid1: one strict logical16/physical4 producer with a one-line feeder;
 * hybrid64: the same producer with the selected 64-line feeder.
 
@@ -128,7 +129,7 @@ ARMS = (
         "native4",
         "native_direct",
         4_096,
-        4_096,
+        16_384,
         4_096,
         1,
         False,
@@ -919,6 +920,8 @@ def classify_matrix(root: Path) -> dict[str, object]:
             "one deterministic gem5 observation per arm",
             "microbenchmark evidence only; no full application was launched",
             "speed comparisons apply only to the exact frozen binary/config",
+            "native4 is four exact 4K operations in the shared T16K "
+            "logical aperture, not a true T4096/API-aperture run",
         ],
     }
 
@@ -1152,6 +1155,14 @@ def execute(
             "legacy_mismatch": (
                 "run_virtual_tile_attribution_matrix.sh selects a T4096 "
                 "binary only for native_fused_4k and T16384 otherwise"
+            ),
+            "native4_same_binary_caveat": (
+                "A T16384 guest restored with num_tile_elements=4096 faults "
+                "because its compile-time MAA aperture exceeds the logical4K "
+                "mapping. The accepted same-binary native4 arm therefore "
+                "executes four exact 4096-element operations with "
+                "logical16/physical4 geometry; it is not a true T4096/API "
+                "aperture result."
             ),
         }
         (root / "launch_manifest.json").write_text(
