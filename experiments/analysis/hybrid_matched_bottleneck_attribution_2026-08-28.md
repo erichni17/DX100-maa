@@ -45,17 +45,22 @@ but not large enough to erase it completely.
 
 ## Experiments in flight
 
-1. Sweep 16/32/64/128 bounded combiner lines at fixed feeder, checkpoint, and
-   semantic work.  This tests whether modest extra assembly capacity reduces
-   masked transactions or the 2,048 backing misses.
-2. Compare cold backing with ideal free preallocation and a charged sequential
+1. Compare cold backing with ideal free preallocation and a charged sequential
    preallocation pass.  This brackets a dense-overwrite/no-read-allocate hint
    without claiming that warm cache state is free hardware.
 
-If neither treatment materially reduces end-to-end ticks, increasing the
-combiner or adding an initializer is rejected.  A larger result buffer can
-eventually assemble complete lines, but recreating a full 16K result store
-would defeat the storage objective.
+Two nearby alternatives are already rejected:
+
+- idealized write ACKs changed a prior matched hybrid from 46,735,908 to
+  46,727,770 ticks (about 0.017%); ACK-tail latency is not the gap;
+- a physically bounded NA256 sweep cut backing writes by 50.131% at 512 line
+  tags but regressed `simTicks` by 0.767058%, with total L3 misses unchanged.
+
+See `hybrid_idealized_ack_2026-08-10.md` and
+`hybrid_cg_combiner_capacity_live_2026-08-28.md`.  The dense initializer is
+useful only if it removes first-write misses and materially lowers end-to-end
+ticks.  A larger result buffer can eventually assemble complete lines, but
+recreating a full 16K result store would defeat the storage objective.
 
 ## Evidence
 
