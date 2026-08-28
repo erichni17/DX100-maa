@@ -1,0 +1,37 @@
+{
+  "schema": "dx100.strict_linecombined_seal.v1",
+  "root": "/data1/nier/dx100-runs/2026-08-27-lead-fixed-scoreboard-na1024-r1",
+  "matched_root": "/data1/nier/worktrees/codex-coordination/sessions/strict-two-phase-cg-reference-20260827-20260827-182028-096a7ac2/evidence/cg-strict-nonfused-na1024-r8-matched",
+  "artifacts": {
+    "command.json": "89f386ae53211307b798328d578e2028599bbb6b1fbaf5a9703789ed1cbfc377",
+    "config.ini": "06323199e3ab806a3b59f53bb126df664497a5e8af6ea8d32f4132db9989452d",
+    "gate.complete": "2902e032763df1e4dad3052b1380b2bd03579172a1b7bfeec3caa6aa18d16c1c",
+    "restore.log": "ce0e40c756ff540754f3f704bcb34e11ecf32aae871bc9184aa7a8ff0808077f",
+    "restore.log.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "result.json": "e30fdcc732f1854c7fe4983b05bba5e46e22f3e4e6eeb00689050916b1cd00e3",
+    "stats.txt": "117ee90fb528967853f2ca2f3194e4f31937db72704da7c34218720f80954547",
+    "strict_trace.log": "77bdcd044c462529d79f3a9b829271beeaa8c77cdb6b48a3e01b8f70cfe95704"
+  },
+  "matched_artifacts": {
+    "raw_root.sha256": "fdb76b36420c7e2b2645465d4652542cf59ebf6b7b3dd7093ec647a411aaf5cc",
+    "result.json": "bf2de1ce7bfe8289b8a89de5025f4fb5516e940e9a4a36a220db917ab26aaf8c"
+  },
+  "expected_result": {
+    "schema": "dx100.cg.strict_p16_q16.line_combined.v1",
+    "terminal": true,
+    "decision": "VALID_LINE_COMBINED_ATTRIBUTION",
+    "promotable": false,
+    "cg_na": 1024,
+    "source_commit": "f87d55ff9800354ec0d048c453db712358cbe219",
+    "gem5_sha256": "4c07d55ffb8528483f1b7cfe629301b23ac23c4c4679a15bfc7b1972c54f2ccd",
+    "guest_sha256": "20335fcdb7cd89ef7d1ec3a2bc7da88327233bd66cc091b9d23b67af19904349",
+    "native_runs": 0,
+    "whole_windows": 65,
+    "fingerprints_exact_equal": true,
+    "deterministic_reductions_exact_equal": true,
+    "p_backing_write_issues": 358114,
+    "all_p_writes_64_bytes": true,
+    "matched_strict_simTicks": 2386167394,
+    "line_combined_simTicks": 2213855573
+  }
+}
