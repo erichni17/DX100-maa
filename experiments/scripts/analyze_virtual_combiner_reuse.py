@@ -15,9 +15,6 @@ INSERT_RE = re.compile(
     r"operation_tick=(?P<operation>\d+) itr=(?P<itr>\d+) "
     r"line=0x(?P<line>[0-9a-f]+) word=(?P<word>\d+)"
 )
-FULL_MASK = (1 << 16) - 1
-
-
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise RuntimeError(message)
@@ -141,8 +138,11 @@ def replay_operation(
     capacity: int,
     ways: int = 4,
     set_xor_shift: int = 0,
+    words_per_line: int = 16,
 ) -> ReplayResult:
     require(capacity > 0, "capacity must be positive")
+    require(words_per_line > 0, "words per line must be positive")
+    full_mask = (1 << words_per_line) - 1
     if ways == 0:
         ways = capacity
     require(
@@ -166,7 +166,7 @@ def replay_operation(
     result = ReplayResult(semantic_words=len(events))
 
     for position, (line, word) in enumerate(events):
-        require(0 <= word < 16, f"invalid word {word}")
+        require(0 <= word < words_per_line, f"invalid word {word}")
         require(
             (line, word) not in seen_words, "duplicate logical output word"
         )
@@ -215,7 +215,7 @@ def replay_operation(
         slot.last_use = position
         if policy == "tree_plru":
             plru[set_id] = plru_touch(plru[set_id], index - set_begin, ways)
-        if slot.mask == FULL_MASK:
+        if slot.mask == full_mask:
             result.record(slot.mask, "full")
             slots[index] = None
             del by_line[line]
@@ -255,6 +255,7 @@ def main() -> int:
     parser.add_argument("trace", type=Path)
     parser.add_argument("--capacity", type=int, default=16)
     parser.add_argument("--ways", type=int, default=4)
+    parser.add_argument("--words-per-line", type=int, default=16)
     parser.add_argument("--set-xor-shift", type=int, default=0)
     parser.add_argument("--expected-operations", type=int)
     parser.add_argument("--expected-words", type=int, default=16_384)
@@ -291,6 +292,7 @@ def main() -> int:
         "trace": str(args.trace.resolve()),
         "capacity_lines": args.capacity,
         "ways": args.ways,
+        "words_per_line": args.words_per_line,
         "set_xor_shift": args.set_xor_shift,
         "operations": len(operations),
         "semantic_words": sum(len(events) for events in operations.values()),
@@ -306,6 +308,7 @@ def main() -> int:
                 args.capacity,
                 args.ways,
                 args.set_xor_shift,
+                args.words_per_line,
             )
             for field in ReplayResult.__dataclass_fields__:
                 setattr(

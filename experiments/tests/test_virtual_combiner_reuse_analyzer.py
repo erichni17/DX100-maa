@@ -36,3 +36,14 @@ def test_belady_improves_a_fixed_capacity_thrashing_sequence() -> None:
     assert belady.writes == 304
     assert belady.writes < round_robin.writes
     assert round_robin.written_words == belady.written_words == len(events)
+
+
+def test_fp64_lines_close_after_eight_words() -> None:
+    events = [(line * 64, word) for line in range(16) for word in range(8)]
+    result = reuse.replay_operation(
+        events, "round_robin", 16, 0, words_per_line=8
+    )
+    assert result.writes == 16
+    assert result.full_writes == 16
+    assert result.eviction_writes == 0
+    assert result.written_words == len(events)
