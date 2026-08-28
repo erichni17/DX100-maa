@@ -626,6 +626,7 @@ def main(argv: list[str] | None = None) -> int:
         "guest_sha256": base.sha256_file(guest),
         "native_runs": 0,
         "direct4_runs": 0,
+        "promotable_ordering_evidence": True,
         "whole_windows": len(joined),
         "fingerprints_exact_equal": True,
         "deterministic_reductions_exact_equal": True,
