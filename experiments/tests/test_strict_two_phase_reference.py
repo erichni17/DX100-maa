@@ -23,6 +23,8 @@ def test_default_off_and_actual_p16_q16_issue_boundaries() -> None:
     assert ".aIssue(curTick())" in indirect
     assert "authorizeAIssue" in indirect
     assert "strict page-fed A packet issue rejected" in indirect
+    assert "my_index_min < 0 || my_index_stride != 1" in indirect
+    assert "my_index_min != 0 || my_index_stride" not in indirect
     assert "authorizeAIssue" in page_state
     assert "!closed() || !executing()" in page_state
     assert "strict_page_fed_terminal_recorded" in indirect
