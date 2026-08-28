@@ -70,6 +70,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--gem5", type=Path, default=gate.ROOT / "build/X86/gem5.opt"
     )
+    parser.add_argument(
+        "--index-buffer-lines",
+        type=int,
+        choices=(1, 4),
+        default=1,
+        help=(
+            "bounded direct-index feeder depth; one line preserves the "
+            "reference"
+        ),
+    )
     args = parser.parse_args(argv)
     matched = args.matched_root.resolve()
     out = args.out.resolve()
@@ -98,6 +108,9 @@ def main(argv: list[str] | None = None) -> int:
         gem5, guest, selector, checkpoint, out, strict=True
     )
     command.append("--maa_virtual_masked_writes")
+    command.append(
+        f"--maa_virtual_index_buffer_lines={args.index_buffer_lines}"
+    )
     (out / "command.json").write_text(json.dumps(command, indent=2) + "\n")
     environment = dict(
         os.environ,
@@ -228,6 +241,7 @@ def main(argv: list[str] | None = None) -> int:
         "deterministic_reductions_exact_equal": True,
         "p_backing_write_issues": len(writes),
         "all_p_writes_64_bytes": True,
+        "virtual_index_buffer_lines": args.index_buffer_lines,
         "matched_strict_simTicks": matched_ticks,
         "line_combined_simTicks": combined_ticks,
         "matched_over_line_combined": matched_ticks / combined_ticks,

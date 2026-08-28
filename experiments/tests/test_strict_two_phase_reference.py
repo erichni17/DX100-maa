@@ -209,6 +209,10 @@ def test_line_combined_arm_is_strict_and_same_checkpoint_matched() -> None:
     )
     assert "verify_matched_root" in runner
     assert "--maa_virtual_masked_writes" in runner
+    assert "--index-buffer-lines" in runner
+    assert "--maa_virtual_index_buffer_lines=" in runner
+    assert 'choices=(1, 4)' in runner
+    assert '"virtual_index_buffer_lines"' in runner
     assert "virtual_strict_two_phase=true" in runner
     assert "virtual_masked_writes=true" in runner
     assert 'gate.integer(row, "bytes") == 64' in runner
