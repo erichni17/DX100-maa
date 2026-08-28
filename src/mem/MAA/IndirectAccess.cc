@@ -6460,12 +6460,13 @@ void IndirectAccessUnit::executeInstruction() {
                         num_RT_slices[my_RT_config]) *
                     num_RT_rows_per_slice *
                     num_RT_slice_columns[my_RT_config];
-                panic_if(my_index_min != 0 || my_index_stride != 1 ||
+                panic_if(my_index_min < 0 || my_index_stride != 1 ||
                              my_max != num_tile_elements ||
                              row_line_slots < static_cast<uint64_t>(my_max) ||
                              my_backing_addr_range_id < 0,
-                         "I[%d] strict two-phase requires exact "
-                         "0:16384:1, 16K physical Row slots, and legal "
+                         "I[%d] strict two-phase requires one complete "
+                         "nonnegative 16K stride-1 span, 16K physical Row "
+                         "slots, and legal "
                          "coherent backing; got %d:%d words=%d slots=%lu "
                          "backing_region=%d\n",
                          my_indirect_id, my_index_min, my_index_stride,
