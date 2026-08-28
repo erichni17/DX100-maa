@@ -221,10 +221,35 @@ def strict_restore_args(
     return command
 
 
-def validate_confirmation(path: Path, source_commit: str) -> None:
+def validate_confirmation(path: Path, source_commit: str, gem5: Path) -> None:
     result_path = path.resolve() / "result.json"
     require(result_path.is_file(), "NA=1024 requires an accepted NA=256 root")
     result = json.loads(result_path.read_text())
+    execution_source = result.get(
+        "execution_source_commit", result.get("source_commit")
+    )
+    require(
+        isinstance(execution_source, str)
+        and re.fullmatch(r"[0-9a-f]{40}", execution_source) is not None,
+        "NA=256 result lacks its execution source identity",
+    )
+    source_delta = subprocess.run(
+        [
+            "git",
+            "diff",
+            "--quiet",
+            execution_source,
+            source_commit,
+            "--",
+            "src",
+            "configs",
+            "benchmarks",
+            "include",
+            "util",
+        ],
+        cwd=ROOT,
+        check=False,
+    )
     require(
         result.get("schema") == "dx100.cg.strict_p16_q16.v1"
         and result.get("terminal") is True
@@ -232,7 +257,9 @@ def validate_confirmation(path: Path, source_commit: str) -> None:
         and result.get("cg_na") == 256
         and result.get("producer") == "page-fed"
         and result.get("scope") == "primary_simple_nonfused_reference"
-        and result.get("source_commit") == source_commit
+        and result.get("promotable_ordering_evidence") is True
+        and result.get("gem5_sha256") == base.sha256_file(gem5)
+        and source_delta.returncode == 0
         and result.get("whole_windows") == EXPECTED_WINDOWS[256],
         "NA=256 root does not authorize a bounded NA=1024 confirmation",
     )
@@ -274,7 +301,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     source_commit = base.source_commit()
     if args.cg_na == 1024:
-        validate_confirmation(args.confirm_from, source_commit)
+        validate_confirmation(args.confirm_from, source_commit, gem5)
     fused.ACTIVE_CG_NA = args.cg_na
     treatment = (
         "page_fed_product_soa_jit"
