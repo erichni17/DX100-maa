@@ -2036,23 +2036,12 @@ MAA::submitDirectRetirementDescriptor(InstructionPtr instruction)
     const uint64_t native_spd_payload_bytes =
         static_cast<uint64_t>(num_tiles) * physical_tile_elements *
         sizeof(uint32_t);
-    const uint64_t producer_line_metadata_bytes =
-        direct_retirement_line_handoff
-        ? num_indirect_units_total * virtual_max_outstanding_writes *
-              IndirectAccessUnit::lineHandoffMetadataBytesPerWrite()
-        : 0;
-    const uint64_t producer_identity_allocator_bytes =
-        direct_retirement_line_handoff
-        ? num_indirect_units_total *
-              IndirectAccessUnit::lineHandoffMetadataFixedBytes()
-        : 0;
     const uint64_t charged_control_bytes =
         HybridConsumerContextQueue::chargedControlBytes() +
         sizeof(directRetirementExecutions) +
         sizeof(directRetirementRequestRecords) +
         DirectRetirementPortRetry<Packet>::chargedControlBytes() +
-        EarlyProducerLineReadinessLedger::chargedTotalBytes() +
-        producer_line_metadata_bytes + producer_identity_allocator_bytes;
+        EarlyProducerLineReadinessLedger::chargedTotalBytes();
     stats.direct_retirement_descriptors++;
     stats.direct_retirement_context_high_water = std::max(
         stats.direct_retirement_context_high_water.value(),

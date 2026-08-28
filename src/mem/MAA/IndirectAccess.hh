@@ -329,7 +329,8 @@ public:
 
     /* Related to BaseMMU::Translation Inheretance */
     void markDelayed() override {}
-    void finish(const Fault &fault, const RequestPtr &req, ThreadContext *tc, BaseMMU::Mode mode) override;
+    void finish(const Fault &fault, const RequestPtr &req,
+                ThreadContext *tc, BaseMMU::Mode mode) override;
 
 protected:
     Instruction *my_instruction;
@@ -913,7 +914,8 @@ protected:
     void closeReorderSurvivalEpoch(bool final);
     void finishReorderSurvival();
     bool checkAndResetAllRowTablesSent();
-    int getRowTableIdx(int RT_config, int channel, int rank, int bankgroup, int bank);
+    int getRowTableIdx(int RT_config, int channel, int rank,
+                       int bankgroup, int bank);
     Addr getGrowAddr(int RT_config, int bankgroup, int bank, int row);
     int getRowTableConfig(Addr addr);
     void setRowTableConfig(Addr addr, int num_CLs, int num_ROWs);

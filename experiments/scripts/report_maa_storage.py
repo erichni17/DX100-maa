@@ -483,8 +483,14 @@ def main() -> int:
     combine_replacement_bits_per_unit = combine_sets * bits_for_values(
         combine_ways
     )
-    outstanding_write_bits_per_unit = outstanding_writes * (
-        1 + args.address_bits
+    virtual_retirement_metadata_bytes_per_entry = 44
+    virtual_retirement_identity_allocator_bytes_per_unit = 8
+    virtual_retirement_scoreboard_bytes_per_unit = (
+        outstanding_writes * virtual_retirement_metadata_bytes_per_entry
+        + virtual_retirement_identity_allocator_bytes_per_unit
+    )
+    outstanding_write_bits_per_unit = (
+        virtual_retirement_scoreboard_bytes_per_unit * 8
     )
     page_counter_bits_per_unit = virtual_pages_used * (5 * iteration_bits + 1)
     completion_increment_bits = tiles * max(0, virtual_pages_used - 1)
@@ -593,18 +599,6 @@ def main() -> int:
     direct_retry_slot_cpp_bytes = 8
     direct_retry_cpp_bytes = direct_retry_slots * direct_retry_slot_cpp_bytes
     direct_early_line_ledger_bytes = 1696
-    # Packed fixed scoreboard entry: valid + physical key + generation +
-    # exact non-recycled transaction + backing line + word mask + page count
-    # + two bounded (page, words) records.  Each indirect unit also owns one
-    # fixed 64-bit transaction allocator; wrap is rejected rather than reused.
-    direct_producer_metadata_bytes_per_entry = 44
-    direct_producer_identity_allocator_bytes = indirect_units * 8
-    direct_producer_metadata_bytes = (
-        indirect_units
-        * outstanding_writes
-        * direct_producer_metadata_bytes_per_entry
-        + direct_producer_identity_allocator_bytes
-    )
     direct_cpp_static_bytes = (
         direct_queue_payload_bytes
         + direct_queue_control_bytes
@@ -612,7 +606,6 @@ def main() -> int:
         + direct_request_records * direct_request_record_cpp_bytes
         + direct_retry_cpp_bytes
         + direct_early_line_ledger_bytes
-        + direct_producer_metadata_bytes
     )
     # Densely packed semantic floor.  It intentionally does not infer an RTL
     # encoding for queue scheduler/control state; that state is shown in the
@@ -625,13 +618,10 @@ def main() -> int:
         + direct_request_records * direct_request_record_hardware_bytes
         + direct_retry_cpp_bytes
         + direct_early_line_ledger_bytes
-        + direct_producer_metadata_bytes
     )
     if not direct_retirement_line_handoff:
         direct_cpp_static_bytes = 0
         direct_hardware_lower_bound_bytes = 0
-        direct_producer_metadata_bytes = 0
-        direct_producer_identity_allocator_bytes = 0
     counted_payload = physical_spd_bytes + active_virtual_payload_total
     bounded_state_total = (
         counted_payload
@@ -859,6 +849,21 @@ def main() -> int:
             "outstanding_write_metadata_bits_per_indirect_unit": (
                 active_write_metadata_bits
             ),
+            "virtual_retirement_metadata_bytes_per_entry": (
+                virtual_retirement_metadata_bytes_per_entry
+                if args.mechanism != "native"
+                else 0
+            ),
+            "virtual_retirement_identity_allocator_bytes_per_unit": (
+                virtual_retirement_identity_allocator_bytes_per_unit
+                if args.mechanism != "native"
+                else 0
+            ),
+            "virtual_retirement_scoreboard_bytes_per_indirect_unit": (
+                virtual_retirement_scoreboard_bytes_per_unit
+                if args.mechanism != "native"
+                else 0
+            ),
             "page_counter_bits_per_indirect_unit": (active_page_counter_bits),
             "native_order_claim_bits_per_indirect_unit": active_claim_bits,
             "metadata_bytes_per_indirect_unit": virtual_control_bytes_per_unit,
@@ -912,15 +917,15 @@ def main() -> int:
                     if direct_retirement_line_handoff
                     else 0
                 ),
-                "producer_line_metadata_bytes_per_entry": (
-                    direct_producer_metadata_bytes_per_entry
+                "producer_line_metadata_bytes_per_entry": 0,
+                "producer_identity_allocator_bytes": 0,
+                "producer_line_metadata_bytes": 0,
+                "shared_virtual_retirement_scoreboard_bytes": (
+                    virtual_retirement_scoreboard_bytes_per_unit
+                    * indirect_units
                     if direct_retirement_line_handoff
                     else 0
                 ),
-                "producer_identity_allocator_bytes": (
-                    direct_producer_identity_allocator_bytes
-                ),
-                "producer_line_metadata_bytes": direct_producer_metadata_bytes,
                 "total_bytes": direct_hardware_lower_bound_bytes,
                 "excludes": (
                     "queue scheduler/control encoding and C++ object padding; "
@@ -972,15 +977,15 @@ def main() -> int:
                     if direct_retirement_line_handoff
                     else 0
                 ),
-                "producer_line_metadata_bytes_per_entry": (
-                    direct_producer_metadata_bytes_per_entry
+                "producer_line_metadata_bytes_per_entry": 0,
+                "producer_identity_allocator_bytes": 0,
+                "producer_line_metadata_bytes": 0,
+                "shared_virtual_retirement_scoreboard_bytes": (
+                    virtual_retirement_scoreboard_bytes_per_unit
+                    * indirect_units
                     if direct_retirement_line_handoff
                     else 0
                 ),
-                "producer_identity_allocator_bytes": (
-                    direct_producer_identity_allocator_bytes
-                ),
-                "producer_line_metadata_bytes": direct_producer_metadata_bytes,
                 "total_bytes": direct_cpp_static_bytes,
                 "assumptions": (
                     "C++ static 64-bit ABI view from the fixed MAA.cc arrays; "

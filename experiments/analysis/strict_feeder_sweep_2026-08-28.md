@@ -84,14 +84,14 @@ tag/control state:
 
 | Lines | Feeder payload | Physical SPD + active virtual payload/control |
 |---:|---:|---:|
-| 1 | 256 B | 539,636 B |
-| 8 | 2,048 B | 541,768 B |
-| 64 | 16,384 B | 558,820 B |
+| 1 | 256 B | 544,260 B |
+| 8 | 2,048 B | 546,392 B |
+| 64 | 16,384 B | 563,444 B |
 
 The full one-to-64 bounded-state delta is therefore 19,184 B: 16,128 B
 payload plus a 3,056-B control lower bound. It is 1.2197% of the 1.5 MiB
 visible SPD payload saved by shrinking 32 tile IDs from 16K to 4K 32-bit
-words. The selected bounded payload/control total remains 73.3534% below the
+words. The selected bounded payload/control total remains 73.1329% below the
 native SPD payload alone.
 
 This is payload accounting, not synthesis. gem5 currently represents each
