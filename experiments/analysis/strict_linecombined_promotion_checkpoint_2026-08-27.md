@@ -135,6 +135,12 @@ latency. Exact numerical and semantic-work gates pass. Feeder64 creates 1,022
 additional masked P transactions (0.000693%) with exact ACK closure. See
 `cg_strict_feeder_full_pair_2026-08-28.md`.
 
+The equal-work API micro confirms the expected ordering at matched one-line
+feeder depth: native16 63,325,847 ticks, hybrid1 71,866,678, and native4x4
+91,978,180. Hybrid64 takes 57,330,645 ticks, but feeder-matched native controls
+are pending before interpreting that point as a virtualization advantage over
+native16. See `hybrid_equal_work_micro_matrix_2026-08-28.md`.
+
 1. Keep IS/HashJoin out of this optimization and keep SSSP on its distinct
    old-result path unless a new producer/consumer proof changes the matrix.
 2. Before hardware or iso-area claims, add competing-agent coherence and retry

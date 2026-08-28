@@ -80,7 +80,26 @@ refute it because descriptor spill/replay removes the retained-16K advantage.
 
 ## Current gate
 
-The new same-binary micro matrix must reproduce the four-arm ordering or give
-phase evidence for any exception. The selected hybrid64 full-CG pair is final
-application verification only; it cannot replace the equal-work micro because
-no provenance-matched native4 full arm is being rerun.
+The accepted same-binary micro matrix gives:
+
+| Arm | `simTicks` |
+|---|---:|
+| Native16, feeder1 | 63,325,847 |
+| Native4x4, feeder1 | 91,978,180 |
+| Hybrid1 | 71,866,678 |
+| Hybrid64 | 57,330,645 |
+
+At matched one-line feeder depth, the retained-16K hybrid is 21.866% faster
+than native4x4 and 13.487% slower than native16. This satisfies the professor's
+expected middle-point ordering.
+
+Hybrid64 is provisionally fastest, but native controls were not given the same
+64-line feeder. Two feeder64 native control arms are therefore required before
+claiming that virtualization beats native16 or before assigning the entire
+hybrid1-to64 gain uniquely to the virtual architecture. The native4 arm also
+uses four 4K operations under a shared logical16 aperture; it is timing/reorder
+evidence, not a true logical4 hardware-cost point.
+
+The selected hybrid64 full-CG pair is final application verification only; it
+cannot replace the equal-work native comparison because no provenance-matched
+native4 full arm is being rerun.

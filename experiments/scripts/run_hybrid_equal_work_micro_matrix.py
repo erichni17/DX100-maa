@@ -812,7 +812,10 @@ def classify_arm(root: Path, arm: ArmSpec) -> dict[str, object]:
     return {
         "name": arm.name,
         "classification": "ACCEPT",
-        "reason": "terminal, exact output, exact semantic work, and mechanism gates pass",
+        "reason": (
+            "terminal, exact output, exact semantic work, and mechanism "
+            "gates pass"
+        ),
         "spec": asdict(arm),
         "output_hash": result_match["hash"],
         "counters": counters,
