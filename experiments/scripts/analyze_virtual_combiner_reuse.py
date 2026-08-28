@@ -63,6 +63,7 @@ def choose_victim(
     plru_bits: int,
     set_begin: int,
     ways: int,
+    position: int,
 ) -> int:
     require(valid, "no valid victim")
     order = sorted(valid, key=lambda index: (index - pointer) % ways)
@@ -82,6 +83,20 @@ def choose_victim(
             return positions[0] if positions else 1 << 62
 
         return max(order, key=next_use)
+    if policy.startswith("lookahead_"):
+        horizon = int(policy.removeprefix("lookahead_"))
+        require(horizon > 0, "lookahead must be positive")
+
+        def bounded_score(index: int) -> tuple[int, int]:
+            slot = slots[index]
+            line = slot.line  # type: ignore[union-attr]
+            positions = future[line]
+            distance = positions[0] - position if positions else horizon + 1
+            # Beyond the visible horizon all lines are indistinguishable;
+            # prefer the fullest victim to maximize words per transaction.
+            return min(distance, horizon + 1), slot.mask.bit_count()  # type: ignore[union-attr]
+
+        return max(order, key=bounded_score)
     if policy == "tree_plru":
         return set_begin + plru_victim(plru_bits, ways)
     raise RuntimeError(f"unknown policy: {policy}")
@@ -174,6 +189,7 @@ def replay_operation(
                     plru[set_id],
                     set_begin,
                     ways,
+                    position,
                 )
                 victim = slots[index]
                 require(victim is not None, "selected empty victim")
@@ -255,6 +271,10 @@ def main() -> int:
         "most_words",
         "lru",
         "tree_plru",
+        "lookahead_32",
+        "lookahead_128",
+        "lookahead_512",
+        "lookahead_2048",
         "belady",
     )
     report: dict[str, object] = {
