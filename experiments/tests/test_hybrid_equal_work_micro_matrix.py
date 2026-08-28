@@ -41,7 +41,7 @@ class EqualWorkContractTest(unittest.TestCase):
                 arms["native4"].physical_elements,
                 arms["native4"].expected_indirect_ops,
             ),
-            (4_096, 4_096, 4),
+            (16_384, 4_096, 4),
         )
         self.assertEqual(
             (
