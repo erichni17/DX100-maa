@@ -73,7 +73,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--index-buffer-lines",
         type=int,
-        choices=(1, 4),
+        choices=(1, 2, 4, 8),
         default=1,
         help=(
             "bounded direct-index feeder depth; one line preserves the "
