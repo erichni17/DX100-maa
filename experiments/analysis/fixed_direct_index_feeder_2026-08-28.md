@@ -87,6 +87,16 @@ point therefore does not depend on creating 64 queue entries at zero cycle
 cost.  Equal `simTicks` across this short deterministic sensitivity is an
 observation, not a general claim that request-generation width never matters.
 
+The integrated lead binary was independently replayed at depth 64 and width
+one.  It exits zero in 246,463,712 `simTicks`, reproduces the exact output and
+all deterministic reductions, closes all 26,672 masked writes, and reports
+10,240 issued B lines across 10,240 issue cycles.  Its result root is
+`/data1/nier/dx100-runs/2026-08-28-lead-fixed-feeder-na256-width1-r1`;
+`result.json` SHA-256 is
+`12409396f0038c7f1892c82210efd39bfc0cb7d6f1876a152b5bf8e8b1021cfc`.
+The 13-file ledger is
+`experiments/analysis/fixed_direct_index_integrated_na256_artifacts_2026-08-28.sha256`.
+
 The preserved result root is
 `/data1/nier/dx100-runs/2026-08-28-fixed-direct-index-width-sensitivity-r1`.
 The 54-file artifact ledger is

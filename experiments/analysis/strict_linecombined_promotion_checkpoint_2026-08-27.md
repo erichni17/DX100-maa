@@ -88,12 +88,23 @@ strict control. A same-binary factorial independently attributes 40.5776% to
 feeder depth under word retirement and 11.8932% to line combining at 64
 lines. Exact output and all work ledgers remain unchanged.
 
-The current direct-index storage ledger charges 19,184 additional bounded
-bytes across four units versus one line; this remains a lower bound, not a
-synthesis result. Eight lines is the first cost knee, 64 the selected speed
-point pending full-CG confirmation, and 128 is rejected as a cost-driven sweep
-stop rather than a measured NA1024 optimum. Full evidence and scope are in
+The fixed direct-index storage ledger charges 26,276 additional bounded bytes
+across four units at 64 lines versus one line; this remains a lower bound, not
+a synthesis result. Eight lines is the first cost knee, 64 is the selected
+speed point and is now confirmed by a full-CG pair, and 128 is rejected as a
+cost-driven sweep stop rather than a measured NA1024 optimum. Full evidence
+and scope are in
 `strict_feeder_sweep_2026-08-28.md`.
+
+The dynamic host maps are no longer part of the selected feeder. A fixed
+128-slot line store implements configured depths 1 through 128, carries exact
+physical response tags and logical-word ownership, and limits request
+generation to one line per cycle by default. Widths one, two, and four are
+tick-identical at the accepted NA256 point; an independent replay with the
+integrated binary also reproduces 246,463,712 ticks and exact correctness.
+This closes the zero-cycle host-container concern for the measured micro, but
+does not substitute for CAM/mux timing or synthesis. See
+`fixed_direct_index_feeder_2026-08-28.md`.
 
 Exact response ownership is also closed. The selected replay carries
 `{address, generation, transaction}` on every retirement request/response,
@@ -151,13 +162,16 @@ optimization, not a virtualization-only gain. See
 | Design | Equal-work micro `simTicks` | Storage interpretation |
 |---|---:|---|
 | Native16, feeder64 | 48,487,143 | 3,176,448-B native comparable lower bound |
-| Hybrid logical16/physical4, feeder64 | 57,330,645 | 1,593,588-B comparable lower bound |
+| Hybrid logical16/physical4, feeder64 | 57,330,645 | 1,600,808-B comparable lower bound |
 | Native4x4, feeder64 | 77,011,459 | timing comparator only; shared logical16 aperture is not a true native4 cost point |
 
-Relative to native16, the hybrid trades 18.239% performance for a 49.831%
+Relative to native16, the hybrid trades 18.239% performance for a 49.604%
 comparable-storage reduction. Relative to native4x4, it improves performance
 25.556%. These are deterministic API-micro observations, not synthesized area
-or suite-wide averages.
+or suite-wide averages. The performance observations predate the fixed-feeder
+source replacement; the revised storage number uses its packed semantic
+ledger, while the integrated NA256 replay establishes timing equivalence only
+for that smaller gate.
 
 1. Keep IS/HashJoin out of this optimization and keep SSSP on its distinct
    old-result path unless a new producer/consumer proof changes the matrix.
