@@ -10779,7 +10779,22 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
         virtual_max_combine_occupancy =
             std::max(virtual_max_combine_occupancy, occupancy);
     }
+    const uint16_t valid_before = target->valid_words;
     target->valid_words |= word_bit;
+    if (debug::MAAVirtualTrace) {
+        const int slot_idx = target - virtual_combine_slots.data();
+        const int line_occupancy = std::count_if(
+            virtual_combine_slots.begin(), virtual_combine_slots.end(),
+            [](const VirtualCombineSlot &slot) { return slot.valid; });
+        DPRINTF(MAAVirtualTrace,
+                "event=virtual_combine_insert schema=1 unit=%d "
+                "operation_tick=%lu itr=%d line=0x%lx word=%u slot=%d "
+                "valid_before=0x%x valid_after=0x%x line_occupancy=%d "
+                "word_occupancy=%d\n",
+                my_indirect_id, my_decode_start_tick, itr, line_vaddr, word,
+                slot_idx, valid_before, target->valid_words, line_occupancy,
+                virtual_combine_words + 1);
+    }
     if (maa->virtual_page_ordered_combiner_drain &&
         target->valid_words == ((1U << my_words_per_cl) - 1)) {
         const Addr output_begin = my_backing_addr;
