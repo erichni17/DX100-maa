@@ -162,10 +162,10 @@ optimization, not a virtualization-only gain. See
 | Design | Equal-work micro `simTicks` | Storage interpretation |
 |---|---:|---|
 | Native16, feeder64 | 48,487,143 | 3,176,448-B native comparable lower bound |
-| Hybrid logical16/physical4, feeder64 | 57,330,645 | 1,600,808-B comparable lower bound |
+| Hybrid logical16/physical4, feeder64 | 57,330,645 | 1,596,712-B comparable lower bound |
 | Native4x4, feeder64 | 77,011,459 | timing comparator only; shared logical16 aperture is not a true native4 cost point |
 
-Relative to native16, the hybrid trades 18.239% performance for a 49.604%
+Relative to native16, the hybrid trades 18.239% performance for a 49.733%
 comparable-storage reduction. Relative to native4x4, it improves performance
 25.556%. These are deterministic API-micro observations, not synthesized area
 or suite-wide averages. The performance observations predate the fixed-feeder
