@@ -170,3 +170,33 @@ def test_actual_cg_runner_requires_primary_nonfused_p16_q16_windows() -> None:
     assert '"cg_numerical_terminal": True' in runner
     assert '"native_runs": 0' in runner
     assert "NA=1024 requires --confirm-from accepted NA=256 root" in runner
+
+
+def test_product_page_response_groups_allow_backing_reuse() -> None:
+    from experiments.scripts.strict_two_phase.run_cg_fused_p16_q16_strict import (
+        group_product_page_responses,
+    )
+
+    records = []
+    for window in range(2):
+        for page in range(4):
+            records.append(
+                {
+                    "core": "3",
+                    "backing": "0xc0000",
+                    "page": str(page),
+                    "generation": str(window * 4 + page + 1),
+                    "pages": f"{page + 1}/4",
+                }
+            )
+    groups = group_product_page_responses(records)
+    assert len(groups[(3, 0xC0000)]) == 2
+    assert all(len(group) == 4 for group in groups[(3, 0xC0000)])
+
+    broken = list(records[:3]) + [dict(records[2])]
+    try:
+        group_product_page_responses(broken)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("duplicate product page was accepted")
