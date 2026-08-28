@@ -92,6 +92,13 @@ synthesis result. Eight lines is the first cost knee, 64 the selected speed
 point, and 128 is rejected. Full evidence and scope are in
 `strict_feeder_sweep_2026-08-28.md`.
 
+Exact response ownership is also closed. The selected replay carries
+`{address, generation, transaction}` on every retirement request/response,
+matches all 358,114 issue/completion identities exactly, and reproduces
+1,249,282,534 ticks. The selected 32-credit scoreboard costs a packed
+1,416 B/unit and is charged once in generic virtual control. See
+`strict_retirement_ack_identity_2026-08-28.md`.
+
 ## Replacement-policy decision
 
 Exact replay of all 1,064,960 CG insertions reproduces 358,114 round-robin
@@ -117,9 +124,9 @@ recorded in `cg_fixed_storage_combiner_sweep_2026-08-27.md`.
    official output and complete mechanism ledgers.
 2. Keep IS/HashJoin out of this optimization and keep SSSP on its distinct
    old-result path unless a new producer/consumer proof changes the matrix.
-3. Before hardware or iso-area claims, add transaction identity for delayed or
-   duplicate ACKs, directed coherence tests, calibrated lookup/mask/port
-   timing, and synthesis-based area/Fmax evidence.
+3. Before hardware or iso-area claims, add competing-agent coherence and retry
+   tests, calibrated lookup/mask/port timing, and synthesis-based area/Fmax
+   evidence.
 
 Primary evidence remains in
 `strict_two_phase_cg_reference_2026-08-27.md`,
