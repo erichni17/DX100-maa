@@ -291,11 +291,12 @@ def sum_suffix(stats: dict[str, float], suffix: str) -> int:
 
 
 def l3_region(stats: dict[str, float], field: str) -> int:
-    # Region 10 is the MAA backing write requestor in this fixed configuration.
-    return exact(stats, f"system.l3.{field}_10::maa")
+    # The _T requestor entry is the complete MAA region aggregate. Individual
+    # subregions may contribute hits and misses to different requestor IDs.
+    return exact(stats, f"system.l3.{field}_T::maa")
 
 
-def ramulator_reads(stats: dict[str, float]) -> int:
+def ramulator_reads(stats: dict[str, float], log: str) -> int:
     candidates = [
         "system.mem_ctrl.dram.readReqs",
         "system.mem_ctrl.readReqs",
@@ -308,8 +309,15 @@ def ramulator_reads(stats: dict[str, float]) -> int:
     names = [
         name for name in stats if name.endswith("total_num_read_requests")
     ]
-    require(len(names) == 1, "missing unambiguous Ramulator read-request stat")
-    return exact(stats, names[0])
+    if len(names) == 1:
+        return exact(stats, names[0])
+    matches = re.findall(
+        r"^\s*SYS0_total_num_read_requests_T:\s*([0-9]+)",
+        log,
+        re.MULTILINE,
+    )
+    require(matches, "missing terminal Ramulator read-request counter")
+    return int(matches[-1])
 
 
 def parse_event(lines: list[str], event: str) -> dict[str, str]:
@@ -468,7 +476,7 @@ def validate_arm(
         "maa_cache_wr_packets": exact(
             stats, "system.maa.port_cache_WR_packets"
         ),
-        "ramulator_read_requests": ramulator_reads(stats),
+        "ramulator_read_requests": ramulator_reads(stats, log),
     }
     require(
         counters["backing_transactions"] == counters["backing_acks"],
@@ -654,21 +662,11 @@ def main() -> int:
     cold = results["cold"]["counters"]
     ideal = results["ideal"]["counters"]
     charged = results["charged"]["counters"]
-    require(
-        cold["l3_maa_region_misses"] - ideal["l3_maa_region_misses"] == 2048,
-        "ideal preallocation did not remove exactly 2048 MAA-region misses",
+    ideal_miss_delta = (
+        cold["l3_maa_region_misses"] - ideal["l3_maa_region_misses"]
     )
-    require(
-        cold["l3_maa_region_misses"] - charged["l3_maa_region_misses"] == 2048,
-        "charged preallocation did not remove exactly 2048 MAA-region misses",
-    )
-    require(
-        ideal["simTicks"] < cold["simTicks"],
-        "ideal cache-state arm did not win",
-    )
-    require(
-        charged["simTicks"] < cold["simTicks"],
-        "charged preallocation did not win",
+    charged_miss_delta = (
+        cold["l3_maa_region_misses"] - charged["l3_maa_region_misses"]
     )
     summary = {
         "schema": "dx100.hybrid_backing_rfo_bracket.v1",
@@ -681,8 +679,13 @@ def main() -> int:
         "checkpoint_identity": checkpoint_digest,
         "results": results,
         "conclusion": {
-            "extra_2048_maa_region_misses_disappear": True,
-            "charged_preallocation_wins": True,
+            "ideal_maa_region_miss_delta": ideal_miss_delta,
+            "charged_maa_region_miss_delta": charged_miss_delta,
+            "extra_2048_maa_region_misses_disappear": (
+                ideal_miss_delta == 2048 and charged_miss_delta == 2048
+            ),
+            "charged_preallocation_wins": charged["simTicks"]
+            < cold["simTicks"],
             "ideal_preallocation_is_cache_state_bound_not_architecture_claim": True,
         },
     }
