@@ -10,9 +10,10 @@ cycle; widths two and four exist only for bounded sensitivity experiments.
 This is a functional fixed-storage model suitable for hardware reasoning.  It
 is not an RTL area, frequency, or power result.
 
-Implementation checkpoint: `35a54fe85ac0d9c13d26b412a2916cf1d674abbe`.
-The corresponding optimized gem5 SHA-256 is
-`96e234e422acf365753d4bf1ec5ca35dd4f107204ab77be7c910f88cb40c12a1`.
+Worker implementation checkpoint:
+`35a54fe85ac0d9c13d26b412a2916cf1d674abbe`.  The integrated lead checkpoint
+after the global-victim follow-up is `85b1b2b3`.  Its optimized gem5 SHA-256 is
+`182a6696a60983aa690fa6b4131592cff4408b380891fa31098f1f978cdada0d`.
 
 ## Source audit and exact mapping
 
@@ -86,9 +87,11 @@ point therefore does not depend on creating 64 queue entries at zero cycle
 cost.  Equal `simTicks` across this short deterministic sensitivity is an
 observation, not a general claim that request-generation width never matters.
 
-Temporary result roots are under
-`/tmp/fixed-direct-index-width-sensitivity.xx0M1g`.  Result SHA-256 values for
-widths one/two/four are respectively
+The preserved result root is
+`/data1/nier/dx100-runs/2026-08-28-fixed-direct-index-width-sensitivity-r1`.
+The 54-file artifact ledger is
+`experiments/analysis/fixed_direct_index_width_sensitivity_artifacts_2026-08-28.sha256`.
+Result SHA-256 values for widths one/two/four are respectively
 `6763cb0a837e2da9dfdc5d1a007fa4e852e8958091f726abeb4d279ec5368306`,
 `54473ba5b38d19429c4d8373043ab3671026e1d8aaff4739107ed1882f39550d`,
 and `171f7548bab4adcd40b2b6447366ee630c9e1c7fae3a211aebed5bfffc6f61a4`.
@@ -112,7 +115,7 @@ control bits per indirect unit.  Configured-active and maximum-supported counts
 are separate; neither is inferred from the 19,576-byte C++ host object.
 
 The selected storage report is
-`/tmp/fixed-direct-index-width-sensitivity.xx0M1g/storage64/maa_storage.json`,
+`/data1/nier/dx100-runs/2026-08-28-fixed-direct-index-width-sensitivity-r1/storage64/maa_storage.json`,
 SHA-256
 `4363553d06e03c2358af8bb31ec518d8a4d3d16c6952adc8cce28d56c8db2f97`.
 
@@ -121,7 +124,9 @@ SHA-256
 The lead audit found a separate legal panic in the destination combiner.  The
 word pool is global, while the old victim loop was always limited to the
 incoming address's set.  A globally full word pool with a free incoming set
-therefore had no local valid victim.
+therefore had no local valid victim.  The first worker integration selected a
+global victim but then incorrectly required that victim to free the incoming
+set's slot.  Checkpoint `85b1b2b3` separates those two resource effects.
 
 The corrected bounded policy is:
 
