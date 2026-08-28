@@ -76,6 +76,42 @@ def event_records(trace: Path, event: str) -> list[dict[str, str]]:
     ]
 
 
+def group_product_page_responses(
+    records: list[dict[str, str]],
+) -> dict[tuple[int, int], list[list[dict[str, str]]]]:
+    active: dict[tuple[int, int], list[dict[str, str]]] = {}
+    complete: dict[tuple[int, int], list[list[dict[str, str]]]] = {}
+    for record in records:
+        key = (integer(record, "core"), integer(record, "backing"))
+        group = active.setdefault(key, [])
+        page = integer(record, "page")
+        try:
+            reported = int(record["pages"].split("/", 1)[0])
+        except (KeyError, ValueError) as error:
+            raise RuntimeError(
+                f"invalid product page lifecycle: {record}"
+            ) from error
+        require(
+            page not in {integer(row, "page") for row in group}
+            and reported == len(group) + 1,
+            f"duplicate/out-of-order product page lifecycle: {record}",
+        )
+        group.append(record)
+        if reported == 4:
+            require(
+                {integer(row, "page") for row in group} == {0, 1, 2, 3}
+                and len({integer(row, "generation") for row in group}) == 4,
+                f"incomplete product response group: {group}",
+            )
+            complete.setdefault(key, []).append(group)
+            active[key] = []
+    require(
+        all(not group for group in active.values()),
+        f"unterminated product response groups: {active}",
+    )
+    return complete
+
+
 def validate_timing(fields: dict[str, str], page_fed: bool) -> None:
     require(
         fields.get("terminal") == "1"
@@ -449,6 +485,7 @@ def main(argv: list[str] | None = None) -> int:
             len(fused_by_generation) == windows,
             "fused generation reuse in trace",
         )
+    product_groups = group_product_page_responses(product_response)
     fingerprint_sha = sha256_text(strict["fingerprint"] + "\n")
     terminal_sha = sha256_text(strict["terminal_line"] + "\n")
     reductions_sha = sha256_text("\n".join(strict["reductions"]) + "\n")
@@ -495,22 +532,13 @@ def main(argv: list[str] | None = None) -> int:
             )
         else:
             product_backing = integer(row, "product_backing")
-            page_rows = [
-                product
-                for product in product_response
-                if integer(product, "core") == integer(row, "p_core")
-                and integer(product, "backing") == product_backing
-            ]
+            key = (integer(row, "p_core"), product_backing)
+            groups = product_groups.get(key, [])
             require(
-                len(page_rows) == 4
-                and {integer(product, "page") for product in page_rows}
-                == {0, 1, 2, 3}
-                and len(
-                    {integer(product, "generation") for product in page_rows}
-                )
-                == 4,
+                groups,
                 "non-fused window lacks four linked product-page responses",
             )
+            groups.pop(0)
         joined.append(
             {
                 "schema": "dx100.cg.strict_p16_q16.window.v1",
@@ -533,6 +561,10 @@ def main(argv: list[str] | None = None) -> int:
                 "cg_reductions_sha256": reductions_sha,
             }
         )
+    require(
+        all(not groups for groups in product_groups.values()),
+        f"unconsumed product response groups: {product_groups}",
+    )
     with (out / "whole_windows.jsonl").open("w", encoding="utf-8") as stream:
         for record in joined:
             stream.write(json.dumps(record, sort_keys=True) + "\n")
