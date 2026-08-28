@@ -76,6 +76,22 @@ have all four properties: dead private B after admission, strict full-window
 descriptor closure, a real virtual result backing indexed by logical ordinal,
 and legal masked retirement to that backing.
 
+## Feeder-depth successor
+
+The selected CG speed point now retains 64 sequential B cache lines instead
+of one while preserving the same full 16K Row/Offset reorder window. At
+NA1024, 64-line masked retirement takes 1,249,282,534 ticks, 43.5698% below
+the exact one-line masked arm and 47.6448% below the one-line word-retirement
+strict control. A same-binary factorial independently attributes 40.5776% to
+feeder depth under word retirement and 11.8932% to line combining at 64
+lines. Exact output and all work ledgers remain unchanged.
+
+The current direct-index storage ledger charges 19,184 additional bounded
+bytes across four units versus one line; this remains a lower bound, not a
+synthesis result. Eight lines is the first cost knee, 64 the selected speed
+point, and 128 is rejected. Full evidence and scope are in
+`strict_feeder_sweep_2026-08-28.md`.
+
 ## Replacement-policy decision
 
 Exact replay of all 1,064,960 CG insertions reproduces 358,114 round-robin
@@ -84,17 +100,24 @@ most-filled policy predicts 349,673 writes (2.357% fewer), while a
 set-constrained offline optimum predicts 313,895.  Even the offline result is
 only about 0.49% of current runtime under a deliberately non-promotional
 linear estimate.  Tree-PLRU, set hashing, and new lookahead hardware are
-rejected; only the zero-new-state most-filled policy merits a live test.
+rejected.
+
+The live gate is now closed. In the complete fixed-16-line NA1024 sweep,
+most-filled reduces P writes from 358,114 to 349,595 but regresses
+`simTicks` from 2,213,855,573 to 2,226,080,727 (0.5522% slower). The minimum
+measured point, 2-way/2-bank/fewest-filled, takes 2,213,832,098 ticks: only
+23,475 ticks (0.00106%) below baseline while changing arbitration and
+replacement. Retain the 4-way/4-bank round-robin baseline and reject all
+fixed-combiner retuning as a selected optimization. The validated matrix is
+recorded in `cg_fixed_storage_combiner_sweep_2026-08-27.md`.
 
 ## Remaining promotion gates
 
-1. Accept or reject the existing most-filled live test on measured
-   `simTicks`; transaction count alone is insufficient.
-2. Accept or reject the separately authorized full-CG candidate with exact
+1. Accept or reject the separately authorized full-CG candidate with exact
    official output and complete mechanism ledgers.
-3. Keep IS/HashJoin out of this optimization and keep SSSP on its distinct
+2. Keep IS/HashJoin out of this optimization and keep SSSP on its distinct
    old-result path unless a new producer/consumer proof changes the matrix.
-4. Before hardware or iso-area claims, add transaction identity for delayed or
+3. Before hardware or iso-area claims, add transaction identity for delayed or
    duplicate ACKs, directed coherence tests, calibrated lookup/mask/port
    timing, and synthesis-based area/Fmax evidence.
 
