@@ -137,7 +137,7 @@ def fixed_args(
         str(gem5),
         "--listener-mode=off",
         f"--outdir={arm_dir / 'run'}",
-        "--debug-flags=MAAVirtualTrace",
+        "--debug-flags=MAAVirtualTrace,MAAMacroEvent,MAATrace",
         "--debug-file=hybrid_trace.log",
         str(CONFIG),
         "--cpu-type",
@@ -262,8 +262,13 @@ def terminal_stats(path: Path) -> dict[str, float]:
         if item.get("simTicks", 0) > 0
         and item.get("system.maa.numInst_INDRD", 0) > 0
     ]
+    # m5_dump_stats follows the completed hybrid fence.  Gem5 emits a later
+    # exit window after the guest verifies every output element; report the
+    # first uncontaminated ROI window but require terminal stats as well.
+    require(eligible, f"missing populated ROI stats window: {path}")
     require(
-        len(eligible) == 1, f"expected one populated ROI stats window: {path}"
+        eligible[-1].get("simTicks", 0) >= eligible[0]["simTicks"],
+        f"missing terminal stats window: {path}",
     )
     return eligible[0]
 
