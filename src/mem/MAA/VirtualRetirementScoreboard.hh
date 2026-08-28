@@ -9,6 +9,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 
 namespace gem5::maa
 {
@@ -21,12 +22,18 @@ class VirtualRetirementScoreboard
     // the modeled hardware state.
     static constexpr uint32_t MaxEntries = 64;
     static constexpr uint32_t MaxPagesPerEntry = 2;
+    // This is a packed semantic charge, not sizeof(Entry).  The exact
+    // transaction consumes one non-recycled 64-bit tag per live entry, plus
+    // one fixed 64-bit allocator per scoreboard.  Allocation fails closed at
+    // exhaustion instead of wrapping into an identity that a delayed ACK may
+    // still carry.
     static constexpr uint32_t ConservativeBytesPerEntry =
-        1 + sizeof(uint64_t) + sizeof(uint64_t) + sizeof(int32_t) +
-        sizeof(uint16_t) + sizeof(uint8_t) +
+        1 + sizeof(uint64_t) + sizeof(uint64_t) + sizeof(uint64_t) +
+        sizeof(int32_t) + sizeof(uint16_t) + sizeof(uint8_t) +
         MaxPagesPerEntry * (sizeof(int32_t) + sizeof(uint16_t));
+    static constexpr uint32_t ConservativeFixedBytes = sizeof(uint64_t);
     static constexpr uint32_t ConservativeTotalBytes =
-        MaxEntries * ConservativeBytesPerEntry;
+        MaxEntries * ConservativeBytesPerEntry + ConservativeFixedBytes;
 
     enum class Result : uint8_t
     {
@@ -36,6 +43,17 @@ class VirtualRetirementScoreboard
         Full,
         Duplicate,
         NotFound,
+        WrongAddress,
+        WrongGeneration,
+        WrongTransaction,
+        Exhausted,
+    };
+
+    struct Identity
+    {
+        uint64_t address = 0;
+        uint64_t generation = 0;
+        uint64_t transaction = 0;
     };
 
     struct PageWords
@@ -65,20 +83,31 @@ class VirtualRetirementScoreboard
         return Result::Accepted;
     }
 
-    Result insert(uint64_t key, const Metadata &metadata)
+    Result insert(uint64_t key, const Metadata &metadata, Identity &identity)
     {
+        identity = {};
         if (!valid(metadata))
             return Result::Invalid;
         if (contains(key))
             return Result::Duplicate;
         if (full())
             return Result::Full;
+        if (nextTransaction_ == 0)
+            return Result::Exhausted;
         for (uint32_t index = 0; index < capacity_; ++index) {
             if (entries_[index].valid)
                 continue;
             entries_[index].valid = true;
             entries_[index].key = key;
+            entries_[index].transaction = nextTransaction_;
             entries_[index].metadata = metadata;
+            identity = {key, metadata.generation, nextTransaction_};
+            if (nextTransaction_ ==
+                std::numeric_limits<uint64_t>::max()) {
+                nextTransaction_ = 0;
+            } else {
+                ++nextTransaction_;
+            }
             ++size_;
             return Result::Accepted;
         }
@@ -95,17 +124,25 @@ class VirtualRetirementScoreboard
         return nullptr;
     }
 
-    Result take(uint64_t key, Metadata &metadata)
+    Result take(const Identity &identity, Metadata &metadata)
     {
+        if (identity.generation == 0 || identity.transaction == 0)
+            return Result::Invalid;
         for (uint32_t index = 0; index < capacity_; ++index) {
             auto &entry = entries_[index];
-            if (!entry.valid || entry.key != key)
+            if (!entry.valid || entry.transaction != identity.transaction)
                 continue;
+            if (entry.key != identity.address)
+                return Result::WrongAddress;
+            if (entry.metadata.generation != identity.generation)
+                return Result::WrongGeneration;
             metadata = entry.metadata;
             entry = {};
             --size_;
             return Result::Accepted;
         }
+        if (contains(identity.address))
+            return Result::WrongTransaction;
         return Result::NotFound;
     }
 
@@ -124,6 +161,10 @@ class VirtualRetirementScoreboard
           case Result::Full: return "full";
           case Result::Duplicate: return "duplicate";
           case Result::NotFound: return "not_found";
+          case Result::WrongAddress: return "wrong_address";
+          case Result::WrongGeneration: return "wrong_generation";
+          case Result::WrongTransaction: return "wrong_transaction";
+          case Result::Exhausted: return "exhausted";
         }
         return "unknown";
     }
@@ -133,6 +174,7 @@ class VirtualRetirementScoreboard
     {
         bool valid = false;
         uint64_t key = 0;
+        uint64_t transaction = 0;
         Metadata metadata{};
     };
 
@@ -152,6 +194,7 @@ class VirtualRetirementScoreboard
 
     uint32_t capacity_ = MaxEntries;
     uint32_t size_ = 0;
+    uint64_t nextTransaction_ = 1;
     std::array<Entry, MaxEntries> entries_{};
 };
 

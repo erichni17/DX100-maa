@@ -158,6 +158,10 @@ protected:
     int virtual_max_combine_words = 0;
     int virtual_max_outstanding_writes_limit = 0;
     bool virtual_masked_writes = false;
+    struct VirtualRetirementSenderState : public Packet::SenderState
+    {
+        maa::VirtualRetirementScoreboard::Identity identity{};
+    };
     maa::VirtualRetirementScoreboard virtual_retirement_scoreboard;
     std::vector<int> virtual_page_logical_words;
     std::vector<int> virtual_page_scanned_words;
@@ -262,6 +266,10 @@ public:
     static constexpr size_t lineHandoffMetadataBytesPerWrite()
     {
         return maa::VirtualRetirementScoreboard::ConservativeBytesPerEntry;
+    }
+    static constexpr size_t lineHandoffMetadataFixedBytes()
+    {
+        return maa::VirtualRetirementScoreboard::ConservativeFixedBytes;
     }
     void allocate(int _my_indirect_id,
                   int _num_tile_elements,
@@ -877,11 +885,11 @@ protected:
     void trackVirtualIteration(int itr, bool write_expected);
     void markVirtualPageReadyIfComplete(int page,
                                         Addr final_write_key = 0);
-    void trackVirtualRetirementWrite(Addr write_key, Addr vaddr,
-                                     unsigned size, uint16_t valid_words);
-    void completeVirtualRetirementWrite(Addr write_key,
-                                        const uint8_t *writeRespPayload,
-                                        unsigned payloadBytes);
+    maa::VirtualRetirementScoreboard::Identity trackVirtualRetirementWrite(
+        Addr write_key, Addr vaddr, unsigned size, uint16_t valid_words);
+    void completeVirtualRetirementWrite(
+        const maa::VirtualRetirementScoreboard::Identity &identity,
+        const uint8_t *writeRespPayload, unsigned payloadBytes);
     bool createRetirementWrite(int itr, const uint8_t *data);
     bool createRetirementWrite(Addr vaddr, unsigned size, const uint8_t *data,
                                uint16_t valid_words = 0);
@@ -939,7 +947,8 @@ public:
                                   uint16_t offset_slot);
 };
 
-static_assert(IndirectAccessUnit::lineHandoffMetadataBytesPerWrite() == 36);
+static_assert(IndirectAccessUnit::lineHandoffMetadataBytesPerWrite() == 44);
+static_assert(IndirectAccessUnit::lineHandoffMetadataFixedBytes() == 8);
 
 } // namespace gem5
 

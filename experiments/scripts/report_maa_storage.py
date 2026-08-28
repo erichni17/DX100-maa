@@ -593,9 +593,18 @@ def main() -> int:
     direct_retry_slot_cpp_bytes = 8
     direct_retry_cpp_bytes = direct_retry_slots * direct_retry_slot_cpp_bytes
     direct_early_line_ledger_bytes = 1696
-    # Fixed scoreboard entry: valid + physical key + generation + backing
-    # line + word mask + page count + two bounded (page, words) records.
-    direct_producer_metadata_bytes = indirect_units * outstanding_writes * 36
+    # Packed fixed scoreboard entry: valid + physical key + generation +
+    # exact non-recycled transaction + backing line + word mask + page count
+    # + two bounded (page, words) records.  Each indirect unit also owns one
+    # fixed 64-bit transaction allocator; wrap is rejected rather than reused.
+    direct_producer_metadata_bytes_per_entry = 44
+    direct_producer_identity_allocator_bytes = indirect_units * 8
+    direct_producer_metadata_bytes = (
+        indirect_units
+        * outstanding_writes
+        * direct_producer_metadata_bytes_per_entry
+        + direct_producer_identity_allocator_bytes
+    )
     direct_cpp_static_bytes = (
         direct_queue_payload_bytes
         + direct_queue_control_bytes
@@ -622,6 +631,7 @@ def main() -> int:
         direct_cpp_static_bytes = 0
         direct_hardware_lower_bound_bytes = 0
         direct_producer_metadata_bytes = 0
+        direct_producer_identity_allocator_bytes = 0
     counted_payload = physical_spd_bytes + active_virtual_payload_total
     bounded_state_total = (
         counted_payload
@@ -902,6 +912,14 @@ def main() -> int:
                     if direct_retirement_line_handoff
                     else 0
                 ),
+                "producer_line_metadata_bytes_per_entry": (
+                    direct_producer_metadata_bytes_per_entry
+                    if direct_retirement_line_handoff
+                    else 0
+                ),
+                "producer_identity_allocator_bytes": (
+                    direct_producer_identity_allocator_bytes
+                ),
                 "producer_line_metadata_bytes": direct_producer_metadata_bytes,
                 "total_bytes": direct_hardware_lower_bound_bytes,
                 "excludes": (
@@ -953,6 +971,14 @@ def main() -> int:
                     direct_early_line_ledger_bytes
                     if direct_retirement_line_handoff
                     else 0
+                ),
+                "producer_line_metadata_bytes_per_entry": (
+                    direct_producer_metadata_bytes_per_entry
+                    if direct_retirement_line_handoff
+                    else 0
+                ),
+                "producer_identity_allocator_bytes": (
+                    direct_producer_identity_allocator_bytes
                 ),
                 "producer_line_metadata_bytes": direct_producer_metadata_bytes,
                 "total_bytes": direct_cpp_static_bytes,
