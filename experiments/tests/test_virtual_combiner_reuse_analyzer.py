@@ -47,3 +47,23 @@ def test_fp64_lines_close_after_eight_words() -> None:
     assert result.full_writes == 16
     assert result.eviction_writes == 0
     assert result.written_words == len(events)
+
+
+def test_shared_word_pool_can_bind_before_line_slots() -> None:
+    events = [(line * 64, word) for word in range(4) for line in range(4)]
+    uncapped = reuse.replay_operation(
+        events, "round_robin", 4, 0, words_per_line=4
+    )
+    capped = reuse.replay_operation(
+        events,
+        "round_robin",
+        4,
+        0,
+        words_per_line=4,
+        word_capacity=4,
+    )
+    assert uncapped.writes == 4
+    assert uncapped.full_writes == 4
+    assert capped.writes == 12
+    assert capped.full_writes == 0
+    assert capped.written_words == len(events)

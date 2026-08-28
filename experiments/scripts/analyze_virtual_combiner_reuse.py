@@ -139,9 +139,13 @@ def replay_operation(
     ways: int = 4,
     set_xor_shift: int = 0,
     words_per_line: int = 16,
+    word_capacity: int = 0,
 ) -> ReplayResult:
     require(capacity > 0, "capacity must be positive")
     require(words_per_line > 0, "words per line must be positive")
+    if word_capacity == 0:
+        word_capacity = capacity * words_per_line
+    require(word_capacity > 0, "word capacity must be positive")
     full_mask = (1 << words_per_line) - 1
     if ways == 0:
         ways = capacity
@@ -162,6 +166,8 @@ def replay_operation(
     by_line: dict[int, int] = {}
     pointers = [0] * num_sets
     plru = [0] * num_sets
+    global_pointer = 0
+    resident_words = 0
     seen_words: set[tuple[int, int]] = set()
     result = ReplayResult(semantic_words=len(events))
 
@@ -181,29 +187,75 @@ def replay_operation(
         set_id = line_number % num_sets
         set_begin = set_id * ways
         set_end = set_begin + ways
-        if index is None:
-            index = next(
-                (slot for slot in range(set_begin, set_end) if slots[slot] is None),
-                None,
+        free_index = next(
+            (slot for slot in range(set_begin, set_end) if slots[slot] is None),
+            None,
+        )
+        word_capacity_full = resident_words >= word_capacity
+        line_capacity_full = index is None and free_index is None
+        if word_capacity_full or line_capacity_full:
+            global_victim = word_capacity_full and not line_capacity_full
+            victim_begin = 0 if global_victim else set_begin
+            victim_count = capacity if global_victim else ways
+            victim_start = (
+                global_pointer
+                if global_victim
+                else set_begin + pointers[set_id]
             )
-            if index is None:
-                valid = list(range(set_begin, set_end))
-                index = choose_victim(
+            valid = [
+                candidate
+                for candidate in range(
+                    victim_begin, victim_begin + victim_count
+                )
+                if slots[candidate] is not None and candidate != index
+            ]
+            if not valid:
+                require(index is not None, "no legal combiner victim")
+                victim_index = index
+            else:
+                victim_index = choose_victim(
                     policy,
                     slots,
                     valid,
-                    set_begin + pointers[set_id],
+                    victim_start,
                     future,
-                    plru[set_id],
-                    set_begin,
-                    ways,
+                    (
+                        plru[set_id]
+                        if not global_victim
+                        else 0
+                    ),
+                    victim_begin,
+                    victim_count,
                     position,
                 )
-                victim = slots[index]
-                require(victim is not None, "selected empty victim")
-                result.record(victim.mask, "eviction")
-                del by_line[victim.line]
-                pointers[set_id] = (index - set_begin + 1) % ways
+            victim = slots[victim_index]
+            require(victim is not None, "selected empty victim")
+            result.record(victim.mask, "eviction")
+            resident_words -= victim.mask.bit_count()
+            require(resident_words >= 0, "resident word count underflow")
+            del by_line[victim.line]
+            victim_set = victim_index // ways
+            pointers[victim_set] = (victim_index % ways + 1) % ways
+            if global_victim:
+                global_pointer = (victim_index + 1) % capacity
+            slots[victim_index] = None
+            if victim_index == index:
+                index = None
+            if set_begin <= victim_index < set_end:
+                free_index = victim_index
+
+        if index is None:
+            if free_index is None:
+                free_index = next(
+                    (
+                        slot
+                        for slot in range(set_begin, set_end)
+                        if slots[slot] is None
+                    ),
+                    None,
+                )
+            require(free_index is not None, "incoming set has no free slot")
+            index = free_index
             slots[index] = Slot(line=line, mask=0, last_use=position)
             by_line[line] = index
 
@@ -212,11 +264,17 @@ def replay_operation(
         bit = 1 << word
         require(not slot.mask & bit, "duplicate word in resident line")
         slot.mask |= bit
+        resident_words += 1
+        require(
+            resident_words <= word_capacity,
+            "resident words exceed configured capacity",
+        )
         slot.last_use = position
         if policy == "tree_plru":
             plru[set_id] = plru_touch(plru[set_id], index - set_begin, ways)
         if slot.mask == full_mask:
             result.record(slot.mask, "full")
+            resident_words -= words_per_line
             slots[index] = None
             del by_line[line]
 
@@ -256,6 +314,12 @@ def main() -> int:
     parser.add_argument("--capacity", type=int, default=16)
     parser.add_argument("--ways", type=int, default=4)
     parser.add_argument("--words-per-line", type=int, default=16)
+    parser.add_argument(
+        "--word-capacity",
+        type=int,
+        default=0,
+        help="shared payload words; zero derives lines times words per line",
+    )
     parser.add_argument("--set-xor-shift", type=int, default=0)
     parser.add_argument(
         "--policies",
@@ -302,6 +366,11 @@ def main() -> int:
         "capacity_lines": args.capacity,
         "ways": args.ways,
         "words_per_line": args.words_per_line,
+        "word_capacity": (
+            args.word_capacity
+            if args.word_capacity
+            else args.capacity * args.words_per_line
+        ),
         "set_xor_shift": args.set_xor_shift,
         "operations": len(operations),
         "semantic_words": sum(len(events) for events in operations.values()),
@@ -318,6 +387,7 @@ def main() -> int:
                 args.ways,
                 args.set_xor_shift,
                 args.words_per_line,
+                args.word_capacity,
             )
             for field in ReplayResult.__dataclass_fields__:
                 setattr(
