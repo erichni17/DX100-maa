@@ -87,6 +87,12 @@ def command_for(gem5: Path, out: Path, dense: bool) -> list[str]:
     )
     require(isinstance(command, list), "predecessor command is not a list")
     command[0] = str(gem5)
+    scripts = [
+        index for index, token in enumerate(command)
+        if token.endswith("/configs/deprecated/example/se.py")
+    ]
+    require(len(scripts) == 1, "expected one se.py command token")
+    command[scripts[0]] = str(ROOT / "configs/deprecated/example/se.py")
     set_option(command, "--outdir=", str(out))
     if not any(
         token.startswith("--maa_virtual_index_issue_lines_per_cycle=")
