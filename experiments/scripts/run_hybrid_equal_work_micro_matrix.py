@@ -526,7 +526,7 @@ def validate_process_record(path: Path, expected_returncode: int = 0) -> None:
 
 
 def validate_masked_retirement(
-    counters: Mapping[str, int], arm_name: str
+    counters: Mapping[str, int], arm_name: str, require_partial: bool = True
 ) -> None:
     require(counters["write_issues"] > 0, f"{arm_name}: no retirement writes")
     require(
@@ -538,10 +538,17 @@ def validate_masked_retirement(
         == counters["write_issues"],
         f"{arm_name}: masked/full write accounting",
     )
-    require(
-        counters["partial_writes"] > 0,
-        f"{arm_name}: masked retirement inactive",
-    )
+    if require_partial:
+        require(
+            counters["partial_writes"] > 0,
+            f"{arm_name}: masked retirement inactive",
+        )
+    else:
+        require(
+            counters["partial_writes"] == 0
+            and counters["full_writes"] == counters["write_issues"],
+            f"{arm_name}: retirement did not close as full lines",
+        )
 
 
 def validate_strict_fetch_lines(
@@ -559,7 +566,14 @@ def validate_strict_fetch_lines(
     )
 
 
-def classify_arm(root: Path, arm: ArmSpec) -> dict[str, object]:
+def classify_arm(
+    root: Path,
+    arm: ArmSpec,
+    combine_slots: int = 16,
+    combine_words: int = 0,
+    strict_result_words: int = 192,
+    require_partial_retirement: bool = True,
+) -> dict[str, object]:
     arm_root = root / "arms" / arm.name
     require(
         (arm_root / "restore.exit").read_text() == "0\n",
@@ -627,8 +641,8 @@ def classify_arm(root: Path, arm: ArmSpec) -> dict[str, object]:
         "virtual_bounded_global_merge": "false",
         "virtual_idealized_write_ack": "false",
         "virtual_native_issue_order": "false",
-        "virtual_combine_slots": "16",
-        "virtual_combine_words": "0",
+        "virtual_combine_slots": str(combine_slots),
+        "virtual_combine_words": str(combine_words),
         "virtual_combine_ways": "0",
         "virtual_response_slots": "8",
         "virtual_response_word_pool": "0",
@@ -702,7 +716,9 @@ def classify_arm(root: Path, arm: ArmSpec) -> dict[str, object]:
         encoding="utf-8", errors="strict"
     ).splitlines()
     if arm.strict:
-        validate_masked_retirement(counters, arm.name)
+        validate_masked_retirement(
+            counters, arm.name, require_partial_retirement
+        )
         strict_trace = exactly_one_event(
             trace_lines, "strict_two_phase_timing"
         )
@@ -714,7 +730,7 @@ def classify_arm(root: Path, arm: ArmSpec) -> dict[str, object]:
             "logical": "16384",
             "physical": "4096",
             "feeder_words": str(arm.feeder_lines * WORDS_PER_INDEX_LINE),
-            "result_words": "192",
+            "result_words": str(strict_result_words),
             "b_words": "16384",
             "descriptors": "16384",
             "pages_ready": "4",
