@@ -109,6 +109,11 @@ def main(argv: list[str] | None = None) -> int:
         help="classify an already completed output without rerunning gem5",
     )
     parser.add_argument(
+        "--dense-write-allocate",
+        action="store_true",
+        help="use no-read first writes for dense virtual backing lines",
+    )
+    parser.add_argument(
         "--word-writes",
         action="store_true",
         help="retain baseline 4-byte P retirement instead of masked lines",
@@ -164,6 +169,8 @@ def main(argv: list[str] | None = None) -> int:
     command.append(f"--maa_virtual_combine_slots={args.combine_slots}")
     if args.combine_words != 0:
         command.append(f"--maa_virtual_combine_words={args.combine_words}")
+    if args.dense_write_allocate:
+        command.append("--maa_virtual_dense_write_allocate")
     command_json = json.dumps(command, indent=2) + "\n"
     if args.classify_existing:
         require(
@@ -257,7 +264,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         in config
         and f"virtual_combine_slots={args.combine_slots}" in config
-        and f"virtual_combine_words={args.combine_words}" in config,
+        and f"virtual_combine_words={args.combine_words}" in config
+        and (
+            "virtual_dense_write_allocate="
+            f"{str(args.dense_write_allocate).lower()}"
+        )
+        in config,
         "strict feeder/retirement treatment did not resolve",
     )
     stats = gate.fused.require_stats(
@@ -297,6 +309,17 @@ def main(argv: list[str] | None = None) -> int:
         "finite direct-index issue-width counters are inconsistent",
     )
     stats.update(issue_stats)
+    dense_initializations = gate.base.stat_sum(
+        out / "stats.txt", "IND_VirtDenseInitializationWrites"
+    )
+    expected_dense_initializations = (
+        expected_windows * 1024 if args.dense_write_allocate else 0
+    )
+    require(
+        dense_initializations == expected_dense_initializations,
+        "dense backing initialization count changed",
+    )
+    stats["IND_VirtDenseInitializationWrites"] = dense_initializations
     trace = out / "strict_trace.log"
     p_timing = gate.event_records(trace, "strict_two_phase_timing")
     q_timing = gate.event_records(trace, "strict_page_fed_two_phase_timing")
@@ -373,6 +396,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
         "virtual_combine_slots": args.combine_slots,
         "virtual_combine_words": args.combine_words,
+        "virtual_dense_write_allocate": args.dense_write_allocate,
         "matched_strict_simTicks": matched_ticks,
         "line_combined_simTicks": combined_ticks,
         "matched_over_line_combined": matched_ticks / combined_ticks,
