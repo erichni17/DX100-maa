@@ -115,6 +115,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
                                   bool _virtual_masked_writes,
                                   bool _virtual_dense_write_allocate,
                                   bool _virtual_complete_line_only,
+                                  int _virtual_complete_line_drain_width,
                                   int _soa_jit_predicate_active_credits,
                                   int _virtual_index_buffer_lines,
                                   int _virtual_index_issue_lines_per_cycle,
@@ -191,6 +192,10 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
     virtual_masked_writes = _virtual_masked_writes;
     virtual_dense_write_allocate = _virtual_dense_write_allocate;
     virtual_complete_line_only = _virtual_complete_line_only;
+    panic_if(!virtual_complete_line_drain_budget.configure(
+                 _virtual_complete_line_drain_width),
+             "I[%d] invalid virtual complete-line drain width %d\n",
+             my_indirect_id, _virtual_complete_line_drain_width);
     panic_if(virtual_dense_write_allocate && !virtual_masked_writes,
              "I[%d] dense backing allocation requires masked retirement\n",
              my_indirect_id);
@@ -847,13 +852,17 @@ bool IndirectAccessUnit::scheduleNextExecution(bool force) {
                      std::max(my_RT_read_access_finish_tick,
                               my_RT_write_access_finish_tick));
     }
-    const Tick finish_tick =
+    const Tick natural_finish_tick =
         std::max(other_finish_tick, my_direct_index_filter_finish_tick);
+    const Tick finish_tick = std::max(
+        natural_finish_tick,
+        virtual_complete_line_drain_retry_tick);
     if (curTick() < finish_tick) {
         const Tick exposed_start =
             std::max(std::max(curTick(), other_finish_tick),
                      my_direct_index_filter_accounted_tick);
-        if (my_direct_index_filter_finish_tick > exposed_start) {
+        if (curTick() < natural_finish_tick &&
+            my_direct_index_filter_finish_tick > exposed_start) {
             const Cycles exposed = maa->getTicksToCycles(
                 my_direct_index_filter_finish_tick - exposed_start);
             (*maa->stats
@@ -6188,6 +6197,8 @@ void IndirectAccessUnit::executeInstruction() {
         virtual_word_attempts_this_cycle = 0;
         virtual_combine_bank_tick = curTick();
         virtual_combine_bank_conflict_tick = 0;
+        virtual_complete_line_drain_budget.reset();
+        virtual_complete_line_drain_retry_tick = 0;
         std::fill(virtual_combine_bank_used.begin(),
                   virtual_combine_bank_used.end(), false);
         virtual_pending_source = false;
@@ -7765,6 +7776,19 @@ void IndirectAccessUnit::executeInstruction() {
                 virtual_full_line_writes;
             (*maa->stats.IND_VirtPartialWrites[my_indirect_id]) +=
                 virtual_partial_word_writes;
+            const auto &drain_counters =
+                virtual_complete_line_drain_budget.counters();
+            panic_if(drain_counters.issuedLines !=
+                         static_cast<uint64_t>(virtual_full_line_writes),
+                     "I[%d] complete-line drain/accounting mismatch %lu/%d\n",
+                     my_indirect_id, drain_counters.issuedLines,
+                     virtual_full_line_writes);
+            (*maa->stats.IND_VirtCompleteLineDrainIssuedLines[
+                my_indirect_id]) += drain_counters.issuedLines;
+            (*maa->stats.IND_VirtCompleteLineDrainBudgetStallCycles[
+                my_indirect_id]) += drain_counters.stallCycles;
+            (*maa->stats.IND_VirtCompleteLineDrainPeakLinesPerCycle[
+                my_indirect_id]) += drain_counters.peakLinesPerCycle;
             if (completeLineOnlyOperation()) {
                 const uint64_t expected_tail =
                     my_max % my_words_per_cl == 0 ? 0 : 1;
@@ -10867,6 +10891,8 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
         if (virtual_masked_writes && victim.valid_words != 0 &&
             virtual_outstanding_writes <
                 virtual_max_outstanding_writes_limit) {
+            if (victim_was_full && !completeLineDrainAvailable())
+                return false;
             const int words = __builtin_popcount(victim.valid_words);
             VirtualCombinePayloadStore::LineData line_data{};
             const auto copy_result = virtual_combine_payload.copyLine(
@@ -10877,6 +10903,8 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
                      VirtualCombinePayloadStore::resultName(copy_result));
             if (createRetirementWrite(victim.line_vaddr, block_size,
                                       line_data.data(), victim.valid_words)) {
+                if (victim_was_full)
+                    recordCompleteLineDrainIssue();
                 retire_full_victim();
                 const auto release_result =
                     virtual_combine_payload.releaseMasked(
@@ -10887,7 +10915,10 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
                     my_indirect_id, victim.line_vaddr,
                     VirtualCombinePayloadStore::resultName(release_result));
                 virtual_combine_words -= words;
-                virtual_partial_word_writes++;
+                if (victim_was_full)
+                    virtual_full_line_writes++;
+                else
+                    virtual_partial_word_writes++;
                 victim.valid_words = 0;
             }
         } else {
@@ -11023,6 +11054,27 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
     return true;
 }
 
+bool
+IndirectAccessUnit::completeLineDrainAvailable()
+{
+    if (virtual_complete_line_drain_budget.available(curTick()))
+        return true;
+    virtual_complete_line_drain_retry_tick = std::max(
+        virtual_complete_line_drain_retry_tick,
+        maa->getClockEdge(Cycles(1)));
+    scheduleExecuteInstructionEvent(1);
+    return false;
+}
+
+void
+IndirectAccessUnit::recordCompleteLineDrainIssue()
+{
+    panic_if(!virtual_complete_line_drain_budget.recordIssue(curTick()),
+             "I[%d] complete-line drain issue exceeded width %u at tick %lu\n",
+             my_indirect_id, virtual_complete_line_drain_budget.limit(),
+             curTick());
+}
+
 void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
     const uint16_t full_mask = (1U << my_words_per_cl) - 1;
     panic_if(virtual_combine_payload.used() !=
@@ -11050,6 +11102,8 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
             panic_if(!slot.valid || slot.valid_words != full_mask,
                      "I[%d] page-ready slot %d is not a full combiner line\n",
                      my_indirect_id, selected);
+            if (!completeLineDrainAvailable())
+                break;
             VirtualCombinePayloadStore::LineData line_data{};
             const auto copy_result = virtual_combine_payload.copyLine(
                 slot.word_refs, slot.valid_words, my_word_size, line_data);
@@ -11060,6 +11114,7 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
             if (!createRetirementWrite(slot.line_vaddr, block_size,
                                        line_data.data()))
                 break;
+            recordCompleteLineDrainIssue();
             (*maa->stats.IND_VirtPageOrderedDrainSelections[my_indirect_id])++;
             if (virtual_combine_page_ready.hasReadyLater(selected_page)) {
                 (*maa->stats.IND_VirtPageOrderedDrainDeferrals[
@@ -11091,6 +11146,8 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
         if (slot.valid_words == full_mask &&
             virtual_outstanding_writes <
                 virtual_max_outstanding_writes_limit) {
+            if (!completeLineDrainAvailable())
+                continue;
             VirtualCombinePayloadStore::LineData line_data{};
             const auto copy_result = virtual_combine_payload.copyLine(
                 slot.word_refs, slot.valid_words, my_word_size, line_data);
@@ -11101,6 +11158,7 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
             if (!createRetirementWrite(slot.line_vaddr, block_size,
                                        line_data.data()))
                 continue;
+            recordCompleteLineDrainIssue();
             const auto release_result = virtual_combine_payload.releaseMasked(
                 slot.word_refs, slot.valid_words);
             panic_if(release_result != VirtualCombinePayloadStore::Result::Ok,

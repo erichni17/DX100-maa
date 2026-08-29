@@ -362,6 +362,16 @@ def addNoISAOptions(parser):
         help="Prioritize full virtual-combiner lines by 4K logical output page",
     )
     parser.add_argument(
+        "--maa_virtual_complete_line_drain_lines_per_cycle",
+        type=int,
+        default=0,
+        choices=(0, 1, 2, 4, 8),
+        help=(
+            "Complete virtual-combiner lines issued per MAA cycle "
+            "(0 is unlimited)"
+        ),
+    )
+    parser.add_argument(
         "--maa_virtual_response_slots",
         type=int,
         default=8,
@@ -393,9 +403,7 @@ def addNoISAOptions(parser):
     parser.add_argument(
         "--maa_virtual_dense_write_allocate",
         action="store_true",
-        help=(
-            "Use a no-read full-line first write for dense virtual backing"
-        ),
+        help=("Use a no-read full-line first write for dense virtual backing"),
     )
     parser.add_argument(
         "--maa_virtual_complete_line_only",

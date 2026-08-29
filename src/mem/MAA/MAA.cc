@@ -155,6 +155,8 @@ MAA::MAA(const MAAParams &p)
       virtual_combine_victim_policy(p.virtual_combine_victim_policy),
       virtual_page_ordered_combiner_drain(
           p.virtual_page_ordered_combiner_drain),
+      virtual_complete_line_drain_lines_per_cycle(
+          p.virtual_complete_line_drain_lines_per_cycle),
       virtual_combine_banks(p.virtual_combine_banks),
       virtual_response_slots(p.virtual_response_slots),
       virtual_response_words(p.virtual_response_words),
@@ -385,6 +387,11 @@ MAA::MAA(const MAAParams &p)
                   virtual_descriptor_spool_read_ahead),
              "Bounded global merge requires descriptor spooling and "
              "disallows paged replay read-ahead\n");
+    panic_if(!maa::CompleteLineDrainBudget::validIssueWidth(
+                 virtual_complete_line_drain_lines_per_cycle),
+             "Virtual complete-line drain width must be one of 0/1/2/4/8, "
+             "got %u\n",
+             virtual_complete_line_drain_lines_per_cycle);
     panic_if(virtual_dense_write_allocate && !virtual_strict_two_phase,
              "Dense backing write allocation requires strict two-phase mode\n");
     if (virtual_complete_line_only) {
@@ -738,6 +745,8 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
     for (int i = 0; i < memSidePorts.size(); i++) {
         memSidePorts[i]->allocate(i);
     }
+    const unsigned int complete_line_drain_width =
+        virtual_complete_line_drain_lines_per_cycle;
     for (int i = 0; i < num_indirect_units_total; i++) {
         indirectAccessUnits[i].allocate(i, num_tile_elements,
                                         num_offset_table_entries,
@@ -760,6 +769,7 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
                                         virtual_masked_writes,
                                         virtual_dense_write_allocate,
                                         virtual_complete_line_only,
+                                        complete_line_drain_width,
                                         soa_jit_predicate_active_credits,
                                         virtual_index_buffer_lines,
                                         virtual_index_issue_lines_per_cycle,
@@ -8774,6 +8784,30 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtFullLineWrites"),
             statistics::units::Count::get(),
             "number of full-cache-line virtual retirement writes"));
+        IND_VirtCompleteLineDrainIssuedLines.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_VirtCompleteLineDrainIssuedLines"),
+                statistics::units::Count::get(),
+                "complete virtual-combiner lines issued through the drain "
+                "budget"));
+        IND_VirtCompleteLineDrainBudgetStallCycles.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_VirtCompleteLineDrainBudgetStallCycles"),
+                statistics::units::Cycle::get(),
+                "MAA cycles with a ready complete virtual-combiner line "
+                "blocked by finite drain width"));
+        IND_VirtCompleteLineDrainPeakLinesPerCycle.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_VirtCompleteLineDrainPeakLinesPerCycle"),
+                statistics::units::Count::get(),
+                "sum of per-instruction peak complete virtual-combiner "
+                "lines issued in one MAA cycle"));
         IND_VirtPartialWrites.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtPartialWrites"),
             statistics::units::Count::get(),

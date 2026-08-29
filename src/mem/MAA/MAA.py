@@ -100,6 +100,11 @@ class MAA(ClockedObject):
         False,
         "Prioritize full virtual-combiner lines by 4K logical output page",
     )
+    virtual_complete_line_drain_lines_per_cycle = Param.Unsigned(
+        0,
+        "Complete virtual-combiner lines issued per MAA cycle "
+        "(0 is unlimited; finite values are 1/2/4/8)",
+    )
     virtual_response_slots = Param.Unsigned(
         8, "Retained source responses used by virtual gather retirement"
     )
