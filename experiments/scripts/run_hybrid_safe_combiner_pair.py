@@ -21,10 +21,12 @@ ARM = base.ArmSpec(
 )
 TREATMENTS = {
     "control16": {
-        "slots": 16, "words": 0, "ways": 0, "result_words": 192
+        "slots": 16, "words": 0, "ways": 0, "response_words": 0,
+        "result_words": 192
     },
     "safe512w16": {
         "slots": 512, "words": 1600, "ways": 16,
+        "response_words": 64,
         "result_words": 1664
     },
 }
@@ -36,7 +38,7 @@ def require(condition: bool, message: str) -> None:
 
 
 def command_for(gem5: Path, out: Path, slots: int, words: int,
-                ways: int) -> list[str]:
+                ways: int, response_words: int) -> list[str]:
     command = json.loads(
         (pair.PREDECESSOR / "arms/hybrid64/command.json").read_text()
     )
@@ -51,6 +53,11 @@ def command_for(gem5: Path, out: Path, slots: int, words: int,
     pair.set_option(command, "--maa_virtual_combine_slots=", str(slots))
     pair.set_option(command, "--maa_virtual_combine_words=", str(words))
     pair.set_option(command, "--maa_virtual_combine_ways=", str(ways))
+    pair.set_option(
+        command, "--maa_virtual_response_word_pool=", str(response_words)
+    )
+    if response_words:
+        command.append("--maa_virtual_complete_line_only")
     if not any(
         token.startswith("--maa_virtual_index_issue_lines_per_cycle=")
         for token in command
@@ -84,8 +91,15 @@ def classify(root: Path, name: str) -> dict[str, object]:
         combine_slots=treatment["slots"],
         combine_words=treatment["words"],
         combine_ways=treatment["ways"],
+        response_word_pool=treatment["response_words"],
         strict_result_words=treatment["result_words"],
         require_partial_retirement=name == "control16",
+    )
+    config = base.parse_config(root / "arms" / name / "run/config.ini")
+    require(
+        config.get("virtual_complete_line_only")
+        == ("false" if name == "control16" else "true"),
+        f"{name}: complete-line-only option did not resolve",
     )
     stats = base.first_stats_section(root / "arms" / name / "run/stats.txt")
     diagnostics = {
@@ -158,6 +172,7 @@ def main() -> int:
             treatment["slots"],
             treatment["words"],
             treatment["ways"],
+            treatment["response_words"],
         )
         wrapper = pair.wrapped(root, selector, command)
         (arm / "command.json").write_text(json.dumps(command, indent=2) + "\n")

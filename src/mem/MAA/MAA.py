@@ -120,6 +120,10 @@ class MAA(ClockedObject):
         False,
         "Initialize the first dense backing fragment with a no-read full-line write",
     )
+    virtual_complete_line_only = Param.Bool(
+        False,
+        "Fail closed unless virtual result backing retires complete cache lines",
+    )
     virtual_idealized_write_ack = Param.Bool(
         False,
         "Diagnostic upper bound: expose virtual pages at final write issue",

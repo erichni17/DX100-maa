@@ -398,6 +398,11 @@ def addNoISAOptions(parser):
         ),
     )
     parser.add_argument(
+        "--maa_virtual_complete_line_only",
+        action="store_true",
+        help="Fail closed if virtual result backing would publish a partial line",
+    )
+    parser.add_argument(
         "--maa_virtual_idealized_write_ack",
         action="store_true",
         help=(

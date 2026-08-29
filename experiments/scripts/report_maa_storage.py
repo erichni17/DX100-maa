@@ -270,6 +270,18 @@ def main() -> int:
     dense_write_allocate = maa.getboolean(
         "virtual_dense_write_allocate", fallback=False
     )
+    complete_line_only = maa.getboolean(
+        "virtual_complete_line_only", fallback=False
+    )
+    if complete_line_only and (
+        combine_words == 0
+        or response_pool == 0
+        or combine_words + response_pool > physical
+    ):
+        fail(
+            "virtual_complete_line_only requires explicit combiner/response "
+            "word pools within physical_tile_elements"
+        )
     try:
         inactive_masked_retention_entries = int(
             maa.get("inactive_page_masked_fragment_retention_lines", "0")
@@ -561,6 +573,7 @@ def main() -> int:
         + active_page_counter_bits
         + active_claim_bits
         + dense_backing_line_bits_per_unit
+        + (1 if complete_line_only and args.mechanism != "native" else 0)
     )
     virtual_control_bytes_per_unit = math.ceil(
         virtual_control_bits_per_unit / 8
@@ -726,6 +739,7 @@ def main() -> int:
             "row_table_organizations_allocated": allocated_slices,
             "direct_retirement_line_handoff": direct_retirement_line_handoff,
             "virtual_dense_write_allocate": dense_write_allocate,
+            "virtual_complete_line_only": complete_line_only,
             "inactive_page_masked_fragment_retention_lines": (
                 inactive_masked_retention_entries
             ),
@@ -934,6 +948,9 @@ def main() -> int:
             ),
             "dense_backing_initialized_fixed_max_bits_per_indirect_unit": (
                 2048 if dense_write_allocate else 0
+            ),
+            "complete_line_only_control_bits_per_indirect_unit": (
+                1 if complete_line_only and args.mechanism != "native" else 0
             ),
             "virtual_retirement_metadata_bytes_per_entry": (
                 virtual_retirement_metadata_bytes_per_entry

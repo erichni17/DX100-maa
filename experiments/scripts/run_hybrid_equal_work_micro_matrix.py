@@ -572,6 +572,7 @@ def classify_arm(
     combine_slots: int = 16,
     combine_words: int = 0,
     combine_ways: int = 0,
+    response_word_pool: int = 0,
     strict_result_words: int = 192,
     require_partial_retirement: bool = True,
 ) -> dict[str, object]:
@@ -646,7 +647,7 @@ def classify_arm(
         "virtual_combine_words": str(combine_words),
         "virtual_combine_ways": str(combine_ways),
         "virtual_response_slots": "8",
-        "virtual_response_word_pool": "0",
+        "virtual_response_word_pool": str(response_word_pool),
         "virtual_words_per_cycle": "1",
         "virtual_max_outstanding_writes": "32",
         "no_reorder": "false",

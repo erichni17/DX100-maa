@@ -162,6 +162,7 @@ protected:
     int virtual_max_outstanding_writes_limit = 0;
     bool virtual_masked_writes = false;
     bool virtual_dense_write_allocate = false;
+    bool virtual_complete_line_only = false;
     maa::DenseBackingLineTracker dense_backing_lines;
     uint64_t virtual_dense_initialization_writes = 0;
     struct VirtualRetirementSenderState : public Packet::SenderState
@@ -298,6 +299,7 @@ public:
                   int _virtual_max_outstanding_writes,
                   bool _virtual_masked_writes,
                   bool _virtual_dense_write_allocate,
+                  bool _virtual_complete_line_only,
                   int _soa_jit_predicate_active_credits,
                   int _virtual_index_buffer_lines,
                   int _virtual_index_issue_lines_per_cycle,
@@ -764,6 +766,7 @@ protected:
     bool isSoaJitPageFedRmw() const;
     bool strictTwoPhaseOperation() const;
     bool denseWriteAllocateOperation() const;
+    bool completeLineOnlyOperation() const;
     bool strictPageFedTwoPhaseOperation() const;
     bool usesBoundedDirectIndexPasses() const;
     bool usesBoundedSourceResponses() const;

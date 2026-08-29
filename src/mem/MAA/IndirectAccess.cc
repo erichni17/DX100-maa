@@ -114,6 +114,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
                                   int _virtual_max_outstanding_writes,
                                   bool _virtual_masked_writes,
                                   bool _virtual_dense_write_allocate,
+                                  bool _virtual_complete_line_only,
                                   int _soa_jit_predicate_active_credits,
                                   int _virtual_index_buffer_lines,
                                   int _virtual_index_issue_lines_per_cycle,
@@ -189,6 +190,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
     virtual_max_outstanding_writes_limit = _virtual_max_outstanding_writes;
     virtual_masked_writes = _virtual_masked_writes;
     virtual_dense_write_allocate = _virtual_dense_write_allocate;
+    virtual_complete_line_only = _virtual_complete_line_only;
     panic_if(virtual_dense_write_allocate && !virtual_masked_writes,
              "I[%d] dense backing allocation requires masked retirement\n",
              my_indirect_id);
@@ -895,6 +897,11 @@ bool IndirectAccessUnit::strictTwoPhaseOperation() const {
 }
 bool IndirectAccessUnit::denseWriteAllocateOperation() const {
     return virtual_dense_write_allocate && strictTwoPhaseOperation();
+}
+bool IndirectAccessUnit::completeLineOnlyOperation() const {
+    return virtual_complete_line_only && my_instruction != nullptr &&
+        my_instruction->opcode ==
+            Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX;
 }
 bool IndirectAccessUnit::strictPageFedTwoPhaseOperation() const {
     return maa->virtual_strict_two_phase && isSoaJitPageFedRmw();
@@ -6093,6 +6100,11 @@ void IndirectAccessUnit::executeInstruction() {
                      !isDirectIndexLoad(),
                  "I[%d] strict two-phase requires a direct B/index stream\n",
                  my_indirect_id);
+        panic_if(virtual_complete_line_only && isVirtualLoad() &&
+                     !completeLineOnlyOperation(),
+                 "I[%d] complete-line-only mode requires an unpredicated "
+                 "direct-index virtual load\n",
+                 my_indirect_id);
         virtual_combine_words_limit = virtual_combine_words_configured == 0
             ? virtual_combine_slots.size() * my_words_per_cl
             : virtual_combine_words_configured;
@@ -7727,6 +7739,11 @@ void IndirectAccessUnit::executeInstruction() {
                 virtual_full_line_writes;
             (*maa->stats.IND_VirtPartialWrites[my_indirect_id]) +=
                 virtual_partial_word_writes;
+            panic_if(completeLineOnlyOperation() &&
+                         virtual_partial_word_writes != 0,
+                     "I[%d] complete-line-only operation published %lu "
+                     "partial lines\n",
+                     my_indirect_id, virtual_partial_word_writes);
             (*maa->stats.IND_VirtDenseInitializationWrites[my_indirect_id]) +=
                 virtual_dense_initialization_writes;
             initializeVirtualPageTracking();
@@ -10803,6 +10820,10 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
         const bool victim_is_target = target == &victim;
         const bool victim_was_full =
             victim.valid_words == ((1U << my_words_per_cl) - 1);
+        panic_if(completeLineOnlyOperation() && !victim_was_full,
+                 "I[%d] complete-line-only capacity pressure selected "
+                 "partial victim 0x%lx mask=0x%x\n",
+                 my_indirect_id, victim.line_vaddr, victim.valid_words);
         bool victim_page_ready = maa->virtual_page_ordered_combiner_drain &&
             victim_was_full;
         auto retire_full_victim = [&]() {
@@ -11066,6 +11087,10 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
         }
         if (!flush_partial)
             continue;
+        panic_if(completeLineOnlyOperation(),
+                 "I[%d] complete-line-only final drain retained partial "
+                 "line 0x%lx mask=0x%x\n",
+                 my_indirect_id, slot.line_vaddr, slot.valid_words);
         if (virtual_masked_writes && slot.valid_words != 0 &&
             virtual_outstanding_writes <
                 virtual_max_outstanding_writes_limit) {

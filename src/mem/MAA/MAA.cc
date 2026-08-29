@@ -163,6 +163,7 @@ MAA::MAA(const MAAParams &p)
       virtual_max_outstanding_writes(p.virtual_max_outstanding_writes),
       virtual_masked_writes(p.virtual_masked_writes),
       virtual_dense_write_allocate(p.virtual_dense_write_allocate),
+      virtual_complete_line_only(p.virtual_complete_line_only),
       virtual_idealized_write_ack(p.virtual_idealized_write_ack),
       direct_retirement_line_handoff(p.direct_retirement_line_handoff),
       soa_jit_predicate_active_credits(
@@ -386,6 +387,18 @@ MAA::MAA(const MAAParams &p)
              "disallows paged replay read-ahead\n");
     panic_if(virtual_dense_write_allocate && !virtual_strict_two_phase,
              "Dense backing write allocation requires strict two-phase mode\n");
+    if (virtual_complete_line_only) {
+        panic_if(virtual_combine_words == 0 ||
+                     virtual_response_word_pool == 0,
+                 "Complete-line-only mode requires explicit combiner and "
+                 "response word pools\n");
+        panic_if(virtual_combine_words + virtual_response_word_pool >
+                     physical_tile_elements,
+                 "Complete-line-only result pools %u+%u exceed physical "
+                 "capacity %u\n",
+                 virtual_combine_words, virtual_response_word_pool,
+                 physical_tile_elements);
+    }
     if (virtual_strict_two_phase) {
         panic_if(num_tile_elements !=
                          maa::StrictTwoPhaseReference::LogicalElements ||
@@ -746,6 +759,7 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
                                         virtual_max_outstanding_writes,
                                         virtual_masked_writes,
                                         virtual_dense_write_allocate,
+                                        virtual_complete_line_only,
                                         soa_jit_predicate_active_credits,
                                         virtual_index_buffer_lines,
                                         virtual_index_issue_lines_per_cycle,

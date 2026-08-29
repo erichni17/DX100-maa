@@ -448,6 +448,7 @@ public:
     unsigned int virtual_max_outstanding_writes;
     bool virtual_masked_writes;
     bool virtual_dense_write_allocate;
+    bool virtual_complete_line_only;
     bool virtual_idealized_write_ack;
     bool direct_retirement_line_handoff;
     unsigned int soa_jit_predicate_active_credits;

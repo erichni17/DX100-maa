@@ -153,6 +153,11 @@ def _get_maa_opts(options):
             options, "maa_virtual_dense_write_allocate"
         )
 
+    if hasattr(options, "maa_virtual_complete_line_only"):
+        opts["virtual_complete_line_only"] = getattr(
+            options, "maa_virtual_complete_line_only"
+        )
+
     if hasattr(options, "maa_virtual_idealized_write_ack"):
         opts["virtual_idealized_write_ack"] = getattr(
             options, "maa_virtual_idealized_write_ack"

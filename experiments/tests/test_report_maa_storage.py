@@ -27,6 +27,7 @@ class StorageReportTest(unittest.TestCase):
         index_issue_width: int = 1,
         combine_words: int = 4096,
         dense_write_allocate: bool = False,
+        complete_line_only: bool = False,
     ) -> Path:
         values = {
             "num_cores": "4",
@@ -51,6 +52,9 @@ class StorageReportTest(unittest.TestCase):
             "virtual_native_issue_order": str(native_order).lower(),
             "virtual_dense_write_allocate": str(
                 dense_write_allocate
+            ).lower(),
+            "virtual_complete_line_only": str(
+                complete_line_only
             ).lower(),
             "direct_retirement_line_handoff": (
                 str(direct_retirement_line_handoff).lower()
@@ -465,6 +469,49 @@ class StorageReportTest(unittest.TestCase):
                     "physical_spd_virtual_payload_and_control_bytes"
                 ],
                 256,
+            )
+
+    def test_complete_line_only_requires_bounded_explicit_pools(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            valid = root / "valid"
+            invalid = root / "invalid"
+            valid.mkdir()
+            invalid.mkdir()
+            valid_config = self.write_config(
+                valid,
+                4096,
+                True,
+                response_pool=64,
+                combine_words=1600,
+                complete_line_only=True,
+            )
+            valid_result, output = self.run_report(
+                valid, valid_config, "direct-index"
+            )
+            self.assertEqual(valid_result.returncode, 0, valid_result.stderr)
+            report = json.loads((output / "maa_storage.json").read_text())
+            self.assertEqual(
+                report["incremental_virtual_control_lower_bound"][
+                    "complete_line_only_control_bits_per_indirect_unit"
+                ],
+                1,
+            )
+            invalid_config = self.write_config(
+                invalid,
+                4096,
+                True,
+                response_pool=480,
+                combine_words=4096,
+                complete_line_only=True,
+            )
+            invalid_result, _ = self.run_report(
+                invalid, invalid_config, "direct-index"
+            )
+            self.assertNotEqual(invalid_result.returncode, 0)
+            self.assertIn(
+                "requires explicit combiner/response word pools",
+                invalid_result.stderr,
             )
 
     def test_inactive_masked_retention_valid_capacities_and_exact_totals(
