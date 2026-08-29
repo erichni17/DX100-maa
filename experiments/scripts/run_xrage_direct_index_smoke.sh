@@ -45,6 +45,7 @@ guest_abi=${MAA_GUEST_ABI_TILE_ELEMENTS:-}
 debug_flags=${XRAGE_DEBUG_FLAGS:-}
 result_scale=${XRAGE_RESULT_SCALE:-1}
 direct_retirement_line_handoff=${MAA_DIRECT_RETIREMENT_LINE_HANDOFF:-0}
+complete_line_only=${MAA_VIRTUAL_COMPLETE_LINE_ONLY:-0}
 expected_direct_descriptors=${XRAGE_EXPECTED_DIRECT_DESCRIPTORS:-0}
 expected_direct_context_high_water=${XRAGE_EXPECTED_DIRECT_CONTEXT_HIGH_WATER:-0}
 l3_ports=${XRAGE_L3_PORTS:-4}
@@ -138,6 +139,21 @@ debug_args=()
     echo "MAA_DIRECT_RETIREMENT_LINE_HANDOFF must be 0 or 1" >&2
     exit 2
 }
+[[ $complete_line_only == 0 || $complete_line_only == 1 ]] || {
+    echo "MAA_VIRTUAL_COMPLETE_LINE_ONLY must be 0 or 1" >&2
+    exit 2
+}
+if [[ $complete_line_only == 1 ]]; then
+    [[ $arm == direct_index_4k || $arm == direct_index_16k ]] || {
+        echo "complete-line-only requires a direct-index XRAGE arm" >&2
+        exit 2
+    }
+    [[ $response_word_pool -gt 0 &&
+       $((combine_words + response_word_pool)) -le $physical ]] || {
+        echo "complete-line-only pools exceed physical result words" >&2
+        exit 2
+    }
+fi
 [[ $expected_direct_descriptors -ge 0 &&
    $expected_direct_context_high_water -ge 0 ]] || {
     echo "expected direct descriptor/context counts must be non-negative" >&2
@@ -321,6 +337,7 @@ fi
     printf 'result_scale=%s\n' "$result_scale"
     printf 'direct_retirement_line_handoff=%s\n' \
         "$direct_retirement_line_handoff"
+    printf 'virtual_complete_line_only=%s\n' "$complete_line_only"
     printf 'expected_direct_descriptors=%s\n' "$expected_direct_descriptors"
     printf 'expected_direct_context_high_water=%s\n' \
         "$expected_direct_context_high_water"
@@ -434,6 +451,9 @@ restore_cmd=(
 if [[ $direct_retirement_line_handoff == 1 ]]; then
     restore_cmd+=(--maa_direct_retirement_line_handoff)
 fi
+if [[ $complete_line_only == 1 ]]; then
+    restore_cmd+=(--maa_virtual_complete_line_only)
+fi
 if [[ $grow_order == 1 ]]; then
     restore_cmd+=(--maa_virtual_grow_order)
 fi
@@ -508,6 +528,14 @@ expected_line_handoff=$(
 grep -Fqx "direct_retirement_line_handoff=$expected_line_handoff" \
     "$out/run/config.ini" || {
     echo "resolved direct-retirement line handoff differs from manifest" >&2
+    exit 1
+}
+expected_complete_line_only=$(
+    [[ $complete_line_only -eq 1 ]] && echo true || echo false
+)
+grep -Fqx "virtual_complete_line_only=$expected_complete_line_only" \
+    "$out/run/config.ini" || {
+    echo "resolved complete-line-only mode differs from manifest" >&2
     exit 1
 }
 if [[ $guest_arm == direct4x3 ]]; then
