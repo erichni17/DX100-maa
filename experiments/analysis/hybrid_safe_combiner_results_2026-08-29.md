@@ -97,11 +97,11 @@ another dense direct-index result whose backing RFO misses are actually on the
 critical path.
 
 Evidence root:
-`/data1/nier/dx100-runs/2026-08-29-hybrid-safe-combiner-pair-r3`.
+`/data1/nier/dx100-runs/2026-08-29-hybrid-safe-combiner-pair-r4`.
 
 - Result SHA-256:
-  `0a24c99120779f451c127235e93c975b322da5e09511a91336d01bf7aaf12da3`.
+  `f2b2840b06d3298510994fed9aa1c8567d901f6fd2eb9dc96d282bf2424e64eb`.
 - Artifact-ledger SHA-256:
-  `817dc07bcb1fcb515b3690ee2162c8b7e706dc248bd7011f3badda3ccd8e12f2`.
+  `89c270bb33a59afd411d13ef01639952a087eddea16674396b3fd27b5aee8f0a`.
 - gem5 SHA-256:
-  `14f9870e5bf337588d50e012a557e26ed51e99ccc9b07476991960d8cf4e1917`.
+  `bb3702ec8fa8e9b328f0efd22da29f756d70679ab3aa69a080dd41e9f2ea4598`.

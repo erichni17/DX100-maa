@@ -184,3 +184,46 @@ Primary evidence remains in
 `strict_linecombined_crossapp_2026-08-27.md`,
 `lead_combiner_reuse_2026-08-27.md`, and
 `../reviews/2026-08-27_strict_linecombine_hardware_review.md`.
+
+## Complete-line successor (2026-08-29)
+
+The matched bottleneck audit found that the 16-line hybrid's first partial
+write fetches every old backing line.  An experimental unmasked-placeholder
+shortcut removed those misses and measured a 16.89% micro gain, but an
+independent review correctly rejected it because zero placeholders could
+become visible in coherent memory.
+
+The legal replacement retains fragments privately and publishes only complete
+lines.  The final source adds a fail-closed `virtual_complete_line_only` mode:
+explicit response/combiner pools must fit the physical word bound, partial
+victim or final drain panics, and terminal partial writes must be zero.
+
+Final equal-work micro point:
+
+| Arm | `simTicks` |
+|---|---:|
+| Native16, feeder64 | 48,491,838 |
+| Native4x4, feeder64 | 77,068,112 |
+| 16-line hybrid control | 56,868,031 |
+| Complete-line hybrid, 512 tags x 16 ways / 1,600 words | 47,241,090 |
+
+The safe hybrid is 16.929% faster than the matched hybrid control, 2.579%
+faster than native16, and exact.  It emits 2,048 full lines and zero partial
+lines, remains within 1,664 result words, and retains a 65.683% comparable
+storage reduction in the one-unit micro ledger.  Without page overlap, the
+hybrid remains slower than native16; the crossing is attributable to both
+complete-line retirement and measured page-level overlap.
+
+The same mechanism produces the first positive real-application successor on
+XRAGE gather0 64K.  A selected 1,536-tag x 16-way / 2,560-word combiner plus
+1,024 response words takes 37,268,284 ticks versus 42,312,279 for same-binary
+native16 and 56,159,086 for the bounded hybrid control.  It closes 8,192 full
+producer lines, zero partial lines, exact direct-consumer work, and exact
+output while retaining a 63.211% comparable-storage reduction.  See
+`hybrid_safe_combiner_results_2026-08-29.md` and
+`xrage_complete_line_hybrid_results_2026-08-29.md`.
+
+CG NA256 is tick-identical under the related dense treatment, so no full CG
+run is justified.  Remaining gates are more XRAGE/FLAG configurations,
+finite tag/reference/payload timing and ports, delayed/competing coherence
+stress, and synthesis/calibrated area-energy-Fmax evidence.
