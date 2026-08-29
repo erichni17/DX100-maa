@@ -17,6 +17,13 @@ All three current runs use one gem5 binary, SHA-256
 the same 64K LANL XRAGE gather input, exact verifier, two-channel Ramulator,
 and feeder depth 128 at finite default issue width.
 
+The bounded-control and selected-hybrid checkpoints were generated separately
+but their physical-memory images are byte-identical, SHA-256
+`ebf977e9ee165095602b75ce03752c5669aca3ae3d97a5563aa051d5fd30f8c2`.
+Their restore commands differ only in output/checkpoint paths and the declared
+combiner slots/words plus complete-line flag.  Native16 uses its native guest
+arm and therefore a separate exact checkpoint.
+
 | Arm | Geometry / result storage | `simTicks` |
 |---|---|---:|
 | Native16 | logical16K / physical16K | 42,312,279 |
