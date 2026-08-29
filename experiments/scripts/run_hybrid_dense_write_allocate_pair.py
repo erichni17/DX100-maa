@@ -32,11 +32,6 @@ EXPECTED_PREDECESSOR = {
         "d44609f28a30e46648dca4febfe7ff0b43d47fe08140dbb356c5597ebe01b870"
     ),
 }
-ARM = base.ArmSpec(
-    "placeholder", "transparent", 4096, 16384, 4096, 64, True, 1, 4, 4
-)
-
-
 class PairError(RuntimeError):
     pass
 
@@ -133,12 +128,14 @@ def ramulator_reads(log: str) -> int:
     return sum(values.values())
 
 
-def classify(root: Path, name: str, dense: bool) -> dict[str, object]:
+def classify(root: Path, name: str, dense: bool,
+             arm_spec: base.ArmSpec) -> dict[str, object]:
     spec = base.ArmSpec(
-        name, ARM.mode, ARM.page_elements, ARM.logical_elements,
-        ARM.physical_elements, ARM.feeder_lines, ARM.strict,
-        ARM.expected_indirect_ops, ARM.expected_stream_writes,
-        ARM.expected_scalar_ops,
+        name, arm_spec.mode, arm_spec.page_elements,
+        arm_spec.logical_elements, arm_spec.physical_elements,
+        arm_spec.feeder_lines, arm_spec.strict,
+        arm_spec.expected_indirect_ops, arm_spec.expected_stream_writes,
+        arm_spec.expected_scalar_ops,
     )
     classified = base.classify_arm(root, spec)
     arm = root / "arms" / name
@@ -201,6 +198,11 @@ def main() -> int:
     parser.add_argument("out", type=Path)
     parser.add_argument("--gem5", type=Path, required=True)
     parser.add_argument("--gem5-sha256", required=True)
+    parser.add_argument(
+        "--mode",
+        choices=("transparent", "transparent_ready"),
+        default="transparent",
+    )
     args = parser.parse_args()
     root = args.out.resolve()
     gem5 = args.gem5.resolve()
@@ -210,6 +212,9 @@ def main() -> int:
             "gem5 identity mismatch")
     require(BWRAP.is_file() and RAMULATOR.is_file(), "missing runtime input")
     verify_predecessor()
+    arm_spec = base.ArmSpec(
+        "placeholder", args.mode, 4096, 16384, 4096, 64, True, 1, 4, 4
+    )
     root.mkdir(parents=True)
     (root / "arms").mkdir()
     environment = dict(os.environ)
@@ -222,7 +227,7 @@ def main() -> int:
         arm = root / "arms" / name
         arm.mkdir()
         treatment = arm / "treatment.txt"
-        treatment.write_text(ARM.treatment)
+        treatment.write_text(arm_spec.treatment)
         command = command_for(gem5, arm / "run", dense)
         wrapper = wrapped(root, treatment, command)
         (arm / "command.json").write_text(json.dumps(command, indent=2) + "\n")
@@ -243,8 +248,8 @@ def main() -> int:
 
     verify_predecessor()
     arms = {
-        "control": classify(root, "control", False),
-        "dense": classify(root, "dense", True),
+        "control": classify(root, "control", False, arm_spec),
+        "dense": classify(root, "dense", True, arm_spec),
     }
     control_ticks = int(arms["control"]["counters"]["simTicks"])
     dense_ticks = int(arms["dense"]["counters"]["simTicks"])
@@ -259,6 +264,7 @@ def main() -> int:
         "gem5_sha256": args.gem5_sha256,
         "source_commit": base.source_commit(),
         "predecessor": str(PREDECESSOR),
+        "mode": args.mode,
         "same_binary": True,
         "same_checkpoint": True,
         "same_semantic_work": True,

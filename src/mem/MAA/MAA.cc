@@ -384,6 +384,8 @@ MAA::MAA(const MAAParams &p)
                   virtual_descriptor_spool_read_ahead),
              "Bounded global merge requires descriptor spooling and "
              "disallows paged replay read-ahead\n");
+    panic_if(virtual_dense_write_allocate && !virtual_strict_two_phase,
+             "Dense backing write allocation requires strict two-phase mode\n");
     if (virtual_strict_two_phase) {
         panic_if(num_tile_elements !=
                          maa::StrictTwoPhaseReference::LogicalElements ||
