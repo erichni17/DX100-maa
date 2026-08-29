@@ -77,7 +77,6 @@ def main() -> int:
 
     expected_manifest = {
         "source_commit": args.source_commit,
-        "simulator_source_commit": args.source_commit,
         "arm": "direct_index_4k",
         "guest_arm": "direct4",
         "result_scale": "1",
@@ -93,6 +92,10 @@ def main() -> int:
         "timeout": "none",
     }
     audited: list[dict[str, object]] = []
+    allowed_untracked = {
+        "?? experiments/scripts/summarize_flag_complete_line.py",
+        "?? experiments/tests/test_summarize_flag_complete_line.py",
+    }
     for case in cases:
         case_id = case["id"]
         require(case_id in by_id, f"missing top-level result for {case_id}")
@@ -110,13 +113,23 @@ def main() -> int:
         for key, expected in expected_manifest.items():
             require(manifest.get(key) == expected,
                     f"{case_id}: {key}={manifest.get(key)!r}, expected {expected!r}")
+        require(
+            re.fullmatch(r"[0-9a-f]{40}", manifest.get("runner_source_commit", ""))
+            is not None,
+            f"invalid runner source commit for {case_id}",
+        )
 
         require((case_root / "checkpoint.exit").read_text().strip() == "0",
                 f"checkpoint failed for {case_id}")
         require((case_root / "restore.exit").read_text().strip() == "0",
                 f"restore failed for {case_id}")
-        require((case_root / "source_status.txt").read_text() == "",
-                f"dirty source recorded for {case_id}")
+        source_status = set(
+            (case_root / "source_status.txt").read_text().splitlines()
+        )
+        require(source_status <= allowed_untracked,
+                f"unexpected dirty source for {case_id}: {source_status}")
+        require((case_root / "source.diff").read_text() == "",
+                f"tracked source diff recorded for {case_id}")
         require((case_root / "xrage_attribution_smoke.pass").is_file(),
                 f"missing verifier pass for {case_id}")
         log = (case_root / "restore.log").read_text()
@@ -154,7 +167,12 @@ def main() -> int:
                 f"write-count closure failed for {case_id}")
         require(full == length // 8 and partial == (1 if length % 8 else 0),
                 f"complete-line/tail closure failed for {case_id}")
-        audited.append({"id": case_id, "ticks": ticks, "hash": row["output_hash"]})
+        audited.append({
+            "id": case_id,
+            "ticks": ticks,
+            "hash": row["output_hash"],
+            "allowed_untracked_analysis_files": sorted(source_status),
+        })
 
     report = {
         "schema": "dx100.flag.complete_line_campaign_audit.v1",

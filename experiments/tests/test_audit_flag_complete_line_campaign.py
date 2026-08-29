@@ -48,7 +48,7 @@ class FlagCompleteLineCampaignAuditTest(unittest.TestCase):
             (case_root / "run").mkdir(parents=True)
             manifest = {
                 "source_commit": SOURCE,
-                "simulator_source_commit": SOURCE,
+                "runner_source_commit": SOURCE,
                 "arm": "direct_index_4k",
                 "guest_arm": "direct4",
                 "result_scale": "1",
@@ -70,6 +70,7 @@ class FlagCompleteLineCampaignAuditTest(unittest.TestCase):
             for name in ("checkpoint.exit", "restore.exit"):
                 (case_root / name).write_text("0\n")
             (case_root / "source_status.txt").write_text("")
+            (case_root / "source.diff").write_text("")
             (case_root / "xrage_attribution_smoke.pass").touch()
             (case_root / "restore.log").write_text(
                 "m5_exit instruction encountered\n"
