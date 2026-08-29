@@ -20,8 +20,13 @@ ARM = base.ArmSpec(
     "placeholder", "transparent", 4096, 16384, 4096, 64, True, 1, 4, 4
 )
 TREATMENTS = {
-    "control16": {"slots": 16, "words": 0, "result_words": 192},
-    "safe416": {"slots": 416, "words": 1600, "result_words": 1664},
+    "control16": {
+        "slots": 16, "words": 0, "ways": 0, "result_words": 192
+    },
+    "safe512w16": {
+        "slots": 512, "words": 1600, "ways": 16,
+        "result_words": 1664
+    },
 }
 
 
@@ -30,7 +35,8 @@ def require(condition: bool, message: str) -> None:
         raise pair.PairError(message)
 
 
-def command_for(gem5: Path, out: Path, slots: int, words: int) -> list[str]:
+def command_for(gem5: Path, out: Path, slots: int, words: int,
+                ways: int) -> list[str]:
     command = json.loads(
         (pair.PREDECESSOR / "arms/hybrid64/command.json").read_text()
     )
@@ -44,6 +50,7 @@ def command_for(gem5: Path, out: Path, slots: int, words: int) -> list[str]:
     pair.set_option(command, "--outdir=", str(out))
     pair.set_option(command, "--maa_virtual_combine_slots=", str(slots))
     pair.set_option(command, "--maa_virtual_combine_words=", str(words))
+    pair.set_option(command, "--maa_virtual_combine_ways=", str(ways))
     if not any(
         token.startswith("--maa_virtual_index_issue_lines_per_cycle=")
         for token in command
@@ -76,6 +83,7 @@ def classify(root: Path, name: str) -> dict[str, object]:
         spec,
         combine_slots=treatment["slots"],
         combine_words=treatment["words"],
+        combine_ways=treatment["ways"],
         strict_result_words=treatment["result_words"],
         require_partial_retirement=name == "control16",
     )
@@ -108,11 +116,11 @@ def classify(root: Path, name: str) -> dict[str, object]:
         <= (treatment["words"] or treatment["slots"] * 8),
         f"{name}: combiner bound exceeded",
     )
-    if name == "safe416":
+    if name == "safe512w16":
         require(
             item["counters"]["full_writes"] == 2048
             and item["counters"]["partial_writes"] == 0,
-            "safe416 did not emit exactly one complete write per line",
+            "safe512w16 did not emit exactly one complete write per line",
         )
     return {**item, "diagnostics": diagnostics}
 
@@ -145,7 +153,11 @@ def main() -> int:
         selector = arm / "treatment.txt"
         selector.write_text(ARM.treatment)
         command = command_for(
-            gem5, arm / "run", treatment["slots"], treatment["words"]
+            gem5,
+            arm / "run",
+            treatment["slots"],
+            treatment["words"],
+            treatment["ways"],
         )
         wrapper = pair.wrapped(root, selector, command)
         (arm / "command.json").write_text(json.dumps(command, indent=2) + "\n")
@@ -163,7 +175,7 @@ def main() -> int:
 
     arms = {name: classify(root, name) for name in TREATMENTS}
     control_ticks = int(arms["control16"]["counters"]["simTicks"])
-    safe_ticks = int(arms["safe416"]["counters"]["simTicks"])
+    safe_ticks = int(arms["safe512w16"]["counters"]["simTicks"])
     result = {
         "schema": "dx100.hybrid_safe_combiner_pair.v1",
         "terminal": True,
@@ -174,8 +186,8 @@ def main() -> int:
         "same_checkpoint": True,
         "physical_result_word_bound": 4096,
         "arms": arms,
-        "safe416_latency_change_pct": 100 * (safe_ticks / control_ticks - 1),
-        "control_over_safe416": control_ticks / safe_ticks,
+        "safe512w16_latency_change_pct": 100 * (safe_ticks / control_ticks - 1),
+        "control_over_safe512w16": control_ticks / safe_ticks,
     }
     (root / "result.json").write_text(
         json.dumps(result, indent=2, sort_keys=True) + "\n"
