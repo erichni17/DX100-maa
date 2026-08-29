@@ -113,6 +113,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
                                   int _virtual_words_per_cycle,
                                   int _virtual_max_outstanding_writes,
                                   bool _virtual_masked_writes,
+                                  bool _virtual_dense_write_allocate,
                                   int _soa_jit_predicate_active_credits,
                                   int _virtual_index_buffer_lines,
                                   int _virtual_index_issue_lines_per_cycle,
@@ -187,6 +188,10 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
              maa::VirtualRetirementScoreboard::MaxEntries);
     virtual_max_outstanding_writes_limit = _virtual_max_outstanding_writes;
     virtual_masked_writes = _virtual_masked_writes;
+    virtual_dense_write_allocate = _virtual_dense_write_allocate;
+    panic_if(virtual_dense_write_allocate && !virtual_masked_writes,
+             "I[%d] dense backing allocation requires masked retirement\n",
+             my_indirect_id);
     panic_if(_soa_jit_predicate_active_credits != 1 &&
                  _soa_jit_predicate_active_credits != 4 &&
                  _soa_jit_predicate_active_credits != 8 &&
@@ -887,6 +892,9 @@ bool IndirectAccessUnit::isDirectIndexLoad() const {
 bool IndirectAccessUnit::strictTwoPhaseOperation() const {
     return maa->virtual_strict_two_phase && isVirtualLoad() &&
            isDirectIndexLoad() && !isSoaJitRmw();
+}
+bool IndirectAccessUnit::denseWriteAllocateOperation() const {
+    return virtual_dense_write_allocate && strictTwoPhaseOperation();
 }
 bool IndirectAccessUnit::strictPageFedTwoPhaseOperation() const {
     return maa->virtual_strict_two_phase && isSoaJitPageFedRmw();
@@ -6085,6 +6093,19 @@ void IndirectAccessUnit::executeInstruction() {
                      !isDirectIndexLoad(),
                  "I[%d] strict two-phase requires a direct B/index stream\n",
                  my_indirect_id);
+        if (denseWriteAllocateOperation()) {
+            panic_if((my_backing_addr & (block_size - 1)) != 0,
+                     "I[%d] dense backing base 0x%lx is not line aligned\n",
+                     my_indirect_id, my_backing_addr);
+            const uint32_t backing_lines =
+                (my_max + my_words_per_cl - 1) / my_words_per_cl;
+            const auto dense_reset = dense_backing_lines.reset(backing_lines);
+            panic_if(dense_reset !=
+                         maa::DenseBackingLineTracker::Result::Accepted,
+                     "I[%d] cannot track %u dense backing lines: %s\n",
+                     my_indirect_id, backing_lines,
+                     maa::DenseBackingLineTracker::resultName(dense_reset));
+        }
         virtual_combine_words_limit = virtual_combine_words_configured == 0
             ? virtual_combine_slots.size() * my_words_per_cl
             : virtual_combine_words_configured;
@@ -6180,6 +6201,7 @@ void IndirectAccessUnit::executeInstruction() {
                   virtual_combine_set_victims.end(), 0);
         virtual_full_line_writes = 0;
         virtual_partial_word_writes = 0;
+        virtual_dense_initialization_writes = 0;
         virtual_max_combine_occupancy = 0;
         virtual_combine_words = 0;
         virtual_max_combine_words = 0;
@@ -7718,10 +7740,23 @@ void IndirectAccessUnit::executeInstruction() {
                 virtual_full_line_writes;
             (*maa->stats.IND_VirtPartialWrites[my_indirect_id]) +=
                 virtual_partial_word_writes;
+            (*maa->stats.IND_VirtDenseInitializationWrites[my_indirect_id]) +=
+                virtual_dense_initialization_writes;
             initializeVirtualPageTracking();
             panic_if(!virtual_retirement_scoreboard.empty(),
                      "I[%d] virtual retirement metadata remains at response\n",
                      my_indirect_id);
+            if (denseWriteAllocateOperation()) {
+                panic_if(!dense_backing_lines.allInitialized() ||
+                             virtual_dense_initialization_writes !=
+                                 dense_backing_lines.lines(),
+                         "I[%d] dense backing initialized %u/%u lines with "
+                         "%lu first writes\n",
+                         my_indirect_id,
+                         dense_backing_lines.initializedLines(),
+                         dense_backing_lines.lines(),
+                         virtual_dense_initialization_writes);
+            }
             panic_if(virtual_pages_ready !=
                          static_cast<int>(virtual_page_expected_words.size()),
                      "I[%d] only %d/%zu virtual pages became ready\n",
@@ -10108,7 +10143,17 @@ void IndirectAccessUnit::completeVirtualRetirementWrite(
                      virtual_page_expected_words[page],
                  "I[%d] virtual page %d completed too many words: %d/%d\n",
                  my_indirect_id, page, virtual_page_completed_words[page],
-                 virtual_page_expected_words[page]);
+                     virtual_page_expected_words[page]);
+    }
+    if (denseWriteAllocateOperation() &&
+        !dense_backing_lines.initialized(metadata.backingLine)) {
+        const auto initialized =
+            dense_backing_lines.acknowledge(metadata.backingLine);
+        panic_if(initialized !=
+                     maa::DenseBackingLineTracker::Result::Accepted,
+                 "I[%d] dense backing line %d ACK failed: %s\n",
+                 my_indirect_id, metadata.backingLine,
+                 maa::DenseBackingLineTracker::resultName(initialized));
     }
     maa->setVirtualLineWordsReady(my_dst_tile, my_backing_addr,
                                   metadata.generation,
@@ -10149,11 +10194,33 @@ bool IndirectAccessUnit::createRetirementWrite(Addr vaddr, unsigned size,
         macro_backing_address_retries++;
         return false;
     }
+    int dense_backing_line = -1;
+    bool dense_initialization = false;
+    if (denseWriteAllocateOperation()) {
+        panic_if(size != block_size || vaddr < my_backing_addr,
+                 "I[%d] dense first write is not one backing line\n",
+                 my_indirect_id);
+        dense_backing_line = (vaddr - my_backing_addr) / block_size;
+        panic_if(!dense_backing_lines.validLine(dense_backing_line),
+                 "I[%d] dense backing line %d is out of range\n",
+                 my_indirect_id, dense_backing_line);
+        dense_initialization =
+            !dense_backing_lines.initialized(dense_backing_line);
+    }
+    const bool full_line_transport =
+        maa::DenseBackingLineTracker::fullLineTransport(
+            denseWriteAllocateOperation(),
+            dense_backing_line >= 0 &&
+                dense_backing_lines.initialized(dense_backing_line),
+            valid_words);
+    panic_if(dense_initialization && !full_line_transport,
+             "I[%d] dense initialization retained a masked transport\n",
+             my_indirect_id);
     RequestPtr req = std::make_shared<Request>(paddr, size, flags,
                                                maa->requestorId);
     req->setRegion(my_backing_addr_range_id);
     std::vector<bool> byte_enable;
-    if (valid_words != 0) {
+    if (valid_words != 0 && !full_line_transport) {
         panic_if(size != block_size,
                  "I[%d] masked retirement write is not a cache line\n",
                  my_indirect_id);
@@ -10177,6 +10244,8 @@ bool IndirectAccessUnit::createRetirementWrite(Addr vaddr, unsigned size,
     pkt->pushSenderState(sender);
     my_expected_responses++;
     virtual_outstanding_writes++;
+    if (dense_initialization)
+        virtual_dense_initialization_writes++;
     if (maa->virtual_idealized_write_ack) {
         const auto *metadata = virtual_retirement_scoreboard.find(write_key);
         panic_if(metadata == nullptr,
@@ -10214,10 +10283,11 @@ bool IndirectAccessUnit::createRetirementWrite(Addr vaddr, unsigned size,
             "event=backing_write_issue schema=3 unit=%d occurrence=%lu "
             "operation_tick=%lu key=0x%lx vaddr=0x%lx paddr=0x%lx "
             "generation=%lu transaction=%lu bytes=%u valid_words=0x%x "
-            "outstanding=%d\n",
+            "dense_initialize=%d dense_line=%d outstanding=%d\n",
             my_indirect_id, attribution_event_occurrence++,
             my_decode_start_tick, write_key, vaddr, paddr,
             identity.generation, identity.transaction, size, valid_words,
+            dense_initialization, dense_backing_line,
             virtual_outstanding_writes);
     virtual_max_outstanding_writes = std::max(
         virtual_max_outstanding_writes, virtual_outstanding_writes);

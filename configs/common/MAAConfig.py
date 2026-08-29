@@ -148,6 +148,11 @@ def _get_maa_opts(options):
             options, "maa_virtual_masked_writes"
         )
 
+    if hasattr(options, "maa_virtual_dense_write_allocate"):
+        opts["virtual_dense_write_allocate"] = getattr(
+            options, "maa_virtual_dense_write_allocate"
+        )
+
     if hasattr(options, "maa_virtual_idealized_write_ack"):
         opts["virtual_idealized_write_ack"] = getattr(
             options, "maa_virtual_idealized_write_ack"

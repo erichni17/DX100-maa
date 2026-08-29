@@ -447,6 +447,7 @@ public:
     unsigned int virtual_words_per_cycle;
     unsigned int virtual_max_outstanding_writes;
     bool virtual_masked_writes;
+    bool virtual_dense_write_allocate;
     bool virtual_idealized_write_ack;
     bool direct_retirement_line_handoff;
     unsigned int soa_jit_predicate_active_credits;
@@ -1217,6 +1218,7 @@ public:
         std::vector<statistics::Scalar *> IND_VirtCombineWordHighWater;
         std::vector<statistics::Scalar *> IND_VirtFullLineWrites;
         std::vector<statistics::Scalar *> IND_VirtPartialWrites;
+        std::vector<statistics::Scalar *> IND_VirtDenseInitializationWrites;
         std::vector<statistics::Scalar *> IND_VirtPageOrderedDrainSelections;
         std::vector<statistics::Scalar *> IND_VirtPageOrderedDrainDeferrals;
         std::vector<statistics::Scalar *> IND_VirtCombineBankAccesses;

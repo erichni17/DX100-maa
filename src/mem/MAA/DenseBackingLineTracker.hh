@@ -59,6 +59,12 @@ class DenseBackingLineTracker
     uint32_t initializedLines() const { return initialized_; }
     bool allInitialized() const { return initialized_ == lines_; }
 
+    static bool fullLineTransport(bool enabled, bool line_initialized,
+                                  uint16_t semantic_mask)
+    {
+        return semantic_mask == 0 || (enabled && !line_initialized);
+    }
+
     static const char *resultName(Result result)
     {
         switch (result) {

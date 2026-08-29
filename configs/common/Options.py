@@ -391,6 +391,13 @@ def addNoISAOptions(parser):
         help="Retire partial virtual lines as masked cache-line writes",
     )
     parser.add_argument(
+        "--maa_virtual_dense_write_allocate",
+        action="store_true",
+        help=(
+            "Use a no-read full-line first write for dense virtual backing"
+        ),
+    )
+    parser.add_argument(
         "--maa_virtual_idealized_write_ack",
         action="store_true",
         help=(

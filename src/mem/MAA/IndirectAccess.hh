@@ -23,6 +23,7 @@
 #include "mem/MAA/BoundedQuantileRanges.hh"
 #include "mem/MAA/BoundedRangePass.hh"
 #include "mem/MAA/DirectIndexFeeder.hh"
+#include "mem/MAA/DenseBackingLineTracker.hh"
 #include "mem/MAA/FusedP16ProductState.hh"
 #include "mem/MAA/ReorderSurvivalTracker.hh"
 #include "mem/MAA/SoaJitOldResultBuffer.hh"
@@ -160,6 +161,9 @@ protected:
     int virtual_max_combine_words = 0;
     int virtual_max_outstanding_writes_limit = 0;
     bool virtual_masked_writes = false;
+    bool virtual_dense_write_allocate = false;
+    maa::DenseBackingLineTracker dense_backing_lines;
+    uint64_t virtual_dense_initialization_writes = 0;
     struct VirtualRetirementSenderState : public Packet::SenderState
     {
         maa::VirtualRetirementScoreboard::Identity identity{};
@@ -293,6 +297,7 @@ public:
                   int _virtual_words_per_cycle,
                   int _virtual_max_outstanding_writes,
                   bool _virtual_masked_writes,
+                  bool _virtual_dense_write_allocate,
                   int _soa_jit_predicate_active_credits,
                   int _virtual_index_buffer_lines,
                   int _virtual_index_issue_lines_per_cycle,
@@ -758,6 +763,7 @@ protected:
     bool isSoaJitOldResultRmw() const;
     bool isSoaJitPageFedRmw() const;
     bool strictTwoPhaseOperation() const;
+    bool denseWriteAllocateOperation() const;
     bool strictPageFedTwoPhaseOperation() const;
     bool usesBoundedDirectIndexPasses() const;
     bool usesBoundedSourceResponses() const;

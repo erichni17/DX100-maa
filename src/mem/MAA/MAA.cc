@@ -162,6 +162,7 @@ MAA::MAA(const MAAParams &p)
       virtual_words_per_cycle(p.virtual_words_per_cycle),
       virtual_max_outstanding_writes(p.virtual_max_outstanding_writes),
       virtual_masked_writes(p.virtual_masked_writes),
+      virtual_dense_write_allocate(p.virtual_dense_write_allocate),
       virtual_idealized_write_ack(p.virtual_idealized_write_ack),
       direct_retirement_line_handoff(p.direct_retirement_line_handoff),
       soa_jit_predicate_active_credits(
@@ -742,6 +743,7 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
                                         virtual_words_per_cycle,
                                         virtual_max_outstanding_writes,
                                         virtual_masked_writes,
+                                        virtual_dense_write_allocate,
                                         soa_jit_predicate_active_credits,
                                         virtual_index_buffer_lines,
                                         virtual_index_issue_lines_per_cycle,
@@ -8760,6 +8762,11 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtPartialWrites"),
             statistics::units::Count::get(),
             "number of partial-word virtual retirement writes"));
+        IND_VirtDenseInitializationWrites.push_back(new statistics::Scalar(
+            this,
+            MAKE_INDIRECT_STAT_NAME("IND_VirtDenseInitializationWrites"),
+            statistics::units::Count::get(),
+            "dense backing lines initialized by a no-read full-line write"));
         IND_VirtPageOrderedDrainSelections.push_back(new statistics::Scalar(
             this,
             MAKE_INDIRECT_STAT_NAME("IND_VirtPageOrderedDrainSelections"),

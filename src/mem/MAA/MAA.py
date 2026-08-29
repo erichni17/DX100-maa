@@ -116,6 +116,10 @@ class MAA(ClockedObject):
     virtual_masked_writes = Param.Bool(
         False, "Retire partial virtual lines as masked cache-line writes"
     )
+    virtual_dense_write_allocate = Param.Bool(
+        False,
+        "Initialize the first dense backing fragment with a no-read full-line write",
+    )
     virtual_idealized_write_ack = Param.Bool(
         False,
         "Diagnostic upper bound: expose virtual pages at final write issue",

@@ -267,6 +267,9 @@ def main() -> int:
     direct_retirement_line_handoff = maa.getboolean(
         "direct_retirement_line_handoff", fallback=False
     )
+    dense_write_allocate = maa.getboolean(
+        "virtual_dense_write_allocate", fallback=False
+    )
     try:
         inactive_masked_retention_entries = int(
             maa.get("inactive_page_masked_fragment_retention_lines", "0")
@@ -518,6 +521,11 @@ def main() -> int:
         virtual_retirement_scoreboard_bytes_per_unit * 8
     )
     page_counter_bits_per_unit = virtual_pages_used * (5 * iteration_bits + 1)
+    dense_backing_line_bits_per_unit = (
+        math.ceil(logical * args.word_bytes / 64)
+        if dense_write_allocate and args.mechanism != "native"
+        else 0
+    )
     completion_increment_bits = tiles * max(0, virtual_pages_used - 1)
 
     if args.mechanism == "native":
@@ -552,6 +560,7 @@ def main() -> int:
         + active_write_metadata_bits
         + active_page_counter_bits
         + active_claim_bits
+        + dense_backing_line_bits_per_unit
     )
     virtual_control_bytes_per_unit = math.ceil(
         virtual_control_bits_per_unit / 8
@@ -716,6 +725,7 @@ def main() -> int:
             "indirect_units": indirect_units,
             "row_table_organizations_allocated": allocated_slices,
             "direct_retirement_line_handoff": direct_retirement_line_handoff,
+            "virtual_dense_write_allocate": dense_write_allocate,
             "inactive_page_masked_fragment_retention_lines": (
                 inactive_masked_retention_entries
             ),
@@ -918,6 +928,12 @@ def main() -> int:
             ),
             "outstanding_write_metadata_bits_per_indirect_unit": (
                 active_write_metadata_bits
+            ),
+            "dense_backing_initialized_bits_per_indirect_unit": (
+                dense_backing_line_bits_per_unit
+            ),
+            "dense_backing_initialized_fixed_max_bits_per_indirect_unit": (
+                2048 if dense_write_allocate else 0
             ),
             "virtual_retirement_metadata_bytes_per_entry": (
                 virtual_retirement_metadata_bytes_per_entry

@@ -52,6 +52,12 @@ main()
     CHECK(tracker.allInitialized());
     CHECK(!tracker.initialized(17));
 
+    CHECK(Tracker::fullLineTransport(false, false, 0));
+    CHECK(Tracker::fullLineTransport(true, false, 0));
+    CHECK(!Tracker::fullLineTransport(false, false, 0x1));
+    CHECK(Tracker::fullLineTransport(true, false, 0x1));
+    CHECK(!Tracker::fullLineTransport(true, true, 0x1));
+
     std::cout << "dense_backing_line_tracker_test: PASS\n";
     return 0;
 }

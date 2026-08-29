@@ -26,6 +26,7 @@ class StorageReportTest(unittest.TestCase):
         index_lines: int = 8,
         index_issue_width: int = 1,
         combine_words: int = 4096,
+        dense_write_allocate: bool = False,
     ) -> Path:
         values = {
             "num_cores": "4",
@@ -48,6 +49,9 @@ class StorageReportTest(unittest.TestCase):
             "virtual_index_issue_lines_per_cycle": str(index_issue_width),
             "virtual_max_outstanding_writes": str(outstanding_writes),
             "virtual_native_issue_order": str(native_order).lower(),
+            "virtual_dense_write_allocate": str(
+                dense_write_allocate
+            ).lower(),
             "direct_retirement_line_handoff": (
                 str(direct_retirement_line_handoff).lower()
             ),
@@ -413,6 +417,54 @@ class StorageReportTest(unittest.TestCase):
                     "configured_destination_combiner_bytes_per_indirect_unit"
                 ],
                 4096 * 4,
+            )
+
+    def test_dense_backing_bitmap_is_charged_once_per_unit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            baseline = root / "baseline"
+            dense = root / "dense"
+            baseline.mkdir()
+            dense.mkdir()
+            baseline_config = self.write_config(
+                baseline, 4096, True
+            )
+            dense_config = self.write_config(
+                dense, 4096, True, dense_write_allocate=True
+            )
+            baseline_result, baseline_output = self.run_report(
+                baseline, baseline_config, "direct-index"
+            )
+            dense_result, dense_output = self.run_report(
+                dense, dense_config, "direct-index"
+            )
+            self.assertEqual(baseline_result.returncode, 0)
+            self.assertEqual(dense_result.returncode, 0)
+            baseline_report = json.loads(
+                (baseline_output / "maa_storage.json").read_text()
+            )
+            dense_report = json.loads(
+                (dense_output / "maa_storage.json").read_text()
+            )
+            control = dense_report["incremental_virtual_control_lower_bound"]
+            self.assertEqual(
+                control["dense_backing_initialized_bits_per_indirect_unit"],
+                2048,
+            )
+            self.assertEqual(
+                control[
+                    "dense_backing_initialized_fixed_max_bits_per_indirect_unit"
+                ],
+                2048,
+            )
+            self.assertEqual(
+                dense_report["bounded_state_lower_bound"][
+                    "physical_spd_virtual_payload_and_control_bytes"
+                ]
+                - baseline_report["bounded_state_lower_bound"][
+                    "physical_spd_virtual_payload_and_control_bytes"
+                ],
+                256,
             )
 
     def test_inactive_masked_retention_valid_capacities_and_exact_totals(
