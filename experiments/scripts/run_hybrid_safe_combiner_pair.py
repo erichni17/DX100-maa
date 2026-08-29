@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare the 16-line hybrid with a physical4K safe 512-tag combiner."""
+"""Compare the 16-line hybrid with a bounded complete-line combiner."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ ARM = base.ArmSpec(
 )
 TREATMENTS = {
     "control16": {"slots": 16, "words": 0, "result_words": 192},
-    "safe512": {"slots": 512, "words": 4032, "result_words": 4096},
+    "safe416": {"slots": 416, "words": 1600, "result_words": 1664},
 }
 
 
@@ -108,11 +108,11 @@ def classify(root: Path, name: str) -> dict[str, object]:
         <= (treatment["words"] or treatment["slots"] * 8),
         f"{name}: combiner bound exceeded",
     )
-    if name == "safe512":
+    if name == "safe416":
         require(
             item["counters"]["full_writes"] == 2048
             and item["counters"]["partial_writes"] == 0,
-            "safe512 did not emit exactly one complete write per line",
+            "safe416 did not emit exactly one complete write per line",
         )
     return {**item, "diagnostics": diagnostics}
 
@@ -163,7 +163,7 @@ def main() -> int:
 
     arms = {name: classify(root, name) for name in TREATMENTS}
     control_ticks = int(arms["control16"]["counters"]["simTicks"])
-    safe_ticks = int(arms["safe512"]["counters"]["simTicks"])
+    safe_ticks = int(arms["safe416"]["counters"]["simTicks"])
     result = {
         "schema": "dx100.hybrid_safe_combiner_pair.v1",
         "terminal": True,
@@ -174,8 +174,8 @@ def main() -> int:
         "same_checkpoint": True,
         "physical_result_word_bound": 4096,
         "arms": arms,
-        "safe512_latency_change_pct": 100 * (safe_ticks / control_ticks - 1),
-        "control_over_safe512": control_ticks / safe_ticks,
+        "safe416_latency_change_pct": 100 * (safe_ticks / control_ticks - 1),
+        "control_over_safe416": control_ticks / safe_ticks,
     }
     (root / "result.json").write_text(
         json.dumps(result, indent=2, sort_keys=True) + "\n"
