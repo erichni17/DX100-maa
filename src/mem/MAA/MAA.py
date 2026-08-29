@@ -122,7 +122,7 @@ class MAA(ClockedObject):
     )
     virtual_complete_line_only = Param.Bool(
         False,
-        "Fail closed unless virtual result backing retires complete cache lines",
+        "Retire complete virtual-result lines plus only the exact final tail",
     )
     virtual_idealized_write_ack = Param.Bool(
         False,

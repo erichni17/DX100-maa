@@ -903,6 +903,27 @@ bool IndirectAccessUnit::completeLineOnlyOperation() const {
         my_instruction->opcode ==
             Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX;
 }
+bool IndirectAccessUnit::legalCompleteLineTail(
+    Addr line_vaddr, uint16_t valid_words) const
+{
+    if (!completeLineOnlyOperation() || my_max <= 0 || my_word_size <= 0)
+        return false;
+    const Addr output_begin = my_backing_addr;
+    const Addr output_end = backingWordAddr(my_max - 1) + my_word_size;
+    const Addr final_line = (output_end - 1) & ~(block_size - 1);
+    if (line_vaddr != final_line || output_begin > line_vaddr + block_size ||
+        output_end <= line_vaddr)
+        return false;
+    const Addr semantic_begin = std::max(output_begin, line_vaddr);
+    const unsigned first_word =
+        (semantic_begin - line_vaddr) / my_word_size;
+    const unsigned words = (output_end - semantic_begin) / my_word_size;
+    if (words == 0 || words >= static_cast<unsigned>(my_words_per_cl))
+        return false;
+    const uint16_t expected = static_cast<uint16_t>(
+        ((1U << words) - 1) << first_word);
+    return valid_words == expected;
+}
 bool IndirectAccessUnit::strictPageFedTwoPhaseOperation() const {
     return maa->virtual_strict_two_phase && isSoaJitPageFedRmw();
 }
@@ -6105,6 +6126,11 @@ void IndirectAccessUnit::executeInstruction() {
                  "I[%d] complete-line-only mode requires an unpredicated "
                  "direct-index virtual load\n",
                  my_indirect_id);
+        panic_if(completeLineOnlyOperation() &&
+                     (my_backing_addr & (block_size - 1)) != 0,
+                 "I[%d] complete-line-only backing base 0x%lx is not "
+                 "cache-line aligned\n",
+                 my_indirect_id, my_backing_addr);
         virtual_combine_words_limit = virtual_combine_words_configured == 0
             ? virtual_combine_slots.size() * my_words_per_cl
             : virtual_combine_words_configured;
@@ -7739,11 +7765,15 @@ void IndirectAccessUnit::executeInstruction() {
                 virtual_full_line_writes;
             (*maa->stats.IND_VirtPartialWrites[my_indirect_id]) +=
                 virtual_partial_word_writes;
-            panic_if(completeLineOnlyOperation() &&
-                         virtual_partial_word_writes != 0,
-                     "I[%d] complete-line-only operation published %lu "
-                     "partial lines\n",
-                     my_indirect_id, virtual_partial_word_writes);
+            if (completeLineOnlyOperation()) {
+                const uint64_t expected_tail =
+                    my_max % my_words_per_cl == 0 ? 0 : 1;
+                panic_if(virtual_partial_word_writes != expected_tail,
+                         "I[%d] complete-line-only operation published %lu "
+                         "partial lines, expected tail count %lu\n",
+                         my_indirect_id, virtual_partial_word_writes,
+                         expected_tail);
+            }
             (*maa->stats.IND_VirtDenseInitializationWrites[my_indirect_id]) +=
                 virtual_dense_initialization_writes;
             initializeVirtualPageTracking();
@@ -11087,7 +11117,9 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
         }
         if (!flush_partial)
             continue;
-        panic_if(completeLineOnlyOperation(),
+        panic_if(completeLineOnlyOperation() &&
+                     !legalCompleteLineTail(slot.line_vaddr,
+                                            slot.valid_words),
                  "I[%d] complete-line-only final drain retained partial "
                  "line 0x%lx mask=0x%x\n",
                  my_indirect_id, slot.line_vaddr, slot.valid_words);

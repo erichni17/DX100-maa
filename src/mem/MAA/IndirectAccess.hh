@@ -767,6 +767,7 @@ protected:
     bool strictTwoPhaseOperation() const;
     bool denseWriteAllocateOperation() const;
     bool completeLineOnlyOperation() const;
+    bool legalCompleteLineTail(Addr line_vaddr, uint16_t valid_words) const;
     bool strictPageFedTwoPhaseOperation() const;
     bool usesBoundedDirectIndexPasses() const;
     bool usesBoundedSourceResponses() const;
