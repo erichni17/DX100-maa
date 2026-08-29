@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 8 ]]; then
-    echo "usage: $0 GEM5 GUEST CASES OUT MAX_PARALLEL SOURCE_COMMIT BINARY_SHA256 RAMULATOR_LIB" >&2
+if [[ $# -ne 9 ]]; then
+    echo "usage: $0 GEM5 GUEST CASES OUT MAX_PARALLEL SOURCE_COMMIT BINARY_SHA256 RAMULATOR_LIB RUNNER" >&2
     exit 2
 fi
 
@@ -14,8 +14,8 @@ parallel=$5
 source_commit=$6
 binary_sha=$7
 ramulator_lib=$(realpath "$8")
+runner_source=$(realpath "$9")
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-runner=$root/experiments/scripts/run_xrage_direct_index_smoke.sh
 provenance=/tmp/gem5-complete-tail.provenance
 
 [[ $parallel =~ ^[1-9][0-9]*$ ]] || {
@@ -43,15 +43,18 @@ provenance=/tmp/gem5-complete-tail.provenance
     exit 2
 }
 
-mkdir -p "$out/cases" "$out/rows" "$out/inputs/lib"
+mkdir -p "$out/cases" "$out/rows" "$out/inputs/lib" "$out/inputs/runner"
 cp "$ramulator_lib" "$out/inputs/lib/libramulator.so"
+cp "$runner_source" "$out/inputs/runner/run_xrage_direct_index_smoke.sh"
 frozen_lib=$out/inputs/lib/libramulator.so
+runner=$out/inputs/runner/run_xrage_direct_index_smoke.sh
 cp "$cases" "$out/cases.list"
 {
     printf 'source_commit=%s\n' "$source_commit"
     printf 'runner_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
     printf 'binary_sha256=%s\n' "$binary_sha"
     printf 'ramulator_sha256=%s\n' "$(sha256sum "$frozen_lib" | awk '{print $1}')"
+    printf 'runner_sha256=%s\n' "$(sha256sum "$runner" | awk '{print $1}')"
     printf 'arms=fused16,compact16,direct4_small,direct4_max\n'
     printf 'max_parallel=%s\n' "$parallel"
     printf 'timeout=none\n'
