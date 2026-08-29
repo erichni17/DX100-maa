@@ -82,3 +82,16 @@ contract, bitmap, and cache behavior are not justified.
 
 This mechanism improves dense output retirement.  It does not reduce A-source
 DRAM work, replace the 4K physical SPD, or solve row-table virtualization.
+
+## CPU-prewarm result
+
+The separate `hybrid_backing_rfo_bracket_2026-08-28.md` experiment tried to
+make each backing line writable with a CPU volatile read/write-self walk.  It
+did not remove any of the 2,048 MAA-region misses; free prewarm improved only
+0.11%, while charging the pass was 5.05x slower.  Reject CPU prewarming.
+
+That result does not exercise this proposal.  It never changes the MAA's first
+masked request into an aligned unmasked full-line write, and Ramulator reads
+do not decrease.  The go/no-go gate for this design therefore remains a
+default-off MAA first-write implementation or an equivalent cache-level
+experiment with exact semantic-mask accounting.

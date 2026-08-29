@@ -43,3 +43,24 @@ CPU-side writable-residency walk and resets statistics afterward. It is not a
 realizable hardware optimization claim; moreover, in this configuration it
 does not remove the MAA's RFO-miss mechanism in the first place. No production
 simulator source and no accepted guest were changed.
+
+## Lead integration review
+
+The result is accepted as a negative for this exact CPU prewarm method, not as
+a rejection of MAA-side dense write allocation.  The CPU's volatile
+read/write-self walk can leave ownership above the LLC; the MAA still records
+2,048 region misses and Ramulator reads do not decrease.  An MAA-issued
+unmasked full-line first write (`WriteLineReq`) is a different mechanism and
+remains untested.
+
+The three arms are internally matched, but this diagnostic uses one memory
+channel and a 16-slice/16-entry Row-Table geometry rather than the accepted
+two-channel matched-feeder comparison.  Its cold 61,355,199-tick observation
+must not replace the accepted 57,330,645-tick hybrid64 result.
+
+Finally, the archived commands point at one shared selector path whose sealed
+final contents are `charged`.  Per-arm selector artifacts, terminal arm
+markers, exact outputs, process records, and raw hashes remain present, but a
+future rerun should bind each immutable selector over the checkpointed path in
+a private mount namespace.  This is a provenance-strength limitation, not an
+observed correctness mismatch.
