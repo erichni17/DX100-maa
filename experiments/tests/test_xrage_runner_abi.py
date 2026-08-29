@@ -128,6 +128,20 @@ class XrageRunnerAbiTest(unittest.TestCase):
             self.assertIn("virtual_combine_slots=%s", script)
             self.assertIn("--maa_virtual_combine_slots", script)
 
+    def test_complete_line_drain_width_is_explicit_and_recorded(self):
+        script = RUNNER.read_text(encoding="utf-8")
+        self.assertIn(
+            "MAA_VIRTUAL_COMPLETE_LINE_DRAIN_LINES_PER_CYCLE", script
+        )
+        self.assertIn(
+            "virtual_complete_line_drain_lines_per_cycle=%s", script
+        )
+        self.assertIn(
+            "--maa_virtual_complete_line_drain_lines_per_cycle", script
+        )
+        self.assertIn("complete_line_drain_stall_cycles", script)
+        self.assertIn("complete_line_drain_peak", script)
+
     def test_partition_combiner_retention_is_explicit_and_recorded(self):
         for runner in (RUNNER, RECOVERY):
             script = runner.read_text(encoding="utf-8")

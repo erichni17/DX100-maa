@@ -46,6 +46,7 @@ debug_flags=${XRAGE_DEBUG_FLAGS:-}
 result_scale=${XRAGE_RESULT_SCALE:-1}
 direct_retirement_line_handoff=${MAA_DIRECT_RETIREMENT_LINE_HANDOFF:-0}
 complete_line_only=${MAA_VIRTUAL_COMPLETE_LINE_ONLY:-0}
+complete_line_drain_lines_per_cycle=${MAA_VIRTUAL_COMPLETE_LINE_DRAIN_LINES_PER_CYCLE:-0}
 expected_direct_descriptors=${XRAGE_EXPECTED_DIRECT_DESCRIPTORS:-0}
 expected_direct_context_high_water=${XRAGE_EXPECTED_DIRECT_CONTEXT_HIGH_WATER:-0}
 l3_ports=${XRAGE_L3_PORTS:-4}
@@ -143,6 +144,13 @@ debug_args=()
     echo "MAA_VIRTUAL_COMPLETE_LINE_ONLY must be 0 or 1" >&2
     exit 2
 }
+case "$complete_line_drain_lines_per_cycle" in
+    0|1|2|4|8) ;;
+    *)
+        echo "MAA_VIRTUAL_COMPLETE_LINE_DRAIN_LINES_PER_CYCLE must be 0/1/2/4/8" >&2
+        exit 2
+        ;;
+esac
 if [[ $complete_line_only == 1 ]]; then
     [[ $arm == direct_index_4k || $arm == direct_index_16k ]] || {
         echo "complete-line-only requires a direct-index XRAGE arm" >&2
@@ -338,6 +346,8 @@ fi
     printf 'direct_retirement_line_handoff=%s\n' \
         "$direct_retirement_line_handoff"
     printf 'virtual_complete_line_only=%s\n' "$complete_line_only"
+    printf 'virtual_complete_line_drain_lines_per_cycle=%s\n' \
+        "$complete_line_drain_lines_per_cycle"
     printf 'expected_direct_descriptors=%s\n' "$expected_direct_descriptors"
     printf 'expected_direct_context_high_water=%s\n' \
         "$expected_direct_context_high_water"
@@ -439,6 +449,7 @@ restore_cmd=(
     --maa_virtual_combine_slots="$combine_slots"
     --maa_virtual_combine_words="$combine_words"
     --maa_virtual_combine_ways="$combine_ways" --maa_virtual_combine_banks=0
+    --maa_virtual_complete_line_drain_lines_per_cycle="$complete_line_drain_lines_per_cycle"
     --maa_virtual_response_slots="$response_slots"
     --maa_virtual_response_word_pool="$response_word_pool"
     --maa_virtual_words_per_cycle=4 --maa_virtual_max_outstanding_writes=64
@@ -538,6 +549,12 @@ grep -Fqx "virtual_complete_line_only=$expected_complete_line_only" \
     echo "resolved complete-line-only mode differs from manifest" >&2
     exit 1
 }
+grep -Fqx \
+    "virtual_complete_line_drain_lines_per_cycle=$complete_line_drain_lines_per_cycle" \
+    "$out/run/config.ini" || {
+    echo "resolved complete-line drain width differs from manifest" >&2
+    exit 1
+}
 if [[ $guest_arm == direct4x3 ]]; then
     grep -Fqx "transparent_spd_mode=3" "$out/run/config.ini" || {
         echo "direct4x3 did not activate direct retirement" >&2
@@ -568,6 +585,17 @@ sum_indirect_stat() {
 }
 write_issues=$(sum_indirect_stat IND_VirtWriteIssues)
 write_completions=$(sum_indirect_stat IND_VirtWriteCompletions)
+full_line_writes=$(sum_indirect_stat IND_VirtFullLineWrites)
+partial_writes=$(sum_indirect_stat IND_VirtPartialWrites)
+complete_line_drain_issued=$(
+    sum_indirect_stat IND_VirtCompleteLineDrainIssuedLines
+)
+complete_line_drain_stall_cycles=$(
+    sum_indirect_stat IND_VirtCompleteLineDrainBudgetStallCycles
+)
+complete_line_drain_peak=$(
+    sum_indirect_stat IND_VirtCompleteLineDrainPeakLinesPerCycle
+)
 pages_ready=$(sum_indirect_stat IND_VirtPagesReady)
 index_words=$(sum_indirect_stat IND_VirtIndexWords)
 index_filter_words=$(sum_indirect_stat IND_VirtIndexFilterWords)
@@ -677,6 +705,9 @@ direct_early_line_overflows=$(
     first_roi_stat system.maa.direct_retirement_early_line_overflows
 )
 for value in "$write_issues" "$write_completions" "$pages_ready" \
+    "$full_line_writes" "$partial_writes" \
+    "$complete_line_drain_issued" "$complete_line_drain_stall_cycles" \
+    "$complete_line_drain_peak" \
     "$index_words" "$index_filter_words" "$index_filter_cycles" \
     "$index_filter_wait_events" "$index_filter_wait_cycles" \
     "$row_table_full_events" "$offset_table_full_events" \
@@ -690,6 +721,15 @@ for value in "$write_issues" "$write_completions" "$pages_ready" \
         exit 1
     }
 done
+[[ $complete_line_drain_issued -eq $full_line_writes ]] || {
+    echo "complete-line drain issue accounting did not close" >&2
+    exit 1
+}
+if [[ $complete_line_drain_lines_per_cycle -ne 0 &&
+      $complete_line_drain_peak -gt $complete_line_drain_lines_per_cycle ]]; then
+    echo "complete-line drain exceeded configured width" >&2
+    exit 1
+fi
 if [[ $guest_arm == direct4x3 ]]; then
     grep -q '^system\.maa\.direct_retirement_early_line_overflows ' "$stats" || {
         echo "direct4x3 early-line overflow statistic is missing" >&2
@@ -790,6 +830,10 @@ fi
 {
     printf 'output_hash\troi_simTicks\tfinal_simTicks\tstats_blocks'
     printf '\tvirtual_write_issues\tvirtual_write_completions'
+    printf '\tvirtual_full_line_writes\tvirtual_partial_writes'
+    printf '\tcomplete_line_drain_lines_per_cycle'
+    printf '\tcomplete_line_drain_issued'
+    printf '\tcomplete_line_drain_stall_cycles\tcomplete_line_drain_peak'
     printf '\tvirtual_pages_ready\tdirect_index_words'
     printf '\tvirtual_index_partitions\tindex_filter_words'
     printf '\tindex_filter_cycles\tindex_filter_wait_events'
@@ -817,9 +861,14 @@ fi
     printf '\tdirect_context_full_stalls'
     printf '\tdirect_request_record_high_water\tdirect_fallbacks'
     printf '\tdirect_early_line_overflows\n'
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$hash" "$roi_ticks" "$final_ticks" "$stats_blocks" \
-        "$write_issues" "$write_completions" "$pages_ready" \
+        "$write_issues" "$write_completions" \
+        "$full_line_writes" "$partial_writes" \
+        "$complete_line_drain_lines_per_cycle" \
+        "$complete_line_drain_issued" \
+        "$complete_line_drain_stall_cycles" "$complete_line_drain_peak" \
+        "$pages_ready" \
         "$index_words" "$index_partitions" "$index_filter_words" \
         "$index_filter_cycles" "$index_filter_wait_events" \
         "$index_filter_wait_cycles" "$row_table_full_events" \
