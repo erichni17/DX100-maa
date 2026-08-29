@@ -11057,7 +11057,8 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
 bool
 IndirectAccessUnit::completeLineDrainAvailable()
 {
-    if (virtual_complete_line_drain_budget.available(curTick()))
+    const uint64_t cycle = static_cast<uint64_t>(maa->curCycle());
+    if (virtual_complete_line_drain_budget.available(cycle))
         return true;
     virtual_complete_line_drain_retry_tick = std::max(
         virtual_complete_line_drain_retry_tick,
@@ -11069,7 +11070,8 @@ IndirectAccessUnit::completeLineDrainAvailable()
 void
 IndirectAccessUnit::recordCompleteLineDrainIssue()
 {
-    panic_if(!virtual_complete_line_drain_budget.recordIssue(curTick()),
+    const uint64_t cycle = static_cast<uint64_t>(maa->curCycle());
+    panic_if(!virtual_complete_line_drain_budget.recordIssue(cycle),
              "I[%d] complete-line drain issue exceeded width %u at tick %lu\n",
              my_indirect_id, virtual_complete_line_drain_budget.limit(),
              curTick());

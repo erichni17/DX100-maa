@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 7 ]]; then
-    echo "usage: $0 GEM5 GUEST CASES OUT MAX_PARALLEL SOURCE_COMMIT BINARY_SHA256" >&2
+if [[ $# -ne 8 ]]; then
+    echo "usage: $0 GEM5 GUEST CASES OUT MAX_PARALLEL SOURCE_COMMIT BINARY_SHA256 RAMULATOR_LIB" >&2
     exit 2
 fi
 
@@ -13,6 +13,7 @@ out=$(realpath -m "$4")
 parallel=$5
 source_commit=$6
 binary_sha=$7
+ramulator_lib=$(realpath "$8")
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 runner=$root/experiments/scripts/run_xrage_direct_index_smoke.sh
 provenance=/tmp/gem5-complete-tail.provenance
@@ -42,12 +43,15 @@ provenance=/tmp/gem5-complete-tail.provenance
     exit 2
 }
 
-mkdir -p "$out/cases" "$out/rows"
+mkdir -p "$out/cases" "$out/rows" "$out/inputs/lib"
+cp "$ramulator_lib" "$out/inputs/lib/libramulator.so"
+frozen_lib=$out/inputs/lib/libramulator.so
 cp "$cases" "$out/cases.list"
 {
     printf 'source_commit=%s\n' "$source_commit"
     printf 'runner_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
     printf 'binary_sha256=%s\n' "$binary_sha"
+    printf 'ramulator_sha256=%s\n' "$(sha256sum "$frozen_lib" | awk '{print $1}')"
     printf 'arms=fused16,compact16,direct4_small,direct4_max\n'
     printf 'max_parallel=%s\n' "$parallel"
     printf 'timeout=none\n'
@@ -115,6 +119,7 @@ run_one() {
         XRAGE_RESULT_SCALE=1 \
         XRAGE_SIMULATOR_SOURCE_COMMIT="$source_commit" \
         XRAGE_SIMULATOR_PROVENANCE="$provenance" \
+        LD_LIBRARY_PATH="$(dirname "$frozen_lib")${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
         "$runner" "$gem5" "$guest" "$input" "$run_out"
 
     [[ $(<"$run_out/checkpoint.exit") == 0 &&
@@ -136,7 +141,7 @@ run_one() {
         "${full:-0}" "${partial:-0}" "$hash" > "$out/rows/$id.$arm.tsv"
 }
 export -f run_one
-export out root runner provenance gem5 guest source_commit
+export out root runner provenance gem5 guest source_commit frozen_lib
 
 xargs -P "$parallel" -n 4 bash -c 'run_one "$@"' _ < "$tasks"
 
