@@ -17,14 +17,14 @@ from experiments.scripts import run_hybrid_equal_work_micro_matrix as base
 
 DENSE_ROOT = Path(
     "/data1/nier/dx100-runs/"
-    "2026-08-29-hybrid-dense-write-allocate-pair-r3"
+    "2026-08-29-hybrid-dense-write-allocate-pair-r4"
 )
 EXPECTED_DENSE = {
     "result.json": (
-        "3b0b10664149343761b590475e05ff72a6a76c725edcbca923490dcf828e0759"
+        "49f86c66498aa245936a03337f2ecdea0eec0841547d2c324aa816cea1e1ed7c"
     ),
     "artifacts.sha256": (
-        "4d730d2b9999a5985588758b4a772514e75c600d3b654466b9dac20b1139ccfd"
+        "f700bc8be8636bccea22b08ea85c732c67f8aca83d09f325903b6e99b4f0e648"
     ),
 }
 NATIVE_ARMS = (
