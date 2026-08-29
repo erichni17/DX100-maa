@@ -113,6 +113,11 @@ def _get_maa_opts(options):
             options, "maa_virtual_page_ordered_combiner_drain"
         )
 
+    if hasattr(options, "maa_virtual_complete_line_drain_lines_per_cycle"):
+        opts["virtual_complete_line_drain_lines_per_cycle"] = getattr(
+            options, "maa_virtual_complete_line_drain_lines_per_cycle"
+        )
+
     if hasattr(options, "maa_virtual_combine_banks"):
         opts["virtual_combine_banks"] = getattr(
             options, "maa_virtual_combine_banks"
