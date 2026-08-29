@@ -6093,19 +6093,6 @@ void IndirectAccessUnit::executeInstruction() {
                      !isDirectIndexLoad(),
                  "I[%d] strict two-phase requires a direct B/index stream\n",
                  my_indirect_id);
-        if (denseWriteAllocateOperation()) {
-            panic_if((my_backing_addr & (block_size - 1)) != 0,
-                     "I[%d] dense backing base 0x%lx is not line aligned\n",
-                     my_indirect_id, my_backing_addr);
-            const uint32_t backing_lines =
-                (my_max + my_words_per_cl - 1) / my_words_per_cl;
-            const auto dense_reset = dense_backing_lines.reset(backing_lines);
-            panic_if(dense_reset !=
-                         maa::DenseBackingLineTracker::Result::Accepted,
-                     "I[%d] cannot track %u dense backing lines: %s\n",
-                     my_indirect_id, backing_lines,
-                     maa::DenseBackingLineTracker::resultName(dense_reset));
-        }
         virtual_combine_words_limit = virtual_combine_words_configured == 0
             ? virtual_combine_slots.size() * my_words_per_cl
             : virtual_combine_words_configured;
@@ -9932,6 +9919,19 @@ void IndirectAccessUnit::initializeVirtualPageTracking() {
     panic_if(pages > MAA::MaxVirtualPages,
              "I[%d] virtual gather needs %d pages, exceeding token limit %d\n",
              my_indirect_id, pages, MAA::MaxVirtualPages);
+    if (denseWriteAllocateOperation()) {
+        panic_if((my_backing_addr & (block_size - 1)) != 0,
+                 "I[%d] dense backing base 0x%lx is not line aligned\n",
+                 my_indirect_id, my_backing_addr);
+        const uint32_t backing_lines =
+            (my_max + my_words_per_cl - 1) / my_words_per_cl;
+        const auto dense_reset = dense_backing_lines.reset(backing_lines);
+        panic_if(dense_reset !=
+                     maa::DenseBackingLineTracker::Result::Accepted,
+                 "I[%d] cannot track %u dense backing lines: %s\n",
+                 my_indirect_id, backing_lines,
+                 maa::DenseBackingLineTracker::resultName(dense_reset));
+    }
     virtual_page_logical_words.resize(pages);
     virtual_page_scanned_words.assign(pages, 0);
     virtual_page_expected_words.assign(pages, 0);
@@ -10177,6 +10177,7 @@ bool IndirectAccessUnit::createRetirementWrite(Addr vaddr, unsigned size,
                                                 uint16_t valid_words) {
     accountVirtualRequestInterval();
     validateRetirementWriteRange(vaddr, size, valid_words);
+    initializeVirtualPageTracking();
     Addr paddr = translatePacket(vaddr, BaseMMU::Write, size);
     const Addr write_key = size == block_size
         ? paddr & ~(block_size - 1) : paddr;
