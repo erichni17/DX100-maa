@@ -7,6 +7,9 @@ complete-line hybrid retirement.  The selected logical16K/physical4K hybrid
 takes 37,268,284 `simTicks`, 11.921% below same-binary native16 and 10.301%
 below the prior accepted hybrid.
 
+Two independent selected-hybrid launches reproduce exactly 37,268,284 ticks,
+the output hash, and every reported mechanism counter.
+
 This is not yet an XRAGE-suite or synthesized-hardware promotion.  Keep the
 configuration explicit and retain the complete-line fail-closed contract.
 
@@ -118,7 +121,9 @@ Evidence roots:
 - bounded control:
   `/data1/nier/dx100-runs/2026-08-29-xrage-complete-line-control-r2`;
 - selected complete-line hybrid:
-  `/data1/nier/dx100-runs/2026-08-29-xrage-complete-line-safe-1536t-2560w-r1`.
+  `/data1/nier/dx100-runs/2026-08-29-xrage-complete-line-safe-1536t-2560w-r1`
+  and
+  `/data1/nier/dx100-runs/2026-08-29-xrage-complete-line-safe-1536t-2560w-r2`.
 
 Combined ledger:
 `xrage_complete_line_artifacts_2026-08-29.sha256`.
