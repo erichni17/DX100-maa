@@ -42,5 +42,7 @@ completions, lookup latency, write credits, drain width, ready selection,
 exact ACK identity, and complete-line/tail legality.
 
 Still open: physical tag/payload/reference RAM banking and ports, same-set
-hazards, reset/epoch implementation, CPU/second-producer coherence or an
-exclusive destination contract, and synthesized area/energy/Fmax.
+hazards, reset/epoch implementation, CPU/virtual-alias coherence, and
+synthesized area/energy/Fmax. Overlapping live MAA producers are now rejected
+until prior page ACK closure; software still owes exclusive destination
+ownership against CPU/alias writes.
