@@ -19,6 +19,23 @@ Stage::Identity identity(uint32_t slot = 3)
     return {7, slot, 0x1000 + slot * 64, 0xff, 8};
 }
 
+void
+checkWidth(uint32_t width, uint8_t words)
+{
+    Stage stage;
+    Stage::Identity line{9, 1, 0x2000, 0xffff, words};
+    CHECK(stage.configure(width));
+    CHECK(stage.claim(line, 100) == Stage::Result::Accepted);
+    uint64_t cycle = 100;
+    while (stage.advance(line, cycle) == Stage::Result::NotReady)
+        ++cycle;
+    const uint64_t expected = (words + width - 1) / width;
+    CHECK(cycle == 100 + expected);
+    CHECK(stage.progress() == words);
+    CHECK(stage.counters().readCycles == expected);
+    CHECK(stage.complete(line) == Stage::Result::Accepted);
+}
+
 int main()
 {
     Stage stage;
@@ -44,5 +61,9 @@ int main()
           Stage::Result::NonMonotonicCycle);
     CHECK(stage.advance(identity(), 22) == Stage::Result::Accepted);
     CHECK(stage.complete(identity()) == Stage::Result::Accepted);
+    for (uint32_t width : {1U, 2U, 4U, 8U}) {
+        checkWidth(width, 8);
+        checkWidth(width, 16);
+    }
     std::cout << "complete-line payload staging tests passed\n";
 }
