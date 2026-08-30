@@ -27,6 +27,7 @@
 #include "mem/MAA/RangeFuser.hh"
 #include "mem/MAA/SPD.hh"
 #include "mem/MAA/StreamAccess.hh"
+#include "mem/MAA/VirtualCombineLookupPipeline.hh"
 #include "mem/packet.hh"
 #include "params/MAA.hh"
 #include "sim/cur_tick.hh"
@@ -162,6 +163,8 @@ MAA::MAA(const MAAParams &p)
       virtual_response_slots(p.virtual_response_slots),
       virtual_response_words(p.virtual_response_words),
       virtual_response_word_pool(p.virtual_response_word_pool),
+      virtual_combine_lookup_latency_cycles(
+          p.virtual_combine_lookup_latency_cycles),
       virtual_words_per_cycle(p.virtual_words_per_cycle),
       virtual_max_outstanding_writes(p.virtual_max_outstanding_writes),
       virtual_masked_writes(p.virtual_masked_writes),
@@ -393,6 +396,11 @@ MAA::MAA(const MAAParams &p)
              "Virtual complete-line drain width must be one of 0/1/2/4/8, "
              "got %u\n",
              virtual_complete_line_drain_lines_per_cycle);
+    panic_if(virtual_combine_lookup_latency_cycles >
+                 maa::VirtualCombineLookupPipeline::MaxLatencyCycles,
+             "Virtual combiner lookup latency must be in [0, %u], got %u\n",
+             maa::VirtualCombineLookupPipeline::MaxLatencyCycles,
+             virtual_combine_lookup_latency_cycles);
     panic_if(virtual_dense_write_allocate && !virtual_strict_two_phase,
              "Dense backing write allocation requires strict two-phase mode\n");
     if (virtual_complete_line_only) {
@@ -766,6 +774,7 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
                                         virtual_response_slots,
                                         virtual_response_words,
                                         virtual_response_word_pool,
+                                        virtual_combine_lookup_latency_cycles,
                                         virtual_words_per_cycle,
                                         virtual_max_outstanding_writes,
                                         virtual_masked_writes,
@@ -8765,6 +8774,29 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtCombineBankConflictCycles"),
             statistics::units::Count::get(),
             "cycles with a virtual destination-combiner same-bank conflict"));
+        IND_VirtCombineLookupIssues.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtCombineLookupIssues"),
+            statistics::units::Count::get(),
+            "ordinary virtual response words entering the combiner lookup "
+            "pipeline"));
+        IND_VirtCombineLookupCompletions.push_back(new statistics::Scalar(
+            this,
+            MAKE_INDIRECT_STAT_NAME("IND_VirtCombineLookupCompletions"),
+            statistics::units::Count::get(),
+            "ordinary virtual lookup words inserted after fixed latency"));
+        IND_VirtCombineLookupWaitCycles.push_back(new statistics::Scalar(
+            this,
+            MAKE_INDIRECT_STAT_NAME("IND_VirtCombineLookupWaitCycles"),
+            statistics::units::Cycle::get(),
+            "MAA cycles with an eligible virtual lookup blocked before "
+            "combiner insertion"));
+        IND_VirtCombineLookupPeakOccupancy.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_VirtCombineLookupPeakOccupancy"),
+                statistics::units::Count::get(),
+                "sum of per-instruction peak pending virtual lookup words"));
         IND_VirtResponseSlotHighWater.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtResponseSlotHighWater"),
             statistics::units::Count::get(),

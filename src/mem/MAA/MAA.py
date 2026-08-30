@@ -118,6 +118,10 @@ class MAA(ClockedObject):
     virtual_response_word_pool = Param.Unsigned(
         0, "Total useful words retained across packed source responses"
     )
+    virtual_combine_lookup_latency_cycles = Param.Unsigned(
+        0,
+        "Pipelined ordinary virtual-combiner tag-lookup latency in MAA cycles",
+    )
     virtual_max_outstanding_writes = Param.Unsigned(
         32, "Acknowledged virtual retirement writes allowed in flight"
     )

@@ -446,6 +446,7 @@ public:
     unsigned int virtual_response_slots;
     unsigned int virtual_response_words;
     unsigned int virtual_response_word_pool;
+    unsigned int virtual_combine_lookup_latency_cycles;
     unsigned int virtual_words_per_cycle;
     unsigned int virtual_max_outstanding_writes;
     bool virtual_masked_writes;
@@ -1232,6 +1233,11 @@ public:
         std::vector<statistics::Scalar *> IND_VirtPageOrderedDrainDeferrals;
         std::vector<statistics::Scalar *> IND_VirtCombineBankAccesses;
         std::vector<statistics::Scalar *> IND_VirtCombineBankConflictCycles;
+        std::vector<statistics::Scalar *> IND_VirtCombineLookupIssues;
+        std::vector<statistics::Scalar *> IND_VirtCombineLookupCompletions;
+        std::vector<statistics::Scalar *> IND_VirtCombineLookupWaitCycles;
+        std::vector<statistics::Scalar *>
+            IND_VirtCombineLookupPeakOccupancy;
         std::vector<statistics::Scalar *> IND_VirtWriteIssues;
         std::vector<statistics::Scalar *> IND_VirtWriteCompletions;
         std::vector<statistics::Scalar *> IND_VirtWriteAddressConflicts;

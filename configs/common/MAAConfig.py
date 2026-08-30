@@ -143,6 +143,11 @@ def _get_maa_opts(options):
             options, "maa_virtual_response_word_pool"
         )
 
+    if hasattr(options, "maa_virtual_combine_lookup_latency_cycles"):
+        opts["virtual_combine_lookup_latency_cycles"] = getattr(
+            options, "maa_virtual_combine_lookup_latency_cycles"
+        )
+
     if hasattr(options, "maa_virtual_words_per_cycle"):
         opts["virtual_words_per_cycle"] = getattr(
             options, "maa_virtual_words_per_cycle"
