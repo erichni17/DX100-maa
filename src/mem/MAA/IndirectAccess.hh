@@ -23,6 +23,7 @@
 #include "mem/MAA/BoundedQuantileRanges.hh"
 #include "mem/MAA/BoundedRangePass.hh"
 #include "mem/MAA/CompleteLineDrainBudget.hh"
+#include "mem/MAA/CompleteLinePayloadStaging.hh"
 #include "mem/MAA/DenseBackingLineTracker.hh"
 #include "mem/MAA/DirectIndexFeeder.hh"
 #include "mem/MAA/FusedP16ProductState.hh"
@@ -178,6 +179,7 @@ protected:
     bool virtual_dense_write_allocate = false;
     bool virtual_complete_line_only = false;
     maa::CompleteLineDrainBudget virtual_complete_line_drain_budget;
+    maa::CompleteLinePayloadStaging virtual_complete_line_payload_staging;
     Tick virtual_complete_line_drain_retry_tick = 0;
     maa::DenseBackingLineTracker dense_backing_lines;
     uint64_t virtual_dense_initialization_writes = 0;
@@ -319,6 +321,7 @@ public:
                   bool _virtual_dense_write_allocate,
                   bool _virtual_complete_line_only,
                   int _virtual_complete_line_drain_width,
+                  int _complete_line_payload_width,
                   int _soa_jit_predicate_active_credits,
                   int _virtual_index_buffer_lines,
                   int _virtual_index_issue_lines_per_cycle,
@@ -929,6 +932,10 @@ protected:
     bool insertVirtualCombineWord(int itr, const uint8_t *data);
     bool completeLineDrainAvailable();
     void recordCompleteLineDrainIssue();
+    maa::CompleteLinePayloadStaging::Identity completeLinePayloadIdentity(
+        int slot, const VirtualCombineSlot &line) const;
+    bool completeLinePayloadReady(int slot, const VirtualCombineSlot &line);
+    void completeLinePayloadIssued(int slot, const VirtualCombineSlot &line);
     void drainVirtualCombiner(bool flush_partial);
     bool virtualCombinerEmpty() const;
     bool boundedSourceResponsesComplete() const;

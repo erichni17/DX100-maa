@@ -51,6 +51,7 @@ result_scale=${XRAGE_RESULT_SCALE:-1}
 direct_retirement_line_handoff=${MAA_DIRECT_RETIREMENT_LINE_HANDOFF:-0}
 complete_line_only=${MAA_VIRTUAL_COMPLETE_LINE_ONLY:-0}
 complete_line_drain_lines_per_cycle=${MAA_VIRTUAL_COMPLETE_LINE_DRAIN_LINES_PER_CYCLE:-0}
+complete_line_payload_words_per_cycle=${MAA_VIRTUAL_COMPLETE_LINE_PAYLOAD_WORDS_PER_CYCLE:-0}
 expected_direct_descriptors=${XRAGE_EXPECTED_DIRECT_DESCRIPTORS:-0}
 expected_direct_context_high_water=${XRAGE_EXPECTED_DIRECT_CONTEXT_HIGH_WATER:-0}
 l3_ports=${XRAGE_L3_PORTS:-4}
@@ -169,6 +170,13 @@ case "$complete_line_drain_lines_per_cycle" in
     0|1|2|4|8) ;;
     *)
         echo "MAA_VIRTUAL_COMPLETE_LINE_DRAIN_LINES_PER_CYCLE must be 0/1/2/4/8" >&2
+        exit 2
+        ;;
+esac
+case "$complete_line_payload_words_per_cycle" in
+    0|1|2|4|8) ;;
+    *)
+        echo "MAA_VIRTUAL_COMPLETE_LINE_PAYLOAD_WORDS_PER_CYCLE must be 0/1/2/4/8" >&2
         exit 2
         ;;
 esac
@@ -369,6 +377,8 @@ fi
     printf 'virtual_complete_line_only=%s\n' "$complete_line_only"
     printf 'virtual_complete_line_drain_lines_per_cycle=%s\n' \
         "$complete_line_drain_lines_per_cycle"
+    printf 'virtual_complete_line_payload_words_per_cycle=%s\n' \
+        "$complete_line_payload_words_per_cycle"
     printf 'expected_direct_descriptors=%s\n' "$expected_direct_descriptors"
     printf 'expected_direct_context_high_water=%s\n' \
         "$expected_direct_context_high_water"
@@ -478,6 +488,7 @@ restore_cmd=(
     --maa_virtual_combine_banks="$combine_banks"
     --maa_virtual_combine_set_xor_shift="$combine_set_xor_shift"
     --maa_virtual_complete_line_drain_lines_per_cycle="$complete_line_drain_lines_per_cycle"
+    --maa_virtual_complete_line_payload_words_per_cycle="$complete_line_payload_words_per_cycle"
     --maa_virtual_response_slots="$response_slots"
     --maa_virtual_response_word_pool="$response_word_pool"
     --maa_virtual_combine_lookup_latency_cycles="$combine_lookup_latency"
@@ -587,6 +598,12 @@ grep -Fqx \
     echo "resolved complete-line drain width differs from manifest" >&2
     exit 1
 }
+grep -Fqx \
+    "virtual_complete_line_payload_words_per_cycle=$complete_line_payload_words_per_cycle" \
+    "$out/run/config.ini" || {
+    echo "resolved complete-line payload width differs from manifest" >&2
+    exit 1
+}
 grep -Fqx "virtual_combine_set_xor_shift=$combine_set_xor_shift" \
     "$out/run/config.ini" || {
     echo "resolved combiner set XOR shift differs from manifest" >&2
@@ -672,6 +689,18 @@ page_ordered_deferrals=$(
 combine_bank_accesses=$(sum_indirect_stat IND_VirtCombineBankAccesses)
 combine_bank_conflicts=$(
     sum_indirect_stat IND_VirtCombineBankConflictCycles
+)
+complete_line_payload_starts=$(
+    sum_indirect_stat IND_VirtCompleteLinePayloadStarts
+)
+complete_line_payload_completions=$(
+    sum_indirect_stat IND_VirtCompleteLinePayloadCompletions
+)
+complete_line_payload_read_cycles=$(
+    sum_indirect_stat IND_VirtCompleteLinePayloadReadCycles
+)
+complete_line_payload_blocked_cycles=$(
+    sum_indirect_stat IND_VirtCompleteLinePayloadBlockedCycles
 )
 pages_ready=$(sum_indirect_stat IND_VirtPagesReady)
 index_words=$(sum_indirect_stat IND_VirtIndexWords)
@@ -789,6 +818,10 @@ for value in "$write_issues" "$write_completions" "$pages_ready" \
     "$combine_lookup_wait_cycles" "$combine_lookup_peak" \
     "$page_ordered_selections" "$page_ordered_deferrals" \
     "$combine_bank_accesses" "$combine_bank_conflicts" \
+    "$complete_line_payload_starts" \
+    "$complete_line_payload_completions" \
+    "$complete_line_payload_read_cycles" \
+    "$complete_line_payload_blocked_cycles" \
     "$index_words" "$index_filter_words" "$index_filter_cycles" \
     "$index_filter_wait_events" "$index_filter_wait_cycles" \
     "$row_table_full_events" "$offset_table_full_events" \
@@ -810,6 +843,22 @@ if [[ $combine_banks -eq 0 ]]; then
 else
     [[ $combine_bank_accesses -ge $index_words ]] || {
         echo "combiner bank accesses do not cover inserted words" >&2
+        exit 1
+    }
+fi
+if [[ $complete_line_payload_words_per_cycle -eq 0 ]]; then
+    [[ $complete_line_payload_starts -eq 0 &&
+       $complete_line_payload_completions -eq 0 &&
+       $complete_line_payload_read_cycles -eq 0 &&
+       $complete_line_payload_blocked_cycles -eq 0 ]] || {
+        echo "disabled complete-line payload staging recorded work" >&2
+        exit 1
+    }
+else
+    [[ $complete_line_payload_starts -eq $full_line_writes &&
+       $complete_line_payload_completions -eq $full_line_writes &&
+       $complete_line_payload_read_cycles -gt 0 ]] || {
+        echo "complete-line payload staging did not close exactly" >&2
         exit 1
     }
 fi
@@ -990,8 +1039,13 @@ fi
     printf '\tcombine_lookup_completions\tcombine_lookup_wait_cycles'
     printf '\tcombine_lookup_peak\tpage_ordered_selections'
     printf '\tpage_ordered_deferrals\tcombine_bank_accesses'
-    printf '\tcombine_bank_conflict_cycles\n'
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '\tcombine_bank_conflict_cycles'
+    printf '\tcomplete_line_payload_words_per_cycle'
+    printf '\tcomplete_line_payload_starts'
+    printf '\tcomplete_line_payload_completions'
+    printf '\tcomplete_line_payload_read_cycles'
+    printf '\tcomplete_line_payload_blocked_cycles\n'
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
         "$hash" "$roi_ticks" "$final_ticks" "$stats_blocks" \
         "$write_issues" "$write_completions" \
         "$full_line_writes" "$partial_writes" \
@@ -1027,6 +1081,12 @@ fi
         "$combine_lookup_peak" "$page_ordered_selections" \
         "$page_ordered_deferrals" "$combine_bank_accesses" \
         "$combine_bank_conflicts"
+    printf '\t%s\t%s\t%s\t%s\t%s\n' \
+        "$complete_line_payload_words_per_cycle" \
+        "$complete_line_payload_starts" \
+        "$complete_line_payload_completions" \
+        "$complete_line_payload_read_cycles" \
+        "$complete_line_payload_blocked_cycles"
 } > "$out/result.tsv"
 read -r dram_reads dram_activates dram_precharges < <(
     awk '

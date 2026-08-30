@@ -108,6 +108,11 @@ class MAA(ClockedObject):
         "Complete virtual-combiner lines issued per MAA cycle "
         "(0 is unlimited; finite values are 1/2/4/8)",
     )
+    virtual_complete_line_payload_words_per_cycle = Param.Unsigned(
+        0,
+        "Complete-line payload words staged per MAA cycle "
+        "(0 is unlimited; finite values are 1/2/4/8)",
+    )
     virtual_response_slots = Param.Unsigned(
         8, "Retained source responses used by virtual gather retirement"
     )

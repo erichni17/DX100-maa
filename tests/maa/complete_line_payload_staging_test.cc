@@ -1,0 +1,48 @@
+#include <cstdlib>
+#include <iostream>
+
+#include "mem/MAA/CompleteLinePayloadStaging.hh"
+
+#define CHECK(condition)                                                     \
+    do {                                                                     \
+        if (!(condition)) {                                                  \
+            std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition     \
+                      << '\n';                                               \
+            std::exit(1);                                                    \
+        }                                                                    \
+    } while (false)
+
+using Stage = gem5::maa::CompleteLinePayloadStaging;
+
+Stage::Identity identity(uint32_t slot = 3)
+{
+    return {7, slot, 0x1000 + slot * 64, 0xff, 8};
+}
+
+int main()
+{
+    Stage stage;
+    CHECK(stage.configure(0));
+    CHECK(stage.claim(identity(), 10) == Stage::Result::Disabled);
+    CHECK(!stage.configure(3));
+    CHECK(stage.configure(4));
+    CHECK(stage.claim(identity(), 10) == Stage::Result::Accepted);
+    CHECK(stage.advance(identity(), 10) == Stage::Result::NotReady);
+    CHECK(stage.advance(identity(), 11) == Stage::Result::NotReady);
+    CHECK(stage.progress() == 4);
+    CHECK(stage.claim(identity(4), 11) == Stage::Result::Busy);
+    CHECK(stage.claim(identity(4), 11) == Stage::Result::Busy);
+    CHECK(stage.counters().blockedCycles == 1);
+    CHECK(stage.advance(identity(), 12) == Stage::Result::Accepted);
+    CHECK(stage.complete(identity()) == Stage::Result::Accepted);
+    CHECK(stage.counters().starts == 1);
+    CHECK(stage.counters().completions == 1);
+    CHECK(stage.counters().readCycles == 2);
+
+    CHECK(stage.claim(identity(), 20) == Stage::Result::Accepted);
+    CHECK(stage.advance(identity(), 19) ==
+          Stage::Result::NonMonotonicCycle);
+    CHECK(stage.advance(identity(), 22) == Stage::Result::Accepted);
+    CHECK(stage.complete(identity()) == Stage::Result::Accepted);
+    std::cout << "complete-line payload staging tests passed\n";
+}

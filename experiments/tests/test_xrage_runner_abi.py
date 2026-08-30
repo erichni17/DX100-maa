@@ -7,6 +7,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 RUNNER = ROOT / "experiments/scripts/run_xrage_direct_index_smoke.sh"
 RECOVERY = ROOT / "experiments/scripts/recover_xrage_checkpoint.sh"
+PAYLOAD_SWEEP = (
+    ROOT / "experiments/scripts/run_xrage_complete_line_payload_sweep.sh"
+)
 
 
 class XrageRunnerAbiTest(unittest.TestCase):
@@ -133,14 +136,39 @@ class XrageRunnerAbiTest(unittest.TestCase):
         self.assertIn(
             "MAA_VIRTUAL_COMPLETE_LINE_DRAIN_LINES_PER_CYCLE", script
         )
-        self.assertIn(
-            "virtual_complete_line_drain_lines_per_cycle=%s", script
-        )
+        self.assertIn("virtual_complete_line_drain_lines_per_cycle=%s", script)
         self.assertIn(
             "--maa_virtual_complete_line_drain_lines_per_cycle", script
         )
         self.assertIn("complete_line_drain_stall_cycles", script)
         self.assertIn("complete_line_drain_peak", script)
+
+    def test_complete_line_payload_width_is_explicit_and_recorded(self):
+        script = RUNNER.read_text(encoding="utf-8")
+        self.assertIn(
+            "MAA_VIRTUAL_COMPLETE_LINE_PAYLOAD_WORDS_PER_CYCLE", script
+        )
+        self.assertIn(
+            "virtual_complete_line_payload_words_per_cycle=%s", script
+        )
+        self.assertIn(
+            "--maa_virtual_complete_line_payload_words_per_cycle", script
+        )
+        self.assertIn("complete_line_payload_starts", script)
+        self.assertIn("complete_line_payload_completions", script)
+        self.assertIn("complete_line_payload_read_cycles", script)
+        self.assertIn("complete_line_payload_blocked_cycles", script)
+
+    def test_payload_sweep_uses_selected_bounded_geometry(self):
+        script = PAYLOAD_SWEEP.read_text(encoding="utf-8")
+        self.assertIn("MAA_VIRTUAL_COMBINE_SLOTS=1536", script)
+        self.assertIn("MAA_VIRTUAL_COMBINE_WORDS=2560", script)
+        self.assertIn("MAA_VIRTUAL_COMBINE_WAYS=8", script)
+        self.assertIn("MAA_VIRTUAL_COMBINE_SET_XOR_SHIFT=7", script)
+        self.assertIn("MAA_VIRTUAL_COMBINE_BANKS=4", script)
+        self.assertIn("MAA_VIRTUAL_COMBINE_LOOKUP_LATENCY_CYCLES=3", script)
+        self.assertIn("printf '%s\\n' 0 1 2 4 8", script)
+        self.assertIn("failed exact staging closure", script)
 
     def test_combiner_set_xor_shift_is_explicit_and_recorded(self):
         script = RUNNER.read_text(encoding="utf-8")
@@ -269,7 +297,9 @@ class XrageRunnerAbiTest(unittest.TestCase):
         self.assertIn("ramulator_config=%s", runner)
         self.assertIn("config_tree_sha256=%s", runner)
         self.assertIn("sha256sum --check --status", runner)
-        self.assertIn('artifacts=("$gem5" "$binary" "$input" "$config"', runner)
+        self.assertIn(
+            'artifacts=("$gem5" "$binary" "$input" "$config"', runner
+        )
 
     def test_native_4k_x3_runner_emits_a_4k_nontransparent_restore_abi(self):
         with tempfile.TemporaryDirectory() as directory:
