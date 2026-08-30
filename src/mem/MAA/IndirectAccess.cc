@@ -6193,10 +6193,12 @@ void IndirectAccessUnit::executeInstruction() {
         source_issue_digest_secondary = 0x9e3779b97f4a7c15ULL;
         virtual_reserved_responses = 0;
         virtual_reserved_response_words = 0;
-        virtual_word_budget_tick = curTick();
+        const uint64_t current_cycle =
+            static_cast<uint64_t>(maa->curCycle());
+        virtual_word_budget_cycle = current_cycle;
         virtual_word_attempts_this_cycle = 0;
-        virtual_combine_bank_tick = curTick();
-        virtual_combine_bank_conflict_tick = 0;
+        virtual_combine_bank_cycle = current_cycle;
+        virtual_combine_bank_conflict_cycle = 0;
         virtual_complete_line_drain_budget.reset();
         virtual_complete_line_drain_retry_tick = 0;
         std::fill(virtual_combine_bank_used.begin(),
@@ -10401,12 +10403,14 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                  "I[%d] native response 0x%lx head %d has no claim\n",
                  my_indirect_id, slot.claim_addr, slot.claim_head);
     };
-    if (virtual_word_budget_tick != curTick()) {
-        virtual_word_budget_tick = curTick();
+    const uint64_t current_cycle =
+        static_cast<uint64_t>(maa->curCycle());
+    if (virtual_word_budget_cycle != current_cycle) {
+        virtual_word_budget_cycle = current_cycle;
         virtual_word_attempts_this_cycle = 0;
     }
-    if (virtual_combine_bank_tick != curTick()) {
-        virtual_combine_bank_tick = curTick();
+    if (virtual_combine_bank_cycle != current_cycle) {
+        virtual_combine_bank_cycle = current_cycle;
         std::fill(virtual_combine_bank_used.begin(),
                   virtual_combine_bank_used.end(), false);
     }
@@ -10802,8 +10806,10 @@ bool IndirectAccessUnit::reserveVirtualCombineBank(int itr) {
     const int set = (line_vaddr / block_size) % num_sets;
     const int bank = set % virtual_combine_banks;
     if (virtual_combine_bank_used[bank]) {
-        if (virtual_combine_bank_conflict_tick != curTick()) {
-            virtual_combine_bank_conflict_tick = curTick();
+        const uint64_t current_cycle =
+            static_cast<uint64_t>(maa->curCycle());
+        if (virtual_combine_bank_conflict_cycle != current_cycle) {
+            virtual_combine_bank_conflict_cycle = current_cycle;
             (*maa->stats.IND_VirtCombineBankConflictCycles[my_indirect_id])++;
         }
         return false;
