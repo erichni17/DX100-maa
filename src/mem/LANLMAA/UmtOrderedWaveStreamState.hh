@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 
 #ifndef LANL_MAA_UMT_VARIANT_TEST_CONFIG
 #include "config/lanl_maa_umt_compute_tokens.hh"
@@ -85,6 +86,64 @@ class UmtOrderedWaveStreamStateModel
         UmtOrderedWaveMaximumGroups * 640;
     static constexpr size_t PhysicalBytes = PhysicalBits / 8;
     static constexpr size_t ResidualBytes = PhysicalBytes - AllocatedBytes;
+    // The replay observer is a simulation/test-only passive view.  It owns no
+    // scheduler state and is deliberately not connected to any production
+    // port, RTL wrapper, or cost model.  The 471-bit token layout is packed
+    // little-bit-first with one required zero pad bit in byte 58.
+    // It is compiled only by the directed replay test; production builds do
+    // not acquire trace state, ports, or cycle-result payloads.
+#ifdef LANL_MAA_UMT_CYCLE_TRACE_TEST
+    static constexpr size_t TraceTokenPackedBytes = 59;
+    static constexpr size_t TraceBankWords = 10;
+
+    enum class TraceOperation : uint8_t
+    {
+        None = 0,
+        DenominatorAdd,
+        Divide,
+        Multiply,
+        EdgeAdd
+    };
+
+    struct TraceIssue
+    {
+        bool valid = false;
+        size_t slot = 0;
+        size_t tokenIndex = 0;
+        TraceOperation operation = TraceOperation::None;
+        size_t dividerLane = std::numeric_limits<size_t>::max();
+    };
+
+    struct TraceTokenSnapshot
+    {
+        bool active = false;
+        size_t tokenIndex = 0;
+        std::array<uint8_t, TraceTokenPackedBytes> packed{};
+    };
+
+    struct TraceCounters
+    {
+        uint64_t fpOperations = 0;
+        uint64_t dualIssue = 0;
+        uint64_t fpIssueStall = 0;
+        uint64_t bankConflict = 0;
+        uint64_t writebackStall = 0;
+        uint64_t resultBankStall = 0;
+        uint64_t dividerNoLane = 0;
+    };
+
+    struct TraceStateSnapshot
+    {
+        size_t activeGroupCount = 0;
+        size_t issueCursor = 0;
+        std::array<std::array<std::array<uint64_t, TraceBankWords>,
+                              RowsPerBank>, Banks> bankWords{};
+        std::array<uint64_t, Banks> nextBankCycle{};
+        std::array<TraceTokenSnapshot, ComputeTokenCount> tokens{};
+        TraceCounters counters{};
+        uint64_t digest = 0;
+    };
+#endif
 
     struct Reservation
     {
@@ -155,6 +214,9 @@ class UmtOrderedWaveStreamStateModel
     {
         std::array<size_t, ComputeTokens> completedOperations{};
         size_t completions = 0;
+#ifdef LANL_MAA_UMT_CYCLE_TRACE_TEST
+        std::array<TraceIssue, FpIssueWidth> issues{};
+#endif
         DescriptorError error = DescriptorError::None;
     };
 
@@ -389,6 +451,11 @@ class UmtOrderedWaveStreamStateModel
         size_t issues = 0;
         for (size_t slot = 0; slot < FpIssueWidth; ++slot) {
             bool issued = false;
+#ifdef LANL_MAA_UMT_CYCLE_TRACE_TEST
+            TraceOperation traceOperation = TraceOperation::None;
+            size_t traceTokenIndex = 0;
+            size_t traceDividerLane = std::numeric_limits<size_t>::max();
+#endif
             for (size_t probe = 0;
                  probe < tokens.size() && !issued; ++probe) {
                 const size_t index = (issueCursor + probe) % tokens.size();
@@ -410,6 +477,10 @@ class UmtOrderedWaveStreamStateModel
                 token.phase = TokenPhase::DenominatorAddWait;
                 addNextIssue = cycle + 1;
                 issued = true;
+#ifdef LANL_MAA_UMT_CYCLE_TRACE_TEST
+                traceOperation = TraceOperation::DenominatorAdd;
+                traceTokenIndex = index;
+#endif
                 break;
               case TokenPhase::DividePending: {
                 size_t lane = dividerNextIssue.size();
@@ -453,6 +524,11 @@ class UmtOrderedWaveStreamStateModel
                 dividerNextIssue[lane] =
                     cycle + DividerInitiationInterval;
                 issued = true;
+#ifdef LANL_MAA_UMT_CYCLE_TRACE_TEST
+                traceOperation = TraceOperation::Divide;
+                traceTokenIndex = index;
+                traceDividerLane = lane;
+#endif
                 break;
               }
               case TokenPhase::MultiplyPending:
@@ -470,6 +546,10 @@ class UmtOrderedWaveStreamStateModel
                 token.phase = TokenPhase::MultiplyWait;
                 multiplyNextIssue = cycle + 1;
                 issued = true;
+#ifdef LANL_MAA_UMT_CYCLE_TRACE_TEST
+                traceOperation = TraceOperation::Multiply;
+                traceTokenIndex = index;
+#endif
                 break;
               case TokenPhase::EdgeAddPending:
                 if (cycle < addNextIssue)
@@ -496,6 +576,10 @@ class UmtOrderedWaveStreamStateModel
                 token.phase = TokenPhase::EdgeAddWait;
                 addNextIssue = cycle + 1;
                 issued = true;
+#ifdef LANL_MAA_UMT_CYCLE_TRACE_TEST
+                traceOperation = TraceOperation::EdgeAdd;
+                traceTokenIndex = index;
+#endif
                 break;
               default:
                 break;
@@ -505,6 +589,11 @@ class UmtOrderedWaveStreamStateModel
             }
             if (!issued)
                 break;
+#ifdef LANL_MAA_UMT_CYCLE_TRACE_TEST
+            result.issues[slot] = {
+                true, slot, traceTokenIndex, traceOperation,
+                traceDividerLane};
+#endif
             ++issues;
             ++fpOperationIssueCount;
         }
@@ -630,6 +719,43 @@ class UmtOrderedWaveStreamStateModel
     uint64_t producedResults() const { return resultWordsProduced; }
     uint64_t acceptedResultReads() const { return resultReads; }
 
+#ifdef LANL_MAA_UMT_CYCLE_TRACE_TEST
+    TraceStateSnapshot traceStateSnapshot() const
+    {
+        TraceStateSnapshot snapshot;
+        snapshot.activeGroupCount = activeGroups;
+        snapshot.issueCursor = issueCursor;
+        snapshot.nextBankCycle = nextBankCycle;
+        snapshot.counters = {
+            fpOperationIssueCount, dualIssueCycleCount, fpIssueStallCycles,
+            bankConflictCycles, writebackStallCycles,
+            resultBankStallCycleCount, dividerNoLaneCycleCount};
+        for (size_t bank = 0; bank < Banks; ++bank) {
+            for (size_t row = 0; row < RowsPerBank; ++row) {
+                for (size_t wordIndex = 0; wordIndex < SourceResultWords;
+                     ++wordIndex) {
+                    snapshot.bankWords[bank][row][wordIndex] =
+                        words[bank][row][wordIndex];
+                }
+                snapshot.bankWords[bank][row][SourceResultWords] =
+                    metadataWords[bank][row];
+                // Physical word nine is the documented nonfunctional
+                // model-floor reserve.  It is emitted as zero for row shape
+                // compatibility and excluded from the behavioral digest.
+                snapshot.bankWords[bank][row][SourceResultWords + 1] = 0;
+            }
+        }
+        for (size_t index = 0; index < tokens.size(); ++index) {
+            snapshot.tokens[index].active =
+                tokens[index].phase != TokenPhase::Free;
+            snapshot.tokens[index].tokenIndex = index;
+            snapshot.tokens[index].packed = packTraceToken(tokens[index]);
+        }
+        snapshot.digest = traceDigest(snapshot);
+        return snapshot;
+    }
+#endif
+
   private:
     enum class TokenPhase : uint8_t
     {
@@ -660,6 +786,89 @@ class UmtOrderedWaveStreamStateModel
         double product = 0.0;
         double updatedSource = 0.0;
     };
+
+#ifdef LANL_MAA_UMT_CYCLE_TRACE_TEST
+    static void packTraceBits(
+        std::array<uint8_t, TraceTokenPackedBytes> &packed,
+        size_t &offset, uint64_t value, size_t bits)
+    {
+        for (size_t bit = 0; bit < bits; ++bit) {
+            packed[(offset + bit) / 8] |=
+                ((value >> bit) & 1U) << ((offset + bit) % 8);
+        }
+        offset += bits;
+    }
+
+    static std::array<uint8_t, TraceTokenPackedBytes>
+    packTraceToken(const Token &token)
+    {
+        std::array<uint8_t, TraceTokenPackedBytes> packed{};
+        size_t offset = 0;
+        packTraceBits(packed, offset, static_cast<uint8_t>(token.phase), 4);
+        packTraceBits(packed, offset, token.operation, 6);
+        packTraceBits(packed, offset, token.group, 6);
+        packTraceBits(packed, offset, token.corner, 3);
+        packTraceBits(packed, offset, token.destination, 4);
+        packTraceBits(packed, offset, token.readyCycle, 64);
+        packTraceBits(packed, offset,
+            umtOrderedWaveStreamEncodeFp64(token.denominatorInput), 64);
+        packTraceBits(packed, offset,
+            umtOrderedWaveStreamEncodeFp64(token.denominator), 64);
+        packTraceBits(packed, offset,
+            umtOrderedWaveStreamEncodeFp64(token.numerator), 64);
+        packTraceBits(packed, offset,
+            umtOrderedWaveStreamEncodeFp64(token.flux), 64);
+        packTraceBits(packed, offset,
+            umtOrderedWaveStreamEncodeFp64(token.product), 64);
+        packTraceBits(packed, offset,
+            umtOrderedWaveStreamEncodeFp64(token.updatedSource), 64);
+        return packed;
+    }
+
+    static void traceDigestByte(uint64_t &digest, uint8_t value)
+    {
+        digest ^= value;
+        digest *= 1099511628211ULL;
+    }
+
+    static void traceDigestWord(uint64_t &digest, uint64_t value)
+    {
+        for (size_t byte = 0; byte < sizeof(value); ++byte)
+            traceDigestByte(digest, (value >> (byte * 8)) & 0xffU);
+    }
+
+    static uint64_t traceDigest(const TraceStateSnapshot &snapshot)
+    {
+        uint64_t digest = 1469598103934665603ULL;
+        traceDigestWord(digest, snapshot.activeGroupCount);
+        traceDigestWord(digest, snapshot.issueCursor);
+        for (size_t bank = 0; bank < Banks; ++bank) {
+            traceDigestWord(digest, snapshot.nextBankCycle[bank]);
+            for (size_t row = 0; row < RowsPerBank; ++row) {
+                // The explicit model-floor reserve at word nine is excluded.
+                for (size_t wordIndex = 0; wordIndex < SourceResultWords + 1;
+                     ++wordIndex) {
+                    traceDigestWord(
+                        digest, snapshot.bankWords[bank][row][wordIndex]);
+                }
+            }
+        }
+        for (const auto &token : snapshot.tokens) {
+            traceDigestByte(digest, token.active ? 1U : 0U);
+            traceDigestWord(digest, token.tokenIndex);
+            for (const uint8_t byte : token.packed)
+                traceDigestByte(digest, byte);
+        }
+        traceDigestWord(digest, snapshot.counters.fpOperations);
+        traceDigestWord(digest, snapshot.counters.dualIssue);
+        traceDigestWord(digest, snapshot.counters.fpIssueStall);
+        traceDigestWord(digest, snapshot.counters.bankConflict);
+        traceDigestWord(digest, snapshot.counters.writebackStall);
+        traceDigestWord(digest, snapshot.counters.resultBankStall);
+        traceDigestWord(digest, snapshot.counters.dividerNoLane);
+        return digest;
+    }
+#endif
 
     static constexpr size_t SourceValidShift = 1;
     static constexpr size_t ResultValidShift = 9;
