@@ -98,9 +98,14 @@ native.  Its combiner payload is 20,480 B/unit and response payload is 8,192
 B/unit.  The remaining incremental charge is bounded tag/mask/reference,
 allocator, page, and retirement metadata.
 
-These are semantic lower bounds, not area/Fmax.  A physical implementation
-still needs timed 16-way lookup, set decoding, reference/payload RAM ports,
-full-line drain bandwidth, reset/epoch handling, and ACK/drain arbitration.
+These are semantic lower bounds, not area/Fmax. A current-binary width sweep
+shows that one complete-line issue per MAA cycle preserves the result at
+37,252,008 ticks, so full-line injection bandwidth is not the selected XRAGE
+bottleneck. See `xrage_complete_line_drain_results_2026-08-29.md`.
+
+A physical implementation still needs timed 16-way lookup, set decoding,
+reference/payload RAM ports, ready selection, reset/epoch handling, and
+ACK/drain arbitration.
 
 ## Correctness and scope
 
@@ -117,9 +122,10 @@ latency than a small bounded direct4 control.  See
 `flag_complete_line_results_2026-08-29.md`.
 
 CG NA256 is tick-identical under dense allocation, and IS/HashJoin do not
-expose this virtual-result edge.  XRAGE and FLAG observations still predate the
-finite complete-line drain model and do not time the 16-way lookup or payload
-ports.
+expose this virtual-result edge. The original XRAGE and FLAG observations
+predate finite drain timing, but a current-binary XRAGE sweep now closes widths
+1/2/4/8. FLAG has not been rerun with finite width. Neither workload times the
+16-way lookup or payload ports.
 
 Evidence roots:
 
