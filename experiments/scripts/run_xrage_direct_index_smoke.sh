@@ -32,6 +32,7 @@ combine_ways=${MAA_VIRTUAL_COMBINE_WAYS:-4}
 combine_set_xor_shift=${MAA_VIRTUAL_COMBINE_SET_XOR_SHIFT:-0}
 response_slots=${MAA_VIRTUAL_RESPONSE_SLOTS:-128}
 response_word_pool=${MAA_VIRTUAL_RESPONSE_WORD_POOL:-480}
+combine_lookup_latency=${MAA_VIRTUAL_COMBINE_LOOKUP_LATENCY_CYCLES:-0}
 row_table_slices=${MAA_NUM_INITIAL_ROW_TABLE_SLICES:-32}
 row_table_rows=${MAA_ROW_TABLE_ROWS_PER_SLICE:-64}
 offset_table_entries=${MAA_NUM_OFFSET_TABLE_ENTRIES:-0}
@@ -108,6 +109,10 @@ debug_args=()
 }
 [[ $response_slots -gt 0 && $response_word_pool -ge 0 ]] || {
     echo "virtual response slots must be positive and the word pool non-negative" >&2
+    exit 2
+}
+[[ $combine_lookup_latency -ge 0 && $combine_lookup_latency -le 8 ]] || {
+    echo "MAA_VIRTUAL_COMBINE_LOOKUP_LATENCY_CYCLES must be in [0,8]" >&2
     exit 2
 }
 [[ $row_table_slices =~ ^(4|8|16|32)$ ]] || {
@@ -377,6 +382,8 @@ fi
     printf 'virtual_combine_set_xor_shift=%s\n' "$combine_set_xor_shift"
     printf 'virtual_response_slots=%s\n' "$response_slots"
     printf 'virtual_response_word_pool=%s\n' "$response_word_pool"
+    printf 'virtual_combine_lookup_latency_cycles=%s\n' \
+        "$combine_lookup_latency"
     printf 'initial_row_table_slices=%s\n' "$row_table_slices"
     printf 'row_table_rows_per_slice=%s\n' "$row_table_rows"
     printf 'offset_table_entries=%s\n' "$offset_table_entries"
@@ -459,6 +466,7 @@ restore_cmd=(
     --maa_virtual_complete_line_drain_lines_per_cycle="$complete_line_drain_lines_per_cycle"
     --maa_virtual_response_slots="$response_slots"
     --maa_virtual_response_word_pool="$response_word_pool"
+    --maa_virtual_combine_lookup_latency_cycles="$combine_lookup_latency"
     --maa_virtual_words_per_cycle=4 --maa_virtual_max_outstanding_writes=64
     --maa_virtual_index_buffer_lines="$index_buffer_lines"
     --maa_virtual_index_partitions="$index_partitions"
@@ -567,6 +575,12 @@ grep -Fqx "virtual_combine_set_xor_shift=$combine_set_xor_shift" \
     echo "resolved combiner set XOR shift differs from manifest" >&2
     exit 1
 }
+grep -Fqx \
+    "virtual_combine_lookup_latency_cycles=$combine_lookup_latency" \
+    "$out/run/config.ini" || {
+    echo "resolved combiner lookup latency differs from manifest" >&2
+    exit 1
+}
 if [[ $guest_arm == direct4x3 ]]; then
     grep -Fqx "transparent_spd_mode=3" "$out/run/config.ini" || {
         echo "direct4x3 did not activate direct retirement" >&2
@@ -607,6 +621,16 @@ complete_line_drain_stall_cycles=$(
 )
 complete_line_drain_peak=$(
     sum_indirect_stat IND_VirtCompleteLineDrainPeakLinesPerCycle
+)
+combine_lookup_issues=$(sum_indirect_stat IND_VirtCombineLookupIssues)
+combine_lookup_completions=$(
+    sum_indirect_stat IND_VirtCombineLookupCompletions
+)
+combine_lookup_wait_cycles=$(
+    sum_indirect_stat IND_VirtCombineLookupWaitCycles
+)
+combine_lookup_peak=$(
+    sum_indirect_stat IND_VirtCombineLookupPeakOccupancy
 )
 pages_ready=$(sum_indirect_stat IND_VirtPagesReady)
 index_words=$(sum_indirect_stat IND_VirtIndexWords)
@@ -720,6 +744,8 @@ for value in "$write_issues" "$write_completions" "$pages_ready" \
     "$full_line_writes" "$partial_writes" \
     "$complete_line_drain_issued" "$complete_line_drain_stall_cycles" \
     "$complete_line_drain_peak" \
+    "$combine_lookup_issues" "$combine_lookup_completions" \
+    "$combine_lookup_wait_cycles" "$combine_lookup_peak" \
     "$index_words" "$index_filter_words" "$index_filter_cycles" \
     "$index_filter_wait_events" "$index_filter_wait_cycles" \
     "$row_table_full_events" "$offset_table_full_events" \
@@ -733,6 +759,26 @@ for value in "$write_issues" "$write_completions" "$pages_ready" \
         exit 1
     }
 done
+if [[ $combine_lookup_latency -eq 0 ]]; then
+    [[ $combine_lookup_issues -eq 0 &&
+       $combine_lookup_completions -eq 0 &&
+       $combine_lookup_wait_cycles -eq 0 && $combine_lookup_peak -eq 0 ]] || {
+        echo "disabled combiner lookup pipeline recorded work" >&2
+        exit 1
+    }
+else
+    lookup_capacity_bound=$response_word_pool
+    if [[ $lookup_capacity_bound -eq 0 ]]; then
+        lookup_capacity_bound=$((response_slots * 16))
+    fi
+    [[ $combine_lookup_issues -eq $index_words &&
+       $combine_lookup_completions -eq $index_words &&
+       $combine_lookup_peak -gt 0 &&
+       $combine_lookup_peak -le $lookup_capacity_bound ]] || {
+        echo "combiner lookup pipeline did not close exactly" >&2
+        exit 1
+    }
+fi
 [[ $complete_line_drain_issued -eq $full_line_writes ]] || {
     echo "complete-line drain issue accounting did not close" >&2
     exit 1
@@ -873,8 +919,11 @@ fi
     printf '\tdirect_context_high_water'
     printf '\tdirect_context_full_stalls'
     printf '\tdirect_request_record_high_water\tdirect_fallbacks'
-    printf '\tdirect_early_line_overflows\n'
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '\tdirect_early_line_overflows'
+    printf '\tcombine_lookup_latency\tcombine_lookup_issues'
+    printf '\tcombine_lookup_completions\tcombine_lookup_wait_cycles'
+    printf '\tcombine_lookup_peak\n'
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$hash" "$roi_ticks" "$final_ticks" "$stats_blocks" \
         "$write_issues" "$write_completions" \
         "$full_line_writes" "$partial_writes" \
@@ -904,7 +953,10 @@ fi
         "$direct_retries" "$direct_overlap_ticks" \
         "$direct_active_stage_high_water" "$direct_context_high_water" \
         "$direct_context_full_stalls" "$direct_request_record_high_water" \
-        "$direct_fallbacks" "$direct_early_line_overflows"
+        "$direct_fallbacks" "$direct_early_line_overflows" \
+        "$combine_lookup_latency" "$combine_lookup_issues" \
+        "$combine_lookup_completions" "$combine_lookup_wait_cycles" \
+        "$combine_lookup_peak"
 } > "$out/result.tsv"
 read -r dram_reads dram_activates dram_precharges < <(
     awk '
