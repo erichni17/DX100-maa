@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Adversarial, dry-only tests for the v3 UMT ingress harness."""
+"""Adversarial, dry-only tests for the v4 UMT ingress harness."""
 import importlib.util
 import json
 import pathlib
@@ -214,6 +214,71 @@ class IngressHarnessTest(unittest.TestCase):
                 path.write_text(text, encoding="utf-8")
                 return {"path": str(path), "sha256": ingress.sha256(path)}
 
+            invocation_id, pid, start_ticks = "a" * 32, 77, "12345"
+
+            def systemd_show(name, terminal=False):
+                fields = {
+                    "Id": ingress.BUILD_UNIT,
+                    "InvocationID": invocation_id,
+                    "MainPID": "0" if terminal else str(pid),
+                    "ExecMainPID": str(pid),
+                    "ExecMainStartTimestampMonotonic": "999999",
+                    "WorkingDirectory": str(source),
+                    **ingress.RESOURCE_POLICY,
+                    "ExecStart": (
+                        "{ path=/usr/bin/scons ; argv[]="
+                        + " ".join(ingress.BUILD_ARGV)
+                        + " ; ignore_errors=no ; start_time=[n/a] ; }"
+                    ),
+                    "Environment": "CPPDEFINES=" + ingress.TRACE_BUILD_DEFINE,
+                    "ExecMainCode": "1" if terminal else "",
+                    "ExecMainStatus": "0" if terminal else "",
+                    "Result": "success" if terminal else "",
+                }
+                return file(
+                    name,
+                    "\n".join(
+                        f"{key}={fields[key]}"
+                        for key in ingress.SYSTEMD_SHOW_PROPERTIES
+                    )
+                    + "\n",
+                )
+
+            receipt_path = root / "proc-start.json"
+            receipt_path.write_text(
+                json.dumps(
+                    {
+                        "schema": "lanl-maa-proc-start-receipt-v1",
+                        "pid": pid,
+                        "proc_start_ticks": start_ticks,
+                        "invocation_id": invocation_id,
+                        "exec_main_start_timestamp_monotonic": "999999",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            receipt = {
+                "path": str(receipt_path),
+                "sha256": ingress.sha256(receipt_path),
+            }
+            marker = (
+                f"{ingress.JOURNAL_TERMINAL_PROTOCOL} unit={ingress.BUILD_UNIT} "
+                f"invocation={invocation_id} pid={pid} "
+                f"proc_start_ticks={start_ticks} result=SUCCESS exit=0"
+            )
+            journal = file(
+                "build.journal",
+                "_SYSTEMD_UNIT="
+                + ingress.BUILD_UNIT
+                + "\n"
+                + "INVOCATION_ID="
+                + invocation_id
+                + "\n"
+                + "MESSAGE="
+                + marker
+                + "\n\n",
+            )
+
             artifacts = {
                 "gem5": {"path": str(gem5), "sha256": ingress.sha256(gem5)},
                 "config_hh": {
@@ -249,7 +314,7 @@ class IngressHarnessTest(unittest.TestCase):
             proof = {
                 "schema": ingress.SCHEMA_BUILD_PROOF,
                 "status": "passed",
-                "producer": "systemd-build-proof-v3",
+                "producer": "systemd-build-proof-v4",
                 "source_worktree": str(source),
                 "source_commit": commit,
                 "source_tree": tree,
@@ -270,13 +335,15 @@ class IngressHarnessTest(unittest.TestCase):
                 "build_artifacts": artifacts,
                 "build_invocation": {
                     "unit": ingress.BUILD_UNIT,
-                    "pid": 77,
-                    "pid_start_time": "123",
-                    "started_at": "2026-08-30T00:00:00Z",
-                    "resource_policy": ingress.RESOURCE_POLICY,
+                    "show_command": list(ingress.BUILD_SHOW_COMMAND),
+                    "live_systemd_show": systemd_show("live.show"),
+                    "terminal_systemd_show": systemd_show(
+                        "terminal.show", terminal=True
+                    ),
+                    "live_process_start_receipt": receipt,
                     "journal_command": list(ingress.BUILD_JOURNAL_COMMAND),
-                    "journal": file("build.journal", "status=0/SUCCESS"),
-                    "journal_success": True,
+                    "journal": journal,
+                    "journal_terminal_protocol": ingress.JOURNAL_TERMINAL_PROTOCOL,
                 },
                 "observer_gate": {
                     "command": [
@@ -322,6 +389,25 @@ class IngressHarnessTest(unittest.TestCase):
             }
             with mock.patch.multiple(ingress, **patches):
                 self.assertEqual(attempt(proof), root / "proof.json")
+
+                def replace_invocation_artifact(
+                    forged, field, suffix, transform
+                ):
+                    old = forged["build_invocation"][field]
+                    altered = root / ("forged-" + suffix)
+                    altered.write_text(
+                        transform(
+                            pathlib.Path(old["path"]).read_text(
+                                encoding="utf-8"
+                            )
+                        ),
+                        encoding="utf-8",
+                    )
+                    forged["build_invocation"][field] = {
+                        "path": str(altered),
+                        "sha256": ingress.sha256(altered),
+                    }
+
                 for field, value in (
                     ("required_relink_observed", False),
                     ("build_returncode", 1),
@@ -333,19 +419,101 @@ class IngressHarnessTest(unittest.TestCase):
                     ):
                         attempt(forged)
                 forged = json.loads(json.dumps(proof))
-                forged["build_invocation"]["resource_policy"][
-                    "MemoryMax"
-                ] = "1"
-                with self.assertRaisesRegex(
-                    RuntimeError, "systemd invocation"
-                ):
+                replace_invocation_artifact(
+                    forged,
+                    "live_systemd_show",
+                    "bad-resource.show",
+                    lambda text: text.replace(
+                        "MemoryMax=" + ingress.RESOURCE_POLICY["MemoryMax"],
+                        "MemoryMax=1",
+                    ),
+                )
+                with self.assertRaises(RuntimeError):
                     attempt(forged)
                 forged = json.loads(json.dumps(proof))
                 forged["build_invocation"]["unit"] = "forged.service"
-                with self.assertRaisesRegex(
-                    RuntimeError, "systemd invocation"
-                ):
+                with self.assertRaises(RuntimeError):
                     attempt(forged)
+                for field, suffix, transform in (
+                    (
+                        "live_systemd_show",
+                        "bad-pid.show",
+                        lambda text: text.replace("MainPID=77", "MainPID=78"),
+                    ),
+                    (
+                        "terminal_systemd_show",
+                        "bad-invocation.show",
+                        lambda text: text.replace(
+                            "InvocationID=" + invocation_id,
+                            "InvocationID=" + "b" * 32,
+                        ),
+                    ),
+                    (
+                        "live_systemd_show",
+                        "bad-start.show",
+                        lambda text: text.replace(
+                            "ExecMainStartTimestampMonotonic=999999",
+                            "ExecMainStartTimestampMonotonic=999998",
+                        ),
+                    ),
+                    (
+                        "live_systemd_show",
+                        "bad-cwd.show",
+                        lambda text: text.replace(
+                            "WorkingDirectory=" + str(source),
+                            "WorkingDirectory=/forged",
+                        ),
+                    ),
+                    (
+                        "live_systemd_show",
+                        "bad-command.show",
+                        lambda text: text.replace(" -j4 ", " -j8 "),
+                    ),
+                ):
+                    forged = json.loads(json.dumps(proof))
+                    replace_invocation_artifact(
+                        forged, field, suffix, transform
+                    )
+                    with self.assertRaises(RuntimeError):
+                        attempt(forged)
+                forged = json.loads(json.dumps(proof))
+                bad_receipt = root / "forged-proc-start.json"
+                bad_receipt.write_text(
+                    json.dumps(
+                        {
+                            "schema": "lanl-maa-proc-start-receipt-v1",
+                            "pid": pid,
+                            "proc_start_ticks": "99999",
+                            "invocation_id": invocation_id,
+                            "exec_main_start_timestamp_monotonic": "999999",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                forged["build_invocation"]["live_process_start_receipt"] = {
+                    "path": str(bad_receipt),
+                    "sha256": ingress.sha256(bad_receipt),
+                }
+                with self.assertRaises(RuntimeError):
+                    attempt(forged)
+                for suffix, transform in (
+                    (
+                        "journal-substring",
+                        lambda text: text.replace(
+                            marker, "prefix " + marker + " suffix"
+                        ),
+                    ),
+                    (
+                        "journal-exit",
+                        lambda text: text.replace("exit=0", "exit=1"),
+                    ),
+                ):
+                    forged = json.loads(json.dumps(proof))
+                    replace_invocation_artifact(
+                        forged, "journal", suffix + ".export", transform
+                    )
+                    with self.assertRaises(RuntimeError):
+                        attempt(forged)
                 forged = json.loads(json.dumps(proof))
                 forged["observer_gate"]["command"][-1] = "clang++"
                 with self.assertRaisesRegex(RuntimeError, "observer gate"):
@@ -361,10 +529,10 @@ class IngressHarnessTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
             contract = {
-                "schema": "lanl-maa-umt-ingress-contract-v3",
+                "schema": "lanl-maa-umt-ingress-contract-v4",
                 "self_sha256": "0" * 64,
             }
-            path = root / "ingress-contract-v3.json"
+            path = root / "ingress-contract-v4.json"
             path.write_text(json.dumps(contract), encoding="utf-8")
             with self.assertRaisesRegex(
                 RuntimeError, "externally fixed|semantics"
@@ -373,8 +541,27 @@ class IngressHarnessTest(unittest.TestCase):
                     path,
                     ingress.sha256(path),
                     root,
-                    root / "identity/ingress-dry-dispatch-v3.json",
+                    root / "identity/ingress-dry-dispatch-v4.json",
                 )
+
+    def test_dispatch_cpu_quota_mapping_is_explicit_and_complete(self):
+        command = ingress.systemd_run_command("arm.service", ["/bin/true"])
+        self.assertEqual(
+            command[:10],
+            [
+                "systemd-run",
+                "--user",
+                "--collect",
+                "--unit=arm.service",
+                "--property=CPUQuota=400%",
+                "--property=CPUWeight=1000",
+                "--property=MemoryHigh=" + str(14 * 1024**3),
+                "--property=MemoryMax=" + str(16 * 1024**3),
+                "--property=MemorySwapMax=0",
+                "--property=RuntimeMaxUSec=4h",
+            ],
+        )
+        self.assertNotIn("--property=CPUQuotaPerSecUSec=4s", command)
 
 
 if __name__ == "__main__":
