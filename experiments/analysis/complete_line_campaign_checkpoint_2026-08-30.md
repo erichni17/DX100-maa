@@ -9,6 +9,7 @@
 - XRAGE knee: 1,536 tags, 8-way XOR7, 2,560 combiner words, 1,024
   response words;
 - response insertion: four words per MAA cycle;
+- combiner insertion/update ports: four banks;
 - lookup: four starts/four completions, three-cycle tested latency;
 - retirement: one complete line per MAA cycle plus exact final tail;
 - selection: bounded 16-page ready queues; and
@@ -28,6 +29,7 @@ See `selected_complete_line_hybrid_2026-08-30.md` for the simple mechanism.
 | lookup latency | XRAGE +0.134%, FLAG +0.155% at 3 cycles | `xrage_lookup_latency_results_2026-08-29.md`, `flag_lookup_latency_results_2026-08-30.md` |
 | bounded ready selection | XRAGE exact, FLAG all-14 exact; timing-neutral | `xrage_page_ready_drain_results_2026-08-30.md`, `flag_page_ready_drain_results_2026-08-30.md` |
 | live MAA producer ownership | selected XRAGE exactly reproduces 37,291,759 ticks | `xrage_backing_ownership_results_2026-08-30.md` |
+| finite combiner banks | four banks add 0.310%; one bank rejected at +20.253% | `xrage_combiner_bank_results_2026-08-30.md` |
 
 ## Important attribution
 

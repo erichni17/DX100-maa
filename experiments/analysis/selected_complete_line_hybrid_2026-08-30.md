@@ -7,7 +7,8 @@
 2. Issue reordered scattered A requests. Returned words first occupy a bounded
    1,024-word response pool.
 3. A four-start/four-completion, three-cycle lookup maps each logical result
-   word into a 2,048-tag, 8-way XOR7 line combiner.
+   word into a 2,048-tag, 8-way XOR7 line combiner. Four banks allow one
+   lookup/update per bank per MAA cycle.
 4. The combiner retains fragments privately in 3,072 useful-word storage until
    a destination cache line is complete.
 5. A bounded 16-page ready queue selects complete lines. At most one line per
@@ -30,6 +31,8 @@ not yet a 4K Row/Offset design and cannot transparently provide 64K reordering.
 - FLAG lookup latency 3: +0.155% geometric-mean overhead versus same-binary
   latency 0.
 - FLAG bounded ready queue: -0.0002% versus scan mode; exact all-14 closure.
+- XRAGE four-bank insertion ports: +0.310% versus unbanked and 11.592% below
+  native16; one bank is rejected.
 
 The speed comes from avoiding fragmented partial-line backing writes while
 retaining the original 16K reorder scope. It does not come from the safety
