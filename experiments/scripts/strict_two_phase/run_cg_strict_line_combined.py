@@ -104,6 +104,16 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--payload-words-per-cycle",
+        type=int,
+        choices=(0, 1, 2, 4, 8),
+        default=0,
+        help=(
+            "complete-line payload words read per MAA cycle; CG words are "
+            "four bytes"
+        ),
+    )
+    parser.add_argument(
         "--classify-existing",
         action="store_true",
         help="classify an already completed output without rerunning gem5",
@@ -133,6 +143,10 @@ def main(argv: list[str] | None = None) -> int:
     require(
         0 <= args.combine_words <= 4096,
         "combiner payload words must be in [0,4096]",
+    )
+    require(
+        not args.word_writes or args.payload_words_per_cycle == 0,
+        "payload staging applies only to masked line retirement",
     )
     require(
         len(gate.base.source_status().splitlines()) == 1, "source is dirty"
@@ -169,6 +183,10 @@ def main(argv: list[str] | None = None) -> int:
     command.append(f"--maa_virtual_combine_slots={args.combine_slots}")
     if args.combine_words != 0:
         command.append(f"--maa_virtual_combine_words={args.combine_words}")
+    command.append(
+        "--maa_virtual_complete_line_payload_words_per_cycle="
+        f"{args.payload_words_per_cycle}"
+    )
     if args.dense_write_allocate:
         command.append("--maa_virtual_dense_write_allocate")
     command_json = json.dumps(command, indent=2) + "\n"
@@ -266,6 +284,11 @@ def main(argv: list[str] | None = None) -> int:
         and f"virtual_combine_slots={args.combine_slots}" in config
         and f"virtual_combine_words={args.combine_words}" in config
         and (
+            "virtual_complete_line_payload_words_per_cycle="
+            f"{args.payload_words_per_cycle}"
+        )
+        in config
+        and (
             "virtual_dense_write_allocate="
             f"{str(args.dense_write_allocate).lower()}"
         )
@@ -309,6 +332,43 @@ def main(argv: list[str] | None = None) -> int:
         "finite direct-index issue-width counters are inconsistent",
     )
     stats.update(issue_stats)
+    payload_stats = {
+        name: gate.base.stat_sum(out / "stats.txt", name)
+        for name in (
+            "IND_VirtFullLineWrites",
+            "IND_VirtCompleteLinePayloadStarts",
+            "IND_VirtCompleteLinePayloadCompletions",
+            "IND_VirtCompleteLinePayloadReadCycles",
+            "IND_VirtCompleteLinePayloadBlockedCycles",
+            "IND_VirtCompleteLinePayloadBackpressureCycles",
+        )
+    }
+    if args.payload_words_per_cycle == 0:
+        require(
+            all(
+                value == 0
+                for name, value in payload_stats.items()
+                if name != "IND_VirtFullLineWrites"
+            ),
+            "disabled CG payload staging recorded work",
+        )
+    else:
+        full_lines = payload_stats["IND_VirtFullLineWrites"]
+        expected_read_cycles = full_lines * (
+            (16 + args.payload_words_per_cycle - 1)
+            // args.payload_words_per_cycle
+        )
+        require(
+            full_lines > 0
+            and payload_stats["IND_VirtCompleteLinePayloadStarts"]
+            == full_lines
+            and payload_stats["IND_VirtCompleteLinePayloadCompletions"]
+            == full_lines
+            and payload_stats["IND_VirtCompleteLinePayloadReadCycles"]
+            == expected_read_cycles,
+            "finite CG payload staging did not close exactly",
+        )
+    stats.update(payload_stats)
     dense_initializations = gate.base.stat_sum(
         out / "stats.txt", "IND_VirtDenseInitializationWrites"
     )
@@ -396,6 +456,9 @@ def main(argv: list[str] | None = None) -> int:
         ),
         "virtual_combine_slots": args.combine_slots,
         "virtual_combine_words": args.combine_words,
+        "virtual_complete_line_payload_words_per_cycle": (
+            args.payload_words_per_cycle
+        ),
         "virtual_dense_write_allocate": args.dense_write_allocate,
         "matched_strict_simTicks": matched_ticks,
         "line_combined_simTicks": combined_ticks,
