@@ -8919,6 +8919,13 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
                     "IND_VirtCompleteLinePayloadBlockedCycles"),
                 statistics::units::Cycle::get(),
                 "MAA cycles a second full line waited for payload staging"));
+        IND_VirtCompleteLinePayloadBackpressureCycles.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_VirtCompleteLinePayloadBackpressureCycles"),
+                statistics::units::Cycle::get(),
+                "MAA cycles result insertion waited for payload staging"));
         IND_VirtPartialWrites.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtPartialWrites"),
             statistics::units::Count::get(),

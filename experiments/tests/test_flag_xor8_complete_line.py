@@ -42,6 +42,7 @@ class FlagXor8CompleteLineTest(unittest.TestCase):
         self.assertIn("$issued -eq $full", source)
         self.assertIn("$payload_starts -eq $full", source)
         self.assertIn("complete_line_payload_read_cycles", source)
+        self.assertIn("complete_line_payload_backpressure_cycles", source)
         self.assertIn("timeout=none", source)
 
 

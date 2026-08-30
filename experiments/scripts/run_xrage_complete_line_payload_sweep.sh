@@ -96,9 +96,9 @@ run_width() {
     }
 
     local hash ticks writes completions full partial recorded starts
-    local staging_completions read_cycles blocked_cycles
+    local staging_completions read_cycles blocked_cycles backpressure_cycles
     read -r hash ticks writes completions full partial recorded starts \
-        staging_completions read_cycles blocked_cycles < <(
+        staging_completions read_cycles blocked_cycles backpressure_cycles < <(
         awk -F '\t' '
             NR == 1 {
                 for (i = 1; i <= NF; i++) col[$i] = i
@@ -114,7 +114,8 @@ run_width() {
                     $(col["complete_line_payload_starts"]),
                     $(col["complete_line_payload_completions"]),
                     $(col["complete_line_payload_read_cycles"]),
-                    $(col["complete_line_payload_blocked_cycles"])
+                    $(col["complete_line_payload_blocked_cycles"]),
+                    $(col["complete_line_payload_backpressure_cycles"])
             }
         ' "$arm_out/result.tsv"
     )
@@ -125,7 +126,8 @@ run_width() {
     }
     if [[ $width -eq 0 ]]; then
         [[ $starts -eq 0 && $staging_completions -eq 0 &&
-           $read_cycles -eq 0 && $blocked_cycles -eq 0 ]] || {
+           $read_cycles -eq 0 && $blocked_cycles -eq 0 &&
+           $backpressure_cycles -eq 0 ]] || {
             echo "disabled payload staging recorded work" >&2
             return 1
         }
@@ -137,9 +139,9 @@ run_width() {
             return 1
         }
     fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$width" "$ticks" "$hash" "$starts" "$read_cycles" \
-        "$blocked_cycles" \
+        "$blocked_cycles" "$backpressure_cycles" \
         "$(sha256sum "$arm_out/run/stats.txt" | awk '{print $1}')" \
         > "$out/rows/width$width.tsv"
 }
@@ -151,6 +153,7 @@ printf '%s\n' 0 1 2 4 8 | \
 
 {
     printf 'width\tticks\thash\tstarts\tread_cycles\tblocked_cycles'
+    printf '\tbackpressure_cycles'
     printf '\tstats_sha256\n'
     sort -n "$out"/rows/*.tsv
 } > "$out/results.tsv"

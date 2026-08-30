@@ -181,6 +181,7 @@ protected:
     maa::CompleteLineDrainBudget virtual_complete_line_drain_budget;
     maa::CompleteLinePayloadStaging virtual_complete_line_payload_staging;
     Tick virtual_complete_line_drain_retry_tick = 0;
+    Tick virtual_complete_line_payload_backpressure_tick = 0;
     maa::DenseBackingLineTracker dense_backing_lines;
     uint64_t virtual_dense_initialization_writes = 0;
     struct VirtualRetirementSenderState : public Packet::SenderState

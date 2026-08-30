@@ -112,10 +112,12 @@ run_one() {
     local lookup_issues lookup_completions lookup_wait lookup_peak
     local page_selections page_deferrals payload_width payload_starts
     local payload_completions payload_read_cycles payload_blocked_cycles
+    local payload_backpressure_cycles
     read -r hash ticks writes completions full partial width issued stalls peak \
         lookup_issues lookup_completions lookup_wait lookup_peak \
         page_selections page_deferrals payload_width payload_starts \
-        payload_completions payload_read_cycles payload_blocked_cycles < <(
+        payload_completions payload_read_cycles payload_blocked_cycles \
+        payload_backpressure_cycles < <(
         awk -F '\t' '
             NR == 1 {
                 for (i = 1; i <= NF; i++) col[$i] = i
@@ -141,7 +143,8 @@ run_one() {
                     $(col["complete_line_payload_starts"]),
                     $(col["complete_line_payload_completions"]),
                     $(col["complete_line_payload_read_cycles"]),
-                    $(col["complete_line_payload_blocked_cycles"])
+                    $(col["complete_line_payload_blocked_cycles"]),
+                    $(col["complete_line_payload_backpressure_cycles"])
             }
         ' "$run_out/result.tsv"
     )
@@ -168,8 +171,8 @@ run_one() {
     [[ $payload_width -eq $payload_words_per_cycle ]] || return 1
     if [[ $payload_words_per_cycle -eq 0 ]]; then
         [[ $payload_starts -eq 0 && $payload_completions -eq 0 &&
-           $payload_read_cycles -eq 0 && $payload_blocked_cycles -eq 0 ]] || \
-            return 1
+           $payload_read_cycles -eq 0 && $payload_blocked_cycles -eq 0 &&
+           $payload_backpressure_cycles -eq 0 ]] || return 1
     else
         local expected_read_cycles=$((
             full * ((8 + payload_words_per_cycle - 1) /
@@ -178,12 +181,12 @@ run_one() {
         [[ $payload_starts -eq $full && $payload_completions -eq $full &&
            $payload_read_cycles -eq $expected_read_cycles ]] || return 1
     fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$id" "$length" "$ticks" "$writes" "$full" "$partial" \
         "$stalls" "$peak" "$lookup_wait" "$lookup_peak" \
         "$page_selections" "$page_deferrals" "$payload_width" \
         "$payload_starts" "$payload_completions" "$payload_read_cycles" \
-        "$payload_blocked_cycles" "$hash" \
+        "$payload_blocked_cycles" "$payload_backpressure_cycles" "$hash" \
         > "$out/rows/$id.tsv"
 }
 export -f run_one
@@ -200,7 +203,7 @@ xargs -r -P "$parallel" -n 3 bash -c \
     printf '\tpeak_sum\tlookup_wait_cycles\tlookup_peak_sum'
     printf '\tpage_selections\tpage_deferrals\tpayload_width'
     printf '\tpayload_starts\tpayload_completions\tpayload_read_cycles'
-    printf '\tpayload_blocked_cycles\thash\n'
+    printf '\tpayload_blocked_cycles\tpayload_backpressure_cycles\thash\n'
     cat "$out"/rows/*.tsv | sort
 } > "$out/results.tsv"
 [[ $(wc -l < "$out/results.tsv") -eq 15 ]] || {

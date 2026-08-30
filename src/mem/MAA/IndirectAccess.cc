@@ -6248,6 +6248,7 @@ void IndirectAccessUnit::executeInstruction() {
                  my_indirect_id);
         virtual_complete_line_payload_staging.reset();
         virtual_complete_line_drain_retry_tick = 0;
+        virtual_complete_line_payload_backpressure_tick = 0;
         std::fill(virtual_combine_bank_used.begin(),
                   virtual_combine_bank_used.end(), false);
         virtual_pending_source = false;
@@ -11265,6 +11266,11 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
         // A finite payload port may still be serializing a complete line.
         // Backpressure the retained response instead of evicting a partial
         // line that complete-line-only mode cannot legally write.
+        if (virtual_complete_line_payload_backpressure_tick != curTick()) {
+            virtual_complete_line_payload_backpressure_tick = curTick();
+            (*maa->stats.IND_VirtCompleteLinePayloadBackpressureCycles[
+                my_indirect_id])++;
+        }
         scheduleExecuteInstructionEvent(1);
         return false;
     }

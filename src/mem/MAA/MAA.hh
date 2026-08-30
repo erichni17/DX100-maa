@@ -1236,6 +1236,8 @@ public:
             IND_VirtCompleteLinePayloadReadCycles;
         std::vector<statistics::Scalar *>
             IND_VirtCompleteLinePayloadBlockedCycles;
+        std::vector<statistics::Scalar *>
+            IND_VirtCompleteLinePayloadBackpressureCycles;
         std::vector<statistics::Scalar *> IND_VirtPartialWrites;
         std::vector<statistics::Scalar *> IND_VirtDenseInitializationWrites;
         std::vector<statistics::Scalar *> IND_VirtPageOrderedDrainSelections;

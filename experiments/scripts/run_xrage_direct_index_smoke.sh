@@ -702,6 +702,9 @@ complete_line_payload_read_cycles=$(
 complete_line_payload_blocked_cycles=$(
     sum_indirect_stat IND_VirtCompleteLinePayloadBlockedCycles
 )
+complete_line_payload_backpressure_cycles=$(
+    sum_indirect_stat IND_VirtCompleteLinePayloadBackpressureCycles
+)
 pages_ready=$(sum_indirect_stat IND_VirtPagesReady)
 index_words=$(sum_indirect_stat IND_VirtIndexWords)
 index_filter_words=$(sum_indirect_stat IND_VirtIndexFilterWords)
@@ -822,6 +825,7 @@ for value in "$write_issues" "$write_completions" "$pages_ready" \
     "$complete_line_payload_completions" \
     "$complete_line_payload_read_cycles" \
     "$complete_line_payload_blocked_cycles" \
+    "$complete_line_payload_backpressure_cycles" \
     "$index_words" "$index_filter_words" "$index_filter_cycles" \
     "$index_filter_wait_events" "$index_filter_wait_cycles" \
     "$row_table_full_events" "$offset_table_full_events" \
@@ -850,7 +854,8 @@ if [[ $complete_line_payload_words_per_cycle -eq 0 ]]; then
     [[ $complete_line_payload_starts -eq 0 &&
        $complete_line_payload_completions -eq 0 &&
        $complete_line_payload_read_cycles -eq 0 &&
-       $complete_line_payload_blocked_cycles -eq 0 ]] || {
+       $complete_line_payload_blocked_cycles -eq 0 &&
+       $complete_line_payload_backpressure_cycles -eq 0 ]] || {
         echo "disabled complete-line payload staging recorded work" >&2
         exit 1
     }
@@ -1044,7 +1049,8 @@ fi
     printf '\tcomplete_line_payload_starts'
     printf '\tcomplete_line_payload_completions'
     printf '\tcomplete_line_payload_read_cycles'
-    printf '\tcomplete_line_payload_blocked_cycles\n'
+    printf '\tcomplete_line_payload_blocked_cycles'
+    printf '\tcomplete_line_payload_backpressure_cycles\n'
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
         "$hash" "$roi_ticks" "$final_ticks" "$stats_blocks" \
         "$write_issues" "$write_completions" \
@@ -1081,12 +1087,13 @@ fi
         "$combine_lookup_peak" "$page_ordered_selections" \
         "$page_ordered_deferrals" "$combine_bank_accesses" \
         "$combine_bank_conflicts"
-    printf '\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$complete_line_payload_words_per_cycle" \
         "$complete_line_payload_starts" \
         "$complete_line_payload_completions" \
         "$complete_line_payload_read_cycles" \
-        "$complete_line_payload_blocked_cycles"
+        "$complete_line_payload_blocked_cycles" \
+        "$complete_line_payload_backpressure_cycles"
 } > "$out/result.tsv"
 read -r dram_reads dram_activates dram_precharges < <(
     awk '
