@@ -11,7 +11,9 @@
 - response insertion: four words per MAA cycle;
 - combiner insertion/update ports: four banks;
 - lookup: four starts/four completions, three-cycle tested latency;
-- retirement: one complete line per MAA cycle plus exact final tail;
+- payload readout: four FP64 words (32 bytes) per MAA cycle;
+- retirement: at most one complete-line issue per MAA cycle plus exact final
+  tail;
 - selection: bounded 16-page ready queues; and
 - coherence: exact WriteResp ownership plus rejection of overlapping live MAA
   producer spans.
@@ -30,6 +32,7 @@ See `selected_complete_line_hybrid_2026-08-30.md` for the simple mechanism.
 | bounded ready selection | XRAGE exact, FLAG all-14 exact; timing-neutral | `xrage_page_ready_drain_results_2026-08-30.md`, `flag_page_ready_drain_results_2026-08-30.md` |
 | live MAA producer ownership | selected XRAGE exactly reproduces 37,291,759 ticks | `xrage_backing_ownership_results_2026-08-30.md` |
 | finite combiner banks | four banks add 0.310%; one bank rejected at +20.253% | `xrage_combiner_bank_results_2026-08-30.md` |
+| finite payload readout | width 4 adds 0.005% on XRAGE and 0.003% geomean across 14 FLAG gathers | `complete_line_payload_bandwidth_2026-08-30.md` |
 
 ## Important attribution
 
@@ -39,8 +42,10 @@ publishes thousands of partial fragments; the selected design publishes one
 full line per eight FP64 words plus only the final tail.
 
 The fail-closed complete-line flag itself is timing/work-identical when disabled
-at the same capacity. The result is not a fused direct sink and does not remove
-the CPU for arithmetic consumers.
+at the same capacity. Payload-width overhead is measured against the same
+hybrid arm. The sub-native16 XRAGE time must not be attributed to
+virtualization alone because that arm also contains the separately evaluated
+XRAGE direct-retirement/fusion optimization.
 
 ## Bugs and rejected paths
 
@@ -61,13 +66,13 @@ the CPU for arithmetic consumers.
 ## Hardware boundary
 
 Genuinely bounded in source: useful payload, tag count/ways, response credits,
-lookup metadata/starts/completions/latency, write credits, drain width, ready
-selection, exact ACK identity, complete-line/tail legality, and live MAA
-producer overlap.
+lookup metadata/starts/completions/latency, aggregate payload-read bandwidth,
+write credits, drain width, ready selection, exact ACK identity,
+complete-line/tail legality, and live MAA producer overlap.
 
 Still not closed:
 
-1. physical tag, payload, and reference RAM banking/ports and same-set hazards;
+1. physical payload/reference RAM bank mapping and conflicts;
 2. CPU or virtual-alias writes to privately retained destination fragments;
 3. reset/epoch implementation and generation wrap;
 4. synthesized area, energy, and Fmax; and
