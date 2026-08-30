@@ -23,6 +23,7 @@
 #include "mem/MAA/BoundedQuantileRanges.hh"
 #include "mem/MAA/BoundedRangePass.hh"
 #include "mem/MAA/CompleteLineDrainBudget.hh"
+#include "mem/MAA/CompleteLinePayloadStaging.hh"
 #include "mem/MAA/DenseBackingLineTracker.hh"
 #include "mem/MAA/DirectIndexFeeder.hh"
 #include "mem/MAA/FusedP16ProductState.hh"
@@ -154,6 +155,7 @@ protected:
     struct VirtualCombineSlot {
         bool valid = false;
         Addr line_vaddr = 0;
+        uint64_t generation = 0;
         uint16_t valid_words = 0;
         VirtualCombinePayloadStore::LineRefs word_refs =
             VirtualCombinePayloadStore::emptyLineRefs();
@@ -179,6 +181,8 @@ protected:
     bool virtual_complete_line_only = false;
     maa::CompleteLineDrainBudget virtual_complete_line_drain_budget;
     Tick virtual_complete_line_drain_retry_tick = 0;
+    maa::CompleteLinePayloadStaging virtual_complete_line_payload_staging;
+    uint64_t virtual_complete_line_payload_next_generation = 0;
     maa::DenseBackingLineTracker dense_backing_lines;
     uint64_t virtual_dense_initialization_writes = 0;
     struct VirtualRetirementSenderState : public Packet::SenderState
@@ -319,6 +323,7 @@ public:
                   bool _virtual_dense_write_allocate,
                   bool _virtual_complete_line_only,
                   int _virtual_complete_line_drain_width,
+                  int _virtual_complete_line_payload_width,
                   int _soa_jit_predicate_active_credits,
                   int _virtual_index_buffer_lines,
                   int _virtual_index_issue_lines_per_cycle,
@@ -929,6 +934,10 @@ protected:
     bool insertVirtualCombineWord(int itr, const uint8_t *data);
     bool completeLineDrainAvailable();
     void recordCompleteLineDrainIssue();
+    bool completeLinePayloadReady(int slot,
+                                  const VirtualCombineSlot &identity);
+    void retireCompleteLinePayload(int slot,
+                                   const VirtualCombineSlot &identity);
     void drainVirtualCombiner(bool flush_partial);
     bool virtualCombinerEmpty() const;
     bool boundedSourceResponsesComplete() const;

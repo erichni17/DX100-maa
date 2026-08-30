@@ -118,6 +118,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
                                   bool _virtual_dense_write_allocate,
                                   bool _virtual_complete_line_only,
                                   int _virtual_complete_line_drain_width,
+                                  int _virtual_complete_line_payload_width,
                                   int _soa_jit_predicate_active_credits,
                                   int _virtual_index_buffer_lines,
                                   int _virtual_index_issue_lines_per_cycle,
@@ -226,6 +227,16 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
                  _virtual_complete_line_drain_width),
              "I[%d] invalid virtual complete-line drain width %d\n",
              my_indirect_id, _virtual_complete_line_drain_width);
+    const auto payload_staging_configured =
+        virtual_complete_line_payload_staging.configure(
+            _virtual_complete_line_payload_width,
+            virtual_combine_slots.size());
+    panic_if(payload_staging_configured !=
+                 maa::CompleteLinePayloadStaging::Result::Accepted,
+             "I[%d] invalid virtual complete-line payload width %d: %s\n",
+             my_indirect_id, _virtual_complete_line_payload_width,
+             maa::CompleteLinePayloadStaging::resultName(
+                 payload_staging_configured));
     panic_if(virtual_dense_write_allocate && !virtual_masked_writes,
              "I[%d] dense backing allocation requires masked retirement\n",
              my_indirect_id);
@@ -6236,6 +6247,11 @@ void IndirectAccessUnit::executeInstruction() {
         virtual_combine_bank_conflict_cycle = 0;
         virtual_complete_line_drain_budget.reset();
         virtual_complete_line_drain_retry_tick = 0;
+        panic_if(!virtual_complete_line_payload_staging.empty(),
+                 "I[%d] stale complete-line payload staging at decode\n",
+                 my_indirect_id);
+        virtual_complete_line_payload_staging.reset();
+        virtual_complete_line_payload_next_generation = 0;
         std::fill(virtual_combine_bank_used.begin(),
                   virtual_combine_bank_used.end(), false);
         virtual_pending_source = false;
@@ -7911,6 +7927,43 @@ void IndirectAccessUnit::executeInstruction() {
                 my_indirect_id]) += drain_counters.stallCycles;
             (*maa->stats.IND_VirtCompleteLineDrainPeakLinesPerCycle[
                 my_indirect_id]) += drain_counters.peakLinesPerCycle;
+            const auto payload_finished =
+                virtual_complete_line_payload_staging.finish();
+            panic_if(payload_finished !=
+                         maa::CompleteLinePayloadStaging::Result::Accepted,
+                     "I[%d] complete-line payload staging did not close: "
+                     "%s\n",
+                     my_indirect_id,
+                     maa::CompleteLinePayloadStaging::resultName(
+                         payload_finished));
+            const auto &payload_counters =
+                virtual_complete_line_payload_staging.counters();
+            panic_if(virtual_complete_line_payload_staging.enabled() &&
+                         payload_counters.issues !=
+                             static_cast<uint64_t>(
+                                 virtual_full_line_writes),
+                     "I[%d] complete-line payload staging/accounting "
+                     "mismatch %lu/%d\n",
+                     my_indirect_id, payload_counters.issues,
+                     virtual_full_line_writes);
+            (*maa->stats.IND_VirtCompleteLinePayloadStageIssues[
+                my_indirect_id]) += payload_counters.issues;
+            (*maa->stats.IND_VirtCompleteLinePayloadStageCompletions[
+                my_indirect_id]) += payload_counters.completions;
+            (*maa->stats.IND_VirtCompleteLinePayloadStageWaitCycles[
+                my_indirect_id]) += payload_counters.waitCycles;
+            (*maa->stats.IND_VirtCompleteLinePayloadStagePeakOccupancy[
+                my_indirect_id]) += payload_counters.peakOccupancy;
+            DPRINTF(MAAVirtualTrace,
+                    "event=complete_line_payload_staging_summary schema=1 "
+                    "unit=%d operation_tick=%lu words_per_cycle=%u "
+                    "issues=%lu completions=%lu wait_cycles=%lu "
+                    "peak_occupancy=%u\n",
+                    my_indirect_id, my_decode_start_tick,
+                    virtual_complete_line_payload_staging.width(),
+                    payload_counters.issues, payload_counters.completions,
+                    payload_counters.waitCycles,
+                    payload_counters.peakOccupancy);
             if (completeLineOnlyOperation()) {
                 const uint64_t expected_tail =
                     my_max % my_words_per_cl == 0 ? 0 : 1;
@@ -11271,10 +11324,18 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
                      "page-ready metadata\n", my_indirect_id, victim_idx);
             victim_page_ready = false;
         };
-        if (virtual_masked_writes && victim.valid_words != 0 &&
-            virtual_outstanding_writes <
-                virtual_max_outstanding_writes_limit) {
-            if (victim_was_full && !completeLineDrainAvailable())
+        const bool bounded_full_line =
+            victim_was_full &&
+            virtual_complete_line_payload_staging.enabled();
+        const bool retire_as_line = virtual_masked_writes ||
+                                    bounded_full_line;
+        if (retire_as_line && victim.valid_words != 0) {
+            if (virtual_outstanding_writes >=
+                virtual_max_outstanding_writes_limit)
+                return false;
+            if (victim_was_full &&
+                (!completeLinePayloadReady(victim_idx, victim) ||
+                 !completeLineDrainAvailable()))
                 return false;
             const int words = __builtin_popcount(victim.valid_words);
             VirtualCombinePayloadStore::LineData line_data{};
@@ -11286,8 +11347,10 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
                      VirtualCombinePayloadStore::resultName(copy_result));
             if (createRetirementWrite(victim.line_vaddr, block_size,
                                       line_data.data(), victim.valid_words)) {
-                if (victim_was_full)
+                if (victim_was_full) {
                     recordCompleteLineDrainIssue();
+                    retireCompleteLinePayload(victim_idx, victim);
+                }
                 retire_full_victim();
                 const auto release_result =
                     virtual_combine_payload.releaseMasked(
@@ -11305,6 +11368,10 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
                 victim.valid_words = 0;
             }
         } else {
+            panic_if(bounded_full_line,
+                     "I[%d] bounded full combiner victim %d reached "
+                     "partial retirement\n",
+                     my_indirect_id, victim_idx);
             while (victim.valid_words != 0 &&
                    virtual_outstanding_writes <
                        virtual_max_outstanding_writes_limit) {
@@ -11377,6 +11444,14 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
     if (!target->valid) {
         target->valid = true;
         target->line_vaddr = line_vaddr;
+        if (virtual_complete_line_payload_staging.enabled()) {
+            panic_if(virtual_complete_line_payload_next_generation ==
+                         std::numeric_limits<uint64_t>::max(),
+                     "I[%d] complete-line payload generation wrapped\n",
+                     my_indirect_id);
+            target->generation =
+                ++virtual_complete_line_payload_next_generation;
+        }
         const int occupancy = std::count_if(
             virtual_combine_slots.begin(), virtual_combine_slots.end(),
             [](const VirtualCombineSlot &slot) { return slot.valid; });
@@ -11460,6 +11535,64 @@ IndirectAccessUnit::recordCompleteLineDrainIssue()
              curTick());
 }
 
+bool
+IndirectAccessUnit::completeLinePayloadReady(
+    int slot, const VirtualCombineSlot &identity)
+{
+    if (!virtual_complete_line_payload_staging.enabled())
+        return true;
+    using PayloadStaging = maa::CompleteLinePayloadStaging;
+    panic_if(slot < 0 ||
+                 slot >= static_cast<int>(virtual_combine_slots.size()) ||
+                 &identity != &virtual_combine_slots[slot] ||
+                 !identity.valid || identity.generation == 0 ||
+                 identity.valid_words !=
+                     static_cast<uint16_t>((1U << my_words_per_cl) - 1),
+             "I[%d] invalid complete-line payload identity slot=%d "
+             "generation=%lu mask=0x%x\n",
+             my_indirect_id, slot, identity.generation,
+             identity.valid_words);
+    const uint64_t cycle = static_cast<uint64_t>(maa->curCycle());
+    const PayloadStaging::Identity staging_identity{
+        static_cast<uint32_t>(slot), identity.generation};
+    const auto result = virtual_complete_line_payload_staging.stage(
+        cycle, staging_identity, my_words_per_cl);
+    if (result == PayloadStaging::Result::Ready)
+        return true;
+    if (result == PayloadStaging::Result::Waiting ||
+        result == PayloadStaging::Result::Busy) {
+        scheduleExecuteInstructionEvent(1);
+        return false;
+    }
+    panic("I[%d] complete-line payload staging failed slot=%d "
+          "generation=%lu: %s\n",
+          my_indirect_id, slot, identity.generation,
+          PayloadStaging::resultName(result));
+}
+
+void
+IndirectAccessUnit::retireCompleteLinePayload(
+    int slot, const VirtualCombineSlot &identity)
+{
+    if (!virtual_complete_line_payload_staging.enabled())
+        return;
+    using PayloadStaging = maa::CompleteLinePayloadStaging;
+    panic_if(slot < 0 ||
+                 slot >= static_cast<int>(virtual_combine_slots.size()) ||
+                 &identity != &virtual_combine_slots[slot],
+             "I[%d] invalid retiring complete-line payload slot %d\n",
+             my_indirect_id, slot);
+    const PayloadStaging::Identity staging_identity{
+        static_cast<uint32_t>(slot), identity.generation};
+    const auto result = virtual_complete_line_payload_staging.retire(
+        static_cast<uint64_t>(maa->curCycle()), staging_identity);
+    panic_if(result != PayloadStaging::Result::Accepted,
+             "I[%d] complete-line payload retirement lost exact slot=%d "
+             "generation=%lu identity: %s\n",
+             my_indirect_id, slot, identity.generation,
+             PayloadStaging::resultName(result));
+}
+
 void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
     const uint16_t full_mask = (1U << my_words_per_cl) - 1;
     panic_if(virtual_combine_payload.used() !=
@@ -11487,7 +11620,8 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
             panic_if(!slot.valid || slot.valid_words != full_mask,
                      "I[%d] page-ready slot %d is not a full combiner line\n",
                      my_indirect_id, selected);
-            if (!completeLineDrainAvailable())
+            if (!completeLinePayloadReady(selected, slot) ||
+                !completeLineDrainAvailable())
                 break;
             VirtualCombinePayloadStore::LineData line_data{};
             const auto copy_result = virtual_combine_payload.copyLine(
@@ -11500,6 +11634,7 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
                                        line_data.data()))
                 break;
             recordCompleteLineDrainIssue();
+            retireCompleteLinePayload(selected, slot);
             (*maa->stats.IND_VirtPageOrderedDrainSelections[my_indirect_id])++;
             if (virtual_combine_page_ready.hasReadyLater(selected_page)) {
                 (*maa->stats.IND_VirtPageOrderedDrainDeferrals[
@@ -11522,7 +11657,9 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
             slot = VirtualCombineSlot();
         }
     }
-    for (auto &slot : virtual_combine_slots) {
+    for (size_t slot_idx = 0; slot_idx < virtual_combine_slots.size();
+         ++slot_idx) {
+        auto &slot = virtual_combine_slots[slot_idx];
         if (!slot.valid)
             continue;
         if (maa->virtual_page_ordered_combiner_drain &&
@@ -11532,7 +11669,8 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
             if (virtual_outstanding_writes >=
                 virtual_max_outstanding_writes_limit)
                 continue;
-            if (!completeLineDrainAvailable())
+            if (!completeLinePayloadReady(slot_idx, slot) ||
+                !completeLineDrainAvailable())
                 continue;
             VirtualCombinePayloadStore::LineData line_data{};
             const auto copy_result = virtual_combine_payload.copyLine(
@@ -11545,6 +11683,7 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
                                        line_data.data()))
                 continue;
             recordCompleteLineDrainIssue();
+            retireCompleteLinePayload(slot_idx, slot);
             const auto release_result = virtual_combine_payload.releaseMasked(
                 slot.word_refs, slot.valid_words);
             panic_if(release_result != VirtualCombinePayloadStore::Result::Ok,
@@ -11638,6 +11777,7 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
 
 bool IndirectAccessUnit::virtualCombinerEmpty() const {
     return virtual_combine_payload.empty() &&
+        virtual_complete_line_payload_staging.empty() &&
         std::all_of(virtual_combine_slots.begin(),
                     virtual_combine_slots.end(),
                     [](const VirtualCombineSlot &slot) {

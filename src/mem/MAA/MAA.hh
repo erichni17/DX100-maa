@@ -442,6 +442,7 @@ public:
     unsigned int virtual_combine_victim_policy;
     bool virtual_page_ordered_combiner_drain;
     unsigned int virtual_complete_line_drain_lines_per_cycle;
+    unsigned int virtual_complete_line_payload_words_per_cycle;
     unsigned int virtual_combine_banks;
     unsigned int virtual_response_slots;
     unsigned int virtual_response_words;
@@ -1227,6 +1228,14 @@ public:
             IND_VirtCompleteLineDrainBudgetStallCycles;
         std::vector<statistics::Scalar *>
             IND_VirtCompleteLineDrainPeakLinesPerCycle;
+        std::vector<statistics::Scalar *>
+            IND_VirtCompleteLinePayloadStageIssues;
+        std::vector<statistics::Scalar *>
+            IND_VirtCompleteLinePayloadStageCompletions;
+        std::vector<statistics::Scalar *>
+            IND_VirtCompleteLinePayloadStageWaitCycles;
+        std::vector<statistics::Scalar *>
+            IND_VirtCompleteLinePayloadStagePeakOccupancy;
         std::vector<statistics::Scalar *> IND_VirtPartialWrites;
         std::vector<statistics::Scalar *> IND_VirtDenseInitializationWrites;
         std::vector<statistics::Scalar *> IND_VirtPageOrderedDrainSelections;
