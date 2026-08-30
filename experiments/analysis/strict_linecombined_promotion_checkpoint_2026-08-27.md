@@ -230,6 +230,12 @@ are 7.476% lower latency than fused16, effectively tied with compact16, and
 guard-disabled arm is tick-identical in every case.  See
 `flag_complete_line_results_2026-08-29.md`.
 
+A same-binary successor halves combiner associativity from 16 to 8 using XOR
+shift 7. It is timing-equivalent across all 14 FLAG gathers (-0.004%
+geometric-mean latency), while the final selected arm remains 7.463% below
+fused16 and tied with compact16 (-0.026%). See
+`flag_xor8_results_2026-08-29.md`.
+
 CG NA256 is tick-identical under the related dense treatment, so no full CG
 run is justified.  Remaining gates are current finite drain-width results,
 finite tag/reference/payload lookup timing and ports, delayed/competing

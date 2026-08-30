@@ -34,6 +34,17 @@ The selected arm's per-case latency change ranges from 0.063% lower to 0.004%
 higher. Ten cases are tick-identical; equal-weight geometric-mean latency is
 0.004% lower. These differences are scheduling-order effects, not a speedup.
 
+The final same-binary application comparison is:
+
+| Comparator | Selected XOR8 latency change |
+|---|---:|
+| fused16 | **-7.463%** |
+| compact16 | **-0.026%** |
+| 16-way complete-line | **-0.004%** |
+
+XOR8 is faster than fused16 in every case. Against compact16, per-case wins
+and losses remain mixed; the geometric-mean result is a tie.
+
 Every arm/case closes:
 
 - the exact output hash;
@@ -66,7 +77,11 @@ ready-line selection, and reset remain explicit gates.
   `/data1/nier/dx100-runs/2026-08-29-flag-xor8-complete-line-r2`;
 - matched 16-way root:
   `/data1/nier/dx100-runs/2026-08-29-flag-current16-drain1-r1`;
+- matched fused16/compact16 root:
+  `/data1/nier/dx100-runs/2026-08-29-flag-current-fused-compact-r1`;
 - paired summary: `.../flag-xor8-complete-line-r2/summary/flag_xor8.md`;
+- final current-control summary:
+  `.../flag-xor8-complete-line-r2/current_comparison/flag_complete_line.md`;
 - artifact ledger: `flag_xor8_artifacts_2026-08-29.sha256`.
 
 The XOR8 campaign wrapper exited 2 after xargs despite all 14 terminal rows;
