@@ -14,12 +14,15 @@ class FlagXor8CompleteLineTest(unittest.TestCase):
         self.assertIn("MAA_VIRTUAL_COMBINE_WORDS=3072", source)
         self.assertIn("FLAG_COMBINE_WAYS:-8", source)
         self.assertIn("FLAG_COMBINE_XOR_SHIFT:-7", source)
+        self.assertIn("FLAG_COMBINE_BANKS:-0", source)
         self.assertIn("FLAG_COMBINE_LOOKUP_LATENCY:-0", source)
         self.assertIn("FLAG_PAGE_ORDERED_DRAIN:-0", source)
+        self.assertIn("FLAG_COMPLETE_LINE_PAYLOAD_WORDS_PER_CYCLE:-0", source)
         self.assertIn('MAA_VIRTUAL_COMBINE_WAYS="$combine_ways"', source)
         self.assertIn(
             'MAA_VIRTUAL_COMBINE_SET_XOR_SHIFT="$combine_xor_shift"', source
         )
+        self.assertIn('MAA_VIRTUAL_COMBINE_BANKS="$combine_banks"', source)
         self.assertIn(
             'MAA_VIRTUAL_COMBINE_LOOKUP_LATENCY_CYCLES="$combine_lookup_latency"',
             source,
@@ -28,8 +31,17 @@ class FlagXor8CompleteLineTest(unittest.TestCase):
             'MAA_VIRTUAL_PAGE_ORDERED_COMBINER_DRAIN="$page_ordered_drain"',
             source,
         )
-        self.assertIn("MAA_VIRTUAL_COMPLETE_LINE_DRAIN_LINES_PER_CYCLE=1", source)
+        self.assertIn(
+            "MAA_VIRTUAL_COMPLETE_LINE_DRAIN_LINES_PER_CYCLE=1", source
+        )
+        self.assertIn(
+            "MAA_VIRTUAL_COMPLETE_LINE_PAYLOAD_WORDS_PER_CYCLE="
+            '"$payload_words_per_cycle"',
+            source,
+        )
         self.assertIn("$issued -eq $full", source)
+        self.assertIn("$payload_starts -eq $full", source)
+        self.assertIn("complete_line_payload_read_cycles", source)
         self.assertIn("timeout=none", source)
 
 

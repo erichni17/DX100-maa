@@ -19,8 +19,10 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 provenance=/tmp/gem5-complete-tail.provenance
 combine_ways=${FLAG_COMBINE_WAYS:-8}
 combine_xor_shift=${FLAG_COMBINE_XOR_SHIFT:-7}
+combine_banks=${FLAG_COMBINE_BANKS:-0}
 combine_lookup_latency=${FLAG_COMBINE_LOOKUP_LATENCY:-0}
 page_ordered_drain=${FLAG_PAGE_ORDERED_DRAIN:-0}
+payload_words_per_cycle=${FLAG_COMPLETE_LINE_PAYLOAD_WORDS_PER_CYCLE:-0}
 
 [[ $parallel =~ ^[1-9][0-9]*$ && $source_commit =~ ^[0-9a-f]{40}$ &&
    $binary_sha =~ ^[0-9a-f]{64}$ ]] || {
@@ -29,9 +31,14 @@ page_ordered_drain=${FLAG_PAGE_ORDERED_DRAIN:-0}
 }
 [[ $combine_ways =~ ^(4|8|16)$ &&
    $combine_xor_shift =~ ^([0-9]|[1-5][0-9]|6[0-3])$ &&
+   $combine_banks =~ ^(0|1|2|4|8)$ &&
    $combine_lookup_latency =~ ^[0-8]$ &&
    $page_ordered_drain =~ ^[01]$ ]] || {
     echo "FLAG combiner ways/shift must be 4/8/16 and [0,63]" >&2
+    exit 2
+}
+[[ $payload_words_per_cycle =~ ^(0|1|2|4|8)$ ]] || {
+    echo "FLAG_COMPLETE_LINE_PAYLOAD_WORDS_PER_CYCLE must be 0/1/2/4/8" >&2
     exit 2
 }
 [[ $(sha256sum "$gem5" | awk '{print $1}') == "$binary_sha" ]] || {
@@ -58,6 +65,9 @@ cp "$cases" "$out/cases.list"
     printf 'geometry=logical16384,physical4096,tags2048,ways%s,xor%s,words3072,response1024,drain1,lookup%s,page_ordered%s\n' \
         "$combine_ways" "$combine_xor_shift" "$combine_lookup_latency" \
         "$page_ordered_drain"
+    printf 'combiner_banks=%s\n' "$combine_banks"
+    printf 'complete_line_payload_words_per_cycle=%s\n' \
+        "$payload_words_per_cycle"
     printf 'timeout=none\n'
 } > "$out/manifest.txt"
 
@@ -72,6 +82,7 @@ run_one() {
         MAA_VIRTUAL_COMBINE_WORDS=3072 \
         MAA_VIRTUAL_COMBINE_WAYS="$combine_ways" \
         MAA_VIRTUAL_COMBINE_SET_XOR_SHIFT="$combine_xor_shift" \
+        MAA_VIRTUAL_COMBINE_BANKS="$combine_banks" \
         MAA_VIRTUAL_COMBINE_LOOKUP_LATENCY_CYCLES="$combine_lookup_latency" \
         MAA_VIRTUAL_PAGE_ORDERED_COMBINER_DRAIN="$page_ordered_drain" \
         MAA_VIRTUAL_RESPONSE_SLOTS=128 \
@@ -82,6 +93,7 @@ run_one() {
         MAA_NUM_INDIRECT_UNITS_PER_MAA=1 \
         MAA_VIRTUAL_COMPLETE_LINE_ONLY=1 \
         MAA_VIRTUAL_COMPLETE_LINE_DRAIN_LINES_PER_CYCLE=1 \
+        MAA_VIRTUAL_COMPLETE_LINE_PAYLOAD_WORDS_PER_CYCLE="$payload_words_per_cycle" \
         XRAGE_ARM=direct_index_4k \
         XRAGE_GUEST_ARM=direct4 \
         XRAGE_RESULT_SCALE=1 \
@@ -98,12 +110,40 @@ run_one() {
     }
     local hash ticks writes completions full partial width issued stalls peak
     local lookup_issues lookup_completions lookup_wait lookup_peak
-    local page_selections page_deferrals
+    local page_selections page_deferrals payload_width payload_starts
+    local payload_completions payload_read_cycles payload_blocked_cycles
     read -r hash ticks writes completions full partial width issued stalls peak \
         lookup_issues lookup_completions lookup_wait lookup_peak \
-        page_selections page_deferrals < <(
-        awk -F '\t' 'NR == 2 {print $1, $2, $5, $6, $7, $8, $9, $10, $11, $12, $61, $62, $63, $64, $65, $66}' \
-            "$run_out/result.tsv"
+        page_selections page_deferrals payload_width payload_starts \
+        payload_completions payload_read_cycles payload_blocked_cycles < <(
+        awk -F '\t' '
+            NR == 1 {
+                for (i = 1; i <= NF; i++) col[$i] = i
+                next
+            }
+            NR == 2 {
+                print $(col["output_hash"]), $(col["roi_simTicks"]),
+                    $(col["virtual_write_issues"]),
+                    $(col["virtual_write_completions"]),
+                    $(col["virtual_full_line_writes"]),
+                    $(col["virtual_partial_writes"]),
+                    $(col["complete_line_drain_lines_per_cycle"]),
+                    $(col["complete_line_drain_issued"]),
+                    $(col["complete_line_drain_stall_cycles"]),
+                    $(col["complete_line_drain_peak"]),
+                    $(col["combine_lookup_issues"]),
+                    $(col["combine_lookup_completions"]),
+                    $(col["combine_lookup_wait_cycles"]),
+                    $(col["combine_lookup_peak"]),
+                    $(col["page_ordered_selections"]),
+                    $(col["page_ordered_deferrals"]),
+                    $(col["complete_line_payload_words_per_cycle"]),
+                    $(col["complete_line_payload_starts"]),
+                    $(col["complete_line_payload_completions"]),
+                    $(col["complete_line_payload_read_cycles"]),
+                    $(col["complete_line_payload_blocked_cycles"])
+            }
+        ' "$run_out/result.tsv"
     )
     local expected_full=$((length / 8))
     local expected_partial=$((length % 8 == 0 ? 0 : 1))
@@ -125,21 +165,42 @@ run_one() {
     else
         [[ $page_selections -eq $full ]] || return 1
     fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    [[ $payload_width -eq $payload_words_per_cycle ]] || return 1
+    if [[ $payload_words_per_cycle -eq 0 ]]; then
+        [[ $payload_starts -eq 0 && $payload_completions -eq 0 &&
+           $payload_read_cycles -eq 0 && $payload_blocked_cycles -eq 0 ]] || \
+            return 1
+    else
+        local expected_read_cycles=$((
+            full * ((8 + payload_words_per_cycle - 1) /
+                payload_words_per_cycle)
+        ))
+        [[ $payload_starts -eq $full && $payload_completions -eq $full &&
+           $payload_read_cycles -eq $expected_read_cycles ]] || return 1
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$id" "$length" "$ticks" "$writes" "$full" "$partial" \
         "$stalls" "$peak" "$lookup_wait" "$lookup_peak" \
-        "$page_selections" "$page_deferrals" "$hash" \
+        "$page_selections" "$page_deferrals" "$payload_width" \
+        "$payload_starts" "$payload_completions" "$payload_read_cycles" \
+        "$payload_blocked_cycles" "$hash" \
         > "$out/rows/$id.tsv"
 }
 export -f run_one
 export out root runner provenance gem5 guest source_commit frozen_lib \
-    combine_ways combine_xor_shift combine_lookup_latency page_ordered_drain
+    combine_ways combine_xor_shift combine_banks combine_lookup_latency \
+    page_ordered_drain
+export payload_words_per_cycle
 
 xargs -r -P "$parallel" -n 3 bash -c \
     'run_one "$1" "$2" "$3"' _ < "$cases"
 
 {
-    printf 'id\tlength\tticks\twrites\tfull\tpartial\tstall_cycles\tpeak_sum\tlookup_wait_cycles\tlookup_peak_sum\tpage_selections\tpage_deferrals\thash\n'
+    printf 'id\tlength\tticks\twrites\tfull\tpartial\tstall_cycles'
+    printf '\tpeak_sum\tlookup_wait_cycles\tlookup_peak_sum'
+    printf '\tpage_selections\tpage_deferrals\tpayload_width'
+    printf '\tpayload_starts\tpayload_completions\tpayload_read_cycles'
+    printf '\tpayload_blocked_cycles\thash\n'
     cat "$out"/rows/*.tsv | sort
 } > "$out/results.tsv"
 [[ $(wc -l < "$out/results.tsv") -eq 15 ]] || {
