@@ -30,6 +30,7 @@ combine_slots=${MAA_VIRTUAL_COMBINE_SLOTS:-384}
 combine_words=${MAA_VIRTUAL_COMBINE_WORDS:-4096}
 combine_ways=${MAA_VIRTUAL_COMBINE_WAYS:-4}
 combine_set_xor_shift=${MAA_VIRTUAL_COMBINE_SET_XOR_SHIFT:-0}
+combine_banks=${MAA_VIRTUAL_COMBINE_BANKS:-0}
 response_slots=${MAA_VIRTUAL_RESPONSE_SLOTS:-128}
 response_word_pool=${MAA_VIRTUAL_RESPONSE_WORD_POOL:-480}
 combine_lookup_latency=${MAA_VIRTUAL_COMBINE_LOOKUP_LATENCY_CYCLES:-0}
@@ -106,6 +107,11 @@ debug_args=()
 }
 [[ $combine_set_xor_shift -ge 0 && $combine_set_xor_shift -lt 64 ]] || {
     echo "MAA_VIRTUAL_COMBINE_SET_XOR_SHIFT must be in [0,63]" >&2
+    exit 2
+}
+combine_sets=$((combine_slots / combine_ways))
+[[ $combine_banks -ge 0 && $combine_banks -le $combine_sets ]] || {
+    echo "MAA_VIRTUAL_COMBINE_BANKS must be in [0,$combine_sets]" >&2
     exit 2
 }
 [[ $response_slots -gt 0 && $response_word_pool -ge 0 ]] || {
@@ -385,6 +391,7 @@ fi
     printf 'virtual_combine_words=%s\n' "$combine_words"
     printf 'virtual_combine_ways=%s\n' "$combine_ways"
     printf 'virtual_combine_set_xor_shift=%s\n' "$combine_set_xor_shift"
+    printf 'virtual_combine_banks=%s\n' "$combine_banks"
     printf 'virtual_response_slots=%s\n' "$response_slots"
     printf 'virtual_response_word_pool=%s\n' "$response_word_pool"
     printf 'virtual_combine_lookup_latency_cycles=%s\n' \
@@ -467,7 +474,8 @@ restore_cmd=(
     --maa_num_offset_table_epoch_entries="$offset_table_epoch_entries"
     --maa_virtual_combine_slots="$combine_slots"
     --maa_virtual_combine_words="$combine_words"
-    --maa_virtual_combine_ways="$combine_ways" --maa_virtual_combine_banks=0
+    --maa_virtual_combine_ways="$combine_ways"
+    --maa_virtual_combine_banks="$combine_banks"
     --maa_virtual_combine_set_xor_shift="$combine_set_xor_shift"
     --maa_virtual_complete_line_drain_lines_per_cycle="$complete_line_drain_lines_per_cycle"
     --maa_virtual_response_slots="$response_slots"
@@ -584,6 +592,11 @@ grep -Fqx "virtual_combine_set_xor_shift=$combine_set_xor_shift" \
     echo "resolved combiner set XOR shift differs from manifest" >&2
     exit 1
 }
+grep -Fqx "virtual_combine_banks=$combine_banks" \
+    "$out/run/config.ini" || {
+    echo "resolved combiner banks differ from manifest" >&2
+    exit 1
+}
 grep -Fqx \
     "virtual_combine_lookup_latency_cycles=$combine_lookup_latency" \
     "$out/run/config.ini" || {
@@ -655,6 +668,10 @@ page_ordered_selections=$(
 )
 page_ordered_deferrals=$(
     sum_indirect_stat IND_VirtPageOrderedDrainDeferrals
+)
+combine_bank_accesses=$(sum_indirect_stat IND_VirtCombineBankAccesses)
+combine_bank_conflicts=$(
+    sum_indirect_stat IND_VirtCombineBankConflictCycles
 )
 pages_ready=$(sum_indirect_stat IND_VirtPagesReady)
 index_words=$(sum_indirect_stat IND_VirtIndexWords)
@@ -771,6 +788,7 @@ for value in "$write_issues" "$write_completions" "$pages_ready" \
     "$combine_lookup_issues" "$combine_lookup_completions" \
     "$combine_lookup_wait_cycles" "$combine_lookup_peak" \
     "$page_ordered_selections" "$page_ordered_deferrals" \
+    "$combine_bank_accesses" "$combine_bank_conflicts" \
     "$index_words" "$index_filter_words" "$index_filter_cycles" \
     "$index_filter_wait_events" "$index_filter_wait_cycles" \
     "$row_table_full_events" "$offset_table_full_events" \
@@ -784,6 +802,17 @@ for value in "$write_issues" "$write_completions" "$pages_ready" \
         exit 1
     }
 done
+if [[ $combine_banks -eq 0 ]]; then
+    [[ $combine_bank_accesses -eq 0 && $combine_bank_conflicts -eq 0 ]] || {
+        echo "disabled combiner banks recorded work" >&2
+        exit 1
+    }
+else
+    [[ $combine_bank_accesses -ge $index_words ]] || {
+        echo "combiner bank accesses do not cover inserted words" >&2
+        exit 1
+    }
+fi
 if [[ $page_ordered_drain -eq 0 ]]; then
     [[ $page_ordered_selections -eq 0 && $page_ordered_deferrals -eq 0 ]] || {
         echo "disabled page-ordered drain recorded work" >&2
@@ -959,8 +988,9 @@ fi
     printf '\tcombine_lookup_latency\tcombine_lookup_issues'
     printf '\tcombine_lookup_completions\tcombine_lookup_wait_cycles'
     printf '\tcombine_lookup_peak\tpage_ordered_selections'
-    printf '\tpage_ordered_deferrals\n'
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '\tpage_ordered_deferrals\tcombine_bank_accesses'
+    printf '\tcombine_bank_conflict_cycles\n'
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$hash" "$roi_ticks" "$final_ticks" "$stats_blocks" \
         "$write_issues" "$write_completions" \
         "$full_line_writes" "$partial_writes" \
@@ -994,7 +1024,8 @@ fi
         "$combine_lookup_latency" "$combine_lookup_issues" \
         "$combine_lookup_completions" "$combine_lookup_wait_cycles" \
         "$combine_lookup_peak" "$page_ordered_selections" \
-        "$page_ordered_deferrals"
+        "$page_ordered_deferrals" "$combine_bank_accesses" \
+        "$combine_bank_conflicts"
 } > "$out/result.tsv"
 read -r dram_reads dram_activates dram_precharges < <(
     awk '
