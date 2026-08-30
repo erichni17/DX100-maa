@@ -89,6 +89,15 @@ module LanlUmtSchedulerShell #(
     localparam BANK_SCHEDULER_BITS = 283;
     localparam INSTRUMENTATION_BITS =
         COMPUTE_TOKENS == 24 ? 1169 : 1170;
+    localparam FUNCTIONAL_BEHAVIORAL_BITS = 70;
+    localparam BANK_SCHEDULER_BEHAVIORAL_BITS = 8;
+    localparam INSTRUMENTATION_BEHAVIORAL_BITS = 448;
+    localparam FUNCTIONAL_MODEL_FLOOR_RESERVED_BITS =
+        FUNCTIONAL_CONTROL_BITS - FUNCTIONAL_BEHAVIORAL_BITS;
+    localparam BANK_SCHEDULER_MODEL_FLOOR_RESERVED_BITS =
+        BANK_SCHEDULER_BITS - BANK_SCHEDULER_BEHAVIORAL_BITS;
+    localparam INSTRUMENTATION_MODEL_FLOOR_RESERVED_BITS =
+        INSTRUMENTATION_BITS - INSTRUMENTATION_BEHAVIORAL_BITS;
     localparam PERSISTENT_BITS = PHYSICAL_BANK_BITS +
         COMPUTE_TOKENS * TOKEN_LOGICAL_BITS +
         FUNCTIONAL_CONTROL_BITS + BANK_SCHEDULER_BITS +
@@ -114,15 +123,88 @@ module LanlUmtSchedulerShell #(
     // tag; the exact ten-state phase chooses arithmetic behavior.
     wire [COMPUTE_TOKENS * 471 - 1:0] tokenStateFlat;
     wire [470:0] tokenState [0:COMPUTE_TOKENS-1];
-    (* keep = "true", umt_state_class = "functional" *)
-        reg [FUNCTIONAL_CONTROL_BITS-1:0]
-        functionalState;
-    (* keep = "true", umt_state_class = "bank_scheduler" *)
-        reg [BANK_SCHEDULER_BITS-1:0]
-        bankSchedulerState;
-    (* keep = "true", umt_state_class = "instrumentation" *)
-        reg [INSTRUMENTATION_BITS-1:0]
-        instrumentationState;
+
+    // Named behavioral state occupies exactly the same low packed slices as
+    // the preceding structural checkpoint. Bits reserved only to reproduce
+    // the independently derived C++ model floor are deliberately separate:
+    // they are not evidence of implemented C++ fields or functional scheduler
+    // behavior.
+    (* keep = "true", umt_state_class = "functional",
+       umt_state_kind = "behavioral", umt_state_member = "current_cycle" *)
+        reg [63:0] currentCycle;
+    (* keep = "true", umt_state_class = "functional",
+       umt_state_kind = "behavioral", umt_state_member = "issue_cursor" *)
+        reg [5:0] issueCursor;
+    (* keep = "true", umt_state_class = "functional",
+       umt_state_kind = "model_floor_reserved",
+       umt_state_member = "functional_model_floor_reserved" *)
+        reg [FUNCTIONAL_MODEL_FLOOR_RESERVED_BITS-1:0]
+        functionalModelFloorReserved;
+
+    (* keep = "true", umt_state_class = "bank_scheduler",
+       umt_state_kind = "behavioral",
+       umt_state_member = "writeback_reservations" *)
+        reg [3:0] retainedWritebackValid;
+    (* keep = "true", umt_state_class = "bank_scheduler",
+       umt_state_kind = "behavioral",
+       umt_state_member = "issue_bank_reservations" *)
+        reg [3:0] retainedSchedulerBankUsed;
+    (* keep = "true", umt_state_class = "bank_scheduler",
+       umt_state_kind = "model_floor_reserved",
+       umt_state_member = "bank_scheduler_model_floor_reserved" *)
+        reg [BANK_SCHEDULER_MODEL_FLOOR_RESERVED_BITS-1:0]
+        bankSchedulerModelFloorReserved;
+
+    (* keep = "true", umt_state_class = "instrumentation",
+       umt_state_kind = "behavioral",
+       umt_state_member = "fp_operations_issued" *)
+        reg [63:0] fpOperationsIssuedState;
+    (* keep = "true", umt_state_class = "instrumentation",
+       umt_state_kind = "behavioral",
+       umt_state_member = "dual_issue_cycles" *)
+        reg [63:0] dualIssueCyclesState;
+    (* keep = "true", umt_state_class = "instrumentation",
+       umt_state_kind = "behavioral",
+       umt_state_member = "fp_issue_stall_cycles" *)
+        reg [63:0] fpIssueStallCyclesState;
+    (* keep = "true", umt_state_class = "instrumentation",
+       umt_state_kind = "behavioral",
+       umt_state_member = "bank_conflict_cycles" *)
+        reg [63:0] bankConflictCyclesState;
+    (* keep = "true", umt_state_class = "instrumentation",
+       umt_state_kind = "behavioral",
+       umt_state_member = "writeback_stall_cycles" *)
+        reg [63:0] writebackStallCyclesState;
+    (* keep = "true", umt_state_class = "instrumentation",
+       umt_state_kind = "behavioral",
+       umt_state_member = "result_bank_stall_cycles" *)
+        reg [63:0] resultBankStallCyclesState;
+    (* keep = "true", umt_state_class = "instrumentation",
+       umt_state_kind = "behavioral",
+       umt_state_member = "divider_no_lane_cycles" *)
+        reg [63:0] dividerNoLaneCyclesState;
+    (* keep = "true", umt_state_class = "instrumentation",
+       umt_state_kind = "model_floor_reserved",
+       umt_state_member = "instrumentation_model_floor_reserved" *)
+        reg [INSTRUMENTATION_MODEL_FLOOR_RESERVED_BITS-1:0]
+        instrumentationModelFloorReserved;
+
+    // Compatibility/witness views only; the tagged retained storage is the
+    // named state above. The concatenations preserve the old exact layout.
+    wire [FUNCTIONAL_CONTROL_BITS-1:0] functionalState = {
+        functionalModelFloorReserved, issueCursor, currentCycle};
+    wire [BANK_SCHEDULER_BITS-1:0] bankSchedulerState = {
+        bankSchedulerModelFloorReserved,
+        retainedSchedulerBankUsed, retainedWritebackValid};
+    wire [INSTRUMENTATION_BITS-1:0] instrumentationState = {
+        instrumentationModelFloorReserved,
+        dividerNoLaneCyclesState,
+        resultBankStallCyclesState,
+        writebackStallCyclesState,
+        bankConflictCyclesState,
+        fpIssueStallCyclesState,
+        dualIssueCyclesState,
+        fpOperationsIssuedState};
 
     reg [3:0] bank0ReadRow;
     reg [3:0] bank1ReadRow;
@@ -153,8 +235,6 @@ module LanlUmtSchedulerShell #(
     reg [639:0] bank2WriteData;
     reg [639:0] bank3WriteData;
 
-    wire [63:0] currentCycle = functionalState[63:0];
-    wire [5:0] issueCursor = functionalState[69:64];
     wire [27:0] coefficientActive;
     wire [59:0] completionTokenBus;
     wire [639:0] completionResultBus;
@@ -245,13 +325,13 @@ module LanlUmtSchedulerShell #(
     assign persistentBits = PERSISTENT_BITS;
     assign selectorCandidates = COMPUTE_TOKENS * FP_ISSUE_WIDTH;
     assign operandRouteBits = 64 * FP_ISSUE_WIDTH;
-    assign fpOperationsIssued = instrumentationState[63:0];
-    assign dualIssueCycles = instrumentationState[127:64];
-    assign fpIssueStallCycles = instrumentationState[191:128];
-    assign bankConflictCycles = instrumentationState[255:192];
-    assign writebackStallCycles = instrumentationState[319:256];
-    assign resultBankStallCycles = instrumentationState[383:320];
-    assign dividerNoLaneCycles = instrumentationState[447:384];
+    assign fpOperationsIssued = fpOperationsIssuedState;
+    assign dualIssueCycles = dualIssueCyclesState;
+    assign fpIssueStallCycles = fpIssueStallCyclesState;
+    assign bankConflictCycles = bankConflictCyclesState;
+    assign writebackStallCycles = writebackStallCyclesState;
+    assign resultBankStallCycles = resultBankStallCyclesState;
+    assign dividerNoLaneCycles = dividerNoLaneCyclesState;
     assign stateWitness = stateWitnessValue;
 
     genvar coefficientActiveIndex;
@@ -1285,21 +1365,35 @@ module LanlUmtSchedulerShell #(
 
     always @(posedge clock) begin
         if (!nReset) begin
-            functionalState <= {FUNCTIONAL_CONTROL_BITS{1'b0}};
-            bankSchedulerState <= {BANK_SCHEDULER_BITS{1'b0}};
-            instrumentationState <= {INSTRUMENTATION_BITS{1'b0}};
+            currentCycle <= 64'b0;
+            issueCursor <= 6'b0;
+            functionalModelFloorReserved <=
+                {FUNCTIONAL_MODEL_FLOOR_RESERVED_BITS{1'b0}};
+            retainedWritebackValid <= 4'b0;
+            retainedSchedulerBankUsed <= 4'b0;
+            bankSchedulerModelFloorReserved <=
+                {BANK_SCHEDULER_MODEL_FLOOR_RESERVED_BITS{1'b0}};
+            fpOperationsIssuedState <= 64'b0;
+            dualIssueCyclesState <= 64'b0;
+            fpIssueStallCyclesState <= 64'b0;
+            bankConflictCyclesState <= 64'b0;
+            writebackStallCyclesState <= 64'b0;
+            resultBankStallCyclesState <= 64'b0;
+            dividerNoLaneCyclesState <= 64'b0;
+            instrumentationModelFloorReserved <=
+                {INSTRUMENTATION_MODEL_FLOOR_RESERVED_BITS{1'b0}};
         end else begin
-            functionalState[63:0] <= currentCycle + 1'b1;
+            currentCycle <= currentCycle + 1'b1;
             if (issue1Valid)
-                functionalState[69:64] <=
+                issueCursor <=
                     issue1Token == COMPUTE_TOKENS - 1 ? 6'b0 :
                     issue1Token + 1'b1;
             else if (issue0Valid)
-                functionalState[69:64] <=
+                issueCursor <=
                     issue0Token == COMPUTE_TOKENS - 1 ? 6'b0 :
                     issue0Token + 1'b1;
-            bankSchedulerState[3:0] <= writebackValid;
-            bankSchedulerState[7:4] <= schedulerBankUsed;
+            retainedWritebackValid <= writebackValid;
+            retainedSchedulerBankUsed <= schedulerBankUsed;
 
             /* Superseded dynamic token-array updates.
             if (admit0Valid && admit0Ready)
@@ -1424,26 +1518,23 @@ module LanlUmtSchedulerShell #(
             end
             */
 
-            instrumentationState[63:0] <=
-                instrumentationState[63:0] + issue0Valid + issue1Valid;
+            fpOperationsIssuedState <=
+                fpOperationsIssuedState + issue0Valid + issue1Valid;
             if (issue0Valid && issue1Valid)
-                instrumentationState[127:64] <=
-                    instrumentationState[127:64] + 1'b1;
+                dualIssueCyclesState <= dualIssueCyclesState + 1'b1;
             if (schedulerActive && !issue0Valid)
-                instrumentationState[191:128] <=
-                    instrumentationState[191:128] + 1'b1;
+                fpIssueStallCyclesState <= fpIssueStallCyclesState + 1'b1;
             if (schedulerBankConflict)
-                instrumentationState[255:192] <=
-                    instrumentationState[255:192] + 1'b1;
+                bankConflictCyclesState <= bankConflictCyclesState + 1'b1;
             if (writebackCollision)
-                instrumentationState[319:256] <=
-                    instrumentationState[319:256] + 1'b1;
+                writebackStallCyclesState <=
+                    writebackStallCyclesState + 1'b1;
             if (schedulerBankConflict || writebackCollision)
-                instrumentationState[383:320] <=
-                    instrumentationState[383:320] + 1'b1;
+                resultBankStallCyclesState <=
+                    resultBankStallCyclesState + 1'b1;
             if (schedulerDividerUnavailable)
-                instrumentationState[447:384] <=
-                    instrumentationState[447:384] + 1'b1;
+                dividerNoLaneCyclesState <=
+                    dividerNoLaneCyclesState + 1'b1;
 
             /* Superseded monolithic bank-array writes.
             for (writeLane = 0; writeLane < 10;

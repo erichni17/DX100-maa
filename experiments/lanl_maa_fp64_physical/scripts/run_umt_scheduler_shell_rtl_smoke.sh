@@ -15,6 +15,7 @@ bank="$harness/rtl/LanlUmtBank16x640.v"
 testbench="$harness/tests/lanl_umt_scheduler_shell_tb.v"
 modular_testbench="$harness/tests/lanl_umt_modular_primitives_tb.v"
 witness_testbench="$harness/tests/lanl_umt_state_witness_tb.v"
+validator_test="$harness/tests/test_validate_umt_retained_state.py"
 rtl_sources=("$token_entry" "$selector" "$bank" "$rtl")
 
 run_test() {
@@ -65,3 +66,4 @@ run_test "$build_root/lanl_umt_modular_primitives_tb" \
     LANL_UMT_MODULAR_PRIMITIVES_PASS
 run_test "$build_root/lanl_umt_state_witness_tb" \
     LANL_UMT_STATE_WITNESS_PASS
+python3 "$validator_test"

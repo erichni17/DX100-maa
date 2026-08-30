@@ -5,11 +5,18 @@
 `LanlUmtSchedulerShell` is a Verilog-2005 structural checkpoint for the omitted
 UMT token selector, four-bank paired store, writeback-first arbitration, and
 instrumentation state. Fixed wrappers expose T24/T32 by W1/W2. The shell
-declares and keep-marks exactly 471 logical bits per token, four 16x640 masked
-single-port asynchronous-read register files, and the independently derived
-functional, bank-scheduler, and instrumentation floors. Identity outputs make
-the 54,372-bit T24 and 58,142-bit T32 totals and T-by-W selector/64-by-W route
-dimensions directly testable.
+declares and keep-marks exactly 471 behavioral bits per token, four 16x640
+masked single-port asynchronous-read register files, and named retained
+control/counter state. The remaining independently derived functional,
+bank-scheduler, and instrumentation floor is explicitly tagged
+`model_floor_reserved`; those bits reproduce an allocation floor but are not
+claimed as implemented C++ fields or functional scheduler behavior. Each
+wrapper therefore
+separates 526 named behavioral control/counter bits, 1,582 (T24) or 1,584
+(T32) model-floor-reserved bits, 471 bits per behavioral token, and 40,960
+physical bank bits. Identity outputs make the resulting 54,372-bit T24 and
+58,142-bit T32 allocations and T-by-W selector/64-by-W route dimensions
+directly testable.
 
 The first synthesis-scalability decomposition keeps the wrapper interface
 unchanged while moving each token into `LanlUmtTokenEntry`, rotating priority
@@ -18,8 +25,15 @@ into `LanlUmtRotatingPriority`, and each physical bank into
 the scheduler scans one-bit maps and performs wide operand muxing only after
 selection; each bank exposes one masked write process. The bounded
 `run_umt_scheduler_shell_yosys_smoke.sh` requires every wrapper to finish
-`proc; memory_collect; check` independently within 120 seconds instead of
-allowing an unbounded lowering run.
+`proc; memory_collect; opt_clean; check; write_json` independently within 120
+seconds instead of allowing an unbounded lowering run. Its fail-closed
+hierarchical audit requires all four wrappers, exactly T fixed 471-bit token
+entries, four 16x640 memories, each named behavioral member exactly once, each
+reserved class exactly once, and witness-disabled scheduler/bank instances.
+It rejects missing, extra, overlapping, unbacked, misclassified, or
+double-charged state, wrong memory geometry, partial wrapper sets, and
+witness-enabled cost wrappers. Positive all-wrapper and adversarial negative
+tests exercise those rejection paths.
 
 Arithmetic stays outside the shell through one add, one multiply, and eight
 divider ready/completion interfaces. The RTL therefore does not model FP64
@@ -34,11 +48,13 @@ at this checkpoint. A test-only full-state parity witness covers every token,
 every row of all four banks, and the three control-state classes. It is
 parameterized off in every physical wrapper, including inside each modular
 bank, because its XOR tree would contaminate area/Fmax.
-Before any cost promotion, a fresh Yosys/ORFS gate must prove that all intended
-bank, token, functional, scheduler, and instrumentation bits survive synthesis
-under the keep attributes, and C++/RTL traces must close phase, request,
-operand, writeback, and ledger behavior. Until then this is reviewed RTL/test
-collateral, not routed-cost evidence.
+The post-`proc` audit is structural cost-shell allocation evidence only. It
+does not turn model-floor-reserved bits into implementation evidence and it
+does not characterize the register-file memories. Before any cost promotion,
+C++/RTL traces must still close phase, request, operand, writeback, and ledger
+behavior, and a later explicitly authorized physical flow must characterize
+memory and routed logic. Until then this is reviewed RTL/test collateral, not
+area, Fmax, power, energy, or routed-cost evidence.
 
 This harness compares Berkeley HardFloat Release 1 binary64 add/subtract,
 multiply, fused multiply-add, and replicated iterative-divider blocks under one

@@ -14,7 +14,9 @@ module LanlUmtBank16x640 #(
     input [639:0] writeData,
     output [15:0] stateParity
 );
-    (* keep = "true", umt_state_class = "bank" *)
+    (* keep = "true", umt_state_class = "bank",
+       umt_state_kind = "physical_memory",
+       umt_state_member = "paired_store_bank" *)
         reg [639:0] memory [0:15];
     integer lane;
 

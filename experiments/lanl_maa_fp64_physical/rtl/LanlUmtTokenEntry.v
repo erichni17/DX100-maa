@@ -35,7 +35,8 @@ module LanlUmtTokenEntry(
     localparam [3:0] PHASE_EDGE_ADD_WAIT = 4'd8;
     localparam [3:0] PHASE_RESULT_WRITE_PENDING = 4'd9;
 
-    (* keep = "true", umt_state_class = "token" *)
+    (* keep = "true", umt_state_class = "token",
+       umt_state_kind = "behavioral", umt_state_member = "token_entry" *)
         reg [470:0] stateReg;
     reg [470:0] nextState;
     reg writeEnable;
