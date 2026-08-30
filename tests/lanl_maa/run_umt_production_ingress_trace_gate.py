@@ -32,7 +32,7 @@ def main():
     if cxx is None:
         raise RuntimeError(f"C++ compiler not found: {args.cxx}")
     report = {
-        "schema": "lanl-maa-umt-production-ingress-trace-v1",
+        "schema": "lanl-maa-umt-production-ingress-trace-v2",
         "cells": [],
     }
     with tempfile.TemporaryDirectory(prefix="umt-production-ingress-") as temp:
