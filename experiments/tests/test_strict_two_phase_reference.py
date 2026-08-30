@@ -213,8 +213,11 @@ def test_line_combined_arm_is_strict_and_same_checkpoint_matched() -> None:
     assert "--word-writes" in runner
     assert "--payload-words-per-cycle" in runner
     assert "--stage-partial-payload" in runner
+    assert "--payload-active-lines" in runner
     assert "--maa_virtual_complete_line_payload_words_per_cycle=" in runner
     assert "--maa_virtual_complete_line_payload_stage_partial" in runner
+    assert "--maa_virtual_complete_line_payload_active_lines=" in runner
+    assert "IND_VirtCompleteLinePayloadPeakActive" in runner
     assert "IND_VirtCompleteLinePayloadReadCycles" in runner
     assert "expected_lines" in runner
     assert "expected_lines > 0" in runner

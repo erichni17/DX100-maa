@@ -119,6 +119,13 @@ def main(argv: list[str] | None = None) -> int:
         help="apply the finite payload port to masked partial lines",
     )
     parser.add_argument(
+        "--payload-active-lines",
+        type=int,
+        choices=(1, 2, 4, 8, 16),
+        default=1,
+        help="line identities sharing the finite payload-read port",
+    )
+    parser.add_argument(
         "--classify-existing",
         action="store_true",
         help="classify an already completed output without rerunning gem5",
@@ -159,6 +166,10 @@ def main(argv: list[str] | None = None) -> int:
         "partial payload staging requires finite masked-line staging",
     )
     require(
+        args.payload_words_per_cycle != 0 or args.payload_active_lines == 1,
+        "disabled payload staging must retain one inactive line slot",
+    )
+    require(
         len(gate.base.source_status().splitlines()) == 1, "source is dirty"
     )
     gem5 = args.gem5.resolve()
@@ -196,6 +207,10 @@ def main(argv: list[str] | None = None) -> int:
     command.append(
         "--maa_virtual_complete_line_payload_words_per_cycle="
         f"{args.payload_words_per_cycle}"
+    )
+    command.append(
+        "--maa_virtual_complete_line_payload_active_lines="
+        f"{args.payload_active_lines}"
     )
     if args.stage_partial_payload:
         command.append("--maa_virtual_complete_line_payload_stage_partial")
@@ -294,6 +309,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         in config
         and (
+            "virtual_complete_line_payload_active_lines="
+            f"{args.payload_active_lines}"
+        )
+        in config
+        and (
             "virtual_complete_line_payload_stage_partial="
             f"{str(args.stage_partial_payload).lower()}"
         )
@@ -359,6 +379,7 @@ def main(argv: list[str] | None = None) -> int:
             "IND_VirtCompleteLinePayloadReadCycles",
             "IND_VirtCompleteLinePayloadBlockedCycles",
             "IND_VirtCompleteLinePayloadBackpressureCycles",
+            "IND_VirtCompleteLinePayloadPeakActive",
         )
     }
     if args.payload_words_per_cycle == 0:
@@ -384,6 +405,11 @@ def main(argv: list[str] | None = None) -> int:
             == expected_lines
             and payload_stats["IND_VirtCompleteLinePayloadReadCycles"] > 0,
             "finite CG payload staging did not close exactly",
+        )
+        require(
+            0 < payload_stats["IND_VirtCompleteLinePayloadPeakActive"]
+            <= args.payload_active_lines * direct_instructions,
+            "CG payload active-line peak exceeded its bound",
         )
     stats.update(payload_stats)
     dense_initializations = gate.base.stat_sum(
@@ -478,6 +504,9 @@ def main(argv: list[str] | None = None) -> int:
         ),
         "virtual_complete_line_payload_stage_partial": (
             args.stage_partial_payload
+        ),
+        "virtual_complete_line_payload_active_lines": (
+            args.payload_active_lines
         ),
         "virtual_dense_write_allocate": args.dense_write_allocate,
         "matched_strict_simTicks": matched_ticks,

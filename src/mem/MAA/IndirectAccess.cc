@@ -119,6 +119,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
                                   bool _virtual_complete_line_only,
                                   int _virtual_complete_line_drain_width,
                                   int _complete_line_payload_width,
+                                  int _complete_line_payload_active_lines,
                                   bool _complete_line_payload_stage_partial,
                                   int _soa_jit_predicate_active_credits,
                                   int _virtual_index_buffer_lines,
@@ -229,9 +230,11 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
              "I[%d] invalid virtual complete-line drain width %d\n",
              my_indirect_id, _virtual_complete_line_drain_width);
     panic_if(!virtual_complete_line_payload_staging.configure(
-                 _complete_line_payload_width),
-             "I[%d] invalid complete-line payload width %d\n",
-             my_indirect_id, _complete_line_payload_width);
+                 _complete_line_payload_width,
+                 _complete_line_payload_active_lines),
+             "I[%d] invalid payload width/active-lines %d/%d\n",
+             my_indirect_id, _complete_line_payload_width,
+             _complete_line_payload_active_lines);
     virtual_complete_line_payload_stage_partial =
         _complete_line_payload_stage_partial;
     panic_if(virtual_dense_write_allocate && !virtual_masked_writes,
@@ -7951,6 +7954,8 @@ void IndirectAccessUnit::executeInstruction() {
                 my_indirect_id]) += payload_counters.readCycles;
             (*maa->stats.IND_VirtCompleteLinePayloadBlockedCycles[
                 my_indirect_id]) += payload_counters.blockedCycles;
+            (*maa->stats.IND_VirtCompleteLinePayloadPeakActive[
+                my_indirect_id]) += payload_counters.peakActive;
             if (completeLineOnlyOperation()) {
                 const uint64_t expected_tail =
                     my_max % my_words_per_cl == 0 ? 0 : 1;
@@ -11612,11 +11617,10 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
                virtual_max_outstanding_writes_limit) {
             uint32_t selected_page = 0;
             int selected = -1;
-            if (virtual_complete_line_payload_staging.isActive() &&
-                virtual_complete_line_payload_staging.identity().validWords ==
-                    full_mask) {
-                selected =
-                    virtual_complete_line_payload_staging.identity().slot;
+            maa::CompleteLinePayloadStaging::Identity active_full;
+            if (virtual_complete_line_payload_staging.firstWithMask(
+                    full_mask, active_full)) {
+                selected = active_full.slot;
                 panic_if(
                     selected < 0 ||
                         selected >=

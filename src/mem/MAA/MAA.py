@@ -113,6 +113,10 @@ class MAA(ClockedObject):
         "Complete-line payload words staged per MAA cycle "
         "(0 is unlimited; finite values are 1/2/4/8)",
     )
+    virtual_complete_line_payload_active_lines = Param.Unsigned(
+        1,
+        "Maximum line identities sharing the finite payload-read port",
+    )
     virtual_complete_line_payload_stage_partial = Param.Bool(
         False,
         "Apply the finite payload port to masked partial-line writes",

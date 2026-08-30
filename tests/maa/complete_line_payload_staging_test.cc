@@ -1,3 +1,4 @@
+#include <array>
 #include <cstdlib>
 #include <iostream>
 
@@ -36,6 +37,29 @@ checkWidth(uint32_t width, uint8_t words)
     CHECK(stage.complete(line) == Stage::Result::Accepted);
 }
 
+void
+checkSharedWidthPipeline()
+{
+    Stage stage;
+    CHECK(stage.configure(8, 8));
+    std::array<Stage::Identity, 8> lines{};
+    for (uint32_t index = 0; index < lines.size(); ++index) {
+        lines[index] = {11, index, 0x4000 + index * 64, 1, 1};
+        CHECK(stage.claim(lines[index], 40) == Stage::Result::Accepted);
+    }
+    CHECK(stage.activeCount() == 8);
+    CHECK(stage.counters().peakActive == 8);
+    CHECK(stage.claim({11, 9, 0x5000, 1, 1}, 40) == Stage::Result::Busy);
+    for (const auto &line : lines)
+        CHECK(stage.advance(line, 41) == Stage::Result::Accepted);
+    CHECK(stage.counters().readCycles == 1);
+    for (const auto &line : lines)
+        CHECK(stage.complete(line) == Stage::Result::Accepted);
+    CHECK(!stage.isActive());
+    CHECK(stage.counters().starts == 8);
+    CHECK(stage.counters().completions == 8);
+}
+
 int main()
 {
     Stage stage;
@@ -65,5 +89,6 @@ int main()
         checkWidth(width, 8);
         checkWidth(width, 16);
     }
+    checkSharedWidthPipeline();
     std::cout << "complete-line payload staging tests passed\n";
 }

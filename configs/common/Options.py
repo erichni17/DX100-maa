@@ -386,6 +386,13 @@ def addNoISAOptions(parser):
         help="Complete-line combiner payload words staged per MAA cycle",
     )
     parser.add_argument(
+        "--maa_virtual_complete_line_payload_active_lines",
+        type=int,
+        default=1,
+        choices=(1, 2, 4, 8, 16),
+        help="Line identities sharing the finite payload-read port",
+    )
+    parser.add_argument(
         "--maa_virtual_complete_line_payload_stage_partial",
         default=False,
         action="store_true",

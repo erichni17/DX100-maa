@@ -324,6 +324,7 @@ public:
                   bool _virtual_complete_line_only,
                   int _virtual_complete_line_drain_width,
                   int _complete_line_payload_width,
+                  int _complete_line_payload_active_lines,
                   bool _complete_line_payload_stage_partial,
                   int _soa_jit_predicate_active_credits,
                   int _virtual_index_buffer_lines,
