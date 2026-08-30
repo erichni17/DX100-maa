@@ -132,6 +132,10 @@ module LanlUmtSchedulerShell #(
     wire [639:0] bank1ReadData;
     wire [639:0] bank2ReadData;
     wire [639:0] bank3ReadData;
+    wire [15:0] bank0StateParity;
+    wire [15:0] bank1StateParity;
+    wire [15:0] bank2StateParity;
+    wire [15:0] bank3StateParity;
     reg bank0WriteValid;
     reg bank1WriteValid;
     reg bank2WriteValid;
@@ -229,7 +233,6 @@ module LanlUmtSchedulerShell #(
     integer issue0Coefficient;
     integer issue1Coefficient;
     integer witnessToken;
-    integer witnessRow;
     integer writeLane;
 
     assign configuredTokens = COMPUTE_TOKENS;
@@ -307,22 +310,30 @@ module LanlUmtSchedulerShell #(
         end
     endgenerate
 
-    LanlUmtBank16x640 bank0Instance(
+    LanlUmtBank16x640 #(
+        .ENABLE_STATE_WITNESS(ENABLE_STATE_WITNESS)) bank0Instance(
         .clock(clock), .readRow(bank0ReadRow), .readData(bank0ReadData),
         .writeValid(bank0WriteValid), .writeRow(bank0WriteRow),
-        .writeMask(bank0WriteMask), .writeData(bank0WriteData));
-    LanlUmtBank16x640 bank1Instance(
+        .writeMask(bank0WriteMask), .writeData(bank0WriteData),
+        .stateParity(bank0StateParity));
+    LanlUmtBank16x640 #(
+        .ENABLE_STATE_WITNESS(ENABLE_STATE_WITNESS)) bank1Instance(
         .clock(clock), .readRow(bank1ReadRow), .readData(bank1ReadData),
         .writeValid(bank1WriteValid), .writeRow(bank1WriteRow),
-        .writeMask(bank1WriteMask), .writeData(bank1WriteData));
-    LanlUmtBank16x640 bank2Instance(
+        .writeMask(bank1WriteMask), .writeData(bank1WriteData),
+        .stateParity(bank1StateParity));
+    LanlUmtBank16x640 #(
+        .ENABLE_STATE_WITNESS(ENABLE_STATE_WITNESS)) bank2Instance(
         .clock(clock), .readRow(bank2ReadRow), .readData(bank2ReadData),
         .writeValid(bank2WriteValid), .writeRow(bank2WriteRow),
-        .writeMask(bank2WriteMask), .writeData(bank2WriteData));
-    LanlUmtBank16x640 bank3Instance(
+        .writeMask(bank2WriteMask), .writeData(bank2WriteData),
+        .stateParity(bank2StateParity));
+    LanlUmtBank16x640 #(
+        .ENABLE_STATE_WITNESS(ENABLE_STATE_WITNESS)) bank3Instance(
         .clock(clock), .readRow(bank3ReadRow), .readData(bank3ReadData),
         .writeValid(bank3WriteValid), .writeRow(bank3WriteRow),
-        .writeMask(bank3WriteMask), .writeData(bank3WriteData));
+        .writeMask(bank3WriteMask), .writeData(bank3WriteData),
+        .stateParity(bank3StateParity));
 
     LanlUmtRotatingPriority #(.COMPUTE_TOKENS(COMPUTE_TOKENS))
         slot0Selector(
@@ -416,6 +427,14 @@ module LanlUmtSchedulerShell #(
                      witnessToken = witnessToken + 1)
                     stateWitnessValue[witnessToken] =
                         ^tokenState[witnessToken];
+                stateWitnessValue[15:0] =
+                    stateWitnessValue[15:0] ^ bank0StateParity;
+                stateWitnessValue[31:16] =
+                    stateWitnessValue[31:16] ^ bank1StateParity;
+                stateWitnessValue[47:32] =
+                    stateWitnessValue[47:32] ^ bank2StateParity;
+                stateWitnessValue[63:48] =
+                    stateWitnessValue[63:48] ^ bank3StateParity;
                 stateWitnessValue[60] =
                     stateWitnessValue[60] ^ ^functionalState;
                 stateWitnessValue[61] =

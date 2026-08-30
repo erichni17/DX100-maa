@@ -30,8 +30,10 @@ claim. `scripts/run_umt_scheduler_shell_rtl_smoke.sh` elaborates every wrapper
 as Verilog-2005 and runs directed Icarus tests for dimensions, W1/W2 issue,
 same-unit and same-bank exclusion, masked asynchronous bank access,
 writeback collisions, and writeback-first priority. No ORFS target is enabled
-at this checkpoint. A test-only full-state parity witness is parameterized off
-in every physical wrapper because its XOR tree would contaminate area/Fmax.
+at this checkpoint. A test-only full-state parity witness covers every token,
+every row of all four banks, and the three control-state classes. It is
+parameterized off in every physical wrapper, including inside each modular
+bank, because its XOR tree would contaminate area/Fmax.
 Before any cost promotion, a fresh Yosys/ORFS gate must prove that all intended
 bank, token, functional, scheduler, and instrumentation bits survive synthesis
 under the keep attributes, and C++/RTL traces must close phase, request,

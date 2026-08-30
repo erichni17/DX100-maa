@@ -30,6 +30,7 @@ module lanl_umt_modular_primitives_tb;
     reg [9:0] bankWriteMask = 10'b0;
     reg [639:0] bankWriteData = 640'b0;
     wire [639:0] bankReadData;
+    wire [15:0] bankStateParity;
 
     LanlUmtTokenEntry token(
         .clock(clock), .nReset(nReset), .tokenIndex(6'd3),
@@ -53,10 +54,11 @@ module lanl_umt_modular_primitives_tb;
         .sawBankBlocked(selectorSawBank),
         .sawDividerBlocked(selectorSawDivider));
 
-    LanlUmtBank16x640 bank(
+    LanlUmtBank16x640 #(.ENABLE_STATE_WITNESS(1)) bank(
         .clock(clock), .readRow(bankReadRow), .readData(bankReadData),
         .writeValid(bankWriteValid), .writeRow(bankWriteRow),
-        .writeMask(bankWriteMask), .writeData(bankWriteData));
+        .writeMask(bankWriteMask), .writeData(bankWriteData),
+        .stateParity(bankStateParity));
 
     task require;
         input condition;
@@ -115,19 +117,27 @@ module lanl_umt_modular_primitives_tb;
         require(tokenState == 471'b0,
                 "fixed-index result writeback clear differs");
 
+        // The bank has no reset, so make the row known before checking that
+        // a later masked write updates both data and its exported parity.
         bankWriteRow = 4'd7;
-        bankWriteMask = 10'b1000000001;
-        bankWriteData[63:0] = 64'haaaa;
-        bankWriteData[639:576] = 64'hbbbb;
+        bankWriteMask = 10'h3ff;
+        bankWriteData = 640'b0;
         bankWriteValid = 1'b1;
+        @(posedge clock);
+        #1;
+        bankWriteMask = 10'b1000000001;
+        bankWriteData[63:0] = 64'haaab;
+        bankWriteData[639:576] = 64'hbbbb;
         @(posedge clock);
         #1;
         bankWriteValid = 1'b0;
         bankReadRow = 4'd7;
         #1;
-        require(bankReadData[63:0] == 64'haaaa &&
+        require(bankReadData[63:0] == 64'haaab &&
                 bankReadData[639:576] == 64'hbbbb,
                 "independent masked bank readback differs");
+        require(bankStateParity[7] === 1'b1,
+                "enabled per-row bank parity differs");
 
         $display("LANL_UMT_MODULAR_PRIMITIVES_PASS");
         $finish(0);

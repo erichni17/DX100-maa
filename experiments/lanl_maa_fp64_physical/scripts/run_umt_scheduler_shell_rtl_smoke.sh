@@ -14,7 +14,17 @@ selector="$harness/rtl/LanlUmtRotatingPriority.v"
 bank="$harness/rtl/LanlUmtBank16x640.v"
 testbench="$harness/tests/lanl_umt_scheduler_shell_tb.v"
 modular_testbench="$harness/tests/lanl_umt_modular_primitives_tb.v"
+witness_testbench="$harness/tests/lanl_umt_state_witness_tb.v"
 rtl_sources=("$token_entry" "$selector" "$bank" "$rtl")
+
+run_test() {
+    local image=$1
+    local pass_marker=$2
+    local output
+    output=$("$vvp" -M "$ivl_base" "$image")
+    printf '%s\n' "$output"
+    grep -Fqx "$pass_marker" <<<"$output"
+}
 
 [[ -x "$iverilog" ]]
 [[ -x "$vvp" ]]
@@ -43,8 +53,15 @@ done
     -o "$build_root/lanl_umt_modular_primitives_tb" \
     "$token_entry" "$selector" "$bank" "$modular_testbench"
 
-"$vvp" -M "$ivl_base" \
-    "$build_root/lanl_umt_scheduler_shell_tb"
+"$iverilog" -B "$ivl_base" -g2005 -Wall \
+    -Wno-sensitivity-entire-array \
+    -s lanl_umt_state_witness_tb \
+    -o "$build_root/lanl_umt_state_witness_tb" \
+    "${rtl_sources[@]}" "$witness_testbench"
 
-exec "$vvp" -M "$ivl_base" \
-    "$build_root/lanl_umt_modular_primitives_tb"
+run_test "$build_root/lanl_umt_scheduler_shell_tb" \
+    LANL_UMT_SCHEDULER_SHELL_DIRECTED_PASS
+run_test "$build_root/lanl_umt_modular_primitives_tb" \
+    LANL_UMT_MODULAR_PRIMITIVES_PASS
+run_test "$build_root/lanl_umt_state_witness_tb" \
+    LANL_UMT_STATE_WITNESS_PASS
