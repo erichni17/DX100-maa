@@ -32,6 +32,7 @@
 #include "mem/MAA/SoaJitResultPipeline.hh"
 #include "mem/MAA/SoaJitScalarBroadcast.hh"
 #include "mem/MAA/Tables.hh"
+#include "mem/MAA/VirtualCombineLookupPipeline.hh"
 #include "mem/MAA/VirtualCombinePayloadStore.hh"
 #include "mem/MAA/VirtualCombineVictimSelector.hh"
 #include "mem/MAA/VirtualCombinerPageOrder.hh"
@@ -111,16 +112,25 @@ protected:
         Addr claim_grow_addr = 0;
         Addr claim_addr = 0;
         int claim_head = -1;
+        uint32_t lookup_next_issue_sequence = 0;
+        uint32_t lookup_next_completion_sequence = 0;
+        uint32_t lookup_pending = 0;
+        bool lookup_issue_closed = false;
         maa::FusedP16ResponseOwner fusedProduct{};
     };
     std::vector<VirtualResponseSlot> virtual_response_slots;
     VirtualResponsePayloadStore virtual_response_line_payloads;
     int virtual_response_words = 0;
     int virtual_response_word_pool_limit = 0;
+    int virtual_combine_lookup_latency_cycles = 0;
     int virtual_words_per_cycle_limit = 0;
     uint64_t virtual_word_budget_cycle = 0;
     int virtual_word_attempts_this_cycle = 0;
     int virtual_reserved_response_words = 0;
+    maa::VirtualCombineLookupPipeline virtual_combine_lookup_pipeline;
+    uint64_t virtual_combine_lookup_generation = 0;
+    uint64_t virtual_combine_lookup_next_generation = 0;
+    uint64_t virtual_combine_lookup_next_issue_sequence = 0;
     bool virtual_pending_source = false;
     Addr virtual_pending_source_addr = 0;
     int virtual_pending_source_head = -1;
@@ -300,6 +310,7 @@ public:
                   int _virtual_response_slots,
                   int _virtual_response_words,
                   int _virtual_response_word_pool,
+                  int _virtual_combine_lookup_latency_cycles,
                   int _virtual_words_per_cycle,
                   int _virtual_max_outstanding_writes,
                   bool _virtual_masked_writes,

@@ -397,6 +397,16 @@ def addNoISAOptions(parser):
         help="Total useful words retained across packed source responses",
     )
     parser.add_argument(
+        "--maa_virtual_combine_lookup_latency_cycles",
+        type=int,
+        default=0,
+        choices=range(9),
+        help=(
+            "Pipelined ordinary virtual-combiner tag-lookup latency in "
+            "MAA cycles (0 disables)"
+        ),
+    )
+    parser.add_argument(
         "--maa_virtual_max_outstanding_writes",
         type=int,
         default=32,
