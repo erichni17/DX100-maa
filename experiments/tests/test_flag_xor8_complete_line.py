@@ -12,8 +12,12 @@ class FlagXor8CompleteLineTest(unittest.TestCase):
         source = SCRIPT.read_text()
         self.assertIn("MAA_VIRTUAL_COMBINE_SLOTS=2048", source)
         self.assertIn("MAA_VIRTUAL_COMBINE_WORDS=3072", source)
-        self.assertIn("MAA_VIRTUAL_COMBINE_WAYS=8", source)
-        self.assertIn("MAA_VIRTUAL_COMBINE_SET_XOR_SHIFT=7", source)
+        self.assertIn("FLAG_COMBINE_WAYS:-8", source)
+        self.assertIn("FLAG_COMBINE_XOR_SHIFT:-7", source)
+        self.assertIn('MAA_VIRTUAL_COMBINE_WAYS="$combine_ways"', source)
+        self.assertIn(
+            'MAA_VIRTUAL_COMBINE_SET_XOR_SHIFT="$combine_xor_shift"', source
+        )
         self.assertIn("MAA_VIRTUAL_COMPLETE_LINE_DRAIN_LINES_PER_CYCLE=1", source)
         self.assertIn("$issued -eq $full", source)
         self.assertIn("timeout=none", source)

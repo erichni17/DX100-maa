@@ -17,10 +17,17 @@ ramulator_lib=$(realpath "$8")
 runner_source=$(realpath "$9")
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 provenance=/tmp/gem5-complete-tail.provenance
+combine_ways=${FLAG_COMBINE_WAYS:-8}
+combine_xor_shift=${FLAG_COMBINE_XOR_SHIFT:-7}
 
 [[ $parallel =~ ^[1-9][0-9]*$ && $source_commit =~ ^[0-9a-f]{40}$ &&
    $binary_sha =~ ^[0-9a-f]{64}$ ]] || {
     echo "invalid parallelism, source commit, or binary hash" >&2
+    exit 2
+}
+[[ $combine_ways =~ ^(4|8|16)$ &&
+   $combine_xor_shift =~ ^([0-9]|[1-5][0-9]|6[0-3])$ ]] || {
+    echo "FLAG combiner ways/shift must be 4/8/16 and [0,63]" >&2
     exit 2
 }
 [[ $(sha256sum "$gem5" | awk '{print $1}') == "$binary_sha" ]] || {
@@ -44,7 +51,8 @@ cp "$cases" "$out/cases.list"
     printf 'binary_sha256=%s\n' "$binary_sha"
     printf 'ramulator_sha256=%s\n' "$(sha256sum "$frozen_lib" | awk '{print $1}')"
     printf 'runner_sha256=%s\n' "$(sha256sum "$runner" | awk '{print $1}')"
-    printf 'geometry=logical16384,physical4096,tags2048,ways8,xor7,words3072,response1024,drain1\n'
+    printf 'geometry=logical16384,physical4096,tags2048,ways%s,xor%s,words3072,response1024,drain1\n' \
+        "$combine_ways" "$combine_xor_shift"
     printf 'timeout=none\n'
 } > "$out/manifest.txt"
 
@@ -57,8 +65,8 @@ run_one() {
         MAA_GUEST_ABI_TILE_ELEMENTS=16384 \
         MAA_VIRTUAL_COMBINE_SLOTS=2048 \
         MAA_VIRTUAL_COMBINE_WORDS=3072 \
-        MAA_VIRTUAL_COMBINE_WAYS=8 \
-        MAA_VIRTUAL_COMBINE_SET_XOR_SHIFT=7 \
+        MAA_VIRTUAL_COMBINE_WAYS="$combine_ways" \
+        MAA_VIRTUAL_COMBINE_SET_XOR_SHIFT="$combine_xor_shift" \
         MAA_VIRTUAL_RESPONSE_SLOTS=128 \
         MAA_VIRTUAL_RESPONSE_WORD_POOL=1024 \
         MAA_VIRTUAL_INDEX_BUFFER_LINES=128 \
@@ -99,7 +107,8 @@ run_one() {
         "$stalls" "$peak" "$hash" > "$out/rows/$id.tsv"
 }
 export -f run_one
-export out root runner provenance gem5 guest source_commit frozen_lib
+export out root runner provenance gem5 guest source_commit frozen_lib \
+    combine_ways combine_xor_shift
 
 xargs -P "$parallel" -n 3 bash -c 'run_one "$@"' _ < "$cases"
 
