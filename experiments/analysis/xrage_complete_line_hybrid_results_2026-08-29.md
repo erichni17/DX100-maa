@@ -112,6 +112,10 @@ XOR-fold shift 7 or 10 and preserves timing within 0.025%. See
 `xrage_combiner_xor_results_2026-08-29.md`. The 8-way lookup remains untimed,
 but the required comparator/mux fan-in is halved.
 
+A bounded four-start/four-completion lookup pipeline then shows only 0.299%
+latency overhead at eight MAA cycles while closing all 65,536 exact lookup
+tokens. See `xrage_lookup_latency_results_2026-08-29.md`.
+
 ## Correctness and scope
 
 Every accepted run has one exact verifier pass with hash
