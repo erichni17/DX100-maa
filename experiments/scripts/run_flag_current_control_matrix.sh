@@ -17,6 +17,8 @@ ramulator_lib=$(realpath "$8")
 runner_source=$(realpath "$9")
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 provenance=/tmp/gem5-complete-tail.provenance
+read -r -a selected_arms <<< \
+    "${FLAG_CONTROL_ARMS:-fused16 compact16 direct4_small direct4_max}"
 
 [[ $parallel =~ ^[1-9][0-9]*$ ]] || {
     echo "MAX_PARALLEL must be positive" >&2
@@ -34,6 +36,23 @@ provenance=/tmp/gem5-complete-tail.provenance
     echo "gem5 binary hash mismatch" >&2
     exit 2
 }
+[[ ${#selected_arms[@]} -gt 0 ]] || {
+    echo "FLAG_CONTROL_ARMS must select at least one arm" >&2
+    exit 2
+}
+declare -A seen_arms=()
+for arm in "${selected_arms[@]}"; do
+    case "$arm" in
+        fused16|compact16|direct4_small|direct4_max) ;;
+        *) echo "unsupported selected arm: $arm" >&2; exit 2 ;;
+    esac
+    [[ -z ${seen_arms[$arm]+x} ]] || {
+        echo "duplicate selected arm: $arm" >&2
+        exit 2
+    }
+    seen_arms[$arm]=1
+done
+arm_csv=$(IFS=,; echo "${selected_arms[*]}")
 [[ -f $provenance ]] || {
     echo "missing simulator provenance: $provenance" >&2
     exit 2
@@ -55,7 +74,7 @@ cp "$cases" "$out/cases.list"
     printf 'binary_sha256=%s\n' "$binary_sha"
     printf 'ramulator_sha256=%s\n' "$(sha256sum "$frozen_lib" | awk '{print $1}')"
     printf 'runner_sha256=%s\n' "$(sha256sum "$runner" | awk '{print $1}')"
-    printf 'arms=fused16,compact16,direct4_small,direct4_max\n'
+    printf 'arms=%s\n' "$arm_csv"
     printf 'max_parallel=%s\n' "$parallel"
     printf 'timeout=none\n'
 } > "$out/manifest.txt"
@@ -67,12 +86,13 @@ while IFS=$'\t' read -r id input length; do
         echo "invalid case: $id $input $length" >&2
         exit 2
     }
-    for arm in fused16 compact16 direct4_small direct4_max; do
+    for arm in "${selected_arms[@]}"; do
         printf '%s\t%s\t%s\t%s\n' "$id" "$input" "$length" "$arm" >> "$tasks"
     done
 done < "$cases"
-[[ $(wc -l < "$tasks") -eq 56 ]] || {
-    echo "expected 56 matrix points" >&2
+expected_points=$((14 * ${#selected_arms[@]}))
+[[ $(wc -l < "$tasks") -eq $expected_points ]] || {
+    echo "unexpected matrix point count" >&2
     exit 2
 }
 
@@ -146,13 +166,14 @@ run_one() {
 export -f run_one
 export out root runner provenance gem5 guest source_commit frozen_lib
 
-xargs -P "$parallel" -n 4 bash -c 'run_one "$@"' _ < "$tasks"
+xargs -r -P "$parallel" -n 4 bash -c \
+    'run_one "$1" "$2" "$3" "$4"' _ < "$tasks"
 
 {
     printf 'id\tarm\tlength\tticks\twrites\tcompletions\tfull\tpartial\thash\n'
     cat "$out"/rows/*.tsv | sort
 } > "$out/results.tsv"
-[[ $(wc -l < "$out/results.tsv") -eq 57 ]] || {
+[[ $(wc -l < "$out/results.tsv") -eq $((expected_points + 1)) ]] || {
     echo "incomplete matrix" >&2
     exit 1
 }
