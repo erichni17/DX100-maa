@@ -5,6 +5,8 @@ import importlib.util
 import pathlib
 import unittest
 
+import umt_factorial_evidence as FACTORIAL
+
 DRIVER_PATH = pathlib.Path(__file__).with_name(
     "run_umt_ordered_wave_mixed_evidence_smoke.py"
 )
@@ -16,6 +18,12 @@ SPEC.loader.exec_module(DRIVER)
 
 
 class MixedUmtEvidenceTest(unittest.TestCase):
+    @staticmethod
+    def cell(tokens=32, width=2):
+        return FACTORIAL.FactorialCell(
+            tokens, width, FACTORIAL.CELL_VARIANTS[(tokens, width)]
+        )
+
     def test_interleaved_terminal_sequence_is_fixed(self):
         self.assertEqual(
             [
@@ -67,16 +75,15 @@ class MixedUmtEvidenceTest(unittest.TestCase):
         )
 
     def test_exact_traffic_fp_occupancy_and_cost_ledger(self):
-        expected = DRIVER.exact_stats()
+        expected = DRIVER.exact_stats(self.cell())
         self.assertEqual(expected["descriptorDoorbells"], 5)
         self.assertEqual(expected["descriptorRearms"], 4)
         self.assertEqual(expected["descriptorCompletionWrites"], 4)
         self.assertEqual(expected["descriptorErrors"], 1)
         self.assertEqual(expected["descriptorUmtInputReads"], 2280)
-        self.assertEqual(DRIVER.ISSUE2_MIXED_INPUT_LINE_READS, 315)
-        self.assertEqual(
-            expected["descriptorUmtInputLineReads"],
-            DRIVER.ISSUE2_MIXED_INPUT_LINE_READS,
+        self.assertNotIn("descriptorUmtInputLineReads", expected)
+        self.assertIn(
+            "descriptorUmtInputLineReads", DRIVER.TIMING_COUNTER_REASONS
         )
         self.assertEqual(expected["descriptorUmtStateInputWrites"], 1168)
         self.assertEqual(
@@ -86,6 +93,9 @@ class MixedUmtEvidenceTest(unittest.TestCase):
         self.assertEqual(expected["descriptorUmtFp64AddSubOperations"], 2760)
         self.assertEqual(expected["descriptorUmtFp64MultiplyOperations"], 1656)
         self.assertEqual(expected["descriptorUmtFp64DivideOperations"], 1104)
+        self.assertEqual(
+            expected["descriptorUmtStateFpOperationsIssued"], 5520
+        )
         self.assertEqual(expected["descriptorUmtStateStoreHighWaterMark"], 64)
         self.assertEqual(expected["descriptorUmtStateBankHighWaterMark"], 16)
         self.assertEqual(expected["descriptorUmtStateTokenHighWaterMark"], 32)
@@ -106,31 +116,46 @@ class MixedUmtEvidenceTest(unittest.TestCase):
             58142,
         )
 
-    @staticmethod
-    def complete_fake_stats():
-        stats = dict(DRIVER.exact_stats())
+    @classmethod
+    def complete_fake_stats(cls, tokens=32, width=2):
+        stats = dict(DRIVER.exact_stats(cls.cell(tokens, width)))
         for name in DRIVER.TIMING_COUNTER_REASONS:
             stats[name] = 1
+        stats["descriptorUmtStateDualIssueCycles"] = 0 if width == 1 else 1
         stats["lineTableHighWaterMark"] = 32
         stats["controlStatusReads"] = 17
         stats["controlReadRequests"] = 18
         return stats
 
-    @staticmethod
-    def timing_contract(stats, build_sha="a" * 64):
+    @classmethod
+    def timing_contract(cls, stats, build_sha="a" * 64, tokens=32, width=2):
         return {
             "schema": DRIVER.TIMING_CONTRACT_SCHEMA,
             "build_manifest_sha256": build_sha,
+            "cell": cls.cell(tokens, width).document(),
             "counters": {
                 name: stats[name] for name in DRIVER.TIMING_COUNTER_REASONS
             },
         }
 
-    @staticmethod
-    def build_manifest():
+    @classmethod
+    def build_manifest(cls):
+        cell = cls.cell()
+        headers = {}
+        for label, symbol in FACTORIAL.CONFIG_SYMBOLS.items():
+            headers[label] = {
+                "path": (
+                    f"/source/build/{cell.variant}/config/"
+                    f"{symbol.lower()}.hh"
+                ),
+                "sha256": "7" * 64,
+                "symbol": symbol,
+                "value": getattr(cell, label),
+            }
         return {
-            "schema": DRIVER.BUILD_MANIFEST_SCHEMA,
+            "schema": FACTORIAL.BUILD_MANIFEST_SCHEMA,
             "status": "passed",
+            "cell": cell.document(),
             "source_commit": "1" * 40,
             "source_tree": "2" * 40,
             "source_clean_before_and_after": True,
@@ -138,14 +163,19 @@ class MixedUmtEvidenceTest(unittest.TestCase):
             "command": [
                 str(pathlib.Path("/usr/bin/scons").resolve()),
                 "--ignore-style",
-                "build/X86/gem5.opt",
+                f"build/{cell.variant}/gem5.opt",
                 "-j4",
             ],
             "returncode": 0,
             "started_at": "2026-08-09T00:00:00+00:00",
             "ended_at": "2026-08-09T00:01:00+00:00",
             "required_relink_observed": True,
-            "target": "/source/build/X86/gem5.opt",
+            "build_opts": f"/source/build_opts/{cell.variant}",
+            "build_opts_sha256": "8" * 64,
+            "kconfig_state": f"/source/build/{cell.variant}/gem5.build/config",
+            "kconfig_state_sha256": "9" * 64,
+            "generated_config_headers": headers,
+            "target": f"/source/build/{cell.variant}/gem5.opt",
             "target_size": 1,
             "target_mtime_ns": 1,
             "gem5_sha256": "3" * 64,
@@ -158,10 +188,13 @@ class MixedUmtEvidenceTest(unittest.TestCase):
         }
 
     def test_confirmation_requires_exact_external_timing_contract(self):
+        cell = self.cell()
         stats = self.complete_fake_stats()
         contract = self.timing_contract(stats)
-        exact, timing = DRIVER.validate_confirmation(stats, contract, "a" * 64)
-        self.assertEqual(exact, DRIVER.exact_stats())
+        exact, timing = DRIVER.validate_confirmation(
+            stats, contract, "a" * 64, cell
+        )
+        self.assertEqual(exact, DRIVER.exact_stats(cell))
         self.assertEqual(set(timing), set(DRIVER.TIMING_COUNTER_REASONS))
         self.assertTrue(
             all(
@@ -171,26 +204,28 @@ class MixedUmtEvidenceTest(unittest.TestCase):
         )
 
     def test_confirmation_rejects_positive_but_changed_timing(self):
+        cell = self.cell()
         stats = self.complete_fake_stats()
         contract = self.timing_contract(stats)
         stats["descriptorUmtStateFpIssueStallCycles"] = 2
         with self.assertRaisesRegex(
             RuntimeError, "exact timing stat mismatch"
         ):
-            DRIVER.validate_confirmation(stats, contract, "a" * 64)
+            DRIVER.validate_confirmation(stats, contract, "a" * 64, cell)
 
     def test_split_pipeline_counters_are_required_and_close(self):
-        names = (
+        split_names = (
             "descriptorUmtStateBankReadConflictCycles",
             "descriptorUmtStateWritebackStallCycles",
+            "descriptorUmtStatePipelineResultBankStallCycles",
             "descriptorUmtStateDividerNoLaneCycles",
         )
-        for name in names:
+        for name in split_names:
             with self.subTest(missing=name):
                 stats = self.complete_fake_stats()
                 del stats[name]
                 with self.assertRaisesRegex(RuntimeError, "absent"):
-                    DRIVER.observed_timing_counters(stats)
+                    DRIVER.observed_timing_counters(stats, self.cell())
 
         stats = self.complete_fake_stats()
         stats["descriptorUmtStateBankReadConflictCycles"] = 2
@@ -198,22 +233,31 @@ class MixedUmtEvidenceTest(unittest.TestCase):
         stats["descriptorUmtStatePipelineResultBankStallCycles"] = 4
         stats["descriptorUmtStateDividerNoLaneCycles"] = 4
         stats["descriptorUmtBatchCycles"] = 5
-        observed = DRIVER.observed_timing_counters(stats)
+        observed = DRIVER.observed_timing_counters(stats, self.cell())
         self.assertEqual(
             observed["descriptorUmtStatePipelineResultBankStallCycles"], 4
         )
 
-        invalid_union = dict(stats)
-        invalid_union["descriptorUmtStatePipelineResultBankStallCycles"] = 6
-        with self.assertRaisesRegex(RuntimeError, "did not close"):
-            DRIVER.observed_timing_counters(invalid_union)
-
-        invalid_divider = dict(stats)
-        invalid_divider["descriptorUmtStateDividerNoLaneCycles"] = 6
-        with self.assertRaisesRegex(RuntimeError, "exceed active"):
-            DRIVER.observed_timing_counters(invalid_divider)
+        invalid_cases = (
+            ("descriptorUmtStateBankReadConflictCycles", -1, "did not close"),
+            ("descriptorUmtStateWritebackStallCycles", -1, "did not close"),
+            (
+                "descriptorUmtStatePipelineResultBankStallCycles",
+                6,
+                "did not close",
+            ),
+            ("descriptorUmtStateDividerNoLaneCycles", -1, "exceed active"),
+            ("descriptorUmtStateDividerNoLaneCycles", 6, "exceed active"),
+        )
+        for name, value, message in invalid_cases:
+            with self.subTest(name=name, value=value):
+                invalid = dict(stats)
+                invalid[name] = value
+                with self.assertRaisesRegex(RuntimeError, message):
+                    DRIVER.observed_timing_counters(invalid, self.cell())
 
     def test_packet_retry_counters_are_exactly_predeclared(self):
+        cell = self.cell()
         stats = self.complete_fake_stats()
         contract = self.timing_contract(stats)
         for name in DRIVER.PACKET_RETRY_COUNTERS:
@@ -225,7 +269,9 @@ class MixedUmtEvidenceTest(unittest.TestCase):
                 }
                 del incomplete["counters"][name]
                 with self.assertRaisesRegex(RuntimeError, "counter set"):
-                    DRIVER.validate_confirmation(stats, incomplete, "a" * 64)
+                    DRIVER.validate_confirmation(
+                        stats, incomplete, "a" * 64, cell
+                    )
 
         for name in DRIVER.PACKET_RETRY_COUNTERS:
             with self.subTest(name=name):
@@ -235,7 +281,9 @@ class MixedUmtEvidenceTest(unittest.TestCase):
                 DRIVER.validate_packet_retry_counters(changed)
                 changed[name] = 3
                 with self.assertRaisesRegex(RuntimeError, "retry"):
-                    DRIVER.validate_confirmation(changed, contract, "a" * 64)
+                    DRIVER.validate_confirmation(
+                        changed, contract, "a" * 64, cell
+                    )
 
     def test_semantically_valid_retry_ledgers_are_closed_form(self):
         stats = self.complete_fake_stats()
@@ -256,6 +304,7 @@ class MixedUmtEvidenceTest(unittest.TestCase):
         DRIVER.validate_packet_retry_counters(stats)
 
     def test_adversarial_retry_contract_cannot_bless_open_obligations(self):
+        cell = self.cell()
         stats = self.complete_fake_stats()
         stats.update(
             {
@@ -267,9 +316,10 @@ class MixedUmtEvidenceTest(unittest.TestCase):
         )
         contract = self.timing_contract(stats)
         with self.assertRaisesRegex(RuntimeError, "retry obligation"):
-            DRIVER.validate_confirmation(stats, contract, "a" * 64)
+            DRIVER.validate_confirmation(stats, contract, "a" * 64, cell)
 
     def test_balanced_retry_mutation_still_fails_exact_confirmation(self):
+        cell = self.cell()
         stats = self.complete_fake_stats()
         contract = self.timing_contract(stats)
         for name in DRIVER.PACKET_RETRY_COUNTERS:
@@ -278,9 +328,10 @@ class MixedUmtEvidenceTest(unittest.TestCase):
         with self.assertRaisesRegex(
             RuntimeError, "exact timing stat mismatch"
         ):
-            DRIVER.validate_confirmation(stats, contract, "a" * 64)
+            DRIVER.validate_confirmation(stats, contract, "a" * 64, cell)
 
     def test_terminal_retry_run_requires_an_acceptance(self):
+        cell = self.cell()
         stats = self.complete_fake_stats()
         stats.update(
             {
@@ -292,28 +343,78 @@ class MixedUmtEvidenceTest(unittest.TestCase):
         )
         contract = self.timing_contract(stats)
         with self.assertRaisesRegex(RuntimeError, "terminal retry acceptance"):
-            DRIVER.validate_confirmation(stats, contract, "a" * 64)
+            DRIVER.validate_confirmation(stats, contract, "a" * 64, cell)
 
     def test_timing_contract_must_bind_build_manifest(self):
+        cell = self.cell()
         stats = self.complete_fake_stats()
         contract = self.timing_contract(stats, "b" * 64)
         with self.assertRaisesRegex(RuntimeError, "bind the build manifest"):
-            DRIVER.validate_confirmation(stats, contract, "a" * 64)
+            DRIVER.validate_confirmation(stats, contract, "a" * 64, cell)
+        wrong_cell = self.cell(24, 2)
+        with self.assertRaisesRegex(RuntimeError, "cell mismatches"):
+            DRIVER.validate_timing_contract(contract, "b" * 64, wrong_cell)
+
+    def test_mixed_gate_enforces_w1_zero_and_w2_positive(self):
+        w1 = self.cell(32, 1)
+        w1_stats = self.complete_fake_stats(32, 1)
+        w1_contract = self.timing_contract(w1_stats, tokens=32, width=1)
+        DRIVER.validate_confirmation(w1_stats, w1_contract, "a" * 64, w1)
+        w1_stats["descriptorUmtStateDualIssueCycles"] = 1
+        with self.assertRaisesRegex(RuntimeError, "W1 cell"):
+            DRIVER.validate_confirmation(w1_stats, w1_contract, "a" * 64, w1)
+
+        w2 = self.cell(32, 2)
+        w2_stats = self.complete_fake_stats(32, 2)
+        w2_contract = self.timing_contract(w2_stats)
+        DRIVER.validate_confirmation(w2_stats, w2_contract, "a" * 64, w2)
+        w2_stats["descriptorUmtStateDualIssueCycles"] = 0
+        with self.assertRaisesRegex(RuntimeError, "retained|did not exercise"):
+            DRIVER.validate_confirmation(w2_stats, w2_contract, "a" * 64, w2)
+
+    def test_all_cells_derive_mixed_token_issue_and_cost_expectations(self):
+        for tokens, width in FACTORIAL.CELL_VARIANTS:
+            with self.subTest(tokens=tokens, width=width):
+                cell = self.cell(tokens, width)
+                expected = DRIVER.exact_stats(cell)
+                self.assertEqual(
+                    expected["descriptorUmtStateTokenHighWaterMark"], tokens
+                )
+                self.assertEqual(
+                    expected["descriptorUmtStateFpIssueWidth"], width
+                )
+                self.assertEqual(
+                    expected[
+                        "descriptorUmtStateFpIssueSelectionCandidateInputs"
+                    ],
+                    tokens * width,
+                )
+                self.assertEqual(
+                    expected[
+                        "descriptorUmtStatePhysicalStorePlusLogical"
+                        "AuxiliaryBitsFloor"
+                    ],
+                    54372 if tokens == 24 else 58142,
+                )
 
     def test_calibration_emits_candidate_but_not_confirmation(self):
+        cell = self.cell()
         stats = self.complete_fake_stats()
-        exact, candidate = DRIVER.timing_contract_candidate(stats, "a" * 64)
-        self.assertEqual(exact, DRIVER.exact_stats())
+        exact, candidate = DRIVER.timing_contract_candidate(
+            stats, "a" * 64, cell
+        )
+        self.assertEqual(exact, DRIVER.exact_stats(cell))
         self.assertEqual(
             DRIVER.TIMING_CONTRACT_SCHEMA,
-            "lanl-maa-umt-ordered-wave-timing-contract-v2",
+            "lanl-maa-umt-ordered-wave-timing-contract-v3",
         )
         self.assertEqual(
             DRIVER.EVIDENCE_REPORT_SCHEMA,
-            "lanl-maa-umt-ordered-wave-mixed-evidence-v2",
+            "lanl-maa-umt-ordered-wave-mixed-evidence-v3",
         )
         self.assertEqual(candidate["schema"], DRIVER.TIMING_CONTRACT_SCHEMA)
         self.assertEqual(candidate["build_manifest_sha256"], "a" * 64)
+        self.assertEqual(candidate["cell"], cell.document())
         self.assertNotIn("status", candidate)
         self.assertEqual(
             DRIVER.validation_disposition("calibration"),
@@ -334,8 +435,8 @@ class MixedUmtEvidenceTest(unittest.TestCase):
 
     def test_build_manifest_binds_reproducible_relink_contract(self):
         manifest = self.build_manifest()
-        self.assertIs(
-            DRIVER.validate_build_manifest_document(manifest), manifest
+        self.assertEqual(
+            DRIVER.validate_build_manifest_document(manifest), self.cell()
         )
         changed = dict(manifest)
         changed["required_relink_observed"] = False
@@ -345,12 +446,14 @@ class MixedUmtEvidenceTest(unittest.TestCase):
             DRIVER.validate_build_manifest_document(changed)
 
     def test_validator_rejects_error_as_completion(self):
+        cell = self.cell()
         stats = self.complete_fake_stats()
         stats["descriptorCompletionWrites"] = 5
         with self.assertRaisesRegex(RuntimeError, "exact stat mismatch"):
-            DRIVER.validate_exact_stats(stats)
+            DRIVER.validate_exact_stats(stats, cell)
 
     def test_calibration_requires_retained_pipeline_and_stall_work(self):
+        cell = self.cell()
         for name in (
             "descriptorUmtBatchCycles",
             "descriptorUmtStateTokenBackpressureEvents",
@@ -364,7 +467,7 @@ class MixedUmtEvidenceTest(unittest.TestCase):
                 stats = self.complete_fake_stats()
                 stats[name] = 0
                 with self.assertRaisesRegex(RuntimeError, "retained"):
-                    DRIVER.timing_contract_candidate(stats, "a" * 64)
+                    DRIVER.timing_contract_candidate(stats, "a" * 64, cell)
 
 
 if __name__ == "__main__":

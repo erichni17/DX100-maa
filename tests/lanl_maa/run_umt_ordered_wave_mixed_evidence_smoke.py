@@ -5,11 +5,21 @@ import argparse
 import hashlib
 import json
 import pathlib
-import re
 import shutil
 import struct
 import subprocess
 from dataclasses import dataclass
+
+from umt_factorial_evidence import (
+    FACTORIAL_HARNESS_PATHS,
+    cell_from_document,
+    sha256,
+    static_cell_stats,
+    validate_build_manifest_document,
+    validate_build_manifest_files,
+    validate_dual_issue,
+    validate_repository_boundary,
+)
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BAD_RECORD_VALUE = 18
@@ -17,12 +27,6 @@ POISON_BITS = 0x7FF0000000000001
 RESULT_SENTINEL_BITS = 0xDEADBEEFCAFEF00D
 CORNERS = 8
 INPUT_PLANES = 16
-# Two-wide issue changes D32 line residency in the interleaved mixed-ABI
-# sequence.  Three independent cold runs of the d725 production ELF measured
-# 315 physical reads with identical logical work and timing counters.  Keep
-# this treatment-specific traffic oracle explicit rather than deriving the
-# single-issue value (313) from the fixed work matrix.
-ISSUE2_MIXED_INPUT_LINE_READS = 315
 EDGES = (
     (0, 1, 0.5),
     (0, 2, -0.25),
@@ -54,9 +58,8 @@ CASES = (
     EvidenceCase(4, 8, True),
 )
 SUCCESS_CASES = tuple(case for case in CASES if not case.expect_error)
-BUILD_MANIFEST_SCHEMA = "lanl-maa-reproducible-gem5-build-v1"
-TIMING_CONTRACT_SCHEMA = "lanl-maa-umt-ordered-wave-timing-contract-v2"
-EVIDENCE_REPORT_SCHEMA = "lanl-maa-umt-ordered-wave-mixed-evidence-v2"
+TIMING_CONTRACT_SCHEMA = "lanl-maa-umt-ordered-wave-timing-contract-v3"
+EVIDENCE_REPORT_SCHEMA = "lanl-maa-umt-ordered-wave-mixed-evidence-v3"
 GUEST_COMPILE_FLAGS = (
     "-std=c11",
     "-O2",
@@ -77,15 +80,24 @@ GUEST_COMPILE_FLAGS = (
 # These cannot be derived from the fixed work matrix alone. Confirmation still
 # requires exact integers from an external predeclared timing contract.
 TIMING_COUNTER_REASONS = {
+    "descriptorUmtInputLineReads": (
+        "D32 input-line release and re-read placement depends on token and "
+        "issue timing; logical input work is exact instead"
+    ),
     "descriptorUmtBatchCycles": (
         "pipeline-active cycles depend on timing response and token issue "
         "placement; the fixed FP operation counts are exact instead"
     ),
     "descriptorUmtStateTokenBackpressureEvents": (
-        "retry opportunities depend on line arrival and token retirement timing"
+        "retry opportunities depend on line arrival and token retirement "
+        "timing"
     ),
     "descriptorUmtStateFpIssueStallCycles": (
         "stall cycles depend on cycle-by-cycle token arbitration"
+    ),
+    "descriptorUmtStateDualIssueCycles": (
+        "paired issue cycles depend on cycle-by-cycle arbitration; W1 must "
+        "remain exactly zero and W2 must exercise a positive count"
     ),
     "descriptorUmtStateInputBankWaitCycles": (
         "input bank conflicts depend on response arrival cycles"
@@ -97,7 +109,8 @@ TIMING_COUNTER_REASONS = {
         "FP writeback conflicts depend on completion and bank arbitration"
     ),
     "descriptorUmtStatePipelineResultBankStallCycles": (
-        "pipeline result conflicts depend on FP completion and bank arbitration"
+        "pipeline result conflicts depend on FP completion and bank "
+        "arbitration"
     ),
     "descriptorUmtStateDividerNoLaneCycles": (
         "divider availability depends on transient ready-token placement"
@@ -145,38 +158,6 @@ PACKET_RETRY_RELATIONSHIPS = (
     "(retryPacketAcceptances == 0) == (retryPacketResubmissions == 0)",
 )
 
-BUILD_MANIFEST_KEYS = {
-    "schema",
-    "status",
-    "source_commit",
-    "source_tree",
-    "source_clean_before_and_after",
-    "source_identity_unchanged",
-    "command",
-    "returncode",
-    "started_at",
-    "ended_at",
-    "required_relink_observed",
-    "target",
-    "target_size",
-    "target_mtime_ns",
-    "gem5_sha256",
-    "frozen_gem5",
-    "frozen_gem5_sha256",
-    "stdout_sha256",
-    "stderr_sha256",
-    "builder_sha256",
-    "claim_boundary",
-}
-
-
-def sha256(path):
-    digest = hashlib.sha256()
-    with pathlib.Path(path).open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
 
 def write_json(path, document):
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -195,10 +176,6 @@ def read_json_object(path, label):
     if not isinstance(document, dict):
         raise RuntimeError(f"{label} must be a JSON object")
     return document
-
-
-def is_sha256(value):
-    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
 
 
 def read_stats(path):
@@ -273,7 +250,7 @@ def oracle_sha256(case_index, groups):
     return digest.hexdigest()
 
 
-def exact_stats():
+def exact_stats(cell):
     success_groups = sum(case.groups for case in SUCCESS_CASES)
     success_line_packets = sum(
         (case.groups + 7) // 8 for case in SUCCESS_CASES
@@ -300,7 +277,6 @@ def exact_stats():
         # retained-work drain.
         "descriptorUmtGroupsLoaded": success_groups,
         "descriptorUmtInputReads": INPUT_PLANES * success_groups + 72,
-        "descriptorUmtInputLineReads": ISSUE2_MIXED_INPUT_LINE_READS,
         "descriptorUmtStateInputWrites": CORNERS * success_groups + 64,
         "descriptorUmtStateDenominatorsConsumed": (
             CORNERS * success_groups + 7
@@ -319,27 +295,22 @@ def exact_stats():
         # Fixed capacity, occupancy, and explicitly-labeled cost floors.
         "descriptorUmtStateStoreHighWaterMark": 64,
         "descriptorUmtStateBankHighWaterMark": 16,
-        "descriptorUmtStateTokenHighWaterMark": 32,
-        "descriptorUmtStateAllocatedStoreBytes": 4608,
-        "descriptorUmtStatePhysicalStoreBytes": 5120,
-        "descriptorUmtStateResidualStoreBytes": 512,
-        "descriptorUmtStateTokenLogicalBitsFloor": 15072,
-        "descriptorUmtStateFunctionalControlLogicalBitsFloor": 657,
-        "descriptorUmtStateBankSchedulerLogicalBitsFloor": 283,
-        "descriptorUmtStateInstrumentationLogicalBitsFloor": 1170,
-        "descriptorUmtStateAuxiliaryLogicalBitsFloor": 17182,
-        "descriptorUmtStatePhysicalStorePlusLogicalAuxiliaryBitsFloor": 58142,
+        "descriptorUmtStateTokenHighWaterMark": cell.compute_tokens,
+        "descriptorUmtStateFpOperationsIssued": (
+            (2 * CORNERS + 2 * len(EDGES)) * success_groups
+        ),
         "activeContextHighWaterMark": 64,
         "operationTableHighWaterMark": 64,
         "lineWouldBlockCycles": 0,
-        # The guest performs exactly one error-register read and no opcode read.
+        # The guest performs one error-register read and no opcode read.
         "controlErrorReads": 1,
         "controlOpcodeReads": 0,
+        **static_cell_stats(cell),
     }
 
 
-def validate_exact_stats(stats):
-    expected = exact_stats()
+def validate_exact_stats(stats, cell):
+    expected = exact_stats(cell)
     failures = {
         name: {"expected": value, "observed": stats.get(name)}
         for name, value in expected.items()
@@ -382,7 +353,7 @@ def validate_packet_retry_counters(stats):
     return observed
 
 
-def observed_timing_counters(stats):
+def observed_timing_counters(stats, cell):
     observed = {}
     for name in TIMING_COUNTER_REASONS:
         value = stats.get(name)
@@ -399,6 +370,7 @@ def observed_timing_counters(stats):
             "lineTableHighWaterMark",
             "controlStatusReads",
             "controlReadRequests",
+            "descriptorUmtStateDualIssueCycles",
             "descriptorUmtStateBankReadConflictCycles",
             "descriptorUmtStateWritebackStallCycles",
             "descriptorUmtStateDividerNoLaneCycles",
@@ -452,20 +424,30 @@ def observed_timing_counters(stats):
             f"active={observed['descriptorUmtBatchCycles']}"
         )
     validate_packet_retry_counters(observed)
+    validate_dual_issue(observed, cell, require_exercised=True)
     return observed
 
 
-def validate_calibration(stats):
-    return validate_exact_stats(stats), observed_timing_counters(stats)
+def validate_calibration(stats, cell):
+    return validate_exact_stats(stats, cell), observed_timing_counters(
+        stats, cell
+    )
 
 
-def validate_timing_contract(document, build_manifest_sha256):
-    if set(document) != {"schema", "build_manifest_sha256", "counters"}:
+def validate_timing_contract(document, build_manifest_sha256, cell):
+    if set(document) != {
+        "schema",
+        "build_manifest_sha256",
+        "cell",
+        "counters",
+    }:
         raise RuntimeError("timing contract has missing or unknown fields")
     if document["schema"] != TIMING_CONTRACT_SCHEMA:
         raise RuntimeError("timing contract schema changed")
     if document["build_manifest_sha256"] != build_manifest_sha256:
         raise RuntimeError("timing contract does not bind the build manifest")
+    if cell_from_document(document["cell"]) != cell:
+        raise RuntimeError("timing contract cell mismatches build manifest")
     counters = document["counters"]
     if not isinstance(counters, dict) or set(counters) != set(
         TIMING_COUNTER_REASONS
@@ -474,16 +456,16 @@ def validate_timing_contract(document, build_manifest_sha256):
     if any(type(value) is not int for value in counters.values()):
         raise RuntimeError("timing contract counters must be exact integers")
     # Apply the evidence and capacity invariants to the predeclared values too.
-    observed_timing_counters(counters)
+    observed_timing_counters(counters, cell)
     return counters
 
 
-def validate_confirmation(stats, timing_contract, build_manifest_sha256):
-    expected = validate_exact_stats(stats)
+def validate_confirmation(stats, timing_contract, build_manifest_sha256, cell):
+    expected = validate_exact_stats(stats, cell)
     timing_expected = validate_timing_contract(
-        timing_contract, build_manifest_sha256
+        timing_contract, build_manifest_sha256, cell
     )
-    timing_observed = observed_timing_counters(stats)
+    timing_observed = observed_timing_counters(stats, cell)
     failures = {
         name: {"expected": timing_expected[name], "observed": value}
         for name, value in timing_observed.items()
@@ -502,11 +484,12 @@ def validate_confirmation(stats, timing_contract, build_manifest_sha256):
     return expected, exact_timing
 
 
-def timing_contract_candidate(stats, build_manifest_sha256):
-    exact, observed = validate_calibration(stats)
+def timing_contract_candidate(stats, build_manifest_sha256, cell):
+    exact, observed = validate_calibration(stats, cell)
     document = {
         "schema": TIMING_CONTRACT_SCHEMA,
         "build_manifest_sha256": build_manifest_sha256,
+        "cell": cell.document(),
         "counters": observed,
     }
     return exact, document
@@ -539,83 +522,6 @@ def expected_case_matrix():
         }
         for case in CASES
     ]
-
-
-def validate_build_manifest_document(document):
-    if set(document) != BUILD_MANIFEST_KEYS:
-        raise RuntimeError("build manifest has missing or unknown fields")
-    if document["schema"] != BUILD_MANIFEST_SCHEMA:
-        raise RuntimeError("build manifest schema changed")
-    for name in (
-        "gem5_sha256",
-        "frozen_gem5_sha256",
-        "stdout_sha256",
-        "stderr_sha256",
-        "builder_sha256",
-    ):
-        if not is_sha256(document[name]):
-            raise RuntimeError(f"build manifest {name} is not SHA-256")
-    for name in ("source_commit", "source_tree"):
-        if not isinstance(document[name], str) or not re.fullmatch(
-            r"[0-9a-f]{40}", document[name]
-        ):
-            raise RuntimeError(f"build manifest {name} is not a full SHA-1")
-    if document["status"] != "passed" or document["returncode"] != 0:
-        raise RuntimeError("build manifest does not record a passed build")
-    for name in (
-        "source_clean_before_and_after",
-        "source_identity_unchanged",
-        "required_relink_observed",
-    ):
-        if document[name] is not True:
-            raise RuntimeError(f"build manifest {name} is not true")
-    expected_command = [
-        str(pathlib.Path("/usr/bin/scons").resolve()),
-        "--ignore-style",
-        "build/X86/gem5.opt",
-        "-j4",
-    ]
-    if document["command"] != expected_command:
-        raise RuntimeError("build manifest command is not the capped J4 build")
-    if document["gem5_sha256"] != document["frozen_gem5_sha256"]:
-        raise RuntimeError("build manifest target and frozen hashes differ")
-    for name in ("target_size", "target_mtime_ns"):
-        if type(document[name]) is not int or document[name] <= 0:
-            raise RuntimeError(f"build manifest {name} is not positive")
-    for name in (
-        "started_at",
-        "ended_at",
-        "target",
-        "frozen_gem5",
-        "claim_boundary",
-    ):
-        if not isinstance(document[name], str) or not document[name]:
-            raise RuntimeError(f"build manifest {name} is empty")
-    return document
-
-
-def validate_repository_boundary(
-    document, actual_commit, build_manifest_path, gem5
-):
-    if document["source_commit"] != actual_commit:
-        raise RuntimeError("build manifest does not bind exact harness HEAD")
-    actual_tree = subprocess.check_output(
-        ["git", "rev-parse", "HEAD^{tree}"], cwd=ROOT, text=True
-    ).strip()
-    if document["source_tree"] != actual_tree:
-        raise RuntimeError("build manifest does not bind exact source tree")
-    expected_target = (ROOT / "build/X86/gem5.opt").resolve()
-    if pathlib.Path(document["target"]).resolve() != expected_target:
-        raise RuntimeError("build manifest target path changed")
-    if pathlib.Path(document["frozen_gem5"]).resolve() != gem5:
-        raise RuntimeError("build manifest does not name the supplied gem5")
-    if build_manifest_path.parent != gem5.parent:
-        raise RuntimeError("build manifest and frozen gem5 are separated")
-    builder = ROOT / "tests/lanl_maa/run_reproducible_gem5_build.py"
-    if document["builder_sha256"] != sha256(builder):
-        raise RuntimeError("build manifest builder hash is stale")
-    if document["frozen_gem5_sha256"] != sha256(gem5):
-        raise RuntimeError("frozen gem5 hash differs from build manifest")
 
 
 def compile_guest(source, binary, compiler):
@@ -686,12 +592,16 @@ def main():
         raise RuntimeError("mixed UMT source or config path changed")
 
     build_manifest_path = args.build_manifest.resolve()
-    build_manifest = validate_build_manifest_document(
-        read_json_object(build_manifest_path, "build manifest")
-    )
+    build_manifest = read_json_object(build_manifest_path, "build manifest")
+    cell = validate_build_manifest_document(build_manifest)
     build_manifest_sha256 = sha256(build_manifest_path)
+    file_cell, source_root = validate_build_manifest_files(
+        build_manifest, build_manifest_path, gem5
+    )
+    if file_cell != cell:
+        raise RuntimeError("build manifest cell validation disagrees")
     validate_repository_boundary(
-        build_manifest, actual_commit, build_manifest_path, gem5
+        build_manifest, source_root, ROOT, FACTORIAL_HARNESS_PATHS
     )
 
     compiler = shutil.which("cc")
@@ -720,7 +630,7 @@ def main():
         )
         timing_contract_sha256 = sha256(timing_contract_path)
         # Reject a malformed or differently-bound contract before simulation.
-        validate_timing_contract(timing_contract, build_manifest_sha256)
+        validate_timing_contract(timing_contract, build_manifest_sha256, cell)
 
     args.output_root.mkdir(parents=False)
     binary = args.output_root / "umt_ordered_wave_mixed_evidence.elf"
@@ -751,6 +661,7 @@ def main():
         "inactive_result_bits": f"0x{RESULT_SENTINEL_BITS:016x}",
         "build_manifest": build_manifest,
         "build_manifest_sha256": build_manifest_sha256,
+        "cell": cell.document(),
         "timing_contract_sha256": timing_contract_sha256,
         "simulator_commit": build_manifest["source_commit"],
         "harness_commit": actual_commit,
@@ -794,11 +705,11 @@ def main():
     calibration_timing_stats = None
     if validation_mode == "confirmation":
         expected, exact_timing_stats = validate_confirmation(
-            stats, timing_contract, build_manifest_sha256
+            stats, timing_contract, build_manifest_sha256, cell
         )
     else:
         expected, candidate = timing_contract_candidate(
-            stats, build_manifest_sha256
+            stats, build_manifest_sha256, cell
         )
         calibration_timing_stats = candidate["counters"]
         candidate_path = args.output_root / "timing-contract.candidate.json"
@@ -831,7 +742,8 @@ def main():
         },
         "unasserted_timing_counters": {
             "descriptorCycles": (
-                "includes descriptor traffic, cache latency, execution, and drain"
+                "includes descriptor traffic, cache latency, execution, "
+                "and drain"
             ),
             "engineCycles": (
                 "includes the surrounding descriptor engine duty window"

@@ -54,7 +54,9 @@ class MAACoherenceCache(Cache):
 
 with open(args.metadata, encoding="utf-8") as stream:
     metadata = json.load(stream)
-allowed_group_counts = {1, 7, 8, 9, 31, 32, 33, 63, 64}
+if metadata.get("schema") != "lanl-maa-umt64-poison-tail-v2":
+    raise ValueError("UMT poison-tail metadata schema changed")
+allowed_group_counts = {1, 7, 8, 9, 16, 24, 31, 32, 33, 63, 64}
 if (
     not metadata["group_counts"]
     or len(set(metadata["group_counts"])) != len(metadata["group_counts"])
@@ -65,6 +67,54 @@ if metadata.get("abi_version") not in (4, 5):
     raise ValueError("UMT poison-tail ABI version is invalid")
 if metadata["abi_version"] == 4 and max(metadata["group_counts"]) > 32:
     raise ValueError("UMT ABI-v4 poison-tail group count exceeds D32")
+cell = metadata.get("cell")
+valid_cells = {
+    (24, 1, "X86_UMT_T24_W1"),
+    (24, 2, "X86_UMT_T24_W2"),
+    (32, 1, "X86_UMT_T32_W1"),
+    (32, 2, "X86_UMT_T32_W2"),
+}
+if (
+    not isinstance(cell, dict)
+    or (
+        cell.get("compute_tokens"),
+        cell.get("fp_issue_width"),
+        cell.get("variant"),
+    )
+    not in valid_cells
+):
+    raise ValueError("UMT poison-tail metadata cell is invalid")
+if metadata.get("build_manifest", {}).get("cell") != cell:
+    raise ValueError("UMT poison-tail manifest and metadata cells differ")
+build_manifest_sha256 = metadata.get("build_manifest_sha256")
+if (
+    not isinstance(build_manifest_sha256, str)
+    or len(build_manifest_sha256) != 64
+    or any(
+        character not in "0123456789abcdef"
+        for character in build_manifest_sha256
+    )
+):
+    raise ValueError("UMT poison-tail lacks a build-manifest SHA-256")
+mode = metadata.get("validation_mode")
+line_contract_sha256 = metadata.get("line_read_contract_sha256")
+if mode == "d32_line_read_calibration":
+    if metadata["abi_version"] != 4 or line_contract_sha256 is not None:
+        raise ValueError("UMT poison-tail calibration boundary changed")
+elif mode == "confirmation":
+    if metadata["abi_version"] == 4 and (
+        not isinstance(line_contract_sha256, str)
+        or len(line_contract_sha256) != 64
+        or any(
+            character not in "0123456789abcdef"
+            for character in line_contract_sha256
+        )
+    ):
+        raise ValueError("D32 confirmation lacks a line-contract SHA-256")
+    if metadata["abi_version"] == 5 and line_contract_sha256 is not None:
+        raise ValueError("D64 may not carry a D32 line contract")
+else:
+    raise ValueError("UMT poison-tail validation mode changed")
 
 system = System(
     cache_line_size=64,

@@ -62,7 +62,7 @@ class MAACoherenceCache(Cache):
 
 with open(args.metadata, encoding="utf-8") as stream:
     metadata = json.load(stream)
-if metadata.get("schema") != "lanl-maa-umt-ordered-wave-mixed-evidence-v2":
+if metadata.get("schema") != "lanl-maa-umt-ordered-wave-mixed-evidence-v3":
     raise ValueError("mixed UMT evidence metadata schema changed")
 if metadata.get("validation_mode") not in ("confirmation", "calibration"):
     raise ValueError("mixed UMT evidence validation mode changed")
@@ -76,6 +76,25 @@ if (
     )
 ):
     raise ValueError("mixed UMT evidence lacks a build-manifest SHA-256")
+cell = metadata.get("cell")
+valid_cells = {
+    (24, 1, "X86_UMT_T24_W1"),
+    (24, 2, "X86_UMT_T24_W2"),
+    (32, 1, "X86_UMT_T32_W1"),
+    (32, 2, "X86_UMT_T32_W2"),
+}
+if (
+    not isinstance(cell, dict)
+    or (
+        cell.get("compute_tokens"),
+        cell.get("fp_issue_width"),
+        cell.get("variant"),
+    )
+    not in valid_cells
+):
+    raise ValueError("mixed UMT evidence cell is invalid")
+if metadata.get("build_manifest", {}).get("cell") != cell:
+    raise ValueError("mixed UMT manifest and metadata cells differ")
 timing_contract_sha256 = metadata.get("timing_contract_sha256")
 if metadata["validation_mode"] == "confirmation":
     if (
