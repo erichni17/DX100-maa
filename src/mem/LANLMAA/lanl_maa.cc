@@ -1005,6 +1005,9 @@ LANLMAA::rearmDescriptorEngine()
     umtMixedCornerActive = false;
     umtOrderedWaveActive = false;
     umtOrderedWaveState.clear();
+#ifdef LANL_MAA_UMT_INGRESS_TRACE_TEST
+    umtOrderedWaveIngressTrace.clear();
+#endif
     umtOrderedWaveStateStatsRecorded = false;
     umtOrderedWaveResultCursor = UmtOrderedWaveCompletionCursor{};
     umtMixedSidecarReadsQueued = false;
@@ -5403,6 +5406,37 @@ LANLMAA::issueLines()
                     UmtOrderedWaveD64DescriptorVersion &&
                 line.waiters.size() != expected) {
                 ++stats.descriptorUmtInputLineWaiterHoldLineCycles;
+#ifdef LANL_MAA_UMT_INGRESS_TRACE_TEST
+                const auto snapshot = umtOrderedWaveState.traceStateSnapshot();
+                UmtOrderedWaveIngressRecord record;
+                record.cycle = static_cast<uint64_t>(curCycle());
+                record.packetAddress = line.lineAddress;
+                record.lineAddress = line.lineAddress;
+                record.abiVersion = umtOrderedWave.abiVersion;
+                record.stage = first.umtFusedReadStage;
+                record.group = first.umtFusedGroup;
+                record.corner = first.umtFusedReadStage >=
+                    UmtOrderedWaveCorners ?
+                    first.umtFusedReadStage - UmtOrderedWaveCorners : 0;
+                record.waiterCount = line.waiters.size();
+                record.preStateDigest = snapshot.digest;
+                record.postStateDigest = snapshot.digest;
+                umtOrderedWaveIngressTrace.d64Hold(record);
+                DPRINTF(LANLMAA,
+                        "UMT_INGRESS kind=d64_hold cycle=%llu line=%#llx "
+                        "abi=%u stage=%u group=%u corner=%u waiters=%u "
+                        "pre=%#llx post=%#llx\n",
+                        static_cast<unsigned long long>(record.cycle),
+                        static_cast<unsigned long long>(record.lineAddress),
+                        static_cast<unsigned>(record.abiVersion),
+                        static_cast<unsigned>(record.stage), record.group,
+                        static_cast<unsigned>(record.corner),
+                        record.waiterCount,
+                        static_cast<unsigned long long>(
+                            record.preStateDigest),
+                        static_cast<unsigned long long>(
+                            record.postStateDigest));
+#endif
                 continue;
             }
             if (first.umtFusedReadStage >= UmtOrderedWaveCorners) {
@@ -5454,6 +5488,46 @@ LANLMAA::issueLines()
         }
         recordSharedOverlayTraffic(TrafficKind::Line);
         line.state = LineState::InFlight;
+#ifdef LANL_MAA_UMT_INGRESS_TRACE_TEST
+        if (umtOrderedWaveDescriptor()) {
+            const auto &first = operations[line.waiters.front()];
+            const auto snapshot = umtOrderedWaveState.traceStateSnapshot();
+            UmtOrderedWaveIngressRecord record;
+            record.cycle = static_cast<uint64_t>(curCycle());
+            record.packetAddress = line.lineAddress;
+            record.lineAddress = line.lineAddress;
+            record.abiVersion = umtOrderedWave.abiVersion;
+            record.stage = first.umtFusedReadStage;
+            record.group = first.umtFusedGroup;
+            record.corner = first.umtFusedReadStage >=
+                UmtOrderedWaveCorners ?
+                first.umtFusedReadStage - UmtOrderedWaveCorners :
+                first.umtFusedReadStage;
+            record.waiterCount = line.waiters.size();
+            record.preStateDigest = snapshot.digest;
+            record.postStateDigest = snapshot.digest;
+            if (umtOrderedWave.abiVersion ==
+                    UmtOrderedWaveD32DescriptorVersion) {
+                umtOrderedWaveIngressTrace.d32Release(record);
+            } else {
+                umtOrderedWaveIngressTrace.d64Release(record);
+            }
+            DPRINTF(LANLMAA,
+                    "UMT_INGRESS kind=%s_release cycle=%llu line=%#llx "
+                    "abi=%u stage=%u group=%u corner=%u waiters=%u "
+                    "pre=%#llx post=%#llx\n",
+                    umtOrderedWave.abiVersion ==
+                            UmtOrderedWaveD32DescriptorVersion ? "d32" :
+                                                                    "d64",
+                    static_cast<unsigned long long>(record.cycle),
+                    static_cast<unsigned long long>(record.lineAddress),
+                    static_cast<unsigned>(record.abiVersion),
+                    static_cast<unsigned>(record.stage), record.group,
+                    static_cast<unsigned>(record.corner), record.waiterCount,
+                    static_cast<unsigned long long>(record.preStateDigest),
+                    static_cast<unsigned long long>(record.postStateDigest));
+        }
+#endif
         ++stats.physicalLineReads;
         ++issued;
     }
@@ -5657,6 +5731,13 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
         ++stats.descriptorUmtInputLineReads;
 
     const uint8_t *data = packet->getConstPtr<uint8_t>();
+#ifdef LANL_MAA_UMT_INGRESS_TRACE_TEST
+    if (umtOrderedWaveDescriptor()) {
+        umtOrderedWaveIngressTrace.beginCallback(
+            static_cast<uint64_t>(curCycle()));
+    }
+    uint32_t umtIngressWaiterOrder = 0;
+#endif
     for (const size_t operationIndex : line->waiters) {
         auto &operation = operations[operationIndex];
         panic_if(operation.state != OperationState::DataPending,
@@ -5687,6 +5768,10 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
                     const bool sourceStage =
                         operation.umtFusedReadStage <
                             UmtOrderedWaveCorners;
+#ifdef LANL_MAA_UMT_INGRESS_TRACE_TEST
+                    const auto ingressBefore =
+                        umtOrderedWaveState.traceStateSnapshot();
+#endif
                     const auto reservation = sourceStage ?
                         umtOrderedWaveState.writeSource(
                             operation.umtFusedGroup,
@@ -5694,9 +5779,70 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
                             static_cast<uint64_t>(curCycle())) :
                         umtOrderedWaveState.enqueueDenominator(
                             operationIndex, operation.umtFusedGroup,
-                            operation.umtFusedReadStage -
-                                UmtOrderedWaveCorners,
+                                operation.umtFusedReadStage -
+                                    UmtOrderedWaveCorners,
                             bits);
+#ifdef LANL_MAA_UMT_INGRESS_TRACE_TEST
+                    if (reservation.accepted) {
+                        const auto ingressAfter =
+                            umtOrderedWaveState.traceStateSnapshot();
+                        UmtOrderedWaveIngressRecord record;
+                        record.cycle = static_cast<uint64_t>(curCycle());
+                        record.packetAddress = packet->getAddr();
+                        record.lineAddress = line->lineAddress;
+                        record.abiVersion = umtOrderedWave.abiVersion;
+                        record.stage = operation.umtFusedReadStage;
+                        record.group = operation.umtFusedGroup;
+                        record.corner = sourceStage ?
+                            operation.umtFusedReadStage :
+                            operation.umtFusedReadStage -
+                                UmtOrderedWaveCorners;
+                        record.waiterOrder = umtIngressWaiterOrder;
+                        record.waiterCount = line->waiters.size();
+                        record.selectedToken = sourceStage ?
+                            std::numeric_limits<size_t>::max() :
+                            reservation.selectedToken;
+                        record.preStateDigest = ingressBefore.digest;
+                        record.postStateDigest = ingressAfter.digest;
+                        record.nextEngineTick = static_cast<uint64_t>(
+                            clockEdge(Cycles(1)));
+                        if (sourceStage)
+                            umtOrderedWaveIngressTrace.sourceWrite(record);
+                        else
+                            umtOrderedWaveIngressTrace.
+                                denominatorAdmission(record);
+                        const auto &observed =
+                            umtOrderedWaveIngressTrace.records().back();
+                        DPRINTF(LANLMAA,
+                                "UMT_INGRESS kind=%s cycle=%llu callback=%llu "
+                                "lane=%u packet=%#llx line=%#llx abi=%u "
+                                "stage=%u group=%u corner=%u order=%u "
+                                "waiters=%u token=%zu pre=%#llx post=%#llx "
+                                "next_engine_tick=%llu\n",
+                                sourceStage ? "source" : "denominator",
+                                static_cast<unsigned long long>(
+                                    observed.cycle),
+                                static_cast<unsigned long long>(
+                                    observed.callbackSequence),
+                                observed.callbackLane,
+                                static_cast<unsigned long long>(
+                                    observed.packetAddress),
+                                static_cast<unsigned long long>(
+                                    observed.lineAddress),
+                                static_cast<unsigned>(observed.abiVersion),
+                                static_cast<unsigned>(observed.stage),
+                                observed.group,
+                                static_cast<unsigned>(observed.corner),
+                                observed.waiterOrder, observed.waiterCount,
+                                observed.selectedToken,
+                                static_cast<unsigned long long>(
+                                    observed.preStateDigest),
+                                static_cast<unsigned long long>(
+                                    observed.postStateDigest),
+                                static_cast<unsigned long long>(
+                                    observed.nextEngineTick));
+                    }
+#endif
                     if (!reservation.accepted) {
                         ++stats.descriptorUmtStateCapacityErrors;
                         error = reservation.error == DescriptorError::None ?
@@ -6321,11 +6467,20 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
                 &operation.value, data + offset, sizeof(operation.value));
             operation.state = OperationState::RetireReady;
         }
+#ifdef LANL_MAA_UMT_INGRESS_TRACE_TEST
+        ++umtIngressWaiterOrder;
+#endif
         ++stats.responsesFannedOut;
     }
     ++stats.responses;
     delete packet;
     line->clear();
+#ifdef LANL_MAA_UMT_INGRESS_TRACE_TEST
+    if (umtOrderedWaveDescriptor()) {
+        umtOrderedWaveIngressTrace.endCallback(
+            static_cast<uint64_t>(clockEdge(Cycles(1))));
+    }
+#endif
     scheduleTick();
     return true;
 }

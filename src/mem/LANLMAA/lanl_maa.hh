@@ -25,6 +25,7 @@
 #include "mem/LANLMAA/UmtMixedCornerDescriptor.hh"
 #include "mem/LANLMAA/UmtMixedCornerScheduleModel.hh"
 #include "mem/LANLMAA/UmtOrderedWaveDescriptor.hh"
+#include "mem/LANLMAA/UmtOrderedWaveIngressTrace.hh"
 #include "mem/LANLMAA/UmtOrderedWaveStreamState.hh"
 #include "mem/port.hh"
 #include "mem/tport.hh"
@@ -549,6 +550,11 @@ class LANLMAA : public ClockedObject
     bool umtMixedSidecarReadsQueued = false;
     UmtMixedCornerSidecarPortModel umtMixedSidecarPorts;
     UmtOrderedWaveStreamState umtOrderedWaveState;
+#ifdef LANL_MAA_UMT_INGRESS_TRACE_TEST
+    // Host-only directed-test observer.  The default build has neither this
+    // member nor the call sites that populate it.
+    UmtOrderedWaveIngressTrace umtOrderedWaveIngressTrace;
+#endif
     bool umtOrderedWaveStateStatsRecorded = false;
     UmtOrderedWaveCompletionCursor umtOrderedWaveResultCursor;
     DescriptorError descriptorError = DescriptorError::None;

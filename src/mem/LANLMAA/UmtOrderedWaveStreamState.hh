@@ -92,7 +92,8 @@ class UmtOrderedWaveStreamStateModel
     // little-bit-first with one required zero pad bit in byte 58.
     // It is compiled only by the directed replay test; production builds do
     // not acquire trace state, ports, or cycle-result payloads.
-#ifdef LANL_MAA_UMT_CYCLE_TRACE_TEST
+#if defined(LANL_MAA_UMT_CYCLE_TRACE_TEST) || \
+    defined(LANL_MAA_UMT_INGRESS_TRACE_TEST)
     static constexpr size_t TraceTokenPackedBytes = 59;
     static constexpr size_t TraceBankWords = 10;
 
@@ -153,6 +154,11 @@ class UmtOrderedWaveStreamStateModel
         uint64_t stallCycles = 0;
         uint64_t bankReads = 0;
         uint64_t bankWrites = 0;
+#if defined(LANL_MAA_UMT_CYCLE_TRACE_TEST) || \
+    defined(LANL_MAA_UMT_INGRESS_TRACE_TEST)
+        // Passive observer identity; absent from normal production builds.
+        size_t selectedToken = std::numeric_limits<size_t>::max();
+#endif
     };
 
     static constexpr size_t ComputeTokens = ComputeTokenCount;
@@ -214,7 +220,8 @@ class UmtOrderedWaveStreamStateModel
     {
         std::array<size_t, ComputeTokens> completedOperations{};
         size_t completions = 0;
-#ifdef LANL_MAA_UMT_CYCLE_TRACE_TEST
+#if defined(LANL_MAA_UMT_CYCLE_TRACE_TEST) || \
+    defined(LANL_MAA_UMT_INGRESS_TRACE_TEST)
         std::array<TraceIssue, FpIssueWidth> issues{};
 #endif
         DescriptorError error = DescriptorError::None;
@@ -353,7 +360,13 @@ class UmtOrderedWaveStreamStateModel
         ++activeTokens;
         ++denominatorWords;
         tokenHighWater = std::max(tokenHighWater, activeTokens);
-        return {true, DescriptorError::None, 0, 0, 0, 0};
+        Reservation reservation{true, DescriptorError::None, 0, 0, 0, 0};
+#if defined(LANL_MAA_UMT_CYCLE_TRACE_TEST) || \
+    defined(LANL_MAA_UMT_INGRESS_TRACE_TEST)
+        reservation.selectedToken = static_cast<size_t>(
+            std::distance(tokens.begin(), iterator));
+#endif
+        return reservation;
     }
 
     CycleResult cycle(uint64_t cycle)
@@ -451,7 +464,8 @@ class UmtOrderedWaveStreamStateModel
         size_t issues = 0;
         for (size_t slot = 0; slot < FpIssueWidth; ++slot) {
             bool issued = false;
-#ifdef LANL_MAA_UMT_CYCLE_TRACE_TEST
+#if defined(LANL_MAA_UMT_CYCLE_TRACE_TEST) || \
+    defined(LANL_MAA_UMT_INGRESS_TRACE_TEST)
             TraceOperation traceOperation = TraceOperation::None;
             size_t traceTokenIndex = 0;
             size_t traceDividerLane = std::numeric_limits<size_t>::max();
@@ -477,7 +491,8 @@ class UmtOrderedWaveStreamStateModel
                 token.phase = TokenPhase::DenominatorAddWait;
                 addNextIssue = cycle + 1;
                 issued = true;
-#ifdef LANL_MAA_UMT_CYCLE_TRACE_TEST
+#if defined(LANL_MAA_UMT_CYCLE_TRACE_TEST) || \
+    defined(LANL_MAA_UMT_INGRESS_TRACE_TEST)
                 traceOperation = TraceOperation::DenominatorAdd;
                 traceTokenIndex = index;
 #endif
@@ -524,7 +539,8 @@ class UmtOrderedWaveStreamStateModel
                 dividerNextIssue[lane] =
                     cycle + DividerInitiationInterval;
                 issued = true;
-#ifdef LANL_MAA_UMT_CYCLE_TRACE_TEST
+#if defined(LANL_MAA_UMT_CYCLE_TRACE_TEST) || \
+    defined(LANL_MAA_UMT_INGRESS_TRACE_TEST)
                 traceOperation = TraceOperation::Divide;
                 traceTokenIndex = index;
                 traceDividerLane = lane;
@@ -546,7 +562,8 @@ class UmtOrderedWaveStreamStateModel
                 token.phase = TokenPhase::MultiplyWait;
                 multiplyNextIssue = cycle + 1;
                 issued = true;
-#ifdef LANL_MAA_UMT_CYCLE_TRACE_TEST
+#if defined(LANL_MAA_UMT_CYCLE_TRACE_TEST) || \
+    defined(LANL_MAA_UMT_INGRESS_TRACE_TEST)
                 traceOperation = TraceOperation::Multiply;
                 traceTokenIndex = index;
 #endif
@@ -576,7 +593,8 @@ class UmtOrderedWaveStreamStateModel
                 token.phase = TokenPhase::EdgeAddWait;
                 addNextIssue = cycle + 1;
                 issued = true;
-#ifdef LANL_MAA_UMT_CYCLE_TRACE_TEST
+#if defined(LANL_MAA_UMT_CYCLE_TRACE_TEST) || \
+    defined(LANL_MAA_UMT_INGRESS_TRACE_TEST)
                 traceOperation = TraceOperation::EdgeAdd;
                 traceTokenIndex = index;
 #endif
@@ -589,7 +607,8 @@ class UmtOrderedWaveStreamStateModel
             }
             if (!issued)
                 break;
-#ifdef LANL_MAA_UMT_CYCLE_TRACE_TEST
+#if defined(LANL_MAA_UMT_CYCLE_TRACE_TEST) || \
+    defined(LANL_MAA_UMT_INGRESS_TRACE_TEST)
             result.issues[slot] = {
                 true, slot, traceTokenIndex, traceOperation,
                 traceDividerLane};
@@ -719,7 +738,8 @@ class UmtOrderedWaveStreamStateModel
     uint64_t producedResults() const { return resultWordsProduced; }
     uint64_t acceptedResultReads() const { return resultReads; }
 
-#ifdef LANL_MAA_UMT_CYCLE_TRACE_TEST
+#if defined(LANL_MAA_UMT_CYCLE_TRACE_TEST) || \
+    defined(LANL_MAA_UMT_INGRESS_TRACE_TEST)
     TraceStateSnapshot traceStateSnapshot() const
     {
         TraceStateSnapshot snapshot;
@@ -787,7 +807,8 @@ class UmtOrderedWaveStreamStateModel
         double updatedSource = 0.0;
     };
 
-#ifdef LANL_MAA_UMT_CYCLE_TRACE_TEST
+#if defined(LANL_MAA_UMT_CYCLE_TRACE_TEST) || \
+    defined(LANL_MAA_UMT_INGRESS_TRACE_TEST)
     static void packTraceBits(
         std::array<uint8_t, TraceTokenPackedBytes> &packed,
         size_t &offset, uint64_t value, size_t bits)
