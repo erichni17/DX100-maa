@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed v5 opcode-11 UMT ingress evidence harness.
+"""Fail-closed v6 opcode-11 UMT ingress evidence harness.
 
 This program only freezes, validates, and records launch commands.  It never
 builds, invokes systemd, or executes gem5.  A future launcher must first
@@ -16,22 +16,29 @@ import subprocess
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 TRACE_BUILD_DEFINE = "LANL_MAA_UMT_INGRESS_TRACE_TEST"
 LABEL_PREFIX = "lanl_maa_umt_ingress_micro"
-SCHEMA_BUILD_PROOF = "lanl-maa-umt-ingress-instrumented-gem5-build-proof-v5"
+SCHEMA_BUILD_PROOF = "lanl-maa-umt-ingress-instrumented-gem5-build-proof-v6"
 SCHEMA_SUBMISSION = "umt-lanl-maa-submission-v1"
 CANONICAL_SOURCE_ROOT = "/data1/nier/worktrees/DX100-umt-trace-replay-20260830"
 CANONICAL_SOURCE = pathlib.Path(CANONICAL_SOURCE_ROOT)
-CANONICAL_SOURCE_COMMIT = "6d36a1a4f0d5bdbfb3b80a28c6964fc72539d69a"
-CANONICAL_SOURCE_TREE = "3359187ec074e45aef495aea9675cfedf757eb24"
+CANONICAL_SOURCE_COMMIT = "493c043ef0bc3dee0d91c5511371cedf77f15b5c"
+CANONICAL_SOURCE_TREE = "9f7f0866005260f92bde81d516b520032535a92b"
 CANONICAL_GEM5 = CANONICAL_SOURCE / "build/X86_UMT_T32_W2/gem5.opt"
-BUILD_UNIT = "umt-ingress-trace-build-v5-20260830.service"
+BUILD_UNIT = "umt-ingress-trace-build-v6-20260830.service"
 BUILD_ARGV = (
     "/usr/bin/scons",
     "--ignore-style",
     "build/X86_UMT_T32_W2/gem5.opt",
     "-j4",
-    "CCFLAGS_EXTRA=-DLANL_MAA_UMT_INGRESS_TRACE_TEST=1",
+    "CPPDEFINES=LANL_MAA_UMT_INGRESS_TRACE_TEST",
 )
-BUILD_ENVIRONMENT = {}
+SANITIZED_CHILD_ENV_NAMES = ["LANG", "LC_ALL", "PATH", "TZ"]
+# Fixture template only.  Live proofs may record nonempty inherited names, but
+# never their values; `validate_build_environment` checks that shape.
+BUILD_ENVIRONMENT = {
+    "sanitized": SANITIZED_CHILD_ENV_NAMES,
+    "inherited_tool_affecting_names": [],
+    "inherited_tool_affecting_count": 0,
+}
 BUILD_WRAPPER = ROOT / "tests/lanl_maa/run_umt_ingress_build_attestation.py"
 SYSTEMD_SHOW_PROPERTIES = (
     "Id",
@@ -67,7 +74,7 @@ BUILD_JOURNAL_COMMAND = (
     "--no-pager",
     "--output=export",
 )
-JOURNAL_TERMINAL_PROTOCOL = "LANL_MAA_UMT_INGRESS_BUILD_ATTESTATION_V5"
+JOURNAL_TERMINAL_PROTOCOL = "LANL_MAA_UMT_INGRESS_BUILD_ATTESTATION_V6"
 DISPATCH_PROPERTIES = (
     ("CPUQuota", "400%"),
     ("CPUWeight", "1000"),
@@ -100,7 +107,7 @@ INSTRUMENTATION_SOURCES = {
     "src/mem/LANLMAA/lanl_maa.hh": "0867579688c902f04b86d0fdce0b896f60b61031d61410fbd4789385b4cd5b9a",
     "src/mem/LANLMAA/lanl_maa.cc": "dfeb641477a9bf8820b32e8b2231efdc7a968504f34da9b6146e7ed5834e714b",
     "tests/lanl_maa/umt_production_ingress_trace_test.cc": "1364d75af5b1305775b5d0dceeda5a1e1d4dd188d241b1b3db9667684cf3b436",
-    "tests/lanl_maa/run_umt_production_ingress_trace_gate.py": "5460448694b20d83e3965405545803ec7b5313440ff5a5d0cd5381229c170cc6",
+    "tests/lanl_maa/run_umt_production_ingress_trace_gate.py": "25ba79b5acc85b5a8cfb412ff71654b11b0bfa54c50d92a25794d7bf157ede89",
 }
 ABI_CONTRACTS = {
     "D32": {"version": 4, "max_groups": 32},
@@ -231,6 +238,29 @@ def exact_keys(value, keys, label):
         raise RuntimeError(f"{label} has an invalid exact schema")
 
 
+def validate_build_environment(value, label):
+    exact_keys(
+        value,
+        (
+            "sanitized",
+            "inherited_tool_affecting_names",
+            "inherited_tool_affecting_count",
+        ),
+        label,
+    )
+    names = value["inherited_tool_affecting_names"]
+    if (
+        value["sanitized"] != SANITIZED_CHILD_ENV_NAMES
+        or not isinstance(names, list)
+        or names != sorted(set(names))
+        or any(not isinstance(name, str) or not name for name in names)
+        or value["inherited_tool_affecting_count"] != len(names)
+    ):
+        raise RuntimeError(
+            f"{label} has an invalid sanitized environment record"
+        )
+
+
 def atomic_no_clobber(path, value):
     path = pathlib.Path(path)
     if path.exists():
@@ -269,6 +299,10 @@ def artifact(value, label, required_path=None):
     ):
         raise RuntimeError(f"{label} path is not canonical")
     return path
+
+
+def evidence_artifact(value, evidence_dir, name):
+    return artifact(value, f"wrapper evidence {name}", evidence_dir / name)
 
 
 def parse_systemd_show(path, label):
@@ -438,7 +472,7 @@ def journal_marker(
     kind, *, invocation, pid, proc_start_ticks, target_sha256=None
 ):
     value = {
-        "schema": "lanl-maa-umt-ingress-build-attestation-v5",
+        "schema": "lanl-maa-umt-ingress-build-attestation-v6",
         "unit": BUILD_UNIT,
         "invocation_id": invocation,
         "wrapper_pid": pid,
@@ -635,7 +669,7 @@ def read_build_proof(path, digest, gem5, gem5_digest):
         pathlib.Path(proof["build_cwd"]).resolve()
         != CANONICAL_SOURCE.resolve()
         or tuple(proof["build_argv"]) != BUILD_ARGV
-        or proof["build_environment"] != BUILD_ENVIRONMENT
+        or not isinstance(proof["build_environment"], dict)
         or proof["trace_define"] != TRACE_BUILD_DEFINE
         or proof["instrumentation_source_sha256"] != INSTRUMENTATION_SOURCES
         or proof["build_returncode"] != 0
@@ -644,10 +678,11 @@ def read_build_proof(path, digest, gem5, gem5_digest):
         raise RuntimeError(
             "build proof command/environment/source binding mismatch"
         )
-    if proof["producer"] != "systemd-build-proof-v5-service-wrapper":
+    validate_build_environment(
+        proof["build_environment"], "build proof environment"
+    )
+    if proof["producer"] != "systemd-build-proof-v6-service-wrapper":
         raise RuntimeError("build proof producer is not accepted")
-    artifact(proof["build_stdout"], "build stdout")
-    artifact(proof["build_stderr"], "build stderr")
     exact_keys(
         proof["build_artifacts"],
         ("gem5", "config_hh", "config_cc"),
@@ -706,7 +741,7 @@ def read_build_proof(path, digest, gem5, gem5_digest):
             "build_artifacts",
             "compiled_binary_markers",
             "observer_gate",
-            "logs",
+            "evidence",
         ),
         "wrapper attestation",
     )
@@ -758,14 +793,14 @@ def read_build_proof(path, digest, gem5, gem5_digest):
         command=command,
     )
     if (
-        attest["schema"] != "lanl-maa-umt-ingress-build-attestation-v5"
+        attest["schema"] != "lanl-maa-umt-ingress-build-attestation-v6"
         or attest["unit"] != BUILD_UNIT
         or attest["invocation_id"] != invocation
         or attest["wrapper_pid"] != pid
         or attest["wrapper_proc_start_ticks"] != process["proc_start_ticks"]
         or attest["status"] != "passed"
         or tuple(attest["build_argv"]) != BUILD_ARGV
-        or attest["build_environment"] != BUILD_ENVIRONMENT
+        or not isinstance(attest["build_environment"], dict)
         or attest["build_returncode"] != 0
         or attest["required_relink_observed"] is not True
         or attest["instrumentation_source_sha256"] != INSTRUMENTATION_SOURCES
@@ -774,6 +809,13 @@ def read_build_proof(path, digest, gem5, gem5_digest):
     ):
         raise RuntimeError(
             "wrapper attestation identity/build/source binding mismatch"
+        )
+    validate_build_environment(
+        attest["build_environment"], "wrapper environment"
+    )
+    if attest["build_environment"] != proof["build_environment"]:
+        raise RuntimeError(
+            "proof/wrapper sanitized environment records differ"
         )
     exact_keys(
         attest["build_artifacts"],
@@ -790,23 +832,106 @@ def read_build_proof(path, digest, gem5, gem5_digest):
         raise RuntimeError("wrapper target hash differs from canonical gem5")
     exact_keys(
         attest["observer_gate"],
-        ("command", "returncode", "report_sha256"),
+        ("command", "returncode", "report", "transcript"),
         "wrapper observer gate",
     )
     if (
-            tuple(attest["observer_gate"]["command"])
-            != (
-                "/usr/bin/python3",
+        tuple(attest["observer_gate"]["command"])
+        != (
+            "/usr/bin/python3",
             str(
                 CANONICAL_SOURCE
                 / "tests/lanl_maa/run_umt_production_ingress_trace_gate.py"
             ),
             "--cxx",
             "g++",
+            "--binary",
+            str(CANONICAL_GEM5),
+            "--binary-sha256",
+            gem5_digest,
+            "--input-source-sha256",
+            str(evidence_dir / "observer-input-source-sha256.json"),
         )
         or attest["observer_gate"]["returncode"] != 0
     ):
         raise RuntimeError("wrapper observer gate binding mismatch")
+    exact_keys(
+        attest["evidence"],
+        (
+            "scons_stdout",
+            "scons_stderr",
+            "observer_stdout",
+            "observer_stderr",
+            "observer_report",
+            "observer_transcript",
+            "source_manifest",
+            "target_config_literal_scan",
+        ),
+        "wrapper evidence",
+    )
+    evidence_names = {
+        "scons_stdout": "scons.stdout",
+        "scons_stderr": "scons.stderr",
+        "observer_stdout": "observer.stdout",
+        "observer_stderr": "observer.stderr",
+        "observer_report": "observer-report.json",
+        "observer_transcript": "observer-transcript.txt",
+        "source_manifest": "observer-input-source-sha256.json",
+        "target_config_literal_scan": "target-config-literal-scan.json",
+    }
+    for key, name in evidence_names.items():
+        evidence_artifact(attest["evidence"][key], evidence_dir, name)
+    source_manifest = read_json(
+        evidence_artifact(
+            attest["evidence"]["source_manifest"],
+            evidence_dir,
+            "observer-input-source-sha256.json",
+        )
+    )
+    if source_manifest != INSTRUMENTATION_SOURCES:
+        raise RuntimeError("wrapper source-hash manifest is not exact")
+    scan = read_json(
+        evidence_artifact(
+            attest["evidence"]["target_config_literal_scan"],
+            evidence_dir,
+            "target-config-literal-scan.json",
+        )
+    )
+    exact_keys(
+        scan,
+        (
+            "target", "target_sha256", "config_hh", "config_hh_sha256",
+            "config_cc", "config_cc_sha256", "compiled_binary_markers",
+        ),
+        "wrapper target/config/literal scan",
+    )
+    if (
+        pathlib.Path(scan["target"]).resolve() != CANONICAL_GEM5.resolve()
+        or scan["target_sha256"] != gem5_digest
+        or pathlib.Path(scan["config_hh"]).resolve()
+        != (CANONICAL_SOURCE / "build/X86_UMT_T32_W2/config.hh").resolve()
+        or pathlib.Path(scan["config_cc"]).resolve()
+        != (CANONICAL_SOURCE / "build/X86_UMT_T32_W2/config.cc").resolve()
+        or scan["config_hh_sha256"] != attest["build_artifacts"]["config_hh"]
+        or scan["config_cc_sha256"] != attest["build_artifacts"]["config_cc"]
+        or scan["compiled_binary_markers"]
+        != ["UMT_INGRESS kind=", "d64_hold cycle="]
+    ):
+        raise RuntimeError("wrapper target/config/literal scan is not exact")
+    if (
+        attest["observer_gate"]["report"]
+        != attest["evidence"]["observer_report"]
+        or attest["observer_gate"]["transcript"]
+        != attest["evidence"]["observer_transcript"]
+    ):
+        raise RuntimeError("observer gate/report evidence binding mismatch")
+    if (
+        proof["build_stdout"] != attest["evidence"]["scons_stdout"]
+        or proof["build_stderr"] != attest["evidence"]["scons_stderr"]
+    ):
+        raise RuntimeError(
+            "proof SCons evidence does not cross-bind wrapper evidence"
+        )
     journal = artifact(inv["journal"], "build journal")
     parse_export_journal(
         journal, invocation, pid, process["proc_start_ticks"], gem5_digest
@@ -834,7 +959,18 @@ def read_build_proof(path, digest, gem5, gem5_digest):
     if (
         gate["status"] != "passed"
         or tuple(gate["command"])
-        != ("/usr/bin/python3", str(gate_script), "--cxx", "g++")
+        != (
+            "/usr/bin/python3",
+            str(gate_script),
+            "--cxx",
+            "g++",
+            "--binary",
+            str(CANONICAL_GEM5),
+            "--binary-sha256",
+            gem5_digest,
+            "--input-source-sha256",
+            str(evidence_dir / "observer-input-source-sha256.json"),
+        )
         or gate["input_source_sha256"] != INSTRUMENTATION_SOURCES
         or pathlib.Path(gate["binary"]).resolve() != CANONICAL_GEM5.resolve()
         or gate["binary_sha256"] != gem5_digest
@@ -842,25 +978,54 @@ def read_build_proof(path, digest, gem5, gem5_digest):
         raise RuntimeError(
             "observer gate command/input/source/binary binding mismatch"
         )
+    if (
+        gate["stdout"] != attest["evidence"]["observer_stdout"]
+        or gate["stderr"] != attest["evidence"]["observer_stderr"]
+        or gate["report"] != attest["evidence"]["observer_report"]
+        or gate["transcript"] != attest["evidence"]["observer_transcript"]
+    ):
+        raise RuntimeError(
+            "proof observer evidence does not cross-bind wrapper evidence"
+        )
     artifact(gate["stdout"], "observer gate stdout")
     artifact(gate["stderr"], "observer gate stderr")
     transcript = artifact(gate["transcript"], "observer gate transcript")
     report = read_json(artifact(gate["report"], "observer gate report"))
+    expected_cells = [
+        {
+            "tokens": t,
+            "issue_width": w,
+            "waiter_counts": [1, 7, 8],
+            "abi_boundaries": ["D32", "D64"],
+            "two_lane_serialization": "rejected_by_trace_difference",
+            "default_off": "compiled_without_observer_macro",
+        }
+        for t, w in ((24, 1), (24, 2), (32, 1), (32, 2))
+    ]
     if (
-        report.get("schema") != "lanl-maa-umt-production-ingress-trace-v2"
-        or report.get("status") != "passed"
-        or report.get("cells")
-        != [
-            {
-                "tokens": t,
-                "issue_width": w,
-                "waiter_counts": [1, 7, 8],
-                "abi_boundaries": ["D32", "D64"],
-                "two_lane_serialization": "rejected_by_trace_difference",
-                "default_off": "compiled_without_observer_macro",
-            }
-            for t, w in ((24, 1), (24, 2), (32, 1), (32, 2))
-        ]
+        set(report)
+        != {
+            "schema",
+            "status",
+            "source_root",
+            "input_source_sha256",
+            "binary",
+            "binary_sha256",
+            "required_define",
+            "compiled_binary_markers",
+            "cells",
+        }
+        or report["schema"] != "lanl-maa-umt-production-ingress-trace-v2"
+        or report["status"] != "passed"
+        or pathlib.Path(report["source_root"]).resolve()
+        != CANONICAL_SOURCE.resolve()
+        or report["input_source_sha256"] != INSTRUMENTATION_SOURCES
+        or pathlib.Path(report["binary"]).resolve() != CANONICAL_GEM5.resolve()
+        or report["binary_sha256"] != gem5_digest
+        or report["required_define"] != TRACE_BUILD_DEFINE
+        or report["compiled_binary_markers"]
+        != ["UMT_INGRESS kind=", "d64_hold cycle="]
+        or report["cells"] != expected_cells
         or "status=0/SUCCESS"
         not in transcript.read_text(
             encoding="utf-8", errors="strict"
@@ -901,13 +1066,13 @@ def expected_contract(campaign, proof, proof_digest, gem5_digest):
         command = case_command(CANONICAL_GEM5, root, name)
         arms[name] = {
             "root": str(root),
-            "unit": f"umt-ingress-micro-v5-{name}-20260830.service",
+            "unit": f"umt-ingress-micro-v6-{name}-20260830.service",
             "command": command,
             "command_sha256": json_sha256(command),
             "binary_sha256": ADAPTIVE_NATIVE_SHA256,
         }
     return {
-        "schema": "lanl-maa-umt-ingress-contract-v5",
+        "schema": "lanl-maa-umt-ingress-contract-v6",
         "status": "frozen_before_dispatch",
         "campaign_root": str(campaign),
         "harness_source_commit": git_output(ROOT, "rev-parse", "HEAD"),
@@ -976,9 +1141,9 @@ def freeze_contract(args):
         pathlib.Path(args.campaign_root).resolve(),
         pathlib.Path(args.output).resolve(),
     )
-    if campaign.exists() or output != campaign / "ingress-contract-v5.json":
+    if campaign.exists() or output != campaign / "ingress-contract-v6.json":
         raise RuntimeError(
-            "v5 contract must be a fresh campaign/ingress-contract-v5.json"
+            "v6 contract must be a fresh campaign/ingress-contract-v6.json"
         )
     contract = expected_contract(
         campaign, proof, args.instrumented_build_proof_sha256, args.gem5_sha256
@@ -992,7 +1157,7 @@ def dispatch_plan(contract_path, digest, campaign_root, output):
     campaign, contract_path = pathlib.Path(
         campaign_root
     ).resolve(), verify_hash(contract_path, digest, "frozen contract")
-    if contract_path != campaign / "ingress-contract-v5.json":
+    if contract_path != campaign / "ingress-contract-v6.json":
         raise RuntimeError(
             "externally fixed campaign/contract identity mismatch"
         )
@@ -1000,10 +1165,10 @@ def dispatch_plan(contract_path, digest, campaign_root, output):
     if (
         not isinstance(contract, dict)
         or set(contract) != CONTRACT_FIELDS
-        or contract.get("schema") != "lanl-maa-umt-ingress-contract-v5"
+        or contract.get("schema") != "lanl-maa-umt-ingress-contract-v6"
     ):
         raise RuntimeError(
-            "v5 contract semantics, resources, units, roots, or self-hash binding altered"
+            "v6 contract semantics, resources, units, roots, or self-hash binding altered"
         )
     gem5 = verify_hash(
         CANONICAL_GEM5, contract["gem5_sha256"], "canonical gem5"
@@ -1022,17 +1187,17 @@ def dispatch_plan(contract_path, digest, campaign_root, output):
     )
     if contract != expected:
         raise RuntimeError(
-            "v5 contract semantics, resources, units, roots, or self-hash binding altered"
+            "v6 contract semantics, resources, units, roots, or self-hash binding altered"
         )
     output = pathlib.Path(output).resolve()
-    if output != campaign / "identity/ingress-dry-dispatch-v5.json":
-        raise RuntimeError("v5 dry dispatch output identity mismatch")
+    if output != campaign / "identity/ingress-dry-dispatch-v6.json":
+        raise RuntimeError("v6 dry dispatch output identity mismatch")
     commands = {
         name: systemd_run_command(arm["unit"], arm["command"])
         for name, arm in contract["arms"].items()
     }
     plan = {
-        "schema": "lanl-maa-umt-ingress-dispatch-plan-v5",
+        "schema": "lanl-maa-umt-ingress-dispatch-plan-v6",
         "status": "dry_only_not_dispatched",
         "campaign_root": str(campaign),
         "contract": str(contract_path),
@@ -1335,9 +1500,9 @@ def analyze_arm(root, case, contract_path, contract_digest):
     if (
         not isinstance(contract, dict)
         or set(contract) != CONTRACT_FIELDS
-        or contract.get("schema") != "lanl-maa-umt-ingress-contract-v5"
+        or contract.get("schema") != "lanl-maa-umt-ingress-contract-v6"
     ):
-        raise RuntimeError("arm is not bound to an unaltered v5 contract")
+        raise RuntimeError("arm is not bound to an unaltered v6 contract")
     campaign = pathlib.Path(contract.get("campaign_root", ".")).resolve()
     gem5 = verify_hash(
         CANONICAL_GEM5, contract["gem5_sha256"], "canonical gem5"
@@ -1349,7 +1514,7 @@ def analyze_arm(root, case, contract_path, contract_digest):
         contract["gem5_sha256"],
     )
     if (
-        contract_path != campaign / "ingress-contract-v5.json"
+        contract_path != campaign / "ingress-contract-v6.json"
         or contract
         != expected_contract(
             campaign,
@@ -1358,7 +1523,7 @@ def analyze_arm(root, case, contract_path, contract_digest):
             contract.get("gem5_sha256", ""),
         )
     ):
-        raise RuntimeError("arm is not bound to an unaltered v5 contract")
+        raise RuntimeError("arm is not bound to an unaltered v6 contract")
     root, arm = pathlib.Path(root).resolve(), contract["arms"].get(case, {})
     if str(root) != arm.get("root") or arm.get("command") != case_command(
         CANONICAL_GEM5, root, case
@@ -1408,7 +1573,7 @@ def analyze_arm(root, case, contract_path, contract_digest):
     ):
         raise RuntimeError("exact D32/D64/group/input counter gate failed")
     return {
-        "schema": "lanl-maa-umt-ingress-arm-report-v5",
+        "schema": "lanl-maa-umt-ingress-arm-report-v6",
         "status": "passed",
         "case": case,
         "contract": str(contract_path),

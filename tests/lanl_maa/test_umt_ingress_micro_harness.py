@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Adversarial, dry-only tests for the v4 UMT ingress harness."""
+"""Adversarial, dry-only tests for the v6 UMT ingress harness."""
 import importlib.util
 import json
 import pathlib
@@ -14,6 +14,11 @@ spec = importlib.util.spec_from_file_location(
 )
 ingress = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ingress)
+wrapper_spec = importlib.util.spec_from_file_location(
+    "ingress_wrapper", HERE / "run_umt_ingress_build_attestation.py"
+)
+wrapper = importlib.util.module_from_spec(wrapper_spec)
+wrapper_spec.loader.exec_module(wrapper)
 
 
 def callback(kind, callback_id, lane, waiters, pre, post, abi=4):
@@ -25,7 +30,7 @@ def line(label, kind, cycle, waiters, abi=4):
 
 
 class IngressHarnessTest(unittest.TestCase):
-    def test_v5_build_spelling_and_empty_service_environment_are_exact(self):
+    def test_v6_build_spelling_and_sanitized_environment_are_exact(self):
         self.assertEqual(
             ingress.BUILD_ARGV,
             (
@@ -33,13 +38,60 @@ class IngressHarnessTest(unittest.TestCase):
                 "--ignore-style",
                 "build/X86_UMT_T32_W2/gem5.opt",
                 "-j4",
-                "CCFLAGS_EXTRA=-DLANL_MAA_UMT_INGRESS_TRACE_TEST=1",
+                "CPPDEFINES=LANL_MAA_UMT_INGRESS_TRACE_TEST",
             ),
         )
-        self.assertEqual(ingress.BUILD_ENVIRONMENT, {})
         self.assertEqual(
-            ingress.BUILD_UNIT, "umt-ingress-trace-build-v5-20260830.service"
+            ingress.BUILD_ENVIRONMENT,
+            {
+                "sanitized": ["LANG", "LC_ALL", "PATH", "TZ"],
+                "inherited_tool_affecting_names": [],
+                "inherited_tool_affecting_count": 0,
+            },
         )
+        self.assertEqual(
+            ingress.BUILD_UNIT, "umt-ingress-trace-build-v6-20260830.service"
+        )
+
+    def test_wrapper_environment_names_and_v1_gate_report_are_rejected(self):
+        names = wrapper.inherited_tool_affecting_names(
+            {
+                "CC": "secret-compiler",
+                "PYTHONPATH": "secret-path",
+                "SAFE": "x",
+            }
+        )
+        self.assertEqual(names, ["CC", "PYTHONPATH"])
+        self.assertEqual(
+            wrapper.SAFE_CHILD_ENV,
+            {
+                "PATH": "/usr/local/bin:/usr/bin:/bin",
+                "LC_ALL": "C",
+                "LANG": "C",
+                "TZ": "UTC",
+            },
+        )
+        source, target, digest = (
+            pathlib.Path("/source"),
+            pathlib.Path("/target"),
+            "a" * 64,
+        )
+        report = {
+            "schema": "lanl-maa-umt-production-ingress-trace-v1",
+            "status": "passed",
+            "source_root": str(source),
+            "input_source_sha256": {},
+            "binary": str(target),
+            "binary_sha256": digest,
+            "required_define": ingress.TRACE_BUILD_DEFINE,
+            "compiled_binary_markers": [
+                "UMT_INGRESS kind=",
+                "d64_hold cycle=",
+            ],
+            "cells": [],
+        }
+        with self.assertRaisesRegex(RuntimeError, "exact v2"):
+            wrapper.validate_gate_report(report, source, target, digest, {})
 
     def rows(self, case):
         abi, rows, callback_id, digest = (
@@ -234,6 +286,11 @@ class IngressHarnessTest(unittest.TestCase):
             evidence = root / "wrapper-evidence"
             evidence.mkdir()
 
+            def evidence_file(name, text="ok"):
+                path = evidence / name
+                path.write_text(text, encoding="utf-8")
+                return {"path": str(path), "sha256": ingress.sha256(path)}
+
             def systemd_show(name, terminal=False):
                 fields = {
                     "Id": ingress.BUILD_UNIT,
@@ -291,14 +348,14 @@ class IngressHarnessTest(unittest.TestCase):
                 },
             }
             attestation_value = {
-                "schema": "lanl-maa-umt-ingress-build-attestation-v5",
+                "schema": "lanl-maa-umt-ingress-build-attestation-v6",
                 "unit": ingress.BUILD_UNIT,
                 "invocation_id": invocation_id,
                 "wrapper_pid": pid,
                 "wrapper_proc_start_ticks": start_ticks,
                 "status": "passed",
                 "build_argv": list(ingress.BUILD_ARGV),
-                "build_environment": {},
+                "build_environment": ingress.BUILD_ENVIRONMENT,
                 "build_returncode": 0,
                 "required_relink_observed": True,
                 "instrumentation_source_sha256": source_hashes,
@@ -318,11 +375,18 @@ class IngressHarnessTest(unittest.TestCase):
                         ),
                         "--cxx",
                         "g++",
+                        "--binary",
+                        str(gem5),
+                        "--binary-sha256",
+                        ingress.sha256(gem5),
+                        "--input-source-sha256",
+                        str(evidence / "observer-input-source-sha256.json"),
                     ],
                     "returncode": 0,
-                    "report_sha256": "b" * 64,
+                    "report": {},
+                    "transcript": {},
                 },
-                "logs": {},
+                "evidence": {},
             }
             attestation = evidence / "attestation.json"
             attestation.write_text(
@@ -382,12 +446,21 @@ class IngressHarnessTest(unittest.TestCase):
                 "path": str(journal_path),
                 "sha256": ingress.sha256(journal_path),
             }
-            report = root / "observer-report.json"
+            report = evidence / "observer-report.json"
             report.write_text(
                 json.dumps(
                     {
                         "schema": "lanl-maa-umt-production-ingress-trace-v2",
                         "status": "passed",
+                        "source_root": str(source),
+                        "input_source_sha256": source_hashes,
+                        "binary": str(gem5),
+                        "binary_sha256": ingress.sha256(gem5),
+                        "required_define": ingress.TRACE_BUILD_DEFINE,
+                        "compiled_binary_markers": [
+                            "UMT_INGRESS kind=",
+                            "d64_hold cycle=",
+                        ],
                         "cells": [
                             {
                                 "tokens": t,
@@ -403,10 +476,53 @@ class IngressHarnessTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            evidence_items = {
+                "scons_stdout": evidence_file("scons.stdout"),
+                "scons_stderr": evidence_file("scons.stderr"),
+                "observer_stdout": evidence_file("observer.stdout"),
+                "observer_stderr": evidence_file("observer.stderr"),
+                "observer_report": {
+                    "path": str(report),
+                    "sha256": ingress.sha256(report),
+                },
+                "observer_transcript": evidence_file(
+                    "observer-transcript.txt", "status=0/SUCCESS\n"
+                ),
+                "source_manifest": evidence_file(
+                    "observer-input-source-sha256.json",
+                    json.dumps(source_hashes),
+                ),
+                "target_config_literal_scan": evidence_file(
+                    "target-config-literal-scan.json",
+                    json.dumps(
+                        {
+                            "target": str(gem5),
+                            "target_sha256": ingress.sha256(gem5),
+                            "config_hh": str(config_hh),
+                            "config_hh_sha256": ingress.sha256(config_hh),
+                            "config_cc": str(config_cc),
+                            "config_cc_sha256": ingress.sha256(config_cc),
+                            "compiled_binary_markers": [
+                                "UMT_INGRESS kind=", "d64_hold cycle=",
+                            ],
+                        }
+                    ),
+                ),
+            }
+            attestation_value["evidence"] = evidence_items
+            attestation_value["observer_gate"]["report"] = evidence_items[
+                "observer_report"
+            ]
+            attestation_value["observer_gate"]["transcript"] = evidence_items[
+                "observer_transcript"
+            ]
+            attestation.write_text(
+                json.dumps(attestation_value), encoding="utf-8"
+            )
             proof = {
                 "schema": ingress.SCHEMA_BUILD_PROOF,
                 "status": "passed",
-                "producer": "systemd-build-proof-v5-service-wrapper",
+                "producer": "systemd-build-proof-v6-service-wrapper",
                 "source_worktree": str(source),
                 "source_commit": commit,
                 "source_tree": tree,
@@ -422,8 +538,8 @@ class IngressHarnessTest(unittest.TestCase):
                 "instrumentation_source_sha256": source_hashes,
                 "build_returncode": 0,
                 "required_relink_observed": True,
-                "build_stdout": file("build.out"),
-                "build_stderr": file("build.err"),
+                "build_stdout": evidence_items["scons_stdout"],
+                "build_stderr": evidence_items["scons_stderr"],
                 "build_artifacts": artifacts,
                 "build_invocation": {
                     "unit": ingress.BUILD_UNIT,
@@ -455,17 +571,20 @@ class IngressHarnessTest(unittest.TestCase):
                         ),
                         "--cxx",
                         "g++",
+                        "--binary",
+                        str(gem5),
+                        "--binary-sha256",
+                        ingress.sha256(gem5),
+                        "--input-source-sha256",
+                        str(evidence / "observer-input-source-sha256.json"),
                     ],
                     "input_source_sha256": source_hashes,
                     "binary": str(gem5),
                     "binary_sha256": ingress.sha256(gem5),
-                    "stdout": file("gate.out"),
-                    "stderr": file("gate.err"),
-                    "report": {
-                        "path": str(report),
-                        "sha256": ingress.sha256(report),
-                    },
-                    "transcript": file("gate.journal", "status=0/SUCCESS"),
+                    "stdout": evidence_items["observer_stdout"],
+                    "stderr": evidence_items["observer_stderr"],
+                    "report": evidence_items["observer_report"],
+                    "transcript": evidence_items["observer_transcript"],
                     "status": "passed",
                 },
             }
@@ -518,6 +637,67 @@ class IngressHarnessTest(unittest.TestCase):
                         "sha256"
                     ] = ingress.sha256(old)
                 self.assertEqual(attempt(proof), root / "proof.json")
+
+                # v1 looked superficially valid to the earlier harness.  It
+                # lacks the source/binary binding fields and must be rejected
+                # even when every enclosing evidence hash is refreshed.
+                v1 = json.loads(report.read_text(encoding="utf-8"))
+                v1["schema"] = "lanl-maa-umt-production-ingress-trace-v1"
+                report.write_text(json.dumps(v1), encoding="utf-8")
+                refreshed_report = {
+                    "path": str(report),
+                    "sha256": ingress.sha256(report),
+                }
+                attestation_value["evidence"][
+                    "observer_report"
+                ] = refreshed_report
+                attestation_value["observer_gate"]["report"] = refreshed_report
+                attestation.write_text(
+                    json.dumps(attestation_value), encoding="utf-8"
+                )
+                v1_proof = json.loads(json.dumps(proof))
+                v1_proof["observer_gate"]["report"] = refreshed_report
+                v1_proof["build_invocation"]["wrapper_attestation"] = {
+                    "path": str(attestation),
+                    "sha256": ingress.sha256(attestation),
+                }
+                with self.assertRaisesRegex(RuntimeError, "report/transcript"):
+                    attempt(v1_proof)
+                report.write_text(
+                    json.dumps(
+                        {
+                            **v1,
+                            "schema": "lanl-maa-umt-production-ingress-trace-v2",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                refreshed_report = {
+                    "path": str(report),
+                    "sha256": ingress.sha256(report),
+                }
+                attestation_value["evidence"][
+                    "observer_report"
+                ] = refreshed_report
+                attestation_value["observer_gate"]["report"] = refreshed_report
+                attestation.write_text(
+                    json.dumps(attestation_value), encoding="utf-8"
+                )
+                proof["observer_gate"]["report"] = refreshed_report
+                proof["build_invocation"]["wrapper_attestation"] = {
+                    "path": str(attestation),
+                    "sha256": ingress.sha256(attestation),
+                }
+                self.assertEqual(attempt(proof), root / "proof.json")
+
+                forged = json.loads(json.dumps(proof))
+                forged["build_environment"][
+                    "inherited_tool_affecting_count"
+                ] = 1
+                with self.assertRaisesRegex(
+                    RuntimeError, "sanitized environment"
+                ):
+                    attempt(forged)
 
                 def replace_invocation_artifact(
                     forged, field, suffix, transform
@@ -631,8 +811,8 @@ class IngressHarnessTest(unittest.TestCase):
                     (
                         "wrapper-argv",
                         lambda text: text.replace(
-                            "CCFLAGS_EXTRA=-DLANL_MAA_UMT_INGRESS_TRACE_TEST=1",
                             "CPPDEFINES=LANL_MAA_UMT_INGRESS_TRACE_TEST",
+                            "CCFLAGS_EXTRA=-DLANL_MAA_UMT_INGRESS_TRACE_TEST=1",
                         ),
                     ),
                     (

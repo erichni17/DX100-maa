@@ -15,7 +15,7 @@ import re
 import subprocess
 import sys
 
-BUILD_UNIT = "umt-ingress-trace-build-v5-20260830.service"
+BUILD_UNIT = "umt-ingress-trace-build-v6-20260830.service"
 SOURCE_ROOT = "/data1/nier/worktrees/DX100-umt-trace-replay-20260830"
 TARGET_RELATIVE = "build/X86_UMT_T32_W2/gem5.opt"
 CONFIG_RELATIVES = (
@@ -27,7 +27,7 @@ BUILD_ARGV = (
     "--ignore-style",
     TARGET_RELATIVE,
     "-j4",
-    "CCFLAGS_EXTRA=-DLANL_MAA_UMT_INGRESS_TRACE_TEST=1",
+    "CPPDEFINES=LANL_MAA_UMT_INGRESS_TRACE_TEST",
 )
 SOURCE_RELATIVES = (
     "src/mem/LANLMAA/UmtOrderedWaveIngressTrace.hh",
@@ -37,12 +37,44 @@ SOURCE_RELATIVES = (
     "tests/lanl_maa/umt_production_ingress_trace_test.cc",
     "tests/lanl_maa/run_umt_production_ingress_trace_gate.py",
 )
-PROTOCOL = "LANL_MAA_UMT_INGRESS_BUILD_ATTESTATION_V5"
-SCHEMA = "lanl-maa-umt-ingress-build-attestation-v5"
+PROTOCOL = "LANL_MAA_UMT_INGRESS_BUILD_ATTESTATION_V6"
+SCHEMA = "lanl-maa-umt-ingress-build-attestation-v6"
 # A target mention without an actual link command is not sufficient.  This
 # intentionally rejects an unchanged/up-to-date incremental invocation.
 RELINK_RE = re.compile(
     rb"(?m)^.*(?:Linking\s+|\s-o\s+)build/X86_UMT_T32_W2/gem5\.opt(?:\s|$)"
+)
+SAFE_CHILD_ENV = {
+    "PATH": "/usr/local/bin:/usr/bin:/bin",
+    "LC_ALL": "C",
+    "LANG": "C",
+    "TZ": "UTC",
+}
+TOOL_AFFECTING_ENV_PREFIXES = (
+    "CC",
+    "CXX",
+    "CPP",
+    "CFLAGS",
+    "CXXFLAGS",
+    "CCFLAGS",
+    "CPPFLAGS",
+    "LDFLAGS",
+    "LD",
+    "AR",
+    "RANLIB",
+    "SCons",
+    "SCONS",
+    "PYTHON",
+    "PYTHONPATH",
+    "VIRTUAL_ENV",
+    "CONDA",
+    "PATH",
+    "HOME",
+    "TMP",
+    "CCACHE",
+    "SCCACHE",
+    "DISTCC",
+    "ICECC",
 )
 
 
@@ -82,6 +114,64 @@ def marker(kind, **fields):
     )
 
 
+def inherited_tool_affecting_names(environment):
+    """Expose names/count only; values are never evidence or terminal output."""
+    return sorted(
+        name
+        for name in environment
+        if name.upper().startswith(TOOL_AFFECTING_ENV_PREFIXES)
+    )
+
+
+def evidence_artifact(evidence, name):
+    path = evidence / name
+    if not path.is_file() or path.parent != evidence:
+        raise RuntimeError("wrapper evidence artifact path is not exact")
+    return {"path": str(path), "sha256": sha256(path)}
+
+
+def validate_gate_report(value, source, target, target_sha256, inputs):
+    expected_cells = [
+        {
+            "tokens": tokens,
+            "issue_width": width,
+            "waiter_counts": [1, 7, 8],
+            "abi_boundaries": ["D32", "D64"],
+            "two_lane_serialization": "rejected_by_trace_difference",
+            "default_off": "compiled_without_observer_macro",
+        }
+        for tokens, width in ((24, 1), (24, 2), (32, 1), (32, 2))
+    ]
+    if (
+        not isinstance(value, dict)
+        or set(value)
+        != {
+            "schema",
+            "status",
+            "source_root",
+            "input_source_sha256",
+            "binary",
+            "binary_sha256",
+            "required_define",
+            "compiled_binary_markers",
+            "cells",
+        }
+        or value["schema"] != "lanl-maa-umt-production-ingress-trace-v2"
+        or value["status"] != "passed"
+        or pathlib.Path(value["source_root"]).resolve() != source
+        or value["input_source_sha256"] != inputs
+        or pathlib.Path(value["binary"]).resolve() != target
+        or value["binary_sha256"] != target_sha256
+        or value["required_define"] != "LANL_MAA_UMT_INGRESS_TRACE_TEST"
+        or value["compiled_binary_markers"]
+        != ["UMT_INGRESS kind=", "d64_hold cycle="]
+        or value["cells"] != expected_cells
+    ):
+        raise RuntimeError(
+            "observer gate report is not exact v2 source/binary evidence"
+        )
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--unit", required=True)
@@ -110,13 +200,14 @@ def main(argv=None):
         "wrapper_proc_start_ticks": start,
     }
     print(marker("START", **common), flush=True)
+    inherited_names = inherited_tool_affecting_names(os.environ)
     stdout, stderr = evidence / "scons.stdout", evidence / "scons.stderr"
     evidence.mkdir(parents=True, exist_ok=False)
     with stdout.open("wb") as out, stderr.open("wb") as err:
         completed = subprocess.run(
             BUILD_ARGV,
             cwd=source,
-            env=os.environ.copy(),
+            env=SAFE_CHILD_ENV,
             stdout=out,
             stderr=err,
             check=False,
@@ -151,6 +242,24 @@ def main(argv=None):
         evidence / "observer.stdout",
         evidence / "observer.stderr",
     )
+    manifest = evidence / "observer-input-source-sha256.json"
+    no_clobber_json(manifest, inputs)
+    literal_scan = evidence / "target-config-literal-scan.json"
+    no_clobber_json(
+        literal_scan,
+        {
+            "target": str(target),
+            "target_sha256": artifacts["gem5"],
+            "config_hh": str(config_hh),
+            "config_hh_sha256": artifacts["config_hh"],
+            "config_cc": str(config_cc),
+            "config_cc_sha256": artifacts["config_cc"],
+            "compiled_binary_markers": [
+                "UMT_INGRESS kind=",
+                "d64_hold cycle=",
+            ],
+        },
+    )
     gate = (
         "/usr/bin/python3",
         str(
@@ -158,28 +267,47 @@ def main(argv=None):
         ),
         "--cxx",
         "g++",
+        "--binary",
+        str(target),
+        "--binary-sha256",
+        artifacts["gem5"],
+        "--input-source-sha256",
+        str(manifest),
     )
     with gate_stdout.open("wb") as out, gate_stderr.open("wb") as err:
         result = subprocess.run(
-            gate, cwd=source, stdout=out, stderr=err, check=False
+            gate,
+            cwd=source,
+            env=SAFE_CHILD_ENV,
+            stdout=out,
+            stderr=err,
+            check=False,
         )
     if result.returncode != 0:
         raise RuntimeError("observer gate failed")
     report_copy = evidence / "observer-report.json"
     report_copy.write_bytes(gate_stdout.read_bytes())
     try:
-        if (
-            json.loads(report_copy.read_text(encoding="utf-8")).get("status")
-            != "passed"
-        ):
-            raise ValueError("observer report status")
+        validate_gate_report(
+            json.loads(report_copy.read_text(encoding="utf-8")),
+            source,
+            target,
+            artifacts["gem5"],
+            inputs,
+        )
     except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as error:
         raise RuntimeError("observer gate report is invalid") from error
+    transcript = evidence / "observer-transcript.txt"
+    transcript.write_text("status=0/SUCCESS\n", encoding="ascii")
     value = {
         **common,
         "status": "passed",
         "build_argv": list(BUILD_ARGV),
-        "build_environment": {},
+        "build_environment": {
+            "sanitized": sorted(SAFE_CHILD_ENV),
+            "inherited_tool_affecting_names": inherited_names,
+            "inherited_tool_affecting_count": len(inherited_names),
+        },
         "build_returncode": 0,
         "required_relink_observed": True,
         "instrumentation_source_sha256": inputs,
@@ -188,13 +316,28 @@ def main(argv=None):
         "observer_gate": {
             "command": list(gate),
             "returncode": 0,
-            "report_sha256": sha256(report_copy),
+            "report": evidence_artifact(evidence, "observer-report.json"),
+            "transcript": evidence_artifact(
+                evidence, "observer-transcript.txt"
+            ),
         },
-        "logs": {
-            "scons_stdout_sha256": sha256(stdout),
-            "scons_stderr_sha256": sha256(stderr),
-            "observer_stdout_sha256": sha256(gate_stdout),
-            "observer_stderr_sha256": sha256(gate_stderr),
+        "evidence": {
+            "scons_stdout": evidence_artifact(evidence, "scons.stdout"),
+            "scons_stderr": evidence_artifact(evidence, "scons.stderr"),
+            "observer_stdout": evidence_artifact(evidence, "observer.stdout"),
+            "observer_stderr": evidence_artifact(evidence, "observer.stderr"),
+            "observer_report": evidence_artifact(
+                evidence, "observer-report.json"
+            ),
+            "observer_transcript": evidence_artifact(
+                evidence, "observer-transcript.txt"
+            ),
+            "source_manifest": evidence_artifact(
+                evidence, "observer-input-source-sha256.json"
+            ),
+            "target_config_literal_scan": evidence_artifact(
+                evidence, "target-config-literal-scan.json"
+            ),
         },
     }
     no_clobber_json(evidence / "attestation.json", value)
