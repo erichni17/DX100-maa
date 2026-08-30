@@ -35,6 +35,12 @@ Payload is not duplicated; exact lookup tokens reference data retained in the
 already-counted response pool. The result therefore removes the zero-cycle
 tag-lookup assumption without serializing one lookup at a time.
 
+Lookup-token metadata is not included in the current packed storage ledger.
+Although source bounds it by the 1,024-word response pool, measured peak at
+latency 3 is only 12 per logical FLAG operation. A practical fixed queue should
+be sized/backpressured near the measured pipeline requirement and charged
+explicitly.
+
 This remains a sensitivity rather than a synthesis result. XOR/set decode,
 same-set hazards, physical tag/payload RAM ports, ready selection, and reset
 still need a concrete implementation.

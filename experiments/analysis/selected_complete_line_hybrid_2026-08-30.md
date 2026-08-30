@@ -46,3 +46,8 @@ hazards, reset/epoch implementation, CPU/virtual-alias coherence, and
 synthesized area/energy/Fmax. Overlapping live MAA producers are now rejected
 until prior page ACK closure; software still owes exclusive destination
 ownership against CPU/alias writes.
+
+The lookup pipeline duplicates no data, but its bounded identity-token metadata
+is not yet in the storage ledger. Measured peak is 12 tokens per logical
+operation at latency 3; source's 1,024-token ceiling is a fail-safe bound, not
+the selected hardware size.

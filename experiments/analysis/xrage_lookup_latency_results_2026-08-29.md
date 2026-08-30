@@ -47,6 +47,12 @@ For nonzero latency:
 - stale identity, generation mismatch, capacity overflow, early slot release,
   or terminal issue/completion imbalance fails closed.
 
+Token metadata is bounded but not yet charged in the packed storage ledger.
+Source permits as many pending tokens as response words (1,024 selected),
+whereas measured peak at latency 3 is 12 per logical XRAGE operation. A
+hardware implementation should use a much smaller fixed queue with
+backpressure and charge its identity/ready-cycle bits explicitly.
+
 Latency 0 exactly reproduces the prior 8-way/XOR7 run at 37,247,939 ticks,
 closing the default-off neutrality check.
 
