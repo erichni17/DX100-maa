@@ -17,7 +17,8 @@ coherence remain untimed.
 
 - software/logical gather and Row/Offset reorder window: 16K elements;
 - physical result capacity: 4,096 FP64 words;
-- complete-line combiner: 2,048 tags, 16 ways, 3,072 useful words;
+- original complete-line coverage point: 2,048 tags, 16 ways, 3,072 useful
+  words;
 - retained response pool: 128 slots, 1,024 useful words;
 - coherent retirement: one write per complete 64-B line plus only the exact
   final logical tail; and
@@ -100,3 +101,11 @@ Artifact ledgers:
 
 The independent hardware review is
 `../reviews/2026-08-29_complete_line_hardware_cost_review.md`.
+
+## 8-way successor
+
+A same-binary all-14 comparison now replaces the selected 16-way lookup with
+8-way XOR-folded indexing at shift 7. Geometric-mean latency changes by
+-0.004%, exact output/work closes everywhere, and checkpoint physical-memory
+images match pairwise. Tag count and payload are unchanged, but lookup
+associativity is halved. See `flag_xor8_results_2026-08-29.md`.

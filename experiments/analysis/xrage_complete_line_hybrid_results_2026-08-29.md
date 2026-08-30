@@ -103,7 +103,7 @@ shows that one complete-line issue per MAA cycle preserves the result at
 37,252,008 ticks, so full-line injection bandwidth is not the selected XRAGE
 bottleneck. See `xrage_complete_line_drain_results_2026-08-29.md`.
 
-A physical implementation still needs timed 16-way lookup, set decoding,
+A physical implementation still needs timed tag lookup, set decoding,
 reference/payload RAM ports, ready selection, reset/epoch handling, and
 ACK/drain arbitration.
 
