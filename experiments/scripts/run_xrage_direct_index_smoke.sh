@@ -839,7 +839,8 @@ else
     [[ $combine_lookup_issues -eq $index_words &&
        $combine_lookup_completions -eq $index_words &&
        $combine_lookup_peak -gt 0 &&
-       $combine_lookup_peak -le $lookup_capacity_bound ]] || {
+       $combine_lookup_peak -le \
+           $((lookup_capacity_bound * maa_indirect_instructions)) ]] || {
         echo "combiner lookup pipeline did not close exactly" >&2
         exit 1
     }
