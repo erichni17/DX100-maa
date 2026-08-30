@@ -124,9 +124,9 @@ def validate(stats, group_counts, abi_version):
         "descriptorUmtStateTokenLogicalBitsFloor": 15072,
         "descriptorUmtStateFunctionalControlLogicalBitsFloor": 657,
         "descriptorUmtStateBankSchedulerLogicalBitsFloor": 283,
-        "descriptorUmtStateInstrumentationLogicalBitsFloor": 1106,
-        "descriptorUmtStateAuxiliaryLogicalBitsFloor": 17118,
-        "descriptorUmtStatePhysicalStorePlusLogicalAuxiliaryBitsFloor": 58078,
+        "descriptorUmtStateInstrumentationLogicalBitsFloor": 1170,
+        "descriptorUmtStateAuxiliaryLogicalBitsFloor": 17182,
+        "descriptorUmtStatePhysicalStorePlusLogicalAuxiliaryBitsFloor": 58142,
         "descriptorUmtInputLineReads": input_line_reads,
         "descriptorUmtFp64AddSubOperations": 8 * groups,
         "descriptorUmtFp64MultiplyOperations": 0,
@@ -210,6 +210,46 @@ def validate(stats, group_counts, abi_version):
                     f"{name}={value}"
                 )
             bounded[name] = value
+    bank_conflicts = stats.get("descriptorUmtStateBankReadConflictCycles")
+    writeback_stalls = stats.get("descriptorUmtStateWritebackStallCycles")
+    combined_stalls = stats.get(
+        "descriptorUmtStatePipelineResultBankStallCycles"
+    )
+    if (
+        type(bank_conflicts) is not int
+        or type(writeback_stalls) is not int
+        or type(combined_stalls) is not int
+        or bank_conflicts < 0
+        or writeback_stalls < 0
+        or bank_conflicts > combined_stalls
+        or writeback_stalls > combined_stalls
+        or combined_stalls > bank_conflicts + writeback_stalls
+    ):
+        raise RuntimeError(
+            "UMT poison-tail split result-bank accounting did not close: "
+            f"bank={bank_conflicts}, writeback={writeback_stalls}, "
+            f"combined={combined_stalls}"
+        )
+    divider_no_lane = stats.get("descriptorUmtStateDividerNoLaneCycles")
+    if (
+        type(divider_no_lane) is not int
+        or divider_no_lane < 0
+        or divider_no_lane > batch_cycles
+    ):
+        raise RuntimeError(
+            "UMT poison-tail divider-no-lane cycles exceed active cycles: "
+            f"divider={divider_no_lane}, active={batch_cycles}"
+        )
+    bounded.update(
+        {
+            "descriptorUmtStateBankReadConflictCycles": bank_conflicts,
+            "descriptorUmtStateWritebackStallCycles": writeback_stalls,
+            "descriptorUmtStatePipelineResultBankStallCycles": (
+                combined_stalls
+            ),
+            "descriptorUmtStateDividerNoLaneCycles": divider_no_lane,
+        }
+    )
     return expected, bounded
 
 

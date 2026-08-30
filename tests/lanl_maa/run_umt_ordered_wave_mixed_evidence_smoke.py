@@ -90,8 +90,17 @@ TIMING_COUNTER_REASONS = {
     "descriptorUmtStateInputBankWaitCycles": (
         "input bank conflicts depend on response arrival cycles"
     ),
+    "descriptorUmtStateBankReadConflictCycles": (
+        "FP bank-read conflicts depend on cycle-by-cycle issue arbitration"
+    ),
+    "descriptorUmtStateWritebackStallCycles": (
+        "FP writeback conflicts depend on completion and bank arbitration"
+    ),
     "descriptorUmtStatePipelineResultBankStallCycles": (
         "pipeline result conflicts depend on FP completion and bank arbitration"
+    ),
+    "descriptorUmtStateDividerNoLaneCycles": (
+        "divider availability depends on transient ready-token placement"
     ),
     "descriptorUmtStateResultDrainBankWaitCycles": (
         "result drain waits depend on packet formation and bank arbitration"
@@ -317,9 +326,9 @@ def exact_stats():
         "descriptorUmtStateTokenLogicalBitsFloor": 15072,
         "descriptorUmtStateFunctionalControlLogicalBitsFloor": 657,
         "descriptorUmtStateBankSchedulerLogicalBitsFloor": 283,
-        "descriptorUmtStateInstrumentationLogicalBitsFloor": 1106,
-        "descriptorUmtStateAuxiliaryLogicalBitsFloor": 17118,
-        "descriptorUmtStatePhysicalStorePlusLogicalAuxiliaryBitsFloor": 58078,
+        "descriptorUmtStateInstrumentationLogicalBitsFloor": 1170,
+        "descriptorUmtStateAuxiliaryLogicalBitsFloor": 17182,
+        "descriptorUmtStatePhysicalStorePlusLogicalAuxiliaryBitsFloor": 58142,
         "activeContextHighWaterMark": 64,
         "operationTableHighWaterMark": 64,
         "lineWouldBlockCycles": 0,
@@ -390,6 +399,9 @@ def observed_timing_counters(stats):
             "lineTableHighWaterMark",
             "controlStatusReads",
             "controlReadRequests",
+            "descriptorUmtStateBankReadConflictCycles",
+            "descriptorUmtStateWritebackStallCycles",
+            "descriptorUmtStateDividerNoLaneCycles",
         }
         - set(PACKET_RETRY_COUNTERS)
     )
@@ -411,6 +423,33 @@ def observed_timing_counters(stats):
     if observed["controlReadRequests"] != observed["controlStatusReads"] + 1:
         raise RuntimeError(
             "mixed UMT control-read accounting did not close: " f"{observed}"
+        )
+    bank_conflicts = observed["descriptorUmtStateBankReadConflictCycles"]
+    writeback_stalls = observed["descriptorUmtStateWritebackStallCycles"]
+    combined_stalls = observed[
+        "descriptorUmtStatePipelineResultBankStallCycles"
+    ]
+    if (
+        bank_conflicts < 0
+        or writeback_stalls < 0
+        or bank_conflicts > combined_stalls
+        or writeback_stalls > combined_stalls
+        or combined_stalls > bank_conflicts + writeback_stalls
+    ):
+        raise RuntimeError(
+            "mixed UMT split result-bank accounting did not close: "
+            f"bank={bank_conflicts}, writeback={writeback_stalls}, "
+            f"combined={combined_stalls}"
+        )
+    divider_no_lane = observed["descriptorUmtStateDividerNoLaneCycles"]
+    if (
+        divider_no_lane < 0
+        or divider_no_lane > observed["descriptorUmtBatchCycles"]
+    ):
+        raise RuntimeError(
+            "mixed UMT divider-no-lane cycles exceed active cycles: "
+            f"divider={divider_no_lane}, "
+            f"active={observed['descriptorUmtBatchCycles']}"
         )
     validate_packet_retry_counters(observed)
     return observed

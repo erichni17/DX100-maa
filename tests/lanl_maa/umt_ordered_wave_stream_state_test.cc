@@ -156,6 +156,7 @@ tokenizedCase(size_t groups, bool dense = false)
     assert(state.bankConflicts() <= state.pipelineActiveCycles());
     assert(state.writebackStalls() <= state.pipelineActiveCycles());
     assert(state.resultBankStalls() <= state.pipelineActiveCycles());
+    assert(state.dividerNoLaneCycles() <= state.pipelineActiveCycles());
     assert(state.resultBankStalls() >= state.bankConflicts());
     assert(state.resultBankStalls() >= state.writebackStalls());
     assert(state.resultBankStalls() <=
@@ -173,6 +174,9 @@ capacityBackpressureCase()
     assert(state.pipelineActiveCycles() == 0);
     assert(state.tokenBackpressure() == 0);
     assert(state.resultBankStalls() == 0);
+    assert(state.bankConflicts() == 0);
+    assert(state.writebackStalls() == 0);
+    assert(state.dividerNoLaneCycles() == 0);
     assert(state.configure(groups));
     const auto wave = descriptor(groups);
     uint64_t cycle = 0;
@@ -232,6 +236,66 @@ capacityBackpressureCase()
     assert(state.consumedDenominators() == 0);
     assert(state.pipelineActiveCycles() == 0);
     assert(state.tokenBackpressure() == 0);
+    assert(state.resultBankStalls() == 0);
+    assert(state.bankConflicts() == 0);
+    assert(state.writebackStalls() == 0);
+    assert(state.dividerNoLaneCycles() == 0);
+}
+
+void
+dividerNoLaneAccountingCase()
+{
+    // One divider lane with a long initiation interval makes multiple ready
+    // divide candidates observe the same transient no-lane condition. W2
+    // additionally checks that a second issue slot does not double count it.
+    using State = UmtOrderedWaveStreamStateModel<4, 1, 8, 2>;
+    State state;
+    assert(state.dividerNoLaneCycles() == 0);
+    assert(state.configure(4));
+    const auto wave = descriptor(4);
+    for (size_t source = 0; source < UmtOrderedWaveCorners; ++source) {
+        for (size_t group = 0; group < 4; ++group) {
+            assert(state.writeSource(
+                group, source, umtOrderedWaveStreamEncodeFp64(1.0), 0).
+                accepted);
+        }
+    }
+    assert(state.bindDescriptor(wave));
+    for (size_t group = 0; group < 4; ++group) {
+        assert(state.enqueueDenominator(
+            group, group, 0, umtOrderedWaveStreamEncodeFp64(1.0)).
+            accepted);
+    }
+
+    const uint64_t ready = state.readyCycle();
+    assert(state.cycle(ready).error == DescriptorError::None);
+    assert(state.cycle(ready + 1).error == DescriptorError::None);
+    assert(state.dividerNoLaneCycles() == 0);
+
+    // One denominator add can issue while one or more ready divides find the
+    // busy lane. Multiple candidate probes still contribute exactly one.
+    assert(state.cycle(ready + 2).error == DescriptorError::None);
+    assert(state.dividerNoLaneCycles() == 1);
+    assert(state.cycle(ready + 3).error == DescriptorError::None);
+    assert(state.dividerNoLaneCycles() == 2);
+    const uint64_t beforeAllBlocked = state.dividerNoLaneCycles();
+    assert(state.cycle(ready + 4).error == DescriptorError::None);
+    assert(state.dividerNoLaneCycles() == beforeAllBlocked + 1);
+
+    // Once the lane is ready, one divide issues. The second slot observes the
+    // remaining candidates after that issue consumes the lane, again adding
+    // only one cycle rather than one event per candidate or slot.
+    const uint64_t issuedBefore = state.fpOperationsIssued();
+    const uint64_t noLaneBefore = state.dividerNoLaneCycles();
+    assert(state.cycle(ready + 9).error == DescriptorError::None);
+    assert(state.fpOperationsIssued() == issuedBefore + 1);
+    assert(state.dividerNoLaneCycles() == noLaneBefore + 1);
+    assert(state.dividerNoLaneCycles() <= state.pipelineActiveCycles());
+
+    state.clear();
+    assert(state.dividerNoLaneCycles() == 0);
+    assert(state.bankConflicts() == 0);
+    assert(state.writebackStalls() == 0);
     assert(state.resultBankStalls() == 0);
 }
 
@@ -296,14 +360,14 @@ main()
     assert(UmtOrderedWaveStreamState::BankSchedulerLogicalBitsFloor == 283);
     assert(
         UmtOrderedWaveStreamState::InstrumentationLogicalBitsFloor ==
-            (tokens == 24 ? 1105 : 1106));
+            (tokens == 24 ? 1169 : 1170));
     assert(
         UmtOrderedWaveStreamState::AuxiliaryLogicalBitsFloor ==
-            (tokens == 24 ? 13348 : 17118));
+            (tokens == 24 ? 13412 : 17182));
     assert(
         UmtOrderedWaveStreamState::
             PhysicalStorePlusLogicalAuxiliaryBitsFloor ==
-                (tokens == 24 ? 54308 : 58078));
+                (tokens == 24 ? 54372 : 58142));
     closedCase(1);
     closedCase(16);
     closedCase(32);
@@ -314,6 +378,7 @@ main()
     tokenizedCase(16);
     tokenizedCase(64, true);
     capacityBackpressureCase();
+    dividerNoLaneAccountingCase();
     if (issueWidth == 2)
         partialIssueErrorAccountingCase();
     UmtOrderedWaveStreamState issueEvidence;

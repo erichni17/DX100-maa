@@ -133,12 +133,16 @@ class UmtOrderedWaveStreamStateModel
             UmtOrderedWaveMaximumGroups + 1) +
         Banks * umtOrderedWaveStreamBitsForStates(RowsPerBank + 1) +
         Banks * 64;
+    // Charge each persistent instrumentation counter represented by this
+    // model once. The gem5 statistics::Scalar objects that mirror these
+    // counters are host-side simulator bookkeeping, not additional state in
+    // the modeled architecture, and therefore are not charged again here.
     static constexpr size_t InstrumentationLogicalBitsFloor =
         umtOrderedWaveStreamBitsForStates(
             UmtOrderedWaveMaximumGroups + 1) +
         umtOrderedWaveStreamBitsForStates(RowsPerBank + 1) +
         umtOrderedWaveStreamBitsForStates(ComputeTokens + 1) +
-        17 * 64;
+        18 * 64;
     static constexpr size_t AuxiliaryLogicalBitsFloor =
         ComputeTokens * RepresentedTokenLogicalBitsFloor +
         FunctionalControlLogicalBitsFloor +
@@ -206,6 +210,7 @@ class UmtOrderedWaveStreamStateModel
         bankConflictCycles = 0;
         writebackStallCycles = 0;
         resultBankStallCycleCount = 0;
+        dividerNoLaneCycleCount = 0;
         latchedError = DescriptorError::None;
     }
 
@@ -239,6 +244,10 @@ class UmtOrderedWaveStreamStateModel
     uint64_t resultBankStalls() const
     {
         return resultBankStallCycleCount;
+    }
+    uint64_t dividerNoLaneCycles() const
+    {
+        return dividerNoLaneCycleCount;
     }
     DescriptorError error() const { return latchedError; }
 
@@ -298,6 +307,7 @@ class UmtOrderedWaveStreamStateModel
         bool bankConflictRecorded = false;
         bool writebackStallRecorded = false;
         bool resultBankStallRecorded = false;
+        bool dividerNoLaneRecorded = false;
 
         for (auto &token : tokens) {
             if (token.phase == TokenPhase::DenominatorAddWait &&
@@ -410,8 +420,16 @@ class UmtOrderedWaveStreamStateModel
                         break;
                     }
                 }
-                if (lane == dividerNextIssue.size())
+                if (lane == dividerNextIssue.size()) {
+                    // Multiple candidates, probes, or issue slots can observe
+                    // the same transient condition. Attribute it once to this
+                    // pipeline-active cycle rather than once per observation.
+                    if (!dividerNoLaneRecorded) {
+                        ++dividerNoLaneCycleCount;
+                        dividerNoLaneRecorded = true;
+                    }
                     break;
+                }
                 if (!reserveNow(token.group, cycle, true, false)) {
                     if (!bankConflictRecorded) {
                         ++bankConflictCycles;
@@ -790,6 +808,7 @@ class UmtOrderedWaveStreamStateModel
     uint64_t bankConflictCycles = 0;
     uint64_t writebackStallCycles = 0;
     uint64_t resultBankStallCycleCount = 0;
+    uint64_t dividerNoLaneCycleCount = 0;
     DescriptorError latchedError = DescriptorError::None;
 };
 
@@ -850,13 +869,13 @@ static_assert(
     UmtOrderedWaveStreamState::BankSchedulerLogicalBitsFloor == 283);
 static_assert(
     UmtOrderedWaveStreamState::InstrumentationLogicalBitsFloor ==
-        (UmtOrderedWaveConfiguredComputeTokens == 24 ? 1105 : 1106));
+        (UmtOrderedWaveConfiguredComputeTokens == 24 ? 1169 : 1170));
 static_assert(
     UmtOrderedWaveStreamState::AuxiliaryLogicalBitsFloor ==
-        (UmtOrderedWaveConfiguredComputeTokens == 24 ? 13348 : 17118));
+        (UmtOrderedWaveConfiguredComputeTokens == 24 ? 13412 : 17182));
 static_assert(
     UmtOrderedWaveStreamState::PhysicalStorePlusLogicalAuxiliaryBitsFloor ==
-        (UmtOrderedWaveConfiguredComputeTokens == 24 ? 54308 : 58078));
+        (UmtOrderedWaveConfiguredComputeTokens == 24 ? 54372 : 58142));
 
 } // namespace lanlmaa
 } // namespace gem5

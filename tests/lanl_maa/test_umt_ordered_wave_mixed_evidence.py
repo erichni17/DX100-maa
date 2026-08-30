@@ -93,10 +93,17 @@ class MixedUmtEvidenceTest(unittest.TestCase):
             expected["descriptorUmtStatePhysicalStoreBytes"], 5120
         )
         self.assertEqual(
+            expected["descriptorUmtStateInstrumentationLogicalBitsFloor"],
+            1170,
+        )
+        self.assertEqual(
+            expected["descriptorUmtStateAuxiliaryLogicalBitsFloor"], 17182
+        )
+        self.assertEqual(
             expected[
                 "descriptorUmtStatePhysicalStorePlusLogicalAuxiliaryBitsFloor"
             ],
-            58078,
+            58142,
         )
 
     @staticmethod
@@ -171,6 +178,40 @@ class MixedUmtEvidenceTest(unittest.TestCase):
             RuntimeError, "exact timing stat mismatch"
         ):
             DRIVER.validate_confirmation(stats, contract, "a" * 64)
+
+    def test_split_pipeline_counters_are_required_and_close(self):
+        names = (
+            "descriptorUmtStateBankReadConflictCycles",
+            "descriptorUmtStateWritebackStallCycles",
+            "descriptorUmtStateDividerNoLaneCycles",
+        )
+        for name in names:
+            with self.subTest(missing=name):
+                stats = self.complete_fake_stats()
+                del stats[name]
+                with self.assertRaisesRegex(RuntimeError, "absent"):
+                    DRIVER.observed_timing_counters(stats)
+
+        stats = self.complete_fake_stats()
+        stats["descriptorUmtStateBankReadConflictCycles"] = 2
+        stats["descriptorUmtStateWritebackStallCycles"] = 3
+        stats["descriptorUmtStatePipelineResultBankStallCycles"] = 4
+        stats["descriptorUmtStateDividerNoLaneCycles"] = 4
+        stats["descriptorUmtBatchCycles"] = 5
+        observed = DRIVER.observed_timing_counters(stats)
+        self.assertEqual(
+            observed["descriptorUmtStatePipelineResultBankStallCycles"], 4
+        )
+
+        invalid_union = dict(stats)
+        invalid_union["descriptorUmtStatePipelineResultBankStallCycles"] = 6
+        with self.assertRaisesRegex(RuntimeError, "did not close"):
+            DRIVER.observed_timing_counters(invalid_union)
+
+        invalid_divider = dict(stats)
+        invalid_divider["descriptorUmtStateDividerNoLaneCycles"] = 6
+        with self.assertRaisesRegex(RuntimeError, "exceed active"):
+            DRIVER.observed_timing_counters(invalid_divider)
 
     def test_packet_retry_counters_are_exactly_predeclared(self):
         stats = self.complete_fake_stats()

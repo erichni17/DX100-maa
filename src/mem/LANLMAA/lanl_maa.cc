@@ -275,9 +275,18 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
       ADD_STAT(descriptorUmtStateInputBankWaitCycles,
                statistics::units::Cycle::get(),
                "Aggregate source-write request wait cycles at UMT banks"),
+      ADD_STAT(descriptorUmtStateBankReadConflictCycles,
+               statistics::units::Cycle::get(),
+               "Unique pipeline cycles with a blocked UMT FP bank read"),
+      ADD_STAT(descriptorUmtStateWritebackStallCycles,
+               statistics::units::Cycle::get(),
+               "Unique pipeline cycles with a blocked UMT FP writeback"),
       ADD_STAT(descriptorUmtStatePipelineResultBankStallCycles,
                statistics::units::Cycle::get(),
                "Unique pipeline cycles stalled by a UMT result-bank port"),
+      ADD_STAT(descriptorUmtStateDividerNoLaneCycles,
+               statistics::units::Cycle::get(),
+               "Unique active cycles where a ready divide found no lane"),
       ADD_STAT(descriptorUmtStateResultDrainBankWaitCycles,
                statistics::units::Cycle::get(),
                "Aggregate result-drain request wait cycles at UMT banks"),
@@ -2611,8 +2620,14 @@ LANLMAA::recordUmtOrderedWaveStreamStats()
         umtOrderedWaveState.fpOperationsIssued();
     stats.descriptorUmtStateDualIssueCycles +=
         umtOrderedWaveState.dualIssueCycles();
+    stats.descriptorUmtStateBankReadConflictCycles +=
+        umtOrderedWaveState.bankConflicts();
+    stats.descriptorUmtStateWritebackStallCycles +=
+        umtOrderedWaveState.writebackStalls();
     stats.descriptorUmtStatePipelineResultBankStallCycles +=
         umtOrderedWaveState.resultBankStalls();
+    stats.descriptorUmtStateDividerNoLaneCycles +=
+        umtOrderedWaveState.dividerNoLaneCycles();
 }
 
 void
