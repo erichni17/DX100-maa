@@ -247,6 +247,10 @@ XRAGE also closes the existing fixed 16-page ready queue: all 8,192 full lines
 are selected without a 1,536-slot scan, at 37,291,759 ticks and exact output.
 See `xrage_page_ready_drain_results_2026-08-30.md`.
 
+The same queue closes all 14 FLAG gathers with -0.0002% geometric-mean timing
+change and exact full-line/tail work. The concise current mechanism is in
+`selected_complete_line_hybrid_2026-08-30.md`.
+
 CG NA256 is tick-identical under the related dense treatment, so no full CG
 run is justified.  Remaining gates are current finite drain-width results,
 finite tag/reference/payload lookup timing and ports, delayed/competing

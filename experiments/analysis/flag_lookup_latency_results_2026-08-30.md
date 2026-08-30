@@ -54,3 +54,6 @@ still need a concrete implementation.
 Enable the existing bounded page-ready queue to eliminate full-slot drain
 scans, then address payload/reference ports and exclusive destination
 ownership.
+
+The all-14 queue successor is exact and timing-neutral (-0.0002% geometric
+mean). See `flag_page_ready_drain_results_2026-08-30.md`.
