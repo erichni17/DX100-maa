@@ -133,9 +133,10 @@ It stages and completes all 358,114 masked writes in 358,810 read cycles with
 Raw masked-CG roots are named
 `/data1/nier/dx100-runs/2026-08-30-cg-na{256,1024}-payload-*`.
 
-The single-line staging identity leaves bandwidth unused when many masks hold
-only a few words. A multi-line pipelined payload reader is the next candidate
-for reducing the CG cost; it is not part of the accepted complete-line point.
+Multi-line pipelining was tested at 1/2/4/8/16 active identities. Four is the
+small-size knee, but improves the larger `CG_NA=1024` result by only 0.063%.
+The selected design therefore retains one identity. See
+`masked_payload_pipeline_2026-08-30.md`.
 
 ## Decision
 
@@ -157,8 +158,8 @@ This closes aggregate payload-read throughput without adding hidden payload
 capacity. It does not yet synthesize the RAM or prove a conflict-free physical
 bank mapping for arbitrary payload references. Area, energy, Fmax, and exact
 payload-bank conflicts remain open implementation questions. The masked-line
-extension additionally needs multi-line pipelining before promotion beyond its
-current correctness and bandwidth-attribution role.
+extension remains a correctness and bandwidth-attribution result; its tested
+multi-line optimization did not materially reduce the larger-case cost.
 
 Artifact ledger:
 `complete_line_payload_bandwidth_artifacts_2026-08-30.sha256`.

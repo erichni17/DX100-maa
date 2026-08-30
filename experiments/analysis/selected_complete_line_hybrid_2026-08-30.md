@@ -50,8 +50,9 @@ suite-wide retirement-port result.
 
 A default-off masked-line extension now charges CG's partial lines through the
 same 32-byte port. It is exact but adds 4.658% at `CG_NA=256` and 9.538% at
-`CG_NA=1024`; multi-line staging is still needed to avoid wasting bandwidth on
-sparse masks. This extension is evidence, not the selected direct-gather path.
+`CG_NA=1024`. Four active identities improve the larger case by only 0.063%,
+so the selected point retains one identity. This extension is evidence, not
+the selected direct-gather path.
 
 ## Hardware boundary
 
