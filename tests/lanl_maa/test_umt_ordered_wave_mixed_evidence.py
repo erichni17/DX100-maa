@@ -121,6 +121,8 @@ class MixedUmtEvidenceTest(unittest.TestCase):
         stats = dict(DRIVER.exact_stats(cls.cell(tokens, width)))
         for name in DRIVER.TIMING_COUNTER_REASONS:
             stats[name] = 1
+        stats["descriptorUmtBatchCycles"] = 6000
+        stats["descriptorUmtStateFpIssueStallCycles"] = 1
         stats["descriptorUmtStateDualIssueCycles"] = 0 if width == 1 else 1
         stats["lineTableHighWaterMark"] = 32
         stats["controlStatusReads"] = 17
@@ -232,7 +234,7 @@ class MixedUmtEvidenceTest(unittest.TestCase):
         stats["descriptorUmtStateWritebackStallCycles"] = 3
         stats["descriptorUmtStatePipelineResultBankStallCycles"] = 4
         stats["descriptorUmtStateDividerNoLaneCycles"] = 4
-        stats["descriptorUmtBatchCycles"] = 5
+        stats["descriptorUmtBatchCycles"] = 6000
         observed = DRIVER.observed_timing_counters(stats, self.cell())
         self.assertEqual(
             observed["descriptorUmtStatePipelineResultBankStallCycles"], 4
@@ -240,14 +242,28 @@ class MixedUmtEvidenceTest(unittest.TestCase):
 
         invalid_cases = (
             ("descriptorUmtStateBankReadConflictCycles", -1, "unique-cycle"),
+            (
+                "descriptorUmtStateBankReadConflictCycles",
+                6001,
+                "pipeline-active",
+            ),
             ("descriptorUmtStateWritebackStallCycles", -1, "unique-cycle"),
             (
+                "descriptorUmtStateWritebackStallCycles",
+                6001,
+                "pipeline-active",
+            ),
+            (
                 "descriptorUmtStatePipelineResultBankStallCycles",
-                6,
+                6001,
                 "pipeline-active",
             ),
             ("descriptorUmtStateDividerNoLaneCycles", -1, "unique-cycle"),
-            ("descriptorUmtStateDividerNoLaneCycles", 6, "pipeline-active"),
+            (
+                "descriptorUmtStateDividerNoLaneCycles",
+                6001,
+                "pipeline-active",
+            ),
         )
         for name, value, message in invalid_cases:
             with self.subTest(name=name, value=value):
@@ -275,8 +291,9 @@ class MixedUmtEvidenceTest(unittest.TestCase):
         stats = self.complete_fake_stats()
         stats.update(
             {
-                "descriptorUmtBatchCycles": 5,
-                "descriptorUmtStateDualIssueCycles": 5,
+                "descriptorUmtBatchCycles": 5520,
+                "descriptorUmtStateDualIssueCycles": 1,
+                "descriptorUmtStateFpIssueStallCycles": 1,
                 "descriptorUmtStateBankReadConflictCycles": 5,
                 "descriptorUmtStateWritebackStallCycles": 5,
                 "descriptorUmtStatePipelineResultBankStallCycles": 5,
@@ -284,7 +301,35 @@ class MixedUmtEvidenceTest(unittest.TestCase):
             }
         )
         observed = DRIVER.observed_timing_counters(stats, self.cell())
-        self.assertEqual(observed["descriptorUmtStateDualIssueCycles"], 5)
+        self.assertEqual(observed["descriptorUmtStateDualIssueCycles"], 1)
+
+    def test_issue_cycle_and_zero_stall_occupancy_fail_closed(self):
+        stats = self.complete_fake_stats()
+        stats["descriptorUmtBatchCycles"] = 1
+        with self.assertRaisesRegex(RuntimeError, "issue-cycle ledger"):
+            DRIVER.observed_timing_counters(stats, self.cell())
+
+        stats["descriptorUmtBatchCycles"] = 5519
+        with self.assertRaisesRegex(RuntimeError, "issue-cycle ledger"):
+            DRIVER.observed_timing_counters(stats, self.cell())
+
+        stats["descriptorUmtBatchCycles"] = 5520
+        stats["descriptorUmtStateFpIssueStallCycles"] = 2
+        with self.assertRaisesRegex(RuntimeError, "issue-cycle ledger"):
+            DRIVER.observed_timing_counters(stats, self.cell())
+
+    def test_zero_issue_stall_counter_fails_closed(self):
+        for value in (None, "1", -1):
+            with self.subTest(value=value):
+                stats = self.complete_fake_stats()
+                if value is None:
+                    del stats["descriptorUmtStateFpIssueStallCycles"]
+                else:
+                    stats["descriptorUmtStateFpIssueStallCycles"] = value
+                with self.assertRaisesRegex(
+                    RuntimeError, "zero-issue stall|timing counter"
+                ):
+                    DRIVER.observed_timing_counters(stats, self.cell())
 
     def test_pipeline_active_counter_fails_closed(self):
         for value in (None, "5", -1):

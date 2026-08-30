@@ -36,8 +36,9 @@ class FactorialPoisonTailEvidenceTest(unittest.TestCase):
                 "controlStatusReads": 1,
                 "controlOpcodeReads": 0,
                 "controlErrorReads": 0,
-                "descriptorUmtBatchCycles": 100,
+                "descriptorUmtBatchCycles": 300,
                 "descriptorUmtInputLineWaiterHoldLineCycles": 0,
+                "descriptorUmtStateFpIssueStallCycles": 0,
                 "descriptorUmtStateDualIssueCycles": 0 if width == 1 else 7,
                 "descriptorUmtStateBankReadConflictCycles": 0,
                 "descriptorUmtStateWritebackStallCycles": 0,
@@ -152,7 +153,7 @@ class FactorialPoisonTailEvidenceTest(unittest.TestCase):
                 "descriptorUmtStateWritebackStallCycles": 3,
                 "descriptorUmtStatePipelineResultBankStallCycles": 4,
                 "descriptorUmtStateDividerNoLaneCycles": 4,
-                "descriptorUmtBatchCycles": 5,
+                "descriptorUmtBatchCycles": 251,
                 "descriptorUmtStateDualIssueCycles": 5,
             }
         )
@@ -180,14 +181,28 @@ class FactorialPoisonTailEvidenceTest(unittest.TestCase):
 
         invalid_cases = (
             ("descriptorUmtStateBankReadConflictCycles", -1, "unique-cycle"),
+            (
+                "descriptorUmtStateBankReadConflictCycles",
+                252,
+                "pipeline-active",
+            ),
             ("descriptorUmtStateWritebackStallCycles", -1, "unique-cycle"),
             (
+                "descriptorUmtStateWritebackStallCycles",
+                252,
+                "pipeline-active",
+            ),
+            (
                 "descriptorUmtStatePipelineResultBankStallCycles",
-                6,
+                252,
                 "pipeline-active",
             ),
             ("descriptorUmtStateDividerNoLaneCycles", -1, "unique-cycle"),
-            ("descriptorUmtStateDividerNoLaneCycles", 6, "pipeline-active"),
+            (
+                "descriptorUmtStateDividerNoLaneCycles",
+                252,
+                "pipeline-active",
+            ),
         )
         for name, value, message in invalid_cases:
             with self.subTest(name=name, value=value):
@@ -217,8 +232,8 @@ class FactorialPoisonTailEvidenceTest(unittest.TestCase):
         stats = self.complete_d32_g16_stats(24, 2)
         stats.update(
             {
-                "descriptorUmtBatchCycles": 100,
-                "descriptorUmtStateDualIssueCycles": 100,
+                "descriptorUmtBatchCycles": 249,
+                "descriptorUmtStateDualIssueCycles": 7,
                 "descriptorUmtStateBankReadConflictCycles": 100,
                 "descriptorUmtStateWritebackStallCycles": 100,
                 "descriptorUmtStatePipelineResultBankStallCycles": 100,
@@ -228,7 +243,36 @@ class FactorialPoisonTailEvidenceTest(unittest.TestCase):
         _expected, bounded = DRIVER.validate(
             stats, [16], 4, cell, calibration=True
         )
-        self.assertEqual(bounded["dual_issue"]["observed"], 100)
+        self.assertEqual(bounded["dual_issue"]["observed"], 7)
+        self.assertEqual(bounded["minimumFpIssueCycles"], 249)
+
+    def test_issue_cycle_and_zero_stall_occupancy_fail_closed(self):
+        cell = self.cell(24, 2)
+        stats = self.complete_d32_g16_stats(24, 2)
+        stats["descriptorUmtBatchCycles"] = 100
+        with self.assertRaisesRegex(RuntimeError, "issue-cycle ledger"):
+            DRIVER.validate(stats, [16], 4, cell, calibration=True)
+
+        stats["descriptorUmtBatchCycles"] = 248
+        with self.assertRaisesRegex(RuntimeError, "issue-cycle ledger"):
+            DRIVER.validate(stats, [16], 4, cell, calibration=True)
+
+        stats["descriptorUmtBatchCycles"] = 249
+        stats["descriptorUmtStateFpIssueStallCycles"] = 1
+        with self.assertRaisesRegex(RuntimeError, "issue-cycle ledger"):
+            DRIVER.validate(stats, [16], 4, cell, calibration=True)
+
+    def test_zero_issue_stall_counter_fails_closed(self):
+        cell = self.cell(24, 2)
+        for value in (None, "0", -1):
+            with self.subTest(value=value):
+                stats = self.complete_d32_g16_stats(24, 2)
+                if value is None:
+                    del stats["descriptorUmtStateFpIssueStallCycles"]
+                else:
+                    stats["descriptorUmtStateFpIssueStallCycles"] = value
+                with self.assertRaisesRegex(RuntimeError, "zero-issue stall"):
+                    DRIVER.validate(stats, [16], 4, cell, calibration=True)
 
     def test_pipeline_active_counter_fails_closed(self):
         cell = self.cell(24, 2)

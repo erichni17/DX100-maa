@@ -500,6 +500,7 @@ def validate_unique_cycle_counters(stats, cell, require_exercised):
     active_name = "descriptorUmtBatchCycles"
     active_cycles = stats.get(active_name)
     fp_operations = stats.get("descriptorUmtStateFpOperationsIssued")
+    fp_stall_cycles = stats.get("descriptorUmtStateFpIssueStallCycles")
     if type(active_cycles) is not int or active_cycles < 0:
         raise RuntimeError(
             "UMT pipeline-active cycle counter is absent, noninteger, or "
@@ -510,6 +511,11 @@ def validate_unique_cycle_counters(stats, cell, require_exercised):
             "UMT issued-operation counter is absent, noninteger, or "
             f"negative: {fp_operations}"
         )
+    if type(fp_stall_cycles) is not int or fp_stall_cycles < 0:
+        raise RuntimeError(
+            "UMT zero-issue stall counter is absent, noninteger, or "
+            f"negative: {fp_stall_cycles}"
+        )
 
     dual_issue = validate_dual_issue(stats, cell, require_exercised)
     dual_cycles = dual_issue["observed"]
@@ -518,6 +524,15 @@ def validate_unique_cycle_counters(stats, cell, require_exercised):
             "UMT dual-issue cycles exceed unique-cycle or issued-operation "
             f"bounds: dual={dual_cycles}, active={active_cycles}, "
             f"fp_operations={fp_operations}"
+        )
+    minimum_issue_cycles = fp_operations - dual_cycles
+    if minimum_issue_cycles + fp_stall_cycles > active_cycles:
+        raise RuntimeError(
+            "UMT issue-cycle ledger exceeds pipeline-active cycles: "
+            f"minimum_issue_cycles={minimum_issue_cycles}, "
+            f"zero_issue_stalls={fp_stall_cycles}, "
+            f"active={active_cycles}, fp_operations={fp_operations}, "
+            f"dual={dual_cycles}"
         )
 
     names = {
@@ -554,6 +569,8 @@ def validate_unique_cycle_counters(stats, cell, require_exercised):
     return {
         active_name: active_cycles,
         "descriptorUmtStateFpOperationsIssued": fp_operations,
+        "descriptorUmtStateFpIssueStallCycles": fp_stall_cycles,
+        "minimumFpIssueCycles": minimum_issue_cycles,
         "dual_issue": dual_issue,
         **{name: observed[label] for label, name in names.items()},
     }
