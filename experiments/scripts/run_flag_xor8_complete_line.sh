@@ -110,7 +110,8 @@ export -f run_one
 export out root runner provenance gem5 guest source_commit frozen_lib \
     combine_ways combine_xor_shift
 
-xargs -P "$parallel" -n 3 bash -c 'run_one "$@"' _ < "$cases"
+xargs -r -P "$parallel" -n 3 bash -c \
+    'run_one "$1" "$2" "$3"' _ < "$cases"
 
 {
     printf 'id\tlength\tticks\twrites\tfull\tpartial\tstall_cycles\tpeak_sum\thash\n'
