@@ -67,3 +67,8 @@ Artifact ledger:
 
 Run latency 3 on all 14 FLAG gathers with 2,048 tags/8-way XOR7. Then test a
 bounded ready queue/payload-port model or competing destination ownership.
+
+Both immediate gates now close: FLAG lookup-3 adds 0.155% geometric-mean
+latency, and XRAGE's bounded page-ready queue is exact at 37,291,759 ticks.
+See `flag_lookup_latency_results_2026-08-30.md` and
+`xrage_page_ready_drain_results_2026-08-30.md`.

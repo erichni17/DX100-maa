@@ -243,6 +243,10 @@ limits starts/completions to four each per MAA cycle. See
 `flag_lookup_latency_results_2026-08-30.md` and
 `xrage_lookup_latency_results_2026-08-29.md`.
 
+XRAGE also closes the existing fixed 16-page ready queue: all 8,192 full lines
+are selected without a 1,536-slot scan, at 37,291,759 ticks and exact output.
+See `xrage_page_ready_drain_results_2026-08-30.md`.
+
 CG NA256 is tick-identical under the related dense treatment, so no full CG
 run is justified.  Remaining gates are current finite drain-width results,
 finite tag/reference/payload lookup timing and ports, delayed/competing
