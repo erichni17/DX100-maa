@@ -107,6 +107,11 @@ A physical implementation still needs timed 16-way lookup, set decoding,
 reference/payload RAM ports, ready selection, reset/epoch handling, and
 ACK/drain arbitration.
 
+An exact trace/live successor reduces the selected XRAGE lookup to 8 ways with
+XOR-fold shift 7 or 10 and preserves timing within 0.025%. See
+`xrage_combiner_xor_results_2026-08-29.md`. The 8-way lookup remains untimed,
+but the required comparator/mux fan-in is halved.
+
 ## Correctness and scope
 
 Every accepted run has one exact verifier pass with hash
