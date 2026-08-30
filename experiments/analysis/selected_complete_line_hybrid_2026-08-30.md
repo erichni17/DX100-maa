@@ -43,6 +43,11 @@ The speed comes from avoiding fragmented partial-line backing writes while
 retaining the original 16K reorder scope. It does not come from the safety
 guard, which is timing-identical when disabled at the same capacity.
 
+This selected payload-port result applies to the direct-gather complete-line
+path. CG mostly emits partial-mask lines, IS/HashJoin do not execute this
+virtual-result edge, and SSSP has a separate old-result publisher. It is not a
+suite-wide retirement-port result.
+
 ## Hardware boundary
 
 Bounded now: result payload, tags/ways, response pool, lookup starts and

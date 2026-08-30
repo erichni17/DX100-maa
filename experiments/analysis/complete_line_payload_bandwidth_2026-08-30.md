@@ -88,6 +88,25 @@ Raw campaigns:
 - width 4: `/data1/nier/dx100-runs/2026-08-30-flag-payload-width4-bank4-r1`;
 - width 8: `/data1/nier/dx100-runs/2026-08-30-flag-payload-width8-bank4-r1`.
 
+## Cross-application scope
+
+A matched `CG_NA=256` strict line-combined pair is exact at width 0 and at the
+32-byte/cycle CG setting (eight 4-byte words). Ticks increase from 246,463,712
+to 246,594,233, or 0.053%. This is a scope diagnostic, not general CG payload
+validation: only 5 of 26,672 masked P writes are fully populated lines, so the
+staging mechanism charges only 5 lines and 10 read cycles. The dominant
+partial-mask retirement path remains outside this complete-line study.
+
+Raw CG roots:
+
+- control: `/data1/nier/dx100-runs/2026-08-30-cg-na256-payload-control-r1`;
+- 32-byte port: `/data1/nier/dx100-runs/2026-08-30-cg-na256-payload-width8-r1`.
+
+The existing cross-application source audit also shows that NAS IS and
+HashJoin do not execute the virtual-result combiner edge, while SSSP uses a
+separate response-bearing old-result publisher. No suite-wide payload-port
+claim is made for those paths.
+
 ## Decision
 
 Select four FP64 words, or 32 bytes, per MAA cycle. It matches the existing
