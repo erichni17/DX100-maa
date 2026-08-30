@@ -860,9 +860,15 @@ if [[ $complete_line_payload_words_per_cycle -eq 0 ]]; then
         exit 1
     }
 else
+    expected_payload_read_cycles=$((
+        full_line_writes *
+            ((8 + complete_line_payload_words_per_cycle - 1) /
+                complete_line_payload_words_per_cycle)
+    ))
     [[ $complete_line_payload_starts -eq $full_line_writes &&
-       $complete_line_payload_completions -eq $full_line_writes &&
-       $complete_line_payload_read_cycles -gt 0 ]] || {
+       $complete_line_payload_completions -eq $full_line_writes ]] &&
+        ((complete_line_payload_read_cycles ==
+          expected_payload_read_cycles)) || {
         echo "complete-line payload staging did not close exactly" >&2
         exit 1
     }

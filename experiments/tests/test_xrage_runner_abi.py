@@ -159,6 +159,7 @@ class XrageRunnerAbiTest(unittest.TestCase):
         self.assertIn("complete_line_payload_read_cycles", script)
         self.assertIn("complete_line_payload_blocked_cycles", script)
         self.assertIn("complete_line_payload_backpressure_cycles", script)
+        self.assertIn("expected_payload_read_cycles", script)
 
     def test_payload_sweep_uses_selected_bounded_geometry(self):
         script = PAYLOAD_SWEEP.read_text(encoding="utf-8")

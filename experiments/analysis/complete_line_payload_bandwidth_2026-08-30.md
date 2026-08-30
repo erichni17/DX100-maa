@@ -69,17 +69,21 @@ write-response closure.
 
 | Words/cycle | Geomean versus ideal | Worst case | Backpressure cycles |
 |---:|---:|---:|---:|
+| 1 | +3.245% | +21.845% | 37,464 |
 | 2 | +0.441% | +3.140% | 2,036 |
 | 4 | +0.003% | +0.079% | 0 |
 | 8 | +0.005% | +0.066% | 0 |
 
-At width 2, 12 of 14 cases are effectively unchanged. The two outliers lose
-3.056% and 3.140% and account for all 950 and 1,086 backpressure cycles. Width
-4 eliminates that pressure. Width 8 has no measurable advantage over width 4.
+At widths 1 and 2, 12 of 14 cases are effectively unchanged. Width 1's two
+outliers lose 21.845% and 21.806% and account for all 37,464 backpressure
+cycles. Width 2 reduces those losses to 3.056% and 3.140% and backpressure to
+950 and 1,086 cycles. Width 4 eliminates that pressure. Width 8 has no
+measurable advantage over width 4.
 
 Raw campaigns:
 
 - control: `/data1/nier/dx100-runs/2026-08-30-flag-payload-control-bank4-r2`;
+- width 1: `/data1/nier/dx100-runs/2026-08-30-flag-payload-width1-bank4-r1`;
 - width 2: `/data1/nier/dx100-runs/2026-08-30-flag-payload-width2-bank4-r2`;
 - width 4: `/data1/nier/dx100-runs/2026-08-30-flag-payload-width4-bank4-r1`;
 - width 8: `/data1/nier/dx100-runs/2026-08-30-flag-payload-width8-bank4-r1`.
@@ -104,3 +108,11 @@ This closes aggregate payload-read throughput without adding hidden payload
 capacity. It does not yet synthesize the RAM or prove a conflict-free physical
 bank mapping for arbitrary payload references. Area, energy, Fmax, and exact
 payload-bank conflicts remain open implementation questions.
+
+Artifact ledger:
+`complete_line_payload_bandwidth_artifacts_2026-08-30.sha256`.
+
+An independent read-only review found no source correctness, liveness, or
+hidden-payload defect. It identified one P2 experiment-gate gap: the generic
+runner required only a positive staging-cycle count. The accepted runner now
+requires the exact `full_lines * ceil(8 / width)` count.
