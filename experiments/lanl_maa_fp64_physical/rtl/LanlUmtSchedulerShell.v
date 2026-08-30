@@ -112,22 +112,49 @@ module LanlUmtSchedulerShell #(
     // phase4, operation6, group6, corner3, destination4, readyCycle64,
     // and six 64-bit values. The operation field remains the engine operation
     // tag; the exact ten-state phase chooses arithmetic behavior.
-    (* keep = "true" *) reg [470:0] tokenState [0:COMPUTE_TOKENS-1];
-    (* keep = "true" *) reg [FUNCTIONAL_CONTROL_BITS-1:0]
+    wire [COMPUTE_TOKENS * 471 - 1:0] tokenStateFlat;
+    wire [470:0] tokenState [0:COMPUTE_TOKENS-1];
+    (* keep = "true", umt_state_class = "functional" *)
+        reg [FUNCTIONAL_CONTROL_BITS-1:0]
         functionalState;
-    (* keep = "true" *) reg [BANK_SCHEDULER_BITS-1:0]
+    (* keep = "true", umt_state_class = "bank_scheduler" *)
+        reg [BANK_SCHEDULER_BITS-1:0]
         bankSchedulerState;
-    (* keep = "true" *) reg [INSTRUMENTATION_BITS-1:0]
+    (* keep = "true", umt_state_class = "instrumentation" *)
+        reg [INSTRUMENTATION_BITS-1:0]
         instrumentationState;
 
-    // Four 16x640 masked single-ported, asynchronous-read register files.
-    (* keep = "true" *) reg [639:0] bank0 [0:15];
-    (* keep = "true" *) reg [639:0] bank1 [0:15];
-    (* keep = "true" *) reg [639:0] bank2 [0:15];
-    (* keep = "true" *) reg [639:0] bank3 [0:15];
+    reg [3:0] bank0ReadRow;
+    reg [3:0] bank1ReadRow;
+    reg [3:0] bank2ReadRow;
+    reg [3:0] bank3ReadRow;
+    wire [639:0] bank0ReadData;
+    wire [639:0] bank1ReadData;
+    wire [639:0] bank2ReadData;
+    wire [639:0] bank3ReadData;
+    reg bank0WriteValid;
+    reg bank1WriteValid;
+    reg bank2WriteValid;
+    reg bank3WriteValid;
+    reg [3:0] bank0WriteRow;
+    reg [3:0] bank1WriteRow;
+    reg [3:0] bank2WriteRow;
+    reg [3:0] bank3WriteRow;
+    reg [9:0] bank0WriteMask;
+    reg [9:0] bank1WriteMask;
+    reg [9:0] bank2WriteMask;
+    reg [9:0] bank3WriteMask;
+    reg [639:0] bank0WriteData;
+    reg [639:0] bank1WriteData;
+    reg [639:0] bank2WriteData;
+    reg [639:0] bank3WriteData;
 
     wire [63:0] currentCycle = functionalState[63:0];
     wire [5:0] issueCursor = functionalState[69:64];
+    wire [27:0] coefficientActive;
+    wire [59:0] completionTokenBus;
+    wire [639:0] completionResultBus;
+    wire [23:0] writebackTokenBus;
 
     reg [9:0] completionValid;
     reg [5:0] completionToken [0:9];
@@ -149,6 +176,30 @@ module LanlUmtSchedulerShell #(
     reg [7:0] schedulerDividerUsed;
     reg [639:0] schedulerRow;
     reg [63:0] stateWitnessValue;
+    reg [COMPUTE_TOKENS-1:0] slot0Grantable;
+    reg [COMPUTE_TOKENS-1:0] slot0BankBlocked;
+    reg [COMPUTE_TOKENS-1:0] slot0DividerBlocked;
+    reg [COMPUTE_TOKENS-1:0] slot1Grantable;
+    reg [COMPUTE_TOKENS-1:0] slot1BankBlocked;
+    reg [COMPUTE_TOKENS-1:0] slot1DividerBlocked;
+    wire slot0SelectedValid;
+    wire [5:0] slot0SelectedIndex;
+    wire slot0SawBankBlocked;
+    wire slot0SawDividerBlocked;
+    wire slot1SelectedValid;
+    wire [5:0] slot1SelectedIndex;
+    wire slot1SawBankBlocked;
+    wire slot1SawDividerBlocked;
+    reg [5:0] slot1Cursor;
+    reg [470:0] issue0SelectedState;
+    reg [470:0] issue1SelectedState;
+    reg issue0NeedsBank;
+    reg issue1NeedsBank;
+    reg [7:0] dividerAvailableAfterSlot0;
+    reg [639:0] issue0SelectedRow;
+    reg [639:0] issue1SelectedRow;
+    reg [470:0] tokenWorkingState;
+    reg [3:0] tokenNextDestination;
 
     integer resetToken;
     integer completionSource;
@@ -165,6 +216,18 @@ module LanlUmtSchedulerShell #(
     integer schedulerNeedsBank;
     integer schedulerWord;
     integer schedulerCoefficient;
+    integer tokenMapIndex;
+    integer slot1MapIndex;
+    integer tokenUpdateIndex;
+    integer tokenMapUnit;
+    integer tokenMapNeedsBank;
+    integer tokenMapLaneAvailable;
+    integer issue0LaneFound;
+    integer issue1LaneFound;
+    integer issue0LaneIndex;
+    integer issue1LaneIndex;
+    integer issue0Coefficient;
+    integer issue1Coefficient;
     integer witnessToken;
     integer witnessRow;
     integer writeLane;
@@ -187,6 +250,96 @@ module LanlUmtSchedulerShell #(
     assign resultBankStallCycles = instrumentationState[383:320];
     assign dividerNoLaneCycles = instrumentationState[447:384];
     assign stateWitness = stateWitnessValue;
+
+    genvar coefficientActiveIndex;
+    genvar completionBusIndex;
+    genvar writebackBusIndex;
+    genvar tokenEntryIndex;
+    generate
+        for (coefficientActiveIndex = 0; coefficientActiveIndex < 28;
+             coefficientActiveIndex = coefficientActiveIndex + 1) begin:
+                coefficient_active_gen
+            assign coefficientActive[coefficientActiveIndex] =
+                descriptorCoefficients[
+                    coefficientActiveIndex * 64 +: 63] != 63'b0;
+        end
+        for (completionBusIndex = 0; completionBusIndex < 10;
+             completionBusIndex = completionBusIndex + 1) begin:
+                completion_bus_gen
+            assign completionTokenBus[completionBusIndex * 6 +: 6] =
+                completionToken[completionBusIndex];
+            assign completionResultBus[completionBusIndex * 64 +: 64] =
+                completionResult[completionBusIndex];
+        end
+        for (writebackBusIndex = 0; writebackBusIndex < 4;
+             writebackBusIndex = writebackBusIndex + 1) begin:
+                writeback_bus_gen
+            assign writebackTokenBus[writebackBusIndex * 6 +: 6] =
+                writebackToken[writebackBusIndex];
+        end
+        for (tokenEntryIndex = 0; tokenEntryIndex < COMPUTE_TOKENS;
+             tokenEntryIndex = tokenEntryIndex + 1) begin: token_entry_gen
+            assign tokenState[tokenEntryIndex] = tokenStateFlat[
+                tokenEntryIndex * 471 +: 471];
+            LanlUmtTokenEntry entry(
+                .clock(clock),
+                .nReset(nReset),
+                .tokenIndex(tokenEntryIndex[5:0]),
+                .currentCycle(currentCycle),
+                .coefficientActive(coefficientActive),
+                .admit0Valid(admit0Valid && admit0Ready),
+                .admit0Token(admit0Token),
+                .admit0State(admit0State),
+                .admit1Valid(admit1Valid && admit1Ready),
+                .admit1Token(admit1Token),
+                .admit1State(admit1State),
+                .issue0Valid(issue0Valid),
+                .issue0Token(issue0Token),
+                .issue1Valid(issue1Valid),
+                .issue1Token(issue1Token),
+                .completionReady(completionReady),
+                .completionToken(completionTokenBus),
+                .completionResult(completionResultBus),
+                .writebackValid(writebackValid),
+                .writebackToken(writebackTokenBus),
+                .state(tokenStateFlat[tokenEntryIndex * 471 +: 471])
+            );
+        end
+    endgenerate
+
+    LanlUmtBank16x640 bank0Instance(
+        .clock(clock), .readRow(bank0ReadRow), .readData(bank0ReadData),
+        .writeValid(bank0WriteValid), .writeRow(bank0WriteRow),
+        .writeMask(bank0WriteMask), .writeData(bank0WriteData));
+    LanlUmtBank16x640 bank1Instance(
+        .clock(clock), .readRow(bank1ReadRow), .readData(bank1ReadData),
+        .writeValid(bank1WriteValid), .writeRow(bank1WriteRow),
+        .writeMask(bank1WriteMask), .writeData(bank1WriteData));
+    LanlUmtBank16x640 bank2Instance(
+        .clock(clock), .readRow(bank2ReadRow), .readData(bank2ReadData),
+        .writeValid(bank2WriteValid), .writeRow(bank2WriteRow),
+        .writeMask(bank2WriteMask), .writeData(bank2WriteData));
+    LanlUmtBank16x640 bank3Instance(
+        .clock(clock), .readRow(bank3ReadRow), .readData(bank3ReadData),
+        .writeValid(bank3WriteValid), .writeRow(bank3WriteRow),
+        .writeMask(bank3WriteMask), .writeData(bank3WriteData));
+
+    LanlUmtRotatingPriority #(.COMPUTE_TOKENS(COMPUTE_TOKENS))
+        slot0Selector(
+            .cursor(issueCursor), .grantable(slot0Grantable),
+            .bankBlocked(slot0BankBlocked),
+            .dividerBlocked(slot0DividerBlocked),
+            .valid(slot0SelectedValid), .index(slot0SelectedIndex),
+            .sawBankBlocked(slot0SawBankBlocked),
+            .sawDividerBlocked(slot0SawDividerBlocked));
+    LanlUmtRotatingPriority #(.COMPUTE_TOKENS(COMPUTE_TOKENS))
+        slot1Selector(
+            .cursor(slot1Cursor), .grantable(slot1Grantable),
+            .bankBlocked(slot1BankBlocked),
+            .dividerBlocked(slot1DividerBlocked),
+            .valid(slot1SelectedValid), .index(slot1SelectedIndex),
+            .sawBankBlocked(slot1SawBankBlocked),
+            .sawDividerBlocked(slot1SawDividerBlocked));
 
     function integer coefficientIndex;
         input [2:0] source;
@@ -232,6 +385,26 @@ module LanlUmtSchedulerShell #(
         end
     endfunction
 
+    function [1:0] issueUnitForPhase;
+        input [3:0] phase;
+        begin
+            if (phase == PHASE_DIVIDE_PENDING)
+                issueUnitForPhase = UNIT_DIVIDE;
+            else if (phase == PHASE_MULTIPLY_PENDING)
+                issueUnitForPhase = UNIT_MULTIPLY;
+            else
+                issueUnitForPhase = UNIT_ADD;
+        end
+    endfunction
+
+    function issueNeedsBankForPhase;
+        input [3:0] phase;
+        begin
+            issueNeedsBankForPhase = phase == PHASE_DIVIDE_PENDING ||
+                phase == PHASE_EDGE_ADD_PENDING;
+        end
+    endfunction
+
     // Full parity fanout is test-only because it would contaminate routed
     // cost. Physical wrappers leave it disabled and rely on keep attributes
     // plus the post-synthesis retained-state audit.
@@ -243,20 +416,6 @@ module LanlUmtSchedulerShell #(
                      witnessToken = witnessToken + 1)
                     stateWitnessValue[witnessToken] =
                         ^tokenState[witnessToken];
-                for (witnessRow = 0; witnessRow < 16;
-                     witnessRow = witnessRow + 1) begin
-                    stateWitnessValue[witnessRow] =
-                        stateWitnessValue[witnessRow] ^ ^bank0[witnessRow];
-                    stateWitnessValue[witnessRow + 16] =
-                        stateWitnessValue[witnessRow + 16] ^
-                        ^bank1[witnessRow];
-                    stateWitnessValue[witnessRow + 32] =
-                        stateWitnessValue[witnessRow + 32] ^
-                        ^bank2[witnessRow];
-                    stateWitnessValue[witnessRow + 48] =
-                        stateWitnessValue[witnessRow + 48] ^
-                        ^bank3[witnessRow];
-                end
                 stateWitnessValue[60] =
                     stateWitnessValue[60] ^ ^functionalState;
                 stateWitnessValue[61] =
@@ -394,6 +553,7 @@ module LanlUmtSchedulerShell #(
         dividerCompletionReady = completionReady[9:2];
     end
 
+    /* Superseded monolithic selector retained temporarily for review history.
     // Rotating issue selection. Slot one excludes slot zero's token, unit,
     // divider lane, and bank. Writeback reservations are visible first.
     always @* begin
@@ -677,6 +837,263 @@ module LanlUmtSchedulerShell #(
         end
     end
 
+    */
+
+    // Constant-index token classification feeds a narrow rotating bitmap
+    // selector. No wide token or bank data is muxed inside the probe loop.
+    always @* begin
+        slot0Grantable = {COMPUTE_TOKENS{1'b0}};
+        slot0BankBlocked = {COMPUTE_TOKENS{1'b0}};
+        slot0DividerBlocked = {COMPUTE_TOKENS{1'b0}};
+        schedulerActive = 1'b0;
+        for (tokenMapIndex = 0; tokenMapIndex < COMPUTE_TOKENS;
+             tokenMapIndex = tokenMapIndex + 1) begin
+            if (tokenState[tokenMapIndex][3:0] != PHASE_FREE &&
+                !(tokenState[tokenMapIndex][3:0] ==
+                      PHASE_RESULT_WRITE_PENDING &&
+                  writebackValid[tokenState[tokenMapIndex][11:10]] &&
+                  writebackToken[tokenState[tokenMapIndex][11:10]] ==
+                      tokenMapIndex))
+                schedulerActive = 1'b1;
+            if (isIssuePending(tokenState[tokenMapIndex][3:0]) &&
+                tokenState[tokenMapIndex][86:23] <= currentCycle) begin
+                if (issueNeedsBankForPhase(
+                        tokenState[tokenMapIndex][3:0]) &&
+                    writebackValid[tokenState[tokenMapIndex][11:10]]) begin
+                    slot0BankBlocked[tokenMapIndex] = 1'b1;
+                end else if (issueUnitForPhase(
+                        tokenState[tokenMapIndex][3:0]) == UNIT_ADD &&
+                    addReady) begin
+                    slot0Grantable[tokenMapIndex] = 1'b1;
+                end else if (issueUnitForPhase(
+                        tokenState[tokenMapIndex][3:0]) == UNIT_MULTIPLY &&
+                             multiplyReady) begin
+                    slot0Grantable[tokenMapIndex] = 1'b1;
+                end else if (issueUnitForPhase(
+                        tokenState[tokenMapIndex][3:0]) == UNIT_DIVIDE) begin
+                    if (dividerReady != 8'b0)
+                        slot0Grantable[tokenMapIndex] = 1'b1;
+                    else
+                        slot0DividerBlocked[tokenMapIndex] = 1'b1;
+                end
+            end
+        end
+    end
+
+    always @* begin
+        issue0Valid = slot0SelectedValid;
+        issue0Token = slot0SelectedIndex;
+        issue0SelectedState = 471'b0;
+        issue0Operation = 6'b0;
+        issue0Unit = UNIT_ADD;
+        issue0DividerLane = 3'b0;
+        issue0Bank = 2'b0;
+        issue0NeedsBank = 1'b0;
+        dividerAvailableAfterSlot0 = dividerReady;
+        issue0LaneFound = 0;
+        slot1Cursor = issueCursor;
+        if (slot0SelectedValid) begin
+            issue0SelectedState = tokenState[slot0SelectedIndex];
+            issue0Operation = issue0SelectedState[9:4];
+            issue0Bank = issue0SelectedState[11:10];
+            slot1Cursor = slot0SelectedIndex == COMPUTE_TOKENS - 1 ?
+                6'b0 : slot0SelectedIndex + 1'b1;
+            case (issue0SelectedState[3:0])
+              PHASE_DIVIDE_PENDING: begin
+                  issue0Unit = UNIT_DIVIDE;
+                  issue0NeedsBank = 1'b1;
+                  for (issue0LaneIndex = 0; issue0LaneIndex < 8;
+                       issue0LaneIndex = issue0LaneIndex + 1) begin
+                      if (dividerReady[issue0LaneIndex] &&
+                          !issue0LaneFound) begin
+                          issue0DividerLane = issue0LaneIndex[2:0];
+                          dividerAvailableAfterSlot0[issue0LaneIndex] = 1'b0;
+                          issue0LaneFound = 1;
+                      end
+                  end
+              end
+              PHASE_MULTIPLY_PENDING: issue0Unit = UNIT_MULTIPLY;
+              PHASE_EDGE_ADD_PENDING: issue0NeedsBank = 1'b1;
+            endcase
+        end
+    end
+
+    always @* begin
+        slot1Grantable = {COMPUTE_TOKENS{1'b0}};
+        slot1BankBlocked = {COMPUTE_TOKENS{1'b0}};
+        slot1DividerBlocked = {COMPUTE_TOKENS{1'b0}};
+        for (slot1MapIndex = 0; slot1MapIndex < COMPUTE_TOKENS;
+             slot1MapIndex = slot1MapIndex + 1) begin
+            if (FP_ISSUE_WIDTH == 2 && slot0SelectedValid &&
+                slot1MapIndex != slot0SelectedIndex &&
+                isIssuePending(tokenState[slot1MapIndex][3:0]) &&
+                tokenState[slot1MapIndex][86:23] <= currentCycle) begin
+                if (issueNeedsBankForPhase(
+                        tokenState[slot1MapIndex][3:0]) &&
+                    (writebackValid[tokenState[slot1MapIndex][11:10]] ||
+                     (issue0NeedsBank && issue0Bank ==
+                         tokenState[slot1MapIndex][11:10]))) begin
+                    slot1BankBlocked[slot1MapIndex] = 1'b1;
+                end else if (issueUnitForPhase(
+                        tokenState[slot1MapIndex][3:0]) == UNIT_ADD &&
+                             issue0Unit != UNIT_ADD && addReady) begin
+                    slot1Grantable[slot1MapIndex] = 1'b1;
+                end else if (issueUnitForPhase(
+                        tokenState[slot1MapIndex][3:0]) == UNIT_MULTIPLY &&
+                             issue0Unit != UNIT_MULTIPLY && multiplyReady) begin
+                    slot1Grantable[slot1MapIndex] = 1'b1;
+                end else if (issueUnitForPhase(
+                        tokenState[slot1MapIndex][3:0]) == UNIT_DIVIDE) begin
+                    if (dividerAvailableAfterSlot0 != 8'b0)
+                        slot1Grantable[slot1MapIndex] = 1'b1;
+                    else
+                        slot1DividerBlocked[slot1MapIndex] = 1'b1;
+                end
+            end
+        end
+    end
+
+    always @* begin
+        issue1Valid = FP_ISSUE_WIDTH == 2 && slot0SelectedValid &&
+            slot1SelectedValid;
+        issue1Token = slot1SelectedIndex;
+        issue1SelectedState = 471'b0;
+        issue1Operation = 6'b0;
+        issue1Unit = UNIT_ADD;
+        issue1DividerLane = 3'b0;
+        issue1Bank = 2'b0;
+        issue1NeedsBank = 1'b0;
+        issue1LaneFound = 0;
+        if (issue1Valid) begin
+            issue1SelectedState = tokenState[slot1SelectedIndex];
+            issue1Operation = issue1SelectedState[9:4];
+            issue1Bank = issue1SelectedState[11:10];
+            case (issue1SelectedState[3:0])
+              PHASE_DIVIDE_PENDING: begin
+                  issue1Unit = UNIT_DIVIDE;
+                  issue1NeedsBank = 1'b1;
+                  for (issue1LaneIndex = 0; issue1LaneIndex < 8;
+                       issue1LaneIndex = issue1LaneIndex + 1) begin
+                      if (dividerAvailableAfterSlot0[issue1LaneIndex] &&
+                          !issue1LaneFound) begin
+                          issue1DividerLane = issue1LaneIndex[2:0];
+                          issue1LaneFound = 1;
+                      end
+                  end
+              end
+              PHASE_MULTIPLY_PENDING: issue1Unit = UNIT_MULTIPLY;
+              PHASE_EDGE_ADD_PENDING: issue1NeedsBank = 1'b1;
+            endcase
+        end
+    end
+
+    always @* begin
+        schedulerBankUsed = 4'b0;
+        if (issue0Valid && issue0NeedsBank)
+            schedulerBankUsed[issue0Bank] = 1'b1;
+        if (issue1Valid && issue1NeedsBank)
+            schedulerBankUsed[issue1Bank] = 1'b1;
+        schedulerBankConflict = slot0SawBankBlocked ||
+            (slot0SelectedValid && slot1SawBankBlocked);
+        schedulerDividerUnavailable = slot0SawDividerBlocked ||
+            (slot0SelectedValid && slot1SawDividerBlocked);
+    end
+
+    always @* begin
+        bank0ReadRow = externalGroup[5:2];
+        bank1ReadRow = externalGroup[5:2];
+        bank2ReadRow = externalGroup[5:2];
+        bank3ReadRow = externalGroup[5:2];
+        if (issue0Valid && issue0NeedsBank) begin
+            case (issue0Bank)
+              2'd0: bank0ReadRow = issue0SelectedState[15:12];
+              2'd1: bank1ReadRow = issue0SelectedState[15:12];
+              2'd2: bank2ReadRow = issue0SelectedState[15:12];
+              default: bank3ReadRow = issue0SelectedState[15:12];
+            endcase
+        end
+        if (issue1Valid && issue1NeedsBank) begin
+            case (issue1Bank)
+              2'd0: bank0ReadRow = issue1SelectedState[15:12];
+              2'd1: bank1ReadRow = issue1SelectedState[15:12];
+              2'd2: bank2ReadRow = issue1SelectedState[15:12];
+              default: bank3ReadRow = issue1SelectedState[15:12];
+            endcase
+        end
+    end
+
+    always @* begin
+        issue0OperandA = 64'b0;
+        issue0OperandB = 64'b0;
+        issue0SelectedRow = 640'b0;
+        issue0Coefficient = coefficientIndex(
+            issue0SelectedState[18:16], issue0SelectedState[22:19]);
+        case (issue0Bank)
+          2'd0: issue0SelectedRow = bank0ReadData;
+          2'd1: issue0SelectedRow = bank1ReadData;
+          2'd2: issue0SelectedRow = bank2ReadData;
+          default: issue0SelectedRow = bank3ReadData;
+        endcase
+        case (issue0SelectedState[3:0])
+          PHASE_DENOMINATOR_ADD_PENDING: begin
+              issue0OperandA = descriptorSumArea[
+                  issue0SelectedState[18:16] * 64 +: 64];
+              issue0OperandB = issue0SelectedState[150:87];
+          end
+          PHASE_DIVIDE_PENDING: begin
+              issue0OperandA = issue0SelectedRow[
+                  issue0SelectedState[18:16] * 64 +: 64];
+              issue0OperandB = issue0SelectedState[214:151];
+          end
+          PHASE_MULTIPLY_PENDING: begin
+              issue0OperandA = descriptorCoefficients[
+                  issue0Coefficient * 64 +: 64];
+              issue0OperandB = issue0SelectedState[342:279];
+          end
+          PHASE_EDGE_ADD_PENDING: begin
+              issue0OperandA = issue0SelectedRow[
+                  issue0SelectedState[22:19] * 64 +: 64];
+              issue0OperandB = issue0SelectedState[406:343];
+          end
+        endcase
+    end
+
+    always @* begin
+        issue1OperandA = 64'b0;
+        issue1OperandB = 64'b0;
+        issue1SelectedRow = 640'b0;
+        issue1Coefficient = coefficientIndex(
+            issue1SelectedState[18:16], issue1SelectedState[22:19]);
+        case (issue1Bank)
+          2'd0: issue1SelectedRow = bank0ReadData;
+          2'd1: issue1SelectedRow = bank1ReadData;
+          2'd2: issue1SelectedRow = bank2ReadData;
+          default: issue1SelectedRow = bank3ReadData;
+        endcase
+        case (issue1SelectedState[3:0])
+          PHASE_DENOMINATOR_ADD_PENDING: begin
+              issue1OperandA = descriptorSumArea[
+                  issue1SelectedState[18:16] * 64 +: 64];
+              issue1OperandB = issue1SelectedState[150:87];
+          end
+          PHASE_DIVIDE_PENDING: begin
+              issue1OperandA = issue1SelectedRow[
+                  issue1SelectedState[18:16] * 64 +: 64];
+              issue1OperandB = issue1SelectedState[214:151];
+          end
+          PHASE_MULTIPLY_PENDING: begin
+              issue1OperandA = descriptorCoefficients[
+                  issue1Coefficient * 64 +: 64];
+              issue1OperandB = issue1SelectedState[342:279];
+          end
+          PHASE_EDGE_ADD_PENDING: begin
+              issue1OperandA = issue1SelectedRow[
+                  issue1SelectedState[22:19] * 64 +: 64];
+              issue1OperandB = issue1SelectedState[406:343];
+          end
+        endcase
+    end
+
     // External fill/drain has lowest priority after writeback and reads.
     always @* begin
         externalReady = externalValid &&
@@ -685,22 +1102,173 @@ module LanlUmtSchedulerShell #(
         externalReadData = 640'b0;
         if (externalReady && !externalWrite) begin
             case (externalGroup[1:0])
-              2'd0: externalReadData = bank0[externalGroup[5:2]];
-              2'd1: externalReadData = bank1[externalGroup[5:2]];
-              2'd2: externalReadData = bank2[externalGroup[5:2]];
-              default: externalReadData = bank3[externalGroup[5:2]];
+              2'd0: externalReadData = bank0ReadData;
+              2'd1: externalReadData = bank1ReadData;
+              2'd2: externalReadData = bank2ReadData;
+              default: externalReadData = bank3ReadData;
             endcase
         end
     end
+
+    always @* begin
+        bank0WriteValid = writebackValid[0];
+        bank1WriteValid = writebackValid[1];
+        bank2WriteValid = writebackValid[2];
+        bank3WriteValid = writebackValid[3];
+        bank0WriteRow = writebackRow[0];
+        bank1WriteRow = writebackRow[1];
+        bank2WriteRow = writebackRow[2];
+        bank3WriteRow = writebackRow[3];
+        bank0WriteMask = writebackMask[0];
+        bank1WriteMask = writebackMask[1];
+        bank2WriteMask = writebackMask[2];
+        bank3WriteMask = writebackMask[3];
+        bank0WriteData = writebackData[0];
+        bank1WriteData = writebackData[1];
+        bank2WriteData = writebackData[2];
+        bank3WriteData = writebackData[3];
+        if (externalValid && externalReady && externalWrite) begin
+            case (externalGroup[1:0])
+              2'd0: begin
+                  bank0WriteValid = 1'b1;
+                  bank0WriteRow = externalGroup[5:2];
+                  bank0WriteMask = externalWriteMask;
+                  bank0WriteData = externalWriteData;
+              end
+              2'd1: begin
+                  bank1WriteValid = 1'b1;
+                  bank1WriteRow = externalGroup[5:2];
+                  bank1WriteMask = externalWriteMask;
+                  bank1WriteData = externalWriteData;
+              end
+              2'd2: begin
+                  bank2WriteValid = 1'b1;
+                  bank2WriteRow = externalGroup[5:2];
+                  bank2WriteMask = externalWriteMask;
+                  bank2WriteData = externalWriteData;
+              end
+              default: begin
+                  bank3WriteValid = 1'b1;
+                  bank3WriteRow = externalGroup[5:2];
+                  bank3WriteMask = externalWriteMask;
+                  bank3WriteData = externalWriteData;
+              end
+            endcase
+        end
+    end
+
+    /* Superseded central token next-state process. State updates now live in
+       the fixed-index LanlUmtTokenEntry module.
+    // Decode dynamic tags to fixed token-entry write enables. Each generated
+    // token register sees one complete next-state value and one write port.
+    always @* begin
+        tokenNextStateFlat = tokenStateFlat;
+        tokenWriteEnable = {COMPUTE_TOKENS{1'b0}};
+        tokenWorkingState = 471'b0;
+        tokenNextDestination = 4'b0;
+        for (tokenUpdateIndex = 0; tokenUpdateIndex < COMPUTE_TOKENS;
+             tokenUpdateIndex = tokenUpdateIndex + 1) begin
+            tokenWorkingState = tokenState[tokenUpdateIndex];
+            if (admit0Valid && admit0Ready &&
+                admit0Token == tokenUpdateIndex) begin
+                tokenWorkingState = admit0State;
+                tokenWriteEnable[tokenUpdateIndex] = 1'b1;
+            end
+            if (admit1Valid && admit1Ready &&
+                admit1Token == tokenUpdateIndex) begin
+                tokenWorkingState = admit1State;
+                tokenWriteEnable[tokenUpdateIndex] = 1'b1;
+            end
+            if (issue0Valid && issue0Token == tokenUpdateIndex) begin
+                tokenWorkingState[3:0] =
+                    tokenState[tokenUpdateIndex][3:0] + 1'b1;
+                if (tokenState[tokenUpdateIndex][3:0] ==
+                    PHASE_EDGE_ADD_PENDING)
+                    tokenWorkingState[86:23] = 64'hffffffffffffffff;
+                tokenWriteEnable[tokenUpdateIndex] = 1'b1;
+            end
+            if (issue1Valid && issue1Token == tokenUpdateIndex) begin
+                tokenWorkingState[3:0] =
+                    tokenState[tokenUpdateIndex][3:0] + 1'b1;
+                if (tokenState[tokenUpdateIndex][3:0] ==
+                    PHASE_EDGE_ADD_PENDING)
+                    tokenWorkingState[86:23] = 64'hffffffffffffffff;
+                tokenWriteEnable[tokenUpdateIndex] = 1'b1;
+            end
+            for (sequentialCompletionSource = 0;
+                 sequentialCompletionSource < 10;
+                 sequentialCompletionSource =
+                     sequentialCompletionSource + 1) begin
+                if (completionReady[sequentialCompletionSource] &&
+                    completionToken[sequentialCompletionSource] ==
+                        tokenUpdateIndex) begin
+                    case (tokenState[tokenUpdateIndex][3:0])
+                      PHASE_DENOMINATOR_ADD_WAIT: begin
+                          tokenWorkingState[214:151] =
+                              completionResult[sequentialCompletionSource];
+                          tokenWorkingState[86:23] = currentCycle + 1'b1;
+                          tokenWorkingState[3:0] = PHASE_DIVIDE_PENDING;
+                      end
+                      PHASE_DIVIDE_WAIT: begin
+                          tokenWorkingState[342:279] =
+                              completionResult[sequentialCompletionSource];
+                          tokenNextDestination = nextActiveDestination(
+                              tokenState[tokenUpdateIndex][18:16],
+                              tokenState[tokenUpdateIndex][18:16] + 1'b1);
+                          tokenWorkingState[22:19] = tokenNextDestination;
+                          tokenWorkingState[86:23] = currentCycle + 1'b1;
+                          tokenWorkingState[3:0] =
+                              tokenNextDestination == 4'd8 ?
+                                  PHASE_RESULT_WRITE_PENDING :
+                                  PHASE_MULTIPLY_PENDING;
+                      end
+                      PHASE_MULTIPLY_WAIT: begin
+                          tokenWorkingState[406:343] =
+                              completionResult[sequentialCompletionSource];
+                          tokenWorkingState[86:23] = currentCycle + 1'b1;
+                          tokenWorkingState[3:0] = PHASE_EDGE_ADD_PENDING;
+                      end
+                      PHASE_EDGE_ADD_WAIT: begin
+                          tokenWorkingState[470:407] =
+                              completionResult[sequentialCompletionSource];
+                          tokenWorkingState[86:23] = currentCycle;
+                      end
+                    endcase
+                    tokenWriteEnable[tokenUpdateIndex] = 1'b1;
+                end
+            end
+            for (sequentialBank = 0; sequentialBank < 4;
+                 sequentialBank = sequentialBank + 1) begin
+                if (writebackValid[sequentialBank] &&
+                    writebackToken[sequentialBank] == tokenUpdateIndex) begin
+                    if (tokenState[tokenUpdateIndex][3:0] ==
+                        PHASE_EDGE_ADD_WAIT) begin
+                        tokenNextDestination = nextActiveDestination(
+                            tokenState[tokenUpdateIndex][18:16],
+                            tokenState[tokenUpdateIndex][22:19] + 1'b1);
+                        tokenWorkingState[22:19] = tokenNextDestination;
+                        tokenWorkingState[3:0] =
+                            tokenNextDestination == 4'd8 ?
+                                PHASE_RESULT_WRITE_PENDING :
+                                PHASE_MULTIPLY_PENDING;
+                    end else begin
+                        tokenWorkingState = 471'b0;
+                    end
+                    tokenWriteEnable[tokenUpdateIndex] = 1'b1;
+                end
+            end
+            tokenNextStateFlat[tokenUpdateIndex * 471 +: 471] =
+                tokenWorkingState;
+        end
+    end
+
+    */
 
     always @(posedge clock) begin
         if (!nReset) begin
             functionalState <= {FUNCTIONAL_CONTROL_BITS{1'b0}};
             bankSchedulerState <= {BANK_SCHEDULER_BITS{1'b0}};
             instrumentationState <= {INSTRUMENTATION_BITS{1'b0}};
-            for (resetToken = 0; resetToken < COMPUTE_TOKENS;
-                 resetToken = resetToken + 1)
-                tokenState[resetToken] <= 471'b0;
         end else begin
             functionalState[63:0] <= currentCycle + 1'b1;
             if (issue1Valid)
@@ -714,6 +1282,7 @@ module LanlUmtSchedulerShell #(
             bankSchedulerState[3:0] <= writebackValid;
             bankSchedulerState[7:4] <= schedulerBankUsed;
 
+            /* Superseded dynamic token-array updates.
             if (admit0Valid && admit0Ready)
                 tokenState[admit0Token] <= admit0State;
             if (admit1Valid && admit1Ready)
@@ -834,6 +1403,7 @@ module LanlUmtSchedulerShell #(
                     end
                 end
             end
+            */
 
             instrumentationState[63:0] <=
                 instrumentationState[63:0] + issue0Valid + issue1Valid;
@@ -856,6 +1426,7 @@ module LanlUmtSchedulerShell #(
                 instrumentationState[447:384] <=
                     instrumentationState[447:384] + 1'b1;
 
+            /* Superseded monolithic bank-array writes.
             for (writeLane = 0; writeLane < 10;
                  writeLane = writeLane + 1) begin
                 if (writebackValid[0] && writebackMask[0][writeLane])
@@ -891,6 +1462,7 @@ module LanlUmtSchedulerShell #(
                     bank3[externalGroup[5:2]][writeLane * 64 +: 64] <=
                         externalWriteData[writeLane * 64 +: 64];
             end
+            */
         end
     end
 endmodule

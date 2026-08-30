@@ -567,22 +567,22 @@ module lanl_umt_scheduler_shell_tb;
 
         resetDuts();
         @(negedge clock);
-        dut.shell.tokenState[0] =
+        dut.shell.token_entry_gen[0].entry.stateReg =
             makeToken(4'd9, 6'd48, 6'd0, 4'd0, 64'h0, 64'h6100);
-        dut.shell.tokenState[1] =
+        dut.shell.token_entry_gen[1].entry.stateReg =
             makeToken(4'd9, 6'd49, 6'd1, 4'd0, 64'h0, 64'h6101);
-        dut.shell.tokenState[2] =
+        dut.shell.token_entry_gen[2].entry.stateReg =
             makeToken(4'd9, 6'd50, 6'd2, 4'd0, 64'h0, 64'h6102);
-        dut.shell.tokenState[3] =
+        dut.shell.token_entry_gen[3].entry.stateReg =
             makeToken(4'd9, 6'd51, 6'd3, 4'd0, 64'h0, 64'h6103);
         #1;
         @(posedge clock);
         #1;
         require(fpIssueStallCycles == 0 &&
-                dut.shell.tokenState[0][3:0] == 0 &&
-                dut.shell.tokenState[1][3:0] == 0 &&
-                dut.shell.tokenState[2][3:0] == 0 &&
-                dut.shell.tokenState[3][3:0] == 0,
+                dut.shell.token_entry_gen[0].entry.stateReg[3:0] == 0 &&
+                dut.shell.token_entry_gen[1].entry.stateReg[3:0] == 0 &&
+                dut.shell.token_entry_gen[2].entry.stateReg[3:0] == 0 &&
+                dut.shell.token_entry_gen[3].entry.stateReg[3:0] == 0,
                 "all-bank final result drain must not count a stall");
 
         resetDuts();

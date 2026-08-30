@@ -11,6 +11,16 @@ functional, bank-scheduler, and instrumentation floors. Identity outputs make
 the 54,372-bit T24 and 58,142-bit T32 totals and T-by-W selector/64-by-W route
 dimensions directly testable.
 
+The first synthesis-scalability decomposition keeps the wrapper interface
+unchanged while moving each token into `LanlUmtTokenEntry`, rotating priority
+into `LanlUmtRotatingPriority`, and each physical bank into
+`LanlUmtBank16x640`. Dynamic tags are decoded into fixed token-entry events;
+the scheduler scans one-bit maps and performs wide operand muxing only after
+selection; each bank exposes one masked write process. The bounded
+`run_umt_scheduler_shell_yosys_smoke.sh` requires every wrapper to finish
+`proc; memory_collect; check` independently within 120 seconds instead of
+allowing an unbounded lowering run.
+
 Arithmetic stays outside the shell through one add, one multiply, and eight
 divider ready/completion interfaces. The RTL therefore does not model FP64
 numeric behavior, divider state/latency/II area, the descriptor engine,

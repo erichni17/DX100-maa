@@ -9,7 +9,12 @@ iverilog=${IVERILOG:-$tools_root/iverilog/usr/bin/iverilog}
 vvp=${VVP:-$tools_root/iverilog/usr/bin/vvp}
 ivl_base=${IVL_BASE:-$tools_root/iverilog/usr/lib/x86_64-linux-gnu/ivl}
 rtl="$harness/rtl/LanlUmtSchedulerShell.v"
+token_entry="$harness/rtl/LanlUmtTokenEntry.v"
+selector="$harness/rtl/LanlUmtRotatingPriority.v"
+bank="$harness/rtl/LanlUmtBank16x640.v"
 testbench="$harness/tests/lanl_umt_scheduler_shell_tb.v"
+modular_testbench="$harness/tests/lanl_umt_modular_primitives_tb.v"
+rtl_sources=("$token_entry" "$selector" "$bank" "$rtl")
 
 [[ -x "$iverilog" ]]
 [[ -x "$vvp" ]]
@@ -22,14 +27,24 @@ for top in \
     LanlUmtSchedulerShellT32W1 \
     LanlUmtSchedulerShellT32W2; do
     "$iverilog" -B "$ivl_base" -g2005 -Wall \
-        -Wno-sensitivity-entire-array -s "$top" -tnull "$rtl"
+        -Wno-sensitivity-entire-array -s "$top" -tnull \
+        "${rtl_sources[@]}"
 done
 
 "$iverilog" -B "$ivl_base" -g2005 -Wall \
     -Wno-sensitivity-entire-array \
     -s lanl_umt_scheduler_shell_tb \
     -o "$build_root/lanl_umt_scheduler_shell_tb" \
-    "$rtl" "$testbench"
+    "${rtl_sources[@]}" "$testbench"
+
+"$iverilog" -B "$ivl_base" -g2005 -Wall \
+    -Wno-sensitivity-entire-array \
+    -s lanl_umt_modular_primitives_tb \
+    -o "$build_root/lanl_umt_modular_primitives_tb" \
+    "$token_entry" "$selector" "$bank" "$modular_testbench"
+
+"$vvp" -M "$ivl_base" \
+    "$build_root/lanl_umt_scheduler_shell_tb"
 
 exec "$vvp" -M "$ivl_base" \
-    "$build_root/lanl_umt_scheduler_shell_tb"
+    "$build_root/lanl_umt_modular_primitives_tb"
