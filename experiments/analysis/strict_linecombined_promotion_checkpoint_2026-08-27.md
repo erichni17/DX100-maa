@@ -236,6 +236,13 @@ geometric-mean latency), while the final selected arm remains 7.463% below
 fused16 and tied with compact16 (-0.026%). See
 `flag_xor8_results_2026-08-29.md`.
 
+The selected XOR8 organization also closes a three-cycle pipelined lookup on
+all 14 FLAG gathers at +0.155% geometric-mean latency and on XRAGE at +0.134%.
+The pipeline is metadata-only, shares the existing response payload, and
+limits starts/completions to four each per MAA cycle. See
+`flag_lookup_latency_results_2026-08-30.md` and
+`xrage_lookup_latency_results_2026-08-29.md`.
+
 CG NA256 is tick-identical under the related dense treatment, so no full CG
 run is justified.  Remaining gates are current finite drain-width results,
 finite tag/reference/payload lookup timing and ports, delayed/competing

@@ -71,6 +71,10 @@ This is still not a timed lookup or synthesis result. Comparator delay, four
 parallel lookup/update lanes, same-set hazards, payload/reference RAM ports,
 ready-line selection, and reset remain explicit gates.
 
+A same-binary successor adds a three-cycle, four-start/four-completion lookup
+pipeline and increases all-14 geometric-mean latency by only 0.155%, with exact
+token and output closure. See `flag_lookup_latency_results_2026-08-30.md`.
+
 ## Provenance
 
 - selected XOR8 root:
