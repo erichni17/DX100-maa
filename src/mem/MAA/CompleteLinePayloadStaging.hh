@@ -2,8 +2,8 @@
 #define __MEM_MAA_COMPLETE_LINE_PAYLOAD_STAGING_HH__
 
 #include <algorithm>
-#include <array>
 #include <cstdint>
+#include <vector>
 
 namespace gem5::maa
 {
@@ -76,7 +76,7 @@ class CompleteLinePayloadStaging
 
     void reset()
     {
-        entries = {};
+        entries.assign(activeLimit, {});
         activeEntries = 0;
         serviceCursor = 0;
         lastCycle = 0;
@@ -142,6 +142,7 @@ class CompleteLinePayloadStaging
     bool isActive() const { return activeEntries != 0; }
     uint32_t width() const { return wordsPerCycle; }
     uint32_t activeCapacity() const { return activeLimit; }
+    uint32_t allocatedEntries() const { return entries.size(); }
     uint32_t activeCount() const { return activeEntries; }
 
     uint32_t progress() const
@@ -262,7 +263,7 @@ class CompleteLinePayloadStaging
         return Result::Accepted;
     }
 
-    std::array<Entry, MaxActiveLines> entries{};
+    std::vector<Entry> entries{};
     Identity emptyIdentity{};
     Counters stagingCounters{};
     uint64_t lastCycle = 0;

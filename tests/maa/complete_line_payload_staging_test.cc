@@ -26,6 +26,7 @@ checkWidth(uint32_t width, uint8_t words)
     Stage stage;
     Stage::Identity line{9, 1, 0x2000, 0xffff, words};
     CHECK(stage.configure(width));
+    CHECK(stage.allocatedEntries() == 1);
     CHECK(stage.claim(line, 100) == Stage::Result::Accepted);
     uint64_t cycle = 100;
     while (stage.advance(line, cycle) == Stage::Result::NotReady)
@@ -42,6 +43,7 @@ checkSharedWidthPipeline()
 {
     Stage stage;
     CHECK(stage.configure(8, 8));
+    CHECK(stage.allocatedEntries() == 8);
     std::array<Stage::Identity, 8> lines{};
     for (uint32_t index = 0; index < lines.size(); ++index) {
         lines[index] = {11, index, 0x4000 + index * 64, 1, 1};
