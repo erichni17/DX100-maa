@@ -162,6 +162,8 @@ MAA::MAA(const MAAParams &p)
           p.virtual_complete_line_drain_lines_per_cycle),
       virtual_complete_line_payload_words_per_cycle(
           p.virtual_complete_line_payload_words_per_cycle),
+      virtual_complete_line_payload_stage_partial(
+          p.virtual_complete_line_payload_stage_partial),
       virtual_combine_banks(p.virtual_combine_banks),
       virtual_response_slots(p.virtual_response_slots),
       virtual_response_words(p.virtual_response_words),
@@ -404,6 +406,11 @@ MAA::MAA(const MAAParams &p)
              "Virtual complete-line payload width must be 0/1/2/4/8, got "
              "%u\n",
              virtual_complete_line_payload_words_per_cycle);
+    panic_if(virtual_complete_line_payload_stage_partial &&
+                 (virtual_complete_line_payload_words_per_cycle == 0 ||
+                  !virtual_masked_writes),
+             "Partial-line payload staging requires a finite payload width "
+             "and masked writes\n");
     panic_if(virtual_combine_lookup_latency_cycles >
                  maa::VirtualCombineLookupPipeline::MaxLatencyCycles,
              "Virtual combiner lookup latency must be in [0, %u], got %u\n",
@@ -766,6 +773,8 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
         virtual_complete_line_drain_lines_per_cycle;
     const unsigned int complete_line_payload_width =
         virtual_complete_line_payload_words_per_cycle;
+    const bool stage_partial_payload =
+        virtual_complete_line_payload_stage_partial;
     for (int i = 0; i < num_indirect_units_total; i++) {
         indirectAccessUnits[i].allocate(i, num_tile_elements,
                                         num_offset_table_entries,
@@ -792,6 +801,7 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
                                         virtual_complete_line_only,
                                         complete_line_drain_width,
                                         complete_line_payload_width,
+                                        stage_partial_payload,
                                         soa_jit_predicate_active_credits,
                                         virtual_index_buffer_lines,
                                         virtual_index_issue_lines_per_cycle,

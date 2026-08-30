@@ -443,6 +443,7 @@ public:
     bool virtual_page_ordered_combiner_drain;
     unsigned int virtual_complete_line_drain_lines_per_cycle;
     unsigned int virtual_complete_line_payload_words_per_cycle;
+    bool virtual_complete_line_payload_stage_partial;
     unsigned int virtual_combine_banks;
     unsigned int virtual_response_slots;
     unsigned int virtual_response_words;

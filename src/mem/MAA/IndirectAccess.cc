@@ -119,6 +119,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
                                   bool _virtual_complete_line_only,
                                   int _virtual_complete_line_drain_width,
                                   int _complete_line_payload_width,
+                                  bool _complete_line_payload_stage_partial,
                                   int _soa_jit_predicate_active_credits,
                                   int _virtual_index_buffer_lines,
                                   int _virtual_index_issue_lines_per_cycle,
@@ -231,6 +232,8 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
                  _complete_line_payload_width),
              "I[%d] invalid complete-line payload width %d\n",
              my_indirect_id, _complete_line_payload_width);
+    virtual_complete_line_payload_stage_partial =
+        _complete_line_payload_stage_partial;
     panic_if(virtual_dense_write_allocate && !virtual_masked_writes,
              "I[%d] dense backing allocation requires masked retirement\n",
              my_indirect_id);
@@ -7926,16 +7929,20 @@ void IndirectAccessUnit::executeInstruction() {
                 my_indirect_id]) += drain_counters.peakLinesPerCycle;
             const auto &payload_counters =
                 virtual_complete_line_payload_staging.counters();
+            const uint64_t expected_payload_lines =
+                static_cast<uint64_t>(virtual_full_line_writes) +
+                (virtual_complete_line_payload_stage_partial
+                     ? static_cast<uint64_t>(virtual_partial_word_writes)
+                     : 0);
             panic_if(payload_counters.starts != payload_counters.completions ||
                          (virtual_complete_line_payload_staging.enabled() &&
                           payload_counters.completions !=
-                              static_cast<uint64_t>(
-                                  virtual_full_line_writes)),
+                              expected_payload_lines),
                      "I[%d] complete-line payload staging imbalance "
-                     "starts=%lu completions=%lu full=%d\n",
+                     "starts=%lu completions=%lu expected=%lu\n",
                      my_indirect_id, payload_counters.starts,
                      payload_counters.completions,
-                     virtual_full_line_writes);
+                     expected_payload_lines);
             (*maa->stats.IND_VirtCompleteLinePayloadStarts[
                 my_indirect_id]) += payload_counters.starts;
             (*maa->stats.IND_VirtCompleteLinePayloadCompletions[
@@ -11323,7 +11330,9 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
         if (virtual_masked_writes && victim.valid_words != 0 &&
             virtual_outstanding_writes <
                 virtual_max_outstanding_writes_limit) {
-            if (victim_was_full &&
+            const bool stage_payload = victim_was_full ||
+                virtual_complete_line_payload_stage_partial;
+            if (stage_payload &&
                 !completeLinePayloadReady(victim_idx, victim))
                 return false;
             if (victim_was_full && !completeLineDrainAvailable())
@@ -11338,8 +11347,9 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
                      VirtualCombinePayloadStore::resultName(copy_result));
             if (createRetirementWrite(victim.line_vaddr, block_size,
                                       line_data.data(), victim.valid_words)) {
-                if (victim_was_full) {
+                if (stage_payload)
                     completeLinePayloadIssued(victim_idx, victim);
+                if (victim_was_full) {
                     recordCompleteLineDrainIssue();
                 }
                 retire_full_victim();
@@ -11524,7 +11534,8 @@ IndirectAccessUnit::completeLinePayloadIdentity(
              my_indirect_id, slot);
     return {maa->getVirtualPageGeneration(my_dst_tile),
             static_cast<uint32_t>(slot), line.line_vaddr,
-            line.valid_words, static_cast<uint8_t>(my_words_per_cl)};
+            line.valid_words,
+            static_cast<uint8_t>(__builtin_popcount(line.valid_words))};
 }
 
 bool
@@ -11601,7 +11612,9 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
                virtual_max_outstanding_writes_limit) {
             uint32_t selected_page = 0;
             int selected = -1;
-            if (virtual_complete_line_payload_staging.isActive()) {
+            if (virtual_complete_line_payload_staging.isActive() &&
+                virtual_complete_line_payload_staging.identity().validWords ==
+                    full_mask) {
                 selected =
                     virtual_complete_line_payload_staging.identity().slot;
                 panic_if(
@@ -11714,6 +11727,10 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
         if (virtual_masked_writes && slot.valid_words != 0 &&
             virtual_outstanding_writes <
                 virtual_max_outstanding_writes_limit) {
+            const int slot_idx = &slot - virtual_combine_slots.data();
+            if (virtual_complete_line_payload_stage_partial &&
+                !completeLinePayloadReady(slot_idx, slot))
+                continue;
             const int words = __builtin_popcount(slot.valid_words);
             VirtualCombinePayloadStore::LineData line_data{};
             const auto copy_result = virtual_combine_payload.copyLine(
@@ -11724,6 +11741,8 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
                      VirtualCombinePayloadStore::resultName(copy_result));
             if (createRetirementWrite(slot.line_vaddr, block_size,
                                       line_data.data(), slot.valid_words)) {
+                if (virtual_complete_line_payload_stage_partial)
+                    completeLinePayloadIssued(slot_idx, slot);
                 const auto release_result =
                     virtual_combine_payload.releaseMasked(
                         slot.word_refs, slot.valid_words);

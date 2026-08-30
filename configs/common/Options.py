@@ -386,6 +386,12 @@ def addNoISAOptions(parser):
         help="Complete-line combiner payload words staged per MAA cycle",
     )
     parser.add_argument(
+        "--maa_virtual_complete_line_payload_stage_partial",
+        default=False,
+        action="store_true",
+        help="Apply finite payload staging to masked partial-line writes",
+    )
+    parser.add_argument(
         "--maa_virtual_response_slots",
         type=int,
         default=8,

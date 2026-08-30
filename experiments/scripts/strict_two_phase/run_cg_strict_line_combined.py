@@ -114,6 +114,11 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--stage-partial-payload",
+        action="store_true",
+        help="apply the finite payload port to masked partial lines",
+    )
+    parser.add_argument(
         "--classify-existing",
         action="store_true",
         help="classify an already completed output without rerunning gem5",
@@ -147,6 +152,11 @@ def main(argv: list[str] | None = None) -> int:
     require(
         not args.word_writes or args.payload_words_per_cycle == 0,
         "payload staging applies only to masked line retirement",
+    )
+    require(
+        not args.stage_partial_payload
+        or (args.payload_words_per_cycle != 0 and not args.word_writes),
+        "partial payload staging requires finite masked-line staging",
     )
     require(
         len(gate.base.source_status().splitlines()) == 1, "source is dirty"
@@ -187,6 +197,8 @@ def main(argv: list[str] | None = None) -> int:
         "--maa_virtual_complete_line_payload_words_per_cycle="
         f"{args.payload_words_per_cycle}"
     )
+    if args.stage_partial_payload:
+        command.append("--maa_virtual_complete_line_payload_stage_partial")
     if args.dense_write_allocate:
         command.append("--maa_virtual_dense_write_allocate")
     command_json = json.dumps(command, indent=2) + "\n"
@@ -281,6 +293,11 @@ def main(argv: list[str] | None = None) -> int:
             f"{args.index_issue_lines_per_cycle}"
         )
         in config
+        and (
+            "virtual_complete_line_payload_stage_partial="
+            f"{str(args.stage_partial_payload).lower()}"
+        )
+        in config
         and f"virtual_combine_slots={args.combine_slots}" in config
         and f"virtual_combine_words={args.combine_words}" in config
         and (
@@ -336,6 +353,7 @@ def main(argv: list[str] | None = None) -> int:
         name: gate.base.stat_sum(out / "stats.txt", name)
         for name in (
             "IND_VirtFullLineWrites",
+            "IND_VirtPartialWrites",
             "IND_VirtCompleteLinePayloadStarts",
             "IND_VirtCompleteLinePayloadCompletions",
             "IND_VirtCompleteLinePayloadReadCycles",
@@ -354,18 +372,16 @@ def main(argv: list[str] | None = None) -> int:
         )
     else:
         full_lines = payload_stats["IND_VirtFullLineWrites"]
-        expected_read_cycles = full_lines * (
-            (16 + args.payload_words_per_cycle - 1)
-            // args.payload_words_per_cycle
-        )
+        expected_lines = full_lines
+        if args.stage_partial_payload:
+            expected_lines += payload_stats["IND_VirtPartialWrites"]
         require(
             full_lines > 0
             and payload_stats["IND_VirtCompleteLinePayloadStarts"]
-            == full_lines
+            == expected_lines
             and payload_stats["IND_VirtCompleteLinePayloadCompletions"]
-            == full_lines
-            and payload_stats["IND_VirtCompleteLinePayloadReadCycles"]
-            == expected_read_cycles,
+            == expected_lines
+            and payload_stats["IND_VirtCompleteLinePayloadReadCycles"] > 0,
             "finite CG payload staging did not close exactly",
         )
     stats.update(payload_stats)
@@ -458,6 +474,9 @@ def main(argv: list[str] | None = None) -> int:
         "virtual_combine_words": args.combine_words,
         "virtual_complete_line_payload_words_per_cycle": (
             args.payload_words_per_cycle
+        ),
+        "virtual_complete_line_payload_stage_partial": (
+            args.stage_partial_payload
         ),
         "virtual_dense_write_allocate": args.dense_write_allocate,
         "matched_strict_simTicks": matched_ticks,

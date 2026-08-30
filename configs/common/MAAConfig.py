@@ -128,6 +128,11 @@ def _get_maa_opts(options):
             options, "maa_virtual_complete_line_payload_words_per_cycle"
         )
 
+    if hasattr(options, "maa_virtual_complete_line_payload_stage_partial"):
+        opts["virtual_complete_line_payload_stage_partial"] = getattr(
+            options, "maa_virtual_complete_line_payload_stage_partial"
+        )
+
     if hasattr(options, "maa_virtual_combine_banks"):
         opts["virtual_combine_banks"] = getattr(
             options, "maa_virtual_combine_banks"

@@ -212,9 +212,11 @@ def test_line_combined_arm_is_strict_and_same_checkpoint_matched() -> None:
     assert "--index-buffer-lines" in runner
     assert "--word-writes" in runner
     assert "--payload-words-per-cycle" in runner
+    assert "--stage-partial-payload" in runner
     assert "--maa_virtual_complete_line_payload_words_per_cycle=" in runner
+    assert "--maa_virtual_complete_line_payload_stage_partial" in runner
     assert "IND_VirtCompleteLinePayloadReadCycles" in runner
-    assert "expected_read_cycles" in runner
+    assert "expected_lines" in runner
     assert "--maa_virtual_index_buffer_lines=" in runner
     assert 'f"virtual_index_buffer_lines={args.index_buffer_lines}"' in runner
     assert 'choices=(1, 2, 4, 8, 16, 32, 64, 128)' in runner

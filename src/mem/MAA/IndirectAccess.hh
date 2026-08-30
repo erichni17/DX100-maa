@@ -180,6 +180,7 @@ protected:
     bool virtual_complete_line_only = false;
     maa::CompleteLineDrainBudget virtual_complete_line_drain_budget;
     maa::CompleteLinePayloadStaging virtual_complete_line_payload_staging;
+    bool virtual_complete_line_payload_stage_partial = false;
     Tick virtual_complete_line_drain_retry_tick = 0;
     Tick virtual_complete_line_payload_backpressure_tick = 0;
     maa::DenseBackingLineTracker dense_backing_lines;
@@ -323,6 +324,7 @@ public:
                   bool _virtual_complete_line_only,
                   int _virtual_complete_line_drain_width,
                   int _complete_line_payload_width,
+                  bool _complete_line_payload_stage_partial,
                   int _soa_jit_predicate_active_credits,
                   int _virtual_index_buffer_lines,
                   int _virtual_index_issue_lines_per_cycle,
