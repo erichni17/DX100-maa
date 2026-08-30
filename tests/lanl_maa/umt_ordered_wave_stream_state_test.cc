@@ -269,28 +269,41 @@ partialIssueErrorAccountingCase()
 int
 main()
 {
-    assert(UmtOrderedWaveStreamState::ComputeTokens == 32);
-    assert(UmtOrderedWaveStreamState::FpIssueWidth == 2);
+    constexpr size_t tokens = UmtOrderedWaveConfiguredComputeTokens;
+    constexpr size_t issueWidth = UmtOrderedWaveConfiguredFpIssueWidth;
+    assert(UmtOrderedWaveStreamState::ComputeTokens == tokens);
+    assert(UmtOrderedWaveStreamState::FpIssueWidth == issueWidth);
     assert(
-        UmtOrderedWaveStreamState::FpIssueSelectionCandidateInputs == 64);
-    assert(UmtOrderedWaveStreamState::FpIssueOperandRouteBits == 128);
+        UmtOrderedWaveStreamState::FpIssueSelectionCandidateInputs ==
+            tokens * issueWidth);
+    assert(
+        UmtOrderedWaveStreamState::FpIssueOperandRouteBits ==
+            64 * issueWidth);
     assert(
         UmtOrderedWaveStreamState::
-            IncrementalFpIssueSelectionCandidateInputs == 32);
+            IncrementalFpIssueSelectionCandidateInputs ==
+                tokens * (issueWidth - 1));
     assert(
-        UmtOrderedWaveStreamState::IncrementalFpIssueOperandRouteBits == 64);
+        UmtOrderedWaveStreamState::IncrementalFpIssueOperandRouteBits ==
+            64 * (issueWidth - 1));
     assert(UmtOrderedWaveStreamState::DividerLanes == 8);
     assert(UmtOrderedWaveStreamState::DivideLatency == 64);
     assert(UmtOrderedWaveStreamState::DividerInitiationInterval == 32);
     assert(UmtOrderedWaveStreamState::RepresentedTokenLogicalBitsFloor == 471);
     assert(
-        UmtOrderedWaveStreamState::FunctionalControlLogicalBitsFloor == 657);
+        UmtOrderedWaveStreamState::FunctionalControlLogicalBitsFloor ==
+            (tokens == 24 ? 656 : 657));
     assert(UmtOrderedWaveStreamState::BankSchedulerLogicalBitsFloor == 283);
-    assert(UmtOrderedWaveStreamState::InstrumentationLogicalBitsFloor == 1106);
-    assert(UmtOrderedWaveStreamState::AuxiliaryLogicalBitsFloor == 17118);
+    assert(
+        UmtOrderedWaveStreamState::InstrumentationLogicalBitsFloor ==
+            (tokens == 24 ? 1105 : 1106));
+    assert(
+        UmtOrderedWaveStreamState::AuxiliaryLogicalBitsFloor ==
+            (tokens == 24 ? 13348 : 17118));
     assert(
         UmtOrderedWaveStreamState::
-            PhysicalStorePlusLogicalAuxiliaryBitsFloor == 58078);
+            PhysicalStorePlusLogicalAuxiliaryBitsFloor ==
+                (tokens == 24 ? 54308 : 58078));
     closedCase(1);
     closedCase(16);
     closedCase(32);
@@ -301,7 +314,8 @@ main()
     tokenizedCase(16);
     tokenizedCase(64, true);
     capacityBackpressureCase();
-    partialIssueErrorAccountingCase();
+    if (issueWidth == 2)
+        partialIssueErrorAccountingCase();
     UmtOrderedWaveStreamState issueEvidence;
     assert(issueEvidence.configure(64));
     auto issueDescriptor = descriptor(64, true);
@@ -312,7 +326,7 @@ main()
                 group, corner, umtOrderedWaveStreamEncodeFp64(1.0), 0).
                 accepted);
     }
-    for (size_t group = 0; group < 32; ++group) {
+    for (size_t group = 0; group < tokens; ++group) {
         assert(issueEvidence.enqueueDenominator(
             group, group, 0, umtOrderedWaveStreamEncodeFp64(1.0)).
             accepted);
@@ -322,7 +336,10 @@ main()
         issueEvidence.cycle(cycle);
     }
     assert(issueEvidence.fpOperationsIssued() > 0);
-    assert(issueEvidence.dualIssueCycles() > 0);
+    if (issueWidth == 2)
+        assert(issueEvidence.dualIssueCycles() > 0);
+    else
+        assert(issueEvidence.dualIssueCycles() == 0);
 
     UmtOrderedWaveStreamState invalid;
     assert(!invalid.configure(65));

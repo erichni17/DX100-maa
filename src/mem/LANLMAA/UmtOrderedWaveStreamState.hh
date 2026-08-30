@@ -8,7 +8,20 @@
 #include <cstdint>
 #include <cstring>
 
+#ifndef LANL_MAA_UMT_VARIANT_TEST_CONFIG
+#include "config/lanl_maa_umt_compute_tokens.hh"
+#include "config/lanl_maa_umt_fp_issue_width.hh"
+
+#endif
 #include "mem/LANLMAA/UmtOrderedWaveDescriptor.hh"
+
+#ifndef LANL_MAA_UMT_COMPUTE_TOKENS
+#error "LANL_MAA_UMT_COMPUTE_TOKENS must be supplied by the build config"
+#endif
+
+#ifndef LANL_MAA_UMT_FP_ISSUE_WIDTH
+#error "LANL_MAA_UMT_FP_ISSUE_WIDTH must be supplied by the build config"
+#endif
 
 namespace gem5
 {
@@ -780,39 +793,70 @@ class UmtOrderedWaveStreamStateModel
     DescriptorError latchedError = DescriptorError::None;
 };
 
-// The issue-two treatment retains T32, eight divider lanes, II=32, and four
-// single-ported banks. It may issue two operations only when per-unit and bank
-// constraints independently permit both.
+constexpr size_t UmtOrderedWaveConfiguredComputeTokens =
+    LANL_MAA_UMT_COMPUTE_TOKENS;
+constexpr size_t UmtOrderedWaveConfiguredFpIssueWidth =
+    LANL_MAA_UMT_FP_ISSUE_WIDTH;
+
+static_assert(
+    UmtOrderedWaveConfiguredComputeTokens == 24 ||
+    UmtOrderedWaveConfiguredComputeTokens == 32,
+    "UMT compute-token capacity must be exactly 24 or 32");
+static_assert(
+    UmtOrderedWaveConfiguredFpIssueWidth == 1 ||
+    UmtOrderedWaveConfiguredFpIssueWidth == 2,
+    "UMT global FP issue width must be exactly 1 or 2");
+
+// All four factorial cells share this implementation, eight divider lanes,
+// II=32, and four single-ported banks. The build configuration selects only
+// compute-token capacity and global FP issue width.
 using UmtOrderedWaveStreamState =
-    UmtOrderedWaveStreamStateModel<32, 8, 32, 2>;
+    UmtOrderedWaveStreamStateModel<
+        UmtOrderedWaveConfiguredComputeTokens, 8, 32,
+        UmtOrderedWaveConfiguredFpIssueWidth>;
 
 static_assert(UmtOrderedWaveStreamState::Banks == 4);
 static_assert(UmtOrderedWaveStreamState::RowsPerBank == 16);
-static_assert(UmtOrderedWaveStreamState::FpIssueWidth == 2);
 static_assert(
-    UmtOrderedWaveStreamState::FpIssueSelectionCandidateInputs == 64);
-static_assert(UmtOrderedWaveStreamState::FpIssueOperandRouteBits == 128);
+    UmtOrderedWaveStreamState::ComputeTokens ==
+        UmtOrderedWaveConfiguredComputeTokens);
+static_assert(
+    UmtOrderedWaveStreamState::FpIssueWidth ==
+        UmtOrderedWaveConfiguredFpIssueWidth);
+static_assert(
+    UmtOrderedWaveStreamState::FpIssueSelectionCandidateInputs ==
+        UmtOrderedWaveConfiguredComputeTokens *
+        UmtOrderedWaveConfiguredFpIssueWidth);
+static_assert(
+    UmtOrderedWaveStreamState::FpIssueOperandRouteBits ==
+        64 * UmtOrderedWaveConfiguredFpIssueWidth);
 static_assert(
     UmtOrderedWaveStreamState::
-        IncrementalFpIssueSelectionCandidateInputs == 32);
+        IncrementalFpIssueSelectionCandidateInputs ==
+            UmtOrderedWaveConfiguredComputeTokens *
+            (UmtOrderedWaveConfiguredFpIssueWidth - 1));
 static_assert(
-    UmtOrderedWaveStreamState::IncrementalFpIssueOperandRouteBits == 64);
+    UmtOrderedWaveStreamState::IncrementalFpIssueOperandRouteBits ==
+        64 * (UmtOrderedWaveConfiguredFpIssueWidth - 1));
 static_assert(UmtOrderedWaveStreamState::AllocatedBytes == 4608);
 static_assert(UmtOrderedWaveStreamState::PhysicalBytes == 5120);
 static_assert(UmtOrderedWaveStreamState::ResidualBytes == 512);
 static_assert(
     UmtOrderedWaveStreamState::RepresentedTokenLogicalBitsFloor == 471);
 static_assert(
-    UmtOrderedWaveStreamState::FunctionalControlLogicalBitsFloor == 657);
+    UmtOrderedWaveStreamState::FunctionalControlLogicalBitsFloor ==
+        (UmtOrderedWaveConfiguredComputeTokens == 24 ? 656 : 657));
 static_assert(
     UmtOrderedWaveStreamState::BankSchedulerLogicalBitsFloor == 283);
 static_assert(
-    UmtOrderedWaveStreamState::InstrumentationLogicalBitsFloor == 1106);
+    UmtOrderedWaveStreamState::InstrumentationLogicalBitsFloor ==
+        (UmtOrderedWaveConfiguredComputeTokens == 24 ? 1105 : 1106));
 static_assert(
-    UmtOrderedWaveStreamState::AuxiliaryLogicalBitsFloor == 17118);
+    UmtOrderedWaveStreamState::AuxiliaryLogicalBitsFloor ==
+        (UmtOrderedWaveConfiguredComputeTokens == 24 ? 13348 : 17118));
 static_assert(
     UmtOrderedWaveStreamState::PhysicalStorePlusLogicalAuxiliaryBitsFloor ==
-        58078);
+        (UmtOrderedWaveConfiguredComputeTokens == 24 ? 54308 : 58078));
 
 } // namespace lanlmaa
 } // namespace gem5

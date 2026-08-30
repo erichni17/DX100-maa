@@ -42,6 +42,27 @@ config USE_EFENCE
     bool "Link with Electric Fence malloc debugger"
     default n
 
+menu "LANL MAA research configuration"
+
+config LANL_MAA_UMT_COMPUTE_TOKENS
+    int "UMT ordered-wave compute-token capacity"
+    range 24 32
+    default 32
+    help
+      Select the bounded opcode-11 compute-token capacity. Production
+      factorial builds use only 24 or 32; the C++ boundary rejects every
+      intermediate value so a malformed configuration cannot silently build.
+
+config LANL_MAA_UMT_FP_ISSUE_WIDTH
+    int "UMT ordered-wave global FP issue width"
+    range 1 2
+    default 2
+    help
+      Select one or two global ordered-wave FP issue slots. The state model
+      retains its per-unit, bank-port, and divider constraints in both cells.
+
+endmenu
+
 rsource "base/Kconfig"
 rsource "mem/ruby/Kconfig"
 rsource "learning_gem5/part3/Kconfig"
