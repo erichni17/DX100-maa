@@ -187,6 +187,39 @@ module lanl_umt_trace_replay_tb #(
                 fpOperationsIssued, dualIssueCycles, fpIssueStallCycles,
                 bankConflictCycles, writebackStallCycles,
                 resultBankStallCycles, dividerNoLaneCycles);
+            // Canonical machine-readable projection of this exact pre-edge
+            // decision boundary.  The legacy UMT_RTL_TRACE line above is
+            // retained for P1 reviewers; consumers of an equivalence claim
+            // must use this record and reject missing or malformed fields.
+            // All values below are public shell interfaces except the final
+            // state block, which is explicitly an observational witness.
+            $display("UMT_RTL_PROJECTION {\"schema\":\"lanl-maa-umt-rtl-projection-v1\",\"serial\":%0d,\"cycle\":%0d,\"kind\":\"%0s\",\"presented\":{\"admit0\":{\"valid\":%0d,\"token\":%0d,\"state\":\"%h\"},\"admit1\":{\"valid\":%0d,\"token\":%0d,\"state\":\"%h\"},\"add_ready\":%0d,\"multiply_ready\":%0d,\"divider_ready\":\"%h\",\"descriptor_sum_area\":\"%h\",\"descriptor_coefficients\":\"%h\",\"add_completion\":{\"valid\":%0d,\"token\":%0d,\"result\":\"%h\"},\"multiply_completion\":{\"valid\":%0d,\"token\":%0d,\"result\":\"%h\"},\"divider_completion_valid\":\"%h\",\"divider_completion_token\":\"%h\",\"divider_completion_result\":\"%h\",\"external\":{\"valid\":%0d,\"write\":%0d,\"group\":%0d,\"mask\":\"%h\",\"data\":\"%h\"}},\"accepted\":{\"admit0\":%0d,\"admit1\":%0d,\"add_completion\":%0d,\"multiply_completion\":%0d,\"divider_completion\":\"%h\",\"external\":%0d},\"issues\":[{\"valid\":%0d,\"token\":%0d,\"operation\":%0d,\"unit\":%0d,\"lane\":%0d,\"bank\":%0d,\"operand_a\":\"%h\",\"operand_b\":\"%h\"},{\"valid\":%0d,\"token\":%0d,\"operation\":%0d,\"unit\":%0d,\"lane\":%0d,\"bank\":%0d,\"operand_a\":\"%h\",\"operand_b\":\"%h\"}],\"writeback\":[{\"valid\":%0d,\"token\":%0d,\"row\":%0d,\"mask\":\"%h\",\"data\":\"%h\"},{\"valid\":%0d,\"token\":%0d,\"row\":%0d,\"mask\":\"%h\",\"data\":\"%h\"},{\"valid\":%0d,\"token\":%0d,\"row\":%0d,\"mask\":\"%h\",\"data\":\"%h\"},{\"valid\":%0d,\"token\":%0d,\"row\":%0d,\"mask\":\"%h\",\"data\":\"%h\"}],\"state\":{\"digest\":\"%h\",\"issue_cursor\":%0d,\"token0\":\"%h\",\"bank0_word0\":\"%h\",\"writeback_bank_reservations\":\"%h\",\"issue_bank_reservations\":\"%h\"},\"counters\":{\"fp_operations\":%0d,\"dual_issue\":%0d,\"fp_issue_stall\":%0d,\"bank_conflict\":%0d,\"writeback_stall\":%0d,\"result_bank_stall\":%0d,\"divider_no_lane\":%0d}}",
+                traceSerial, dut.currentCycle, kind,
+                admit0Valid, admit0Token, admit0State,
+                admit1Valid, admit1Token, admit1State,
+                addReady, multiplyReady, dividerReady,
+                descriptorSumArea, descriptorCoefficients,
+                addCompletionValid, addCompletionToken, addCompletionResult,
+                multiplyCompletionValid, multiplyCompletionToken, multiplyCompletionResult,
+                dividerCompletionValid, dividerCompletionToken, dividerCompletionResult,
+                externalValid, externalWrite, externalGroup, externalWriteMask, externalWriteData,
+                admit0Ready, admit1Ready, addCompletionReady, multiplyCompletionReady,
+                dividerCompletionReady, externalReady,
+                issue0Valid, issue0Token, issue0Operation, issue0Unit,
+                issue0DividerLane, issue0Bank, issue0OperandA, issue0OperandB,
+                issue1Valid, issue1Token, issue1Operation, issue1Unit,
+                issue1DividerLane, issue1Bank, issue1OperandA, issue1OperandB,
+                dut.writebackValid[0], dut.writebackToken[0], dut.writebackRow[0], dut.writebackMask[0], dut.writebackData[0],
+                dut.writebackValid[1], dut.writebackToken[1], dut.writebackRow[1], dut.writebackMask[1], dut.writebackData[1],
+                dut.writebackValid[2], dut.writebackToken[2], dut.writebackRow[2], dut.writebackMask[2], dut.writebackData[2],
+                dut.writebackValid[3], dut.writebackToken[3], dut.writebackRow[3], dut.writebackMask[3], dut.writebackData[3],
+                stateWitness, dut.issueCursor,
+                dut.token_entry_gen[0].entry.stateReg,
+                dut.bank0Instance.memory[0], dut.retainedWritebackValid,
+                dut.retainedSchedulerBankUsed,
+                fpOperationsIssued, dualIssueCycles, fpIssueStallCycles,
+                bankConflictCycles, writebackStallCycles,
+                resultBankStallCycles, dividerNoLaneCycles);
             traceSerial = traceSerial + 1;
         end
     endtask

@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
-"""P0 fixture transactor and fail-closed RTL replay gate.
+"""Fail-closed UMT C++-fixture-to-RTL public-interface replay audit.
 
-The scheduler shell deliberately has no trace ports.  This tool consumes the
-trusted C++ JSONL trace and writes a *simulation-only* include used by the
-Verilog testbench.  The include pins the semantic SHA-256 and selected C++
-token identities; the testbench uses those identities while exercising the
-existing admission/completion/external interfaces.  It is not included by any
-RTL wrapper, synthesis script, or cost flow.
+This is deliberately an evidence gate, not a trace-shaped success marker.
+It freezes two P0 C++ fixtures per T/W cell, derives the public ingress plan
+for every C++ decision cycle, and rejects an equivalence claim if that plan
+cannot be presented by the shell.  The selected g8 fixtures expose such a
+real mismatch immediately: the C++ model admits eight denominator operations
+at its first decision boundary while the public RTL shell has two admission
+ports.  We preserve that mismatch rather than splitting the C++ cycle or
+pretending that a different RTL timeline is equivalent.
+
+The accompanying simulation-only testbench emits a canonical JSON projection
+at its pre-edge decision boundary.  Its P1 directed scenarios remain useful
+for validating the projection channel itself; they are never relabeled as a
+P0 C++/RTL equivalence result.
 """
 
 import argparse
@@ -21,6 +28,7 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 TRACE_SOURCE = ROOT / "tests/lanl_maa/umt_cycle_trace_replay_test.cc"
 TRACE_CHECKER_PATH = ROOT / "tests/lanl_maa/umt_cycle_trace_jsonl.py"
+MANIFEST = ROOT / "tests/lanl_maa/umt_rtl_trace_fixture_manifest.json"
 RTL = ROOT / "experiments/lanl_maa_fp64_physical/rtl"
 TESTBENCH = (
     ROOT
@@ -30,7 +38,8 @@ TOOLS = pathlib.Path(
     "/data1/nier/tools/lanl-maa-fp64-physical-20260729/iverilog/usr"
 )
 CELLS = ((24, 1), (24, 2), (32, 1), (32, 2))
-SCENARIO = "dense-g8.jsonl"
+SCENARIOS = ("sparse-g8.jsonl", "dense-g8.jsonl")
+PROJECTION_SCHEMA = "lanl-maa-umt-rtl-projection-v1"
 
 
 def checker_module():
@@ -57,6 +66,18 @@ def checked(command, description):
     return result
 
 
+def sha256_file(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def canonical_sha256(value):
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+
+
 def compile_cpp(directory, tokens, width, cxx):
     binary = directory / f"cxx-t{tokens}-w{width}"
     checked(
@@ -79,8 +100,10 @@ def compile_cpp(directory, tokens, width, cxx):
         ],
         f"T{tokens}/W{width} C++ fixture compile",
     )
-    first = directory / f"cxx-a-t{tokens}-w{width}"
-    second = directory / f"cxx-b-t{tokens}-w{width}"
+    first, second = (
+        directory / f"cxx-a-t{tokens}-w{width}",
+        directory / f"cxx-b-t{tokens}-w{width}",
+    )
     checked(
         [str(binary), str(first)], f"T{tokens}/W{width} C++ fixture emission A"
     )
@@ -91,7 +114,114 @@ def compile_cpp(directory, tokens, width, cxx):
     return first, second
 
 
-def selected_tags(records):
+def fixture_events(records):
+    """The immutable event hash excludes cosmetic header labels only."""
+    return [
+        {
+            "cycle": record["cycle"],
+            "denominator_ingress": record["inputs"]["denominator_ingress"],
+            "issues": record["issues"],
+            "completion_ready": record["completion_ready"],
+            "bank_word_changes": record["bank_word_changes"],
+            "state": record["state"],
+            "counters": record["counters"],
+        }
+        for record in records[1:]
+    ]
+
+
+def load_manifest():
+    value = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    if value.get("schema") != "lanl-maa-umt-rtl-trace-fixture-manifest-v1":
+        raise ValueError("fixture manifest schema is unsupported")
+    if tuple(value.get("scenarios", ())) != SCENARIOS:
+        raise ValueError(
+            "fixture manifest does not pin the selected P0 portfolio"
+        )
+    if value.get("fixture_source_sha256") != sha256_file(TRACE_SOURCE):
+        raise ValueError("fixture source SHA differs from immutable manifest")
+    cells = {
+        (item["compute_tokens"], item["fp_issue_width"]): item
+        for item in value.get("cells", [])
+    }
+    if set(cells) != set(CELLS):
+        raise ValueError(
+            "fixture manifest does not cover exactly the four T/W cells"
+        )
+    return cells
+
+
+def validate_fixture(first, second, scenario, expected):
+    left, right = CHECKER.load_trace(first / scenario), CHECKER.load_trace(
+        second / scenario
+    )
+    digest = CHECKER.semantic_digest(left)
+    events = fixture_events(left)
+    if left != right or digest != CHECKER.semantic_digest(right):
+        raise ValueError(
+            f"{scenario}: independently emitted C++ fixtures differ"
+        )
+    observed = {
+        "trace_semantic_sha256": digest,
+        "event_sha256": canonical_sha256(events),
+        "cycles": len(events),
+        "first_cycle": events[0]["cycle"],
+        "max_denominator_ingress": max(
+            len(item["denominator_ingress"]) for item in events
+        ),
+    }
+    if observed != expected:
+        raise ValueError(
+            f"{scenario}: fixture manifest stale or tampered: {observed} != {expected}"
+        )
+    return left, observed
+
+
+def public_interface_mapping(records):
+    """Derive, rather than invent, the requested public ingress per cycle.
+
+    Admission tags are the C++ first-free binding for the chosen fixture's
+    first batch.  A list longer than two is a hard mapping failure: the RTL
+    exports exactly admit0 and admit1, and carrying it into a later cycle
+    changes the C++ pre-edge state, selected issues, counters, and digest.
+    """
+    mapping, failures = [], []
+    for record in records[1:]:
+        ingress = record["inputs"]["denominator_ingress"]
+        selected_tags = [item["operation"] for item in ingress]
+        if len(set(selected_tags)) != len(selected_tags):
+            failures.append(
+                {
+                    "cycle": record["cycle"],
+                    "reason": "non-unique_cxx_admission_tag",
+                }
+            )
+        if len(ingress) > 2:
+            failures.append(
+                {
+                    "cycle": record["cycle"],
+                    "reason": "public_admission_width_exceeded",
+                    "cxx_presented": len(ingress),
+                    "rtl_public_capacity": 2,
+                    "selected_cxx_admission_tags": selected_tags,
+                }
+            )
+        mapping.append(
+            {
+                "cycle": record["cycle"],
+                "presented_denominator_ingress": ingress,
+                "selected_cxx_admission_tags": selected_tags,
+                "expected_issues": record["issues"],
+                "expected_completion_ready": record["completion_ready"],
+                "expected_bank_word_changes": record["bank_word_changes"],
+                "expected_state": record["state"],
+                "expected_counters": record["counters"],
+            }
+        )
+    return mapping, failures
+
+
+def selected_issue_tags(records):
     tags = []
     for record in records[1:]:
         for issue in record["issues"]:
@@ -99,46 +229,145 @@ def selected_tags(records):
                 tags.append(issue["token"])
                 if len(tags) == 2:
                     return tags
-    raise ValueError("fixture has fewer than two selected issue tags")
+    raise ValueError("C++ fixture contains fewer than two selected issue tags")
 
 
-def write_include(path, records, digest):
-    tags = selected_tags(records)
-    header = records[0]
-    if header["compute_tokens"] <= max(tags):
+def write_include(path, tokens, trace_sha, tags):
+    if len(tags) != 2 or any(tag < 0 or tag >= tokens for tag in tags):
         raise ValueError(
-            "selected C++ tag lies outside the configured capacity"
+            "selected C++ tags are outside the configured RTL cell"
         )
-    words = [digest[index : index + 16] for index in range(0, 64, 16)]
+    words = [trace_sha[index : index + 16] for index in range(0, 64, 16)]
     path.write_text(
-        "// Generated in a temporary directory by umt_rtl_trace_transactor.py.\n"
-        "// It is a simulation fixture, never a production RTL include.\n"
-        f"localparam [63:0] CXX_P0_SHA0 = 64'h{words[0]};\n"
-        f"localparam [63:0] CXX_P0_SHA1 = 64'h{words[1]};\n"
-        f"localparam [63:0] CXX_P0_SHA2 = 64'h{words[2]};\n"
-        f"localparam [63:0] CXX_P0_SHA3 = 64'h{words[3]};\n"
-        f"localparam [5:0] CXX_P0_TAG0 = 6'd{tags[0]};\n"
-        f"localparam [5:0] CXX_P0_TAG1 = 6'd{tags[1]};\n"
-        f"localparam integer CXX_P0_TOKEN_CAPACITY = {header['compute_tokens']};\n",
+        "// Generated simulation-only fixture; never a production RTL include.\n"
+        + "".join(
+            f"localparam [63:0] CXX_P0_SHA{index} = 64'h{word};\n"
+            for index, word in enumerate(words)
+        )
+        + f"localparam [5:0] CXX_P0_TAG0 = 6'd{tags[0]};\n"
+        + f"localparam [5:0] CXX_P0_TAG1 = 6'd{tags[1]};\n"
+        + f"localparam integer CXX_P0_TOKEN_CAPACITY = {tokens};\n",
         encoding="utf-8",
     )
 
 
-def validate_pair(first, second):
-    left = CHECKER.load_trace(first)
-    right = CHECKER.load_trace(second)
-    digest = CHECKER.semantic_digest(left)
-    if left != right or digest != CHECKER.semantic_digest(right):
-        raise ValueError("independent C++ fixture emissions differ")
-    return left, digest
+def validate_projection(records):
+    if not records:
+        raise ValueError("RTL emitted no canonical projections")
+    required = {
+        "schema",
+        "serial",
+        "cycle",
+        "kind",
+        "presented",
+        "accepted",
+        "issues",
+        "writeback",
+        "state",
+        "counters",
+    }
+    previous = -1
+    for record in records:
+        if set(record) != required or record["schema"] != PROJECTION_SCHEMA:
+            raise ValueError("RTL projection schema is incomplete or stale")
+        if record["serial"] != previous + 1:
+            raise ValueError("RTL projection serials are not contiguous")
+        previous = record["serial"]
+        if len(record["issues"]) != 2 or len(record["writeback"]) != 4:
+            raise ValueError(
+                "RTL projection omits ordered issue/writeback lanes"
+            )
+
+        # JSON cannot carry Verilog X/Z safely.  Reject it anywhere in the
+        # projection, including hierarchical observational state.
+        def has_unknown(value, key=None):
+            if isinstance(value, dict):
+                return any(
+                    has_unknown(item, name) for name, item in value.items()
+                )
+            if isinstance(value, list):
+                return any(has_unknown(item) for item in value)
+            return (
+                isinstance(value, str)
+                and key not in {"schema", "kind"}
+                and any(letter in value.lower() for letter in ("x", "z"))
+            )
+
+        if has_unknown(record):
+            raise ValueError("RTL projection contains unknown/high-Z state")
+    return canonical_sha256(records)
 
 
-def run_rtl(directory, tokens, width, include):
-    iverilog = TOOLS / "bin/iverilog"
-    vvp = TOOLS / "bin/vvp"
-    ivl = TOOLS / "lib/x86_64-linux-gnu/ivl"
+def read_projection(stdout):
+    prefix = "UMT_RTL_PROJECTION "
+    records = []
+    for line in stdout.splitlines():
+        if line.startswith(prefix):
+            try:
+                records.append(json.loads(line[len(prefix) :]))
+            except json.JSONDecodeError as error:
+                raise ValueError(
+                    f"malformed RTL projection: {error.msg}"
+                ) from error
+    return records
+
+
+def assert_projection_file(path, expected_digest, expected_count):
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, list) or len(payload) != expected_count:
+        raise ValueError("RTL projection has missing or extra decision cycles")
+    if validate_projection(payload) != expected_digest:
+        raise ValueError("RTL projection semantic SHA differs")
+
+
+def projection_negative_tests(directory, records, digest):
+    baseline = directory / "rtl-projection.json"
+    baseline.write_text(
+        json.dumps(records, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    assert_projection_file(baseline, digest, len(records))
+    negatives = {}
+    tampered = json.loads(baseline.read_text(encoding="utf-8"))
+    tampered[0]["kind"] = "tampered"
+    path = directory / "rtl-projection-tampered.json"
+    path.write_text(json.dumps(tampered), encoding="utf-8")
+    try:
+        assert_projection_file(path, digest, len(records))
+    except ValueError:
+        negatives["tamper"] = "rejected"
+    else:
+        raise RuntimeError("tampered RTL projection accepted")
+    path = directory / "rtl-projection-missing-cycle.json"
+    path.write_text(json.dumps(records[:-1]), encoding="utf-8")
+    try:
+        assert_projection_file(path, digest, len(records))
+    except ValueError:
+        negatives["missing_cycle"] = "rejected"
+    else:
+        raise RuntimeError("missing RTL projection cycle accepted")
+    try:
+        assert_projection_file(baseline, "0" * 64, len(records))
+    except ValueError:
+        negatives["stale_expected_sha"] = "rejected"
+    else:
+        raise RuntimeError("stale RTL projection SHA accepted")
+    return negatives
+
+
+def run_rtl(directory, tokens, width, trace_sha, tags):
+    iverilog, vvp, ivl = (
+        TOOLS / "bin/iverilog",
+        TOOLS / "bin/vvp",
+        TOOLS / "lib/x86_64-linux-gnu/ivl",
+    )
     if not all(item.exists() for item in (iverilog, vvp, ivl / "ivl")):
         raise RuntimeError("pinned Icarus toolchain is unavailable")
+    include_dir = directory / f"fixture-t{tokens}-w{width}"
+    include_dir.mkdir()
+    write_include(
+        include_dir / "umt_trace_fixture.vh", tokens, trace_sha, tags
+    )
     image = directory / f"rtl-t{tokens}-w{width}"
     checked(
         [
@@ -149,10 +378,10 @@ def run_rtl(directory, tokens, width, include):
             "-Wall",
             "-Wno-sensitivity-entire-array",
             "-I",
-            str(include.parent),
-            f"-P",
+            str(include_dir),
+            "-P",
             f"lanl_umt_trace_replay_tb.COMPUTE_TOKENS={tokens}",
-            f"-P",
+            "-P",
             f"lanl_umt_trace_replay_tb.FP_ISSUE_WIDTH={width}",
             "-s",
             "lanl_umt_trace_replay_tb",
@@ -164,47 +393,23 @@ def run_rtl(directory, tokens, width, include):
             str(RTL / "LanlUmtSchedulerShell.v"),
             str(TESTBENCH),
         ],
-        f"T{tokens}/W{width} RTL trace testbench compile",
+        f"T{tokens}/W{width} RTL projection compile",
     )
     result = checked(
         [str(vvp), "-M", str(ivl), str(image)],
-        f"T{tokens}/W{width} RTL trace replay",
+        f"T{tokens}/W{width} RTL projection run",
     )
-    lines = [
-        line
-        for line in result.stdout.splitlines()
-        if line.startswith("UMT_RTL_TRACE")
-    ]
-    required = {
-        "tag_cursor",
-        "same_unit",
-        "same_bank",
-        "edge_before_result",
-        "future_ready",
-        "zero_skip",
-        "masked_store",
-        "completion_ready",
-        "divide_plus_64",
-        "divide_ii_32",
-    }
-    seen = {
-        line.split(" kind=")[1].split()[0]
-        for line in lines
-        if " kind=" in line
-    }
-    if required - seen:
-        raise RuntimeError(
-            f"T{tokens}/W{width}: missing trace coverage {sorted(required - seen)}\n"
-            f"trace output:\n{result.stdout}"
-        )
-    if "LANL_UMT_TRACE_REPLAY_PASS" not in result.stdout:
-        raise RuntimeError(f"T{tokens}/W{width}: missing PASS marker")
+    marker = f"LANL_UMT_TRACE_REPLAY_PASS T{tokens}W{width}"
+    if marker not in result.stdout:
+        raise RuntimeError(f"T{tokens}/W{width}: missing terminal PASS marker")
+    projections = read_projection(result.stdout)
+    digest = validate_projection(projections)
+    negatives = projection_negative_tests(directory, projections, digest)
     return {
-        "tokens": tokens,
-        "issue_width": width,
-        "trace_records": len(lines),
-        "coverage": sorted(seen),
-        "status": "passed",
+        "records": len(projections),
+        "semantic_sha256": digest,
+        "negative_tests": negatives,
+        "marker_and_exit": "passed",
     }
 
 
@@ -214,26 +419,53 @@ def main():
     args = parser.parse_args()
     if shutil.which(args.cxx) is None:
         raise RuntimeError(f"C++ compiler not found: {args.cxx}")
-    report = {"schema": "lanl-maa-umt-rtl-trace-replay-p1-v1", "cells": []}
-    with tempfile.TemporaryDirectory(prefix="umt-rtl-trace-replay-") as temp:
-        directory = pathlib.Path(temp)
+    manifest = load_manifest()
+    report = {"schema": "lanl-maa-umt-rtl-trace-replay-p2-v1", "cells": []}
+    with tempfile.TemporaryDirectory(
+        prefix="umt-rtl-trace-replay-p2-"
+    ) as temporary:
+        directory = pathlib.Path(temporary)
         for tokens, width in CELLS:
             first, second = compile_cpp(directory, tokens, width, args.cxx)
-            records, digest = validate_pair(
-                first / SCENARIO, second / SCENARIO
+            cell = {"tokens": tokens, "issue_width": width, "fixtures": []}
+            trace_sha_for_p1 = None
+            tags_for_p1 = None
+            for scenario in SCENARIOS:
+                records, immutable = validate_fixture(
+                    first,
+                    second,
+                    scenario,
+                    manifest[(tokens, width)]["scenarios"][scenario],
+                )
+                mapping, failures = public_interface_mapping(records)
+                if not failures:
+                    raise RuntimeError(
+                        f"{scenario}: expected a public interface incompatibility was not detected"
+                    )
+                # This exact compare is intentionally fail-closed before a
+                # different-width RTL run can be mistaken for the C++ cycle.
+                cell["fixtures"].append(
+                    {
+                        "scenario": scenario,
+                        "immutable": immutable,
+                        "mapping_sha256": canonical_sha256(mapping),
+                        "equivalence": "failed_closed_public_interface_mismatch",
+                        "mismatch": failures[0],
+                    }
+                )
+                trace_sha_for_p1 = immutable["trace_semantic_sha256"]
+                tags_for_p1 = selected_issue_tags(records)
+            cell["rtl_projection_p1"] = run_rtl(
+                directory, tokens, width, trace_sha_for_p1, tags_for_p1
             )
-            include_dir = directory / f"fixture-t{tokens}-w{width}"
-            include_dir.mkdir()
-            include = include_dir / "umt_trace_fixture.vh"
-            write_include(include, records, digest)
-            cell = run_rtl(directory, tokens, width, include)
-            cell["cxx_scenario"] = SCENARIO
-            cell["cxx_semantic_sha256"] = digest
             cell[
-                "fixture_integrity"
-            ] = "independent semantic digest recomputation"
+                "status"
+            ] = "p0_not_equivalent_p1_projection_channel_validated"
             report["cells"].append(cell)
-    report["status"] = "passed"
+    report["status"] = "passed_fail_closed_divergence_preserved"
+    report[
+        "equivalence_claim"
+    ] = "rejected: C++ g8 first decision cycle has eight admissions; RTL public ingress capacity is two"
     print(json.dumps(report, indent=2, sort_keys=True))
 
 
