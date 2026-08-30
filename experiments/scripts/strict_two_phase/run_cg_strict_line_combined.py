@@ -377,7 +377,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.stage_partial_payload:
             expected_lines += payload_stats["IND_VirtPartialWrites"]
         require(
-            full_lines > 0
+            expected_lines > 0
             and payload_stats["IND_VirtCompleteLinePayloadStarts"]
             == expected_lines
             and payload_stats["IND_VirtCompleteLinePayloadCompletions"]
