@@ -96,7 +96,7 @@ run_width() {
         echo "drain width $width failed exact producer closure" >&2
         return 1
     }
-    if [[ $width -ne 0 && $peak -gt $width ]]; then
+    if [[ $width -ne 0 && $peak -gt $((width * 4)) ]]; then
         echo "drain width $width exceeded its peak" >&2
         return 1
     fi

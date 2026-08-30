@@ -56,7 +56,7 @@ def main() -> int:
         require(ticks > 0 and issued == 8192 and peak > 0,
                 f"terminal mechanism closure failed at width {width}")
         if width != 0:
-            require(peak <= width, f"peak exceeds width {width}")
+            require(peak <= width * 4, f"summed peak exceeds width {width}")
         report_rows.append({
             "width": width,
             "ticks": ticks,
@@ -88,7 +88,7 @@ def main() -> int:
         "",
         f"Current width-0 versus legacy: {report['width0_delta_vs_legacy_pct']:+.3f}% latency.",
         "",
-        "| Width (lines/cycle) | simTicks | vs width 0 | vs native16 | Budget stalls | Peak |",
+        "| Width (lines/cycle) | simTicks | vs width 0 | vs native16 | Budget stalls | Peak sum (4 ops) |",
         "|---:|---:|---:|---:|---:|---:|",
     ]
     for row in report_rows:

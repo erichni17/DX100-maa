@@ -726,7 +726,8 @@ done
     exit 1
 }
 if [[ $complete_line_drain_lines_per_cycle -ne 0 &&
-      $complete_line_drain_peak -gt $complete_line_drain_lines_per_cycle ]]; then
+      $complete_line_drain_peak -gt \
+          $((complete_line_drain_lines_per_cycle * maa_indirect_instructions)) ]]; then
     echo "complete-line drain exceeded configured width" >&2
     exit 1
 fi
