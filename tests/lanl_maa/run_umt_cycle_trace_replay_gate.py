@@ -28,6 +28,14 @@ def checked(command, description):
     return result
 
 
+def semantic_digest(trace):
+    result = checked(
+        ["python3", str(CHECKER), str(trace)],
+        f"{trace.name} schema/integrity validation",
+    )
+    return json.loads(result.stdout)["semantic_digest"]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cxx", default="g++")
@@ -62,10 +70,15 @@ def main():
                 ],
                 f"T{tokens}/W{width} compile",
             )
-            trace_directory = root / f"traces-t{tokens}-w{width}"
+            trace_directory = root / f"traces-t{tokens}-w{width}-a"
+            replay_directory = root / f"traces-t{tokens}-w{width}-b"
             checked(
                 [str(output), str(trace_directory)],
                 f"T{tokens}/W{width} trace emission",
+            )
+            checked(
+                [str(output), str(replay_directory)],
+                f"T{tokens}/W{width} independent trace emission",
             )
             if tuple(
                 sorted(item.name for item in trace_directory.iterdir())
@@ -75,19 +88,18 @@ def main():
                 )
             for scenario in SCENARIOS:
                 trace = trace_directory / scenario
-                checked(
-                    ["python3", str(CHECKER), str(trace)],
-                    f"T{tokens}/W{width} {scenario} schema validation",
-                )
+                digest = semantic_digest(trace)
                 checked(
                     [
                         "python3",
                         str(CHECKER),
                         str(trace),
                         "--compare",
-                        str(trace),
+                        str(replay_directory / scenario),
+                        "--expected-semantic-digest",
+                        digest,
                     ],
-                    f"T{tokens}/W{width} {scenario} exact self-compare",
+                    f"T{tokens}/W{width} {scenario} replay/integrity compare",
                 )
             tampered = trace_directory / "tampered.jsonl"
             text = (trace_directory / SCENARIOS[0]).read_text(encoding="utf-8")
@@ -111,7 +123,8 @@ def main():
                     "issue_width": width,
                     "scenarios": len(SCENARIOS),
                     "schema": "passed",
-                    "self_compare": "passed",
+                    "repeat_compare": "passed",
+                    "fixture_integrity": "semantic digest recomputed",
                     "tamper": "rejected",
                 }
             )

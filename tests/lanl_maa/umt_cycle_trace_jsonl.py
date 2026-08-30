@@ -6,6 +6,7 @@ traces, but neither consumes RTL output nor makes an RTL-equivalence claim.
 """
 
 import argparse
+import hashlib
 import json
 import pathlib
 import sys
@@ -277,17 +278,42 @@ def load_trace(path):
     return records
 
 
+def semantic_digest(records):
+    """Return the versioned canonical digest used for replay fixtures.
+
+    JSONL permits harmless whitespace variation.  The trace contract does
+    not: every semantic record is re-encoded with sorted keys and compact
+    separators before hashing.  This is intentionally independent of the
+    producer's fixed descriptor/stimulus labels, so a copied header cannot
+    conceal a changed cycle record.
+    """
+    canonical = "\n".join(
+        json.dumps(record, sort_keys=True, separators=(",", ":"))
+        for record in records
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("trace", type=pathlib.Path)
     parser.add_argument("--compare", type=pathlib.Path)
+    parser.add_argument("--expected-semantic-digest")
     args = parser.parse_args()
     try:
         left = load_trace(args.trace)
+        digest = semantic_digest(left)
+        if (
+            args.expected_semantic_digest is not None
+            and digest != args.expected_semantic_digest
+        ):
+            fail("fixture integrity failed: semantic digest differs")
         if args.compare is not None:
             right = load_trace(args.compare)
             if left != right:
                 fail("comparison failed: canonical records differ")
+            if digest != semantic_digest(right):
+                fail("comparison failed: semantic digest differs")
     except (OSError, ValueError) as error:
         print(f"FAIL: {error}", file=sys.stderr)
         return 1
@@ -298,6 +324,7 @@ def main():
                 "status": "passed",
                 "records": len(left),
                 "compared": args.compare is not None,
+                "semantic_digest": digest,
             },
             sort_keys=True,
         )
