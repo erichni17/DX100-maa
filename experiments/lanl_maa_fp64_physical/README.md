@@ -1,5 +1,33 @@
 # LANL-MAA FP64 common-corner physical screen
 
+## UMT scheduler/register-file cost shell
+
+`LanlUmtSchedulerShell` is a Verilog-2005 structural checkpoint for the omitted
+UMT token selector, four-bank paired store, writeback-first arbitration, and
+instrumentation state. Fixed wrappers expose T24/T32 by W1/W2. The shell
+declares and keep-marks exactly 471 logical bits per token, four 16x640 masked
+single-port asynchronous-read register files, and the independently derived
+functional, bank-scheduler, and instrumentation floors. Identity outputs make
+the 54,372-bit T24 and 58,142-bit T32 totals and T-by-W selector/64-by-W route
+dimensions directly testable.
+
+Arithmetic stays outside the shell through one add, one multiply, and eight
+divider ready/completion interfaces. The RTL therefore does not model FP64
+numeric behavior, divider state/latency/II area, the descriptor engine,
+cache/coherence traffic, clocking, ECC, or a characterized SRAM macro. It is
+not a complete accelerator and cannot support a 1 GHz, power, or energy
+claim. `scripts/run_umt_scheduler_shell_rtl_smoke.sh` elaborates every wrapper
+as Verilog-2005 and runs directed Icarus tests for dimensions, W1/W2 issue,
+same-unit and same-bank exclusion, masked asynchronous bank access,
+writeback collisions, and writeback-first priority. No ORFS target is enabled
+at this checkpoint. A test-only full-state parity witness is parameterized off
+in every physical wrapper because its XOR tree would contaminate area/Fmax.
+Before any cost promotion, a fresh Yosys/ORFS gate must prove that all intended
+bank, token, functional, scheduler, and instrumentation bits survive synthesis
+under the keep attributes, and C++/RTL traces must close phase, request,
+operand, writeback, and ledger behavior. Until then this is reviewed RTL/test
+collateral, not routed-cost evidence.
+
 This harness compares Berkeley HardFloat Release 1 binary64 add/subtract,
 multiply, fused multiply-add, and replicated iterative-divider blocks under one
 pinned OpenROAD-flow-scripts Nangate45 typical corner.
