@@ -33,6 +33,9 @@ Widths 0/2/4/8 and the FLAG control curve use simulator source
 The width-1 liveness rerun adds only response-aware retry at
 `6a6737a5eef3ef84fcd355bac5d4eb5729ff5d7e`, binary SHA-256
 `8799671e25abfb230767780bd4ab58e45421b41749c72e55a2acc149368392aa`.
+The default-off masked-line extension uses simulator source
+`40762e0d9a135ac7a3ea07f69ecf1b9f502b7116`, binary SHA-256
+`e79bcf18fb520fe1e68f9d2efcc67dda568c8a564182663c14a1c51194869893`.
 
 ## XRAGE
 
@@ -107,6 +110,33 @@ HashJoin do not execute the virtual-result combiner edge, while SSSP uses a
 separate response-bearing old-result publisher. No suite-wide payload-port
 claim is made for those paths.
 
+### Masked-line extension
+
+A default-off extension applies the same finite port to every masked CG line,
+not only fully populated lines. At `CG_NA=256`, all arms preserve the exact
+fingerprint, 11 deterministic reductions, 26,672 write issues/completions, and
+strict mechanism closure:
+
+| Payload bytes/cycle | `simTicks` | Versus ideal | Starts/completions | Read cycles |
+|---:|---:|---:|---:|---:|
+| ideal | 246,463,712 | 0.000% | 0 | 0 |
+| 4 | 298,239,233 | +21.007% | 26,672 | 163,840 |
+| 8 | 276,104,812 | +12.027% | 26,672 | 88,815 |
+| 16 | 263,114,373 | +6.756% | 26,672 | 51,656 |
+| 32 | 257,943,613 | +4.658% | 26,672 | 33,644 |
+
+The promoted `CG_NA=1024` same-checkpoint pair is also exact. The ideal arm is
+1,247,488,418 ticks; the 32-byte arm is 1,366,470,047 ticks, or +9.538%.
+It stages and completes all 358,114 masked writes in 358,810 read cycles with
+975 blocked-line cycles and zero producer-backpressure cycles.
+
+Raw masked-CG roots are named
+`/data1/nier/dx100-runs/2026-08-30-cg-na{256,1024}-payload-*`.
+
+The single-line staging identity leaves bandwidth unused when many masks hold
+only a few words. A multi-line pipelined payload reader is the next candidate
+for reducing the CG cost; it is not part of the accepted complete-line point.
+
 ## Decision
 
 Select four FP64 words, or 32 bytes, per MAA cycle. It matches the existing
@@ -126,7 +156,9 @@ retained as a liveness fix, not as the selected performance point.
 This closes aggregate payload-read throughput without adding hidden payload
 capacity. It does not yet synthesize the RAM or prove a conflict-free physical
 bank mapping for arbitrary payload references. Area, energy, Fmax, and exact
-payload-bank conflicts remain open implementation questions.
+payload-bank conflicts remain open implementation questions. The masked-line
+extension additionally needs multi-line pipelining before promotion beyond its
+current correctness and bandwidth-attribution role.
 
 Artifact ledger:
 `complete_line_payload_bandwidth_artifacts_2026-08-30.sha256`.

@@ -48,6 +48,11 @@ path. CG mostly emits partial-mask lines, IS/HashJoin do not execute this
 virtual-result edge, and SSSP has a separate old-result publisher. It is not a
 suite-wide retirement-port result.
 
+A default-off masked-line extension now charges CG's partial lines through the
+same 32-byte port. It is exact but adds 4.658% at `CG_NA=256` and 9.538% at
+`CG_NA=1024`; multi-line staging is still needed to avoid wasting bandwidth on
+sparse masks. This extension is evidence, not the selected direct-gather path.
+
 ## Hardware boundary
 
 Bounded now: result payload, tags/ways, response pool, lookup starts and
