@@ -27,6 +27,7 @@
 #include "mem/MAA/RangeFuser.hh"
 #include "mem/MAA/SPD.hh"
 #include "mem/MAA/StreamAccess.hh"
+#include "mem/MAA/VirtualBackingOwnership.hh"
 #include "mem/MAA/VirtualCombineLookupPipeline.hh"
 #include "mem/packet.hh"
 #include "params/MAA.hh"
@@ -5882,6 +5883,46 @@ void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
                                 int backingRangeID, int wordSize) {
     panic_if(tokenTileID < 0 || tokenTileID >= num_tiles,
              "invalid virtual completion token tile %d\n", tokenTileID);
+    uint64_t backingEnd = 0;
+    panic_if(!maa::VirtualBackingOwnership::span(
+                 backingAddr, num_tile_elements, wordSize, backingEnd),
+             "virtual producer token %d has invalid backing span 0x%lx/%d\n",
+             tokenTileID, backingAddr, wordSize);
+    const int expectedPages = getCeiling(
+        static_cast<int>(num_tile_elements),
+        static_cast<int>(physical_tile_elements));
+    panic_if(expectedPages <= 0 || expectedPages > MaxVirtualPages,
+             "virtual producer page count %d exceeds [1,%d]\n",
+             expectedPages, MaxVirtualPages);
+    auto producerComplete = [this, expectedPages](int token) {
+        if (virtualPageGeneration[token] == 0)
+            return true;
+        return std::all_of(
+            virtualPageReady[token].begin(),
+            virtualPageReady[token].begin() + expectedPages,
+            [](bool ready) { return ready; });
+    };
+    panic_if(!producerComplete(tokenTileID),
+             "virtual completion token %d reused before producer ACK "
+             "closure\n",
+             tokenTileID);
+    for (int other = 0; other < num_tiles; ++other) {
+        if (other == tokenTileID || producerComplete(other))
+            continue;
+        uint64_t otherEnd = 0;
+        panic_if(!maa::VirtualBackingOwnership::span(
+                     virtualPageBackingAddr[other], num_tile_elements,
+                     virtualPageWordSize[other], otherEnd),
+                 "live virtual producer token %d has invalid backing span\n",
+                 other);
+        panic_if(maa::VirtualBackingOwnership::overlaps(
+                     backingAddr, backingEnd,
+                     virtualPageBackingAddr[other], otherEnd),
+                 "virtual producer token %d backing [0x%lx,0x%lx) overlaps "
+                 "live token %d [0x%lx,0x%lx)\n",
+                 tokenTileID, backingAddr, backingEnd, other,
+                 virtualPageBackingAddr[other], otherEnd);
+    }
     if (virtual_strict_two_phase) {
         panic_if(std::any_of(
                      strictTwoPhaseReferences.begin(),
