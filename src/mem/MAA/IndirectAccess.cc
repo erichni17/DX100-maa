@@ -11168,9 +11168,10 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
         if (maa->virtual_page_ordered_combiner_drain &&
             slot.valid_words == full_mask)
             continue;
-        if (slot.valid_words == full_mask &&
-            virtual_outstanding_writes <
-                virtual_max_outstanding_writes_limit) {
+        if (slot.valid_words == full_mask) {
+            if (virtual_outstanding_writes >=
+                virtual_max_outstanding_writes_limit)
+                continue;
             if (!completeLineDrainAvailable())
                 continue;
             VirtualCombinePayloadStore::LineData line_data{};
