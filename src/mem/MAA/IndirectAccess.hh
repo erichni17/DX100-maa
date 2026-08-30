@@ -131,6 +131,8 @@ protected:
     uint64_t virtual_combine_lookup_generation = 0;
     uint64_t virtual_combine_lookup_next_generation = 0;
     uint64_t virtual_combine_lookup_next_issue_sequence = 0;
+    uint64_t virtual_combine_lookup_completion_budget_cycle = 0;
+    int virtual_combine_lookup_completions_this_cycle = 0;
     bool virtual_pending_source = false;
     Addr virtual_pending_source_addr = 0;
     int virtual_pending_source_head = -1;

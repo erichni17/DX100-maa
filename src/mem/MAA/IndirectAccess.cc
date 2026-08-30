@@ -196,9 +196,15 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
              maa::VirtualCombineLookupPipeline::MaxLatencyCycles);
     virtual_combine_lookup_latency_cycles =
         _virtual_combine_lookup_latency_cycles;
+    const size_t lookup_capacity = virtual_response_word_pool_limit != 0
+        ? static_cast<size_t>(virtual_response_word_pool_limit)
+        : (virtual_response_words != 0
+               ? static_cast<size_t>(_virtual_response_slots) *
+                     virtual_response_words
+               : static_cast<size_t>(_virtual_response_slots) *
+                     VirtualCombinePayloadStore::MaxLineWords);
     const auto lookup_configured = virtual_combine_lookup_pipeline.configure(
-        virtual_combine_lookup_latency_cycles,
-        static_cast<size_t>(_num_offset_table_entries));
+        virtual_combine_lookup_latency_cycles, lookup_capacity);
     panic_if(
         lookup_configured !=
             maa::VirtualCombineLookupPipeline::Result::Accepted,
@@ -6282,6 +6288,9 @@ void IndirectAccessUnit::executeInstruction() {
                  "I[%d] stale virtual combiner lookup state at decode\n",
                  my_indirect_id);
         virtual_combine_lookup_next_issue_sequence = 0;
+        virtual_combine_lookup_completion_budget_cycle =
+            static_cast<uint64_t>(maa->curCycle());
+        virtual_combine_lookup_completions_this_cycle = 0;
         if (isVirtualLoad() && !isFusedP16Product() &&
             virtual_combine_lookup_latency_cycles != 0) {
             ++virtual_combine_lookup_next_generation;
@@ -10520,6 +10529,10 @@ bool IndirectAccessUnit::drainVirtualResponses() {
         virtual_word_budget_cycle = current_cycle;
         virtual_word_attempts_this_cycle = 0;
     }
+    if (virtual_combine_lookup_completion_budget_cycle != current_cycle) {
+        virtual_combine_lookup_completion_budget_cycle = current_cycle;
+        virtual_combine_lookup_completions_this_cycle = 0;
+    }
     if (virtual_combine_bank_cycle != current_cycle) {
         virtual_combine_bank_cycle = current_cycle;
         std::fill(virtual_combine_bank_used.begin(),
@@ -10528,6 +10541,11 @@ bool IndirectAccessUnit::drainVirtualResponses() {
     auto budget_exhausted = [this]() {
         return virtual_words_per_cycle_limit != 0 &&
                virtual_word_attempts_this_cycle >=
+                   virtual_words_per_cycle_limit;
+    };
+    auto lookup_completion_budget_exhausted = [this]() {
+        return virtual_words_per_cycle_limit != 0 &&
+               virtual_combine_lookup_completions_this_cycle >=
                    virtual_words_per_cycle_limit;
     };
     const bool lookup_enabled =
@@ -10571,6 +10589,8 @@ bool IndirectAccessUnit::drainVirtualResponses() {
     bool lookup_start_blocked = false;
     if (lookup_enabled) {
         using LookupPipeline = maa::VirtualCombineLookupPipeline;
+        const bool packed_response = virtual_response_words != 0 ||
+                                     virtual_response_word_pool_limit != 0;
         std::vector<LookupPipeline::Token> ready;
         const auto ready_result =
             virtual_combine_lookup_pipeline.collectReady(current_cycle,
@@ -10580,6 +10600,10 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                  my_indirect_id,
                  LookupPipeline::resultName(ready_result));
         for (const auto &token : ready) {
+            if (lookup_completion_budget_exhausted()) {
+                lookup_blocked = true;
+                break;
+            }
             panic_if(token.operationGeneration !=
                              virtual_combine_lookup_generation ||
                          token.responseSlot >=
@@ -10611,9 +10635,21 @@ bool IndirectAccessUnit::drainVirtualResponses() {
             }
             if (token.pass >= 0)
                 direct_index_partition = token.pass;
+            const uint8_t *word = nullptr;
+            if (packed_response) {
+                panic_if(token.slotSequence >= slot.packed_words.size(),
+                         "I[%d] virtual lookup packed reference %u exceeds "
+                         "%zu words\n",
+                         my_indirect_id, token.slotSequence,
+                         slot.packed_words.size());
+                word = slot.packed_words[token.slotSequence].data();
+            } else {
+                word = virtual_response_line_payloads.lineData(
+                           token.responseSlot) +
+                       token.wordId * my_word_size;
+            }
             if (!reserveVirtualCombineBank(token.iteration) ||
-                !insertVirtualCombineWord(token.iteration,
-                                          token.data.data())) {
+                !insertVirtualCombineWord(token.iteration, word)) {
                 lookup_blocked = true;
                 continue;
             }
@@ -10626,6 +10662,7 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                      LookupPipeline::resultName(completed));
             --slot.lookup_pending;
             ++slot.lookup_next_completion_sequence;
+            ++virtual_combine_lookup_completions_this_cycle;
             DPRINTF(MAAVirtualTrace,
                     "event=virtual_combine_lookup_complete schema=1 "
                     "unit=%d operation_tick=%lu generation=%lu cycle=%lu "
@@ -10648,8 +10685,6 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                      LookupPipeline::resultName(waited));
         }
 
-        const bool packed_response = virtual_response_words != 0 ||
-                                     virtual_response_word_pool_limit != 0;
         bool issued_in_sweep = false;
         do {
             issued_in_sweep = false;
@@ -10672,17 +10707,12 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                          "I[%d] lookup response slot %zu has invalid word "
                          "id %d\n",
                          my_indirect_id, slot_idx, entry.wid);
-                const uint8_t *word = nullptr;
                 if (packed_response) {
                     panic_if(slot.next_packed_word >=
                                  slot.packed_words.size(),
                              "I[%d] packed lookup response slot %zu ended "
                              "before Offset slot %d\n",
                              my_indirect_id, slot_idx, slot.next_itr);
-                    word = slot.packed_words[slot.next_packed_word].data();
-                } else {
-                    word = virtual_response_line_payloads.lineData(slot_idx) +
-                           entry.wid * my_word_size;
                 }
 
                 LookupPipeline::Token token;
@@ -10697,7 +10727,6 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                 token.wordId = entry.wid;
                 token.pass = entry.pass;
                 token.wordBytes = my_word_size;
-                std::memcpy(token.data.data(), word, my_word_size);
                 const auto started = virtual_combine_lookup_pipeline.start(
                     current_cycle, token);
                 if (started == LookupPipeline::Result::Full) {

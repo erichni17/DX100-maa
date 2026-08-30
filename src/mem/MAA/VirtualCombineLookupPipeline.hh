@@ -2,7 +2,6 @@
 #define __MEM_MAA_VIRTUAL_COMBINE_LOOKUP_PIPELINE_HH__
 
 #include <algorithm>
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -25,7 +24,6 @@ class VirtualCombineLookupPipeline
 {
   public:
     static constexpr uint32_t MaxLatencyCycles = 8;
-    static constexpr uint32_t MaxWordBytes = 8;
 
     struct Token
     {
@@ -38,7 +36,6 @@ class VirtualCombineLookupPipeline
         int32_t wordId = -1;
         int32_t pass = -1;
         uint8_t wordBytes = 0;
-        std::array<uint8_t, MaxWordBytes> data{};
     };
 
     struct Counters
@@ -283,7 +280,7 @@ class VirtualCombineLookupPipeline
         return sameIdentity(left, right) &&
                left.iteration == right.iteration &&
                left.wordId == right.wordId && left.pass == right.pass &&
-               left.wordBytes == right.wordBytes && left.data == right.data;
+               left.wordBytes == right.wordBytes;
     }
 
     Result

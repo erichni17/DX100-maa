@@ -36,8 +36,6 @@ token(uint64_t generation, uint64_t issue, uint16_t slot,
     value.wordId = iteration % 16;
     value.pass = iteration / 16384;
     value.wordBytes = 4;
-    for (uint32_t byte = 0; byte < value.wordBytes; ++byte)
-        value.data[byte] = static_cast<uint8_t>(iteration + byte);
     return value;
 }
 
@@ -87,7 +85,7 @@ testPipelinedWidthAnd65536WordClosure()
     constexpr uint32_t width = 4;
     constexpr uint32_t latency = 8;
     Pipeline pipeline;
-    CHECK(pipeline.configure(latency, words) == Result::Accepted);
+    CHECK(pipeline.configure(latency, width * latency) == Result::Accepted);
     CHECK(pipeline.begin(generation) == Result::Accepted);
 
     uint32_t issued = 0;
