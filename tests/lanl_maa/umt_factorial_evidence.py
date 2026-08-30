@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Fail-closed UMT factorial build identity and stat expectations."""
 
+import datetime
 import hashlib
 import pathlib
 import re
@@ -118,6 +119,30 @@ def parse_generated_define(path, symbol):
     if match is None:
         raise RuntimeError(f"malformed generated config header: {path}")
     return int(match.group(1))
+
+
+def parse_manifest_timestamp(value, label):
+    if not isinstance(value, str) or not value:
+        raise RuntimeError(f"build manifest {label} is empty")
+    try:
+        parsed = datetime.datetime.fromisoformat(value)
+    except ValueError as error:
+        raise RuntimeError(
+            f"build manifest {label} is not an ISO-8601 timestamp"
+        ) from error
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise RuntimeError(
+            f"build manifest {label} lacks an explicit UTC offset"
+        )
+    return parsed
+
+
+def timestamp_ns(value):
+    epoch = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
+    delta = value.astimezone(datetime.timezone.utc) - epoch
+    return (
+        delta.days * 86400 + delta.seconds
+    ) * 1_000_000_000 + delta.microseconds * 1000
 
 
 def cell_from_document(document):
@@ -252,6 +277,31 @@ def validate_build_manifest_files(document, build_manifest_path, gem5):
     if manifest_path.parent != gem5.parent:
         raise RuntimeError("build manifest and frozen gem5 are separated")
 
+    build_logs = {
+        "stdout": manifest_path.parent / "build.stdout",
+        "stderr": manifest_path.parent / "build.stderr",
+    }
+    for name, path in build_logs.items():
+        if not path.is_file():
+            raise RuntimeError(f"build manifest {name} log is absent")
+        if sha256(path) != document[f"{name}_sha256"]:
+            raise RuntimeError(f"build manifest {name} log hash mismatches")
+    try:
+        stdout_lines = (
+            build_logs["stdout"].read_text(encoding="utf-8").splitlines()
+        )
+    except UnicodeDecodeError as error:
+        raise RuntimeError("build manifest stdout log is not UTF-8") from error
+    link_record = re.compile(
+        rf"\s*\[    LINK\]\s+->\s+(?:build/)?"
+        rf"{re.escape(cell.variant)}/gem5\.opt\s*"
+    )
+    if not any(link_record.fullmatch(line) for line in stdout_lines):
+        raise RuntimeError(
+            "build manifest stdout lacks the exact cell-specific relink "
+            "record"
+        )
+
     artifact_hashes = {
         "build_opts": "build_opts_sha256",
         "kconfig_state": "kconfig_state_sha256",
@@ -263,6 +313,22 @@ def validate_build_manifest_files(document, build_manifest_path, gem5):
             raise RuntimeError(
                 f"build manifest {path_name} artifact hash mismatches"
             )
+
+    target_stat = expected_paths["target"].stat()
+    if target_stat.st_size != document["target_size"]:
+        raise RuntimeError("build manifest target size mismatches artifact")
+    if target_stat.st_mtime_ns != document["target_mtime_ns"]:
+        raise RuntimeError("build manifest target mtime mismatches artifact")
+    started_at = parse_manifest_timestamp(document["started_at"], "started_at")
+    ended_at = parse_manifest_timestamp(document["ended_at"], "ended_at")
+    started_ns = timestamp_ns(started_at)
+    ended_ns = timestamp_ns(ended_at)
+    if ended_ns < started_ns:
+        raise RuntimeError("build manifest build interval is reversed")
+    if not started_ns <= target_stat.st_mtime_ns <= ended_ns:
+        raise RuntimeError(
+            "build manifest target mtime is outside the build interval"
+        )
 
     expected_values = {
         CONFIG_SYMBOLS["compute_tokens"]: cell.compute_tokens,
@@ -427,4 +493,67 @@ def validate_dual_issue(stats, cell, require_exercised):
             else "nonnegative"
         ),
         "observed": observed,
+    }
+
+
+def validate_unique_cycle_counters(stats, cell, require_exercised):
+    active_name = "descriptorUmtBatchCycles"
+    active_cycles = stats.get(active_name)
+    fp_operations = stats.get("descriptorUmtStateFpOperationsIssued")
+    if type(active_cycles) is not int or active_cycles < 0:
+        raise RuntimeError(
+            "UMT pipeline-active cycle counter is absent, noninteger, or "
+            f"negative: {active_name}={active_cycles}"
+        )
+    if type(fp_operations) is not int or fp_operations < 0:
+        raise RuntimeError(
+            "UMT issued-operation counter is absent, noninteger, or "
+            f"negative: {fp_operations}"
+        )
+
+    dual_issue = validate_dual_issue(stats, cell, require_exercised)
+    dual_cycles = dual_issue["observed"]
+    if dual_cycles > active_cycles or 2 * dual_cycles > fp_operations:
+        raise RuntimeError(
+            "UMT dual-issue cycles exceed unique-cycle or issued-operation "
+            f"bounds: dual={dual_cycles}, active={active_cycles}, "
+            f"fp_operations={fp_operations}"
+        )
+
+    names = {
+        "bank": "descriptorUmtStateBankReadConflictCycles",
+        "writeback": "descriptorUmtStateWritebackStallCycles",
+        "combined": "descriptorUmtStatePipelineResultBankStallCycles",
+        "divider": "descriptorUmtStateDividerNoLaneCycles",
+    }
+    observed = {}
+    for label, name in names.items():
+        value = stats.get(name)
+        if type(value) is not int or value < 0:
+            raise RuntimeError(
+                "UMT unique-cycle counter is absent, noninteger, or "
+                f"negative: {name}={value}"
+            )
+        if value > active_cycles:
+            raise RuntimeError(
+                "UMT unique-cycle counter exceeds pipeline-active cycles: "
+                f"{name}={value}, active={active_cycles}"
+            )
+        observed[label] = value
+
+    if (
+        observed["bank"] > observed["combined"]
+        or observed["writeback"] > observed["combined"]
+        or observed["combined"] > observed["bank"] + observed["writeback"]
+    ):
+        raise RuntimeError(
+            "UMT split result-bank accounting did not close: "
+            f"bank={observed['bank']}, writeback={observed['writeback']}, "
+            f"combined={observed['combined']}"
+        )
+    return {
+        active_name: active_cycles,
+        "descriptorUmtStateFpOperationsIssued": fp_operations,
+        "dual_issue": dual_issue,
+        **{name: observed[label] for label, name in names.items()},
     }

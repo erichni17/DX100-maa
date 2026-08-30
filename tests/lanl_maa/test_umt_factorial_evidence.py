@@ -2,6 +2,7 @@
 """Adversarial unit tests for schema-v2 UMT factorial evidence identity."""
 
 import copy
+import os
 import pathlib
 import tempfile
 import unittest
@@ -34,7 +35,22 @@ class UmtFactorialEvidenceTest(unittest.TestCase):
         build_opts.write_text(assignments, encoding="utf-8")
         kconfig.write_text(assignments, encoding="utf-8")
         target.write_bytes(b"gem5-cell")
+        started_at = "2026-08-29T00:00:00+00:00"
+        ended_at = "2026-08-29T00:01:00+00:00"
+        target_mtime_ns = (
+            EVIDENCE.timestamp_ns(
+                EVIDENCE.parse_manifest_timestamp(started_at, "started_at")
+            )
+            + 30_000_000_000
+        )
+        os.utime(target, ns=(target_mtime_ns, target_mtime_ns))
         gem5.write_bytes(target.read_bytes())
+        stdout = identity / "build.stdout"
+        stderr = identity / "build.stderr"
+        stdout.write_text(
+            f" [    LINK]  -> {variant}/gem5.opt\n", encoding="utf-8"
+        )
+        stderr.write_text("", encoding="utf-8")
         generated = {}
         for label, symbol in EVIDENCE.CONFIG_SYMBOLS.items():
             value = tokens if label == "compute_tokens" else width
@@ -65,8 +81,8 @@ class UmtFactorialEvidenceTest(unittest.TestCase):
                 "-j4",
             ],
             "returncode": 0,
-            "started_at": "2026-08-29T00:00:00+00:00",
-            "ended_at": "2026-08-29T00:01:00+00:00",
+            "started_at": started_at,
+            "ended_at": ended_at,
             "required_relink_observed": True,
             "build_opts": str(build_opts.resolve()),
             "build_opts_sha256": EVIDENCE.sha256(build_opts),
@@ -79,8 +95,8 @@ class UmtFactorialEvidenceTest(unittest.TestCase):
             "gem5_sha256": EVIDENCE.sha256(target),
             "frozen_gem5": str(gem5.resolve()),
             "frozen_gem5_sha256": EVIDENCE.sha256(gem5),
-            "stdout_sha256": "3" * 64,
-            "stderr_sha256": "4" * 64,
+            "stdout_sha256": EVIDENCE.sha256(stdout),
+            "stderr_sha256": EVIDENCE.sha256(stderr),
             "builder_sha256": "5" * 64,
             "claim_boundary": "local exact cell build",
         }
@@ -168,6 +184,72 @@ class UmtFactorialEvidenceTest(unittest.TestCase):
             with self.assertRaisesRegex(
                 RuntimeError, "mismatches manifest cell"
             ):
+                EVIDENCE.validate_build_manifest_files(
+                    manifest, manifest_path, gem5
+                )
+
+    def test_build_logs_are_required_and_rehashed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest, manifest_path, gem5 = self.fixture(temporary)
+            stdout = manifest_path.parent / "build.stdout"
+            stdout.unlink()
+            with self.assertRaisesRegex(RuntimeError, "stdout log is absent"):
+                EVIDENCE.validate_build_manifest_files(
+                    manifest, manifest_path, gem5
+                )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest, manifest_path, gem5 = self.fixture(temporary)
+            stderr = manifest_path.parent / "build.stderr"
+            stderr.write_text("tampered\n", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "stderr log hash"):
+                EVIDENCE.validate_build_manifest_files(
+                    manifest, manifest_path, gem5
+                )
+
+    def test_fake_log_hash_cannot_bless_real_logs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest, manifest_path, gem5 = self.fixture(temporary)
+            manifest["stdout_sha256"] = "f" * 64
+            with self.assertRaisesRegex(RuntimeError, "stdout log hash"):
+                EVIDENCE.validate_build_manifest_files(
+                    manifest, manifest_path, gem5
+                )
+
+    def test_hashed_stdout_must_contain_exact_cell_link_record(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest, manifest_path, gem5 = self.fixture(temporary)
+            stdout = manifest_path.parent / "build.stdout"
+            stdout.write_text(
+                "[    LINK]  -> X86/gem5.opt\n", encoding="utf-8"
+            )
+            manifest["stdout_sha256"] = EVIDENCE.sha256(stdout)
+            with self.assertRaisesRegex(RuntimeError, "cell-specific relink"):
+                EVIDENCE.validate_build_manifest_files(
+                    manifest, manifest_path, gem5
+                )
+
+    def test_target_stat_fields_are_bound_to_the_artifact(self):
+        for name in ("target_size", "target_mtime_ns"):
+            with self.subTest(name=name):
+                with tempfile.TemporaryDirectory() as temporary:
+                    manifest, manifest_path, gem5 = self.fixture(temporary)
+                    manifest[name] += 1
+                    stat_label = name.removeprefix("target_").removesuffix(
+                        "_ns"
+                    )
+                    with self.assertRaisesRegex(
+                        RuntimeError, f"target {stat_label}"
+                    ):
+                        EVIDENCE.validate_build_manifest_files(
+                            manifest, manifest_path, gem5
+                        )
+
+    def test_target_mtime_must_fall_inside_build_interval(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest, manifest_path, gem5 = self.fixture(temporary)
+            manifest["ended_at"] = "2026-08-29T00:00:20+00:00"
+            with self.assertRaisesRegex(RuntimeError, "outside the build"):
                 EVIDENCE.validate_build_manifest_files(
                     manifest, manifest_path, gem5
                 )

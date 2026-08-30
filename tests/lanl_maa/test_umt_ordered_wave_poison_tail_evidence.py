@@ -153,6 +153,7 @@ class FactorialPoisonTailEvidenceTest(unittest.TestCase):
                 "descriptorUmtStatePipelineResultBankStallCycles": 4,
                 "descriptorUmtStateDividerNoLaneCycles": 4,
                 "descriptorUmtBatchCycles": 5,
+                "descriptorUmtStateDualIssueCycles": 5,
             }
         )
         _expected, bounded = DRIVER.validate(
@@ -173,20 +174,20 @@ class FactorialPoisonTailEvidenceTest(unittest.TestCase):
                 invalid = dict(stats)
                 del invalid[name]
                 with self.assertRaisesRegex(
-                    RuntimeError, "did not close|exceed active"
+                    RuntimeError, "unique-cycle counter"
                 ):
                     DRIVER.validate(invalid, [16], 4, cell, calibration=True)
 
         invalid_cases = (
-            ("descriptorUmtStateBankReadConflictCycles", -1, "did not close"),
-            ("descriptorUmtStateWritebackStallCycles", -1, "did not close"),
+            ("descriptorUmtStateBankReadConflictCycles", -1, "unique-cycle"),
+            ("descriptorUmtStateWritebackStallCycles", -1, "unique-cycle"),
             (
                 "descriptorUmtStatePipelineResultBankStallCycles",
                 6,
-                "did not close",
+                "pipeline-active",
             ),
-            ("descriptorUmtStateDividerNoLaneCycles", -1, "exceed active"),
-            ("descriptorUmtStateDividerNoLaneCycles", 6, "exceed active"),
+            ("descriptorUmtStateDividerNoLaneCycles", -1, "unique-cycle"),
+            ("descriptorUmtStateDividerNoLaneCycles", 6, "pipeline-active"),
         )
         for name, value, message in invalid_cases:
             with self.subTest(name=name, value=value):
@@ -194,6 +195,52 @@ class FactorialPoisonTailEvidenceTest(unittest.TestCase):
                 invalid[name] = value
                 with self.assertRaisesRegex(RuntimeError, message):
                     DRIVER.validate(invalid, [16], 4, cell, calibration=True)
+
+    def test_impossible_unique_cycle_ledger_fails_closed(self):
+        cell = self.cell(24, 2)
+        stats = self.complete_d32_g16_stats(24, 2)
+        stats.update(
+            {
+                "descriptorUmtBatchCycles": 100,
+                "descriptorUmtStateFpOperationsIssued": 256,
+                "descriptorUmtStateDualIssueCycles": 1000,
+                "descriptorUmtStateBankReadConflictCycles": 1000,
+                "descriptorUmtStateWritebackStallCycles": 1000,
+                "descriptorUmtStatePipelineResultBankStallCycles": 1000,
+            }
+        )
+        with self.assertRaisesRegex(RuntimeError, "dual-issue cycles exceed"):
+            DRIVER.validate(stats, [16], 4, cell, calibration=True)
+
+    def test_unique_cycle_boundary_equality_is_valid(self):
+        cell = self.cell(24, 2)
+        stats = self.complete_d32_g16_stats(24, 2)
+        stats.update(
+            {
+                "descriptorUmtBatchCycles": 100,
+                "descriptorUmtStateDualIssueCycles": 100,
+                "descriptorUmtStateBankReadConflictCycles": 100,
+                "descriptorUmtStateWritebackStallCycles": 100,
+                "descriptorUmtStatePipelineResultBankStallCycles": 100,
+                "descriptorUmtStateDividerNoLaneCycles": 100,
+            }
+        )
+        _expected, bounded = DRIVER.validate(
+            stats, [16], 4, cell, calibration=True
+        )
+        self.assertEqual(bounded["dual_issue"]["observed"], 100)
+
+    def test_pipeline_active_counter_fails_closed(self):
+        cell = self.cell(24, 2)
+        for value in (None, "100", -1):
+            with self.subTest(value=value):
+                stats = self.complete_d32_g16_stats(24, 2)
+                if value is None:
+                    del stats["descriptorUmtBatchCycles"]
+                else:
+                    stats["descriptorUmtBatchCycles"] = value
+                with self.assertRaisesRegex(RuntimeError, "pipeline-active"):
+                    DRIVER.validate(stats, [16], 4, cell, calibration=True)
 
     def test_all_cells_derive_token_high_water_and_cost(self):
         for tokens, width in FACTORIAL.CELL_VARIANTS:

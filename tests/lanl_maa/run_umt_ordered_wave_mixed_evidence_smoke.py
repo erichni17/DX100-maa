@@ -17,8 +17,8 @@ from umt_factorial_evidence import (
     static_cell_stats,
     validate_build_manifest_document,
     validate_build_manifest_files,
-    validate_dual_issue,
     validate_repository_boundary,
+    validate_unique_cycle_counters,
 )
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -353,7 +353,7 @@ def validate_packet_retry_counters(stats):
     return observed
 
 
-def observed_timing_counters(stats, cell):
+def observed_timing_counters(stats, cell, fp_operations_issued=None):
     observed = {}
     for name in TIMING_COUNTER_REASONS:
         value = stats.get(name)
@@ -363,6 +363,14 @@ def observed_timing_counters(stats, cell):
                 f"{name}={value}"
             )
         observed[name] = value
+
+    cycle_stats = stats
+    if fp_operations_issued is not None:
+        cycle_stats = dict(stats)
+        cycle_stats[
+            "descriptorUmtStateFpOperationsIssued"
+        ] = fp_operations_issued
+    validate_unique_cycle_counters(cycle_stats, cell, require_exercised=True)
 
     retained_work = (
         set(TIMING_COUNTER_REASONS)
@@ -396,35 +404,7 @@ def observed_timing_counters(stats, cell):
         raise RuntimeError(
             "mixed UMT control-read accounting did not close: " f"{observed}"
         )
-    bank_conflicts = observed["descriptorUmtStateBankReadConflictCycles"]
-    writeback_stalls = observed["descriptorUmtStateWritebackStallCycles"]
-    combined_stalls = observed[
-        "descriptorUmtStatePipelineResultBankStallCycles"
-    ]
-    if (
-        bank_conflicts < 0
-        or writeback_stalls < 0
-        or bank_conflicts > combined_stalls
-        or writeback_stalls > combined_stalls
-        or combined_stalls > bank_conflicts + writeback_stalls
-    ):
-        raise RuntimeError(
-            "mixed UMT split result-bank accounting did not close: "
-            f"bank={bank_conflicts}, writeback={writeback_stalls}, "
-            f"combined={combined_stalls}"
-        )
-    divider_no_lane = observed["descriptorUmtStateDividerNoLaneCycles"]
-    if (
-        divider_no_lane < 0
-        or divider_no_lane > observed["descriptorUmtBatchCycles"]
-    ):
-        raise RuntimeError(
-            "mixed UMT divider-no-lane cycles exceed active cycles: "
-            f"divider={divider_no_lane}, "
-            f"active={observed['descriptorUmtBatchCycles']}"
-        )
     validate_packet_retry_counters(observed)
-    validate_dual_issue(observed, cell, require_exercised=True)
     return observed
 
 
@@ -456,7 +436,11 @@ def validate_timing_contract(document, build_manifest_sha256, cell):
     if any(type(value) is not int for value in counters.values()):
         raise RuntimeError("timing contract counters must be exact integers")
     # Apply the evidence and capacity invariants to the predeclared values too.
-    observed_timing_counters(counters, cell)
+    observed_timing_counters(
+        counters,
+        cell,
+        exact_stats(cell)["descriptorUmtStateFpOperationsIssued"],
+    )
     return counters
 
 

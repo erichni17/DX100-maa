@@ -239,15 +239,15 @@ class MixedUmtEvidenceTest(unittest.TestCase):
         )
 
         invalid_cases = (
-            ("descriptorUmtStateBankReadConflictCycles", -1, "did not close"),
-            ("descriptorUmtStateWritebackStallCycles", -1, "did not close"),
+            ("descriptorUmtStateBankReadConflictCycles", -1, "unique-cycle"),
+            ("descriptorUmtStateWritebackStallCycles", -1, "unique-cycle"),
             (
                 "descriptorUmtStatePipelineResultBankStallCycles",
                 6,
-                "did not close",
+                "pipeline-active",
             ),
-            ("descriptorUmtStateDividerNoLaneCycles", -1, "exceed active"),
-            ("descriptorUmtStateDividerNoLaneCycles", 6, "exceed active"),
+            ("descriptorUmtStateDividerNoLaneCycles", -1, "unique-cycle"),
+            ("descriptorUmtStateDividerNoLaneCycles", 6, "pipeline-active"),
         )
         for name, value, message in invalid_cases:
             with self.subTest(name=name, value=value):
@@ -255,6 +255,49 @@ class MixedUmtEvidenceTest(unittest.TestCase):
                 invalid[name] = value
                 with self.assertRaisesRegex(RuntimeError, message):
                     DRIVER.observed_timing_counters(invalid, self.cell())
+
+    def test_impossible_unique_cycle_ledger_fails_closed(self):
+        stats = self.complete_fake_stats()
+        stats.update(
+            {
+                "descriptorUmtBatchCycles": 5,
+                "descriptorUmtStateFpOperationsIssued": 5520,
+                "descriptorUmtStateDualIssueCycles": 3000,
+                "descriptorUmtStateBankReadConflictCycles": 6,
+                "descriptorUmtStateWritebackStallCycles": 6,
+                "descriptorUmtStatePipelineResultBankStallCycles": 6,
+            }
+        )
+        with self.assertRaisesRegex(RuntimeError, "dual-issue cycles exceed"):
+            DRIVER.observed_timing_counters(stats, self.cell())
+
+    def test_unique_cycle_boundary_equality_is_valid(self):
+        stats = self.complete_fake_stats()
+        stats.update(
+            {
+                "descriptorUmtBatchCycles": 5,
+                "descriptorUmtStateDualIssueCycles": 5,
+                "descriptorUmtStateBankReadConflictCycles": 5,
+                "descriptorUmtStateWritebackStallCycles": 5,
+                "descriptorUmtStatePipelineResultBankStallCycles": 5,
+                "descriptorUmtStateDividerNoLaneCycles": 5,
+            }
+        )
+        observed = DRIVER.observed_timing_counters(stats, self.cell())
+        self.assertEqual(observed["descriptorUmtStateDualIssueCycles"], 5)
+
+    def test_pipeline_active_counter_fails_closed(self):
+        for value in (None, "5", -1):
+            with self.subTest(value=value):
+                stats = self.complete_fake_stats()
+                if value is None:
+                    del stats["descriptorUmtBatchCycles"]
+                else:
+                    stats["descriptorUmtBatchCycles"] = value
+                with self.assertRaisesRegex(
+                    RuntimeError, "absent or noninteger|pipeline-active"
+                ):
+                    DRIVER.observed_timing_counters(stats, self.cell())
 
     def test_packet_retry_counters_are_exactly_predeclared(self):
         cell = self.cell()
@@ -466,7 +509,9 @@ class MixedUmtEvidenceTest(unittest.TestCase):
             with self.subTest(name=name):
                 stats = self.complete_fake_stats()
                 stats[name] = 0
-                with self.assertRaisesRegex(RuntimeError, "retained"):
+                with self.assertRaisesRegex(
+                    RuntimeError, "retained|dual-issue|accounting"
+                ):
                     DRIVER.timing_contract_candidate(stats, "a" * 64, cell)
 
 

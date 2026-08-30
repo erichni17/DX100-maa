@@ -14,8 +14,8 @@ from umt_factorial_evidence import (
     static_cell_stats,
     validate_build_manifest_document,
     validate_build_manifest_files,
-    validate_dual_issue,
     validate_repository_boundary,
+    validate_unique_cycle_counters,
 )
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -293,8 +293,11 @@ def validate(
             "UMT64 poison-tail status reads exceed total control reads: "
             f"{bounded}"
         )
-    batch_cycles = stats.get("descriptorUmtBatchCycles")
-    if batch_cycles is None or batch_cycles <= len(group_counts):
+    cycle_counters = validate_unique_cycle_counters(
+        stats, cell, require_exercised=(groups > 1)
+    )
+    batch_cycles = cycle_counters["descriptorUmtBatchCycles"]
+    if batch_cycles <= len(group_counts):
         raise RuntimeError(
             "UMT measured pipeline cycles are absent or still a per-batch "
             f"placeholder: {batch_cycles}"
@@ -312,49 +315,7 @@ def validate(
     ):
         raise RuntimeError("D64 full matrix did not exercise line holding")
     bounded["descriptorUmtInputLineWaiterHoldLineCycles"] = input_hold_cycles
-    bounded["dual_issue"] = validate_dual_issue(
-        stats, cell, require_exercised=(groups > 1)
-    )
-    bank_conflicts = stats.get("descriptorUmtStateBankReadConflictCycles")
-    writeback_stalls = stats.get("descriptorUmtStateWritebackStallCycles")
-    combined_stalls = stats.get(
-        "descriptorUmtStatePipelineResultBankStallCycles"
-    )
-    if (
-        type(bank_conflicts) is not int
-        or type(writeback_stalls) is not int
-        or type(combined_stalls) is not int
-        or bank_conflicts < 0
-        or writeback_stalls < 0
-        or bank_conflicts > combined_stalls
-        or writeback_stalls > combined_stalls
-        or combined_stalls > bank_conflicts + writeback_stalls
-    ):
-        raise RuntimeError(
-            "UMT poison-tail split result-bank accounting did not close: "
-            f"bank={bank_conflicts}, writeback={writeback_stalls}, "
-            f"combined={combined_stalls}"
-        )
-    divider_no_lane = stats.get("descriptorUmtStateDividerNoLaneCycles")
-    if (
-        type(divider_no_lane) is not int
-        or divider_no_lane < 0
-        or divider_no_lane > batch_cycles
-    ):
-        raise RuntimeError(
-            "UMT poison-tail divider-no-lane cycles exceed active cycles: "
-            f"divider={divider_no_lane}, active={batch_cycles}"
-        )
-    bounded.update(
-        {
-            "descriptorUmtStateBankReadConflictCycles": bank_conflicts,
-            "descriptorUmtStateWritebackStallCycles": writeback_stalls,
-            "descriptorUmtStatePipelineResultBankStallCycles": (
-                combined_stalls
-            ),
-            "descriptorUmtStateDividerNoLaneCycles": divider_no_lane,
-        }
-    )
+    bounded.update(cycle_counters)
     if len(group_counts) > 1:
         for name in (
             "descriptorUmtStateTokenBackpressureEvents",
