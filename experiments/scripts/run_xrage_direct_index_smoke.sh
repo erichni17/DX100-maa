@@ -730,6 +730,15 @@ complete_line_payload_backpressure_cycles=$(
 complete_line_payload_peak_active=$(
     sum_indirect_stat IND_VirtCompleteLinePayloadPeakActive
 )
+complete_line_payload_scheduled_words=$(
+    sum_indirect_stat IND_VirtCompleteLinePayloadScheduledWords
+)
+complete_line_payload_read_words=$(
+    sum_indirect_stat IND_VirtCompleteLinePayloadReadWords
+)
+complete_line_payload_serial_read_cycles=$(
+    sum_indirect_stat IND_VirtCompleteLinePayloadSerialReadCycles
+)
 pages_ready=$(sum_indirect_stat IND_VirtPagesReady)
 index_words=$(sum_indirect_stat IND_VirtIndexWords)
 index_filter_words=$(sum_indirect_stat IND_VirtIndexFilterWords)
@@ -852,6 +861,9 @@ for value in "$write_issues" "$write_completions" "$pages_ready" \
     "$complete_line_payload_blocked_cycles" \
     "$complete_line_payload_backpressure_cycles" \
     "$complete_line_payload_peak_active" \
+    "$complete_line_payload_scheduled_words" \
+    "$complete_line_payload_read_words" \
+    "$complete_line_payload_serial_read_cycles" \
     "$index_words" "$index_filter_words" "$index_filter_cycles" \
     "$index_filter_wait_events" "$index_filter_wait_cycles" \
     "$row_table_full_events" "$offset_table_full_events" \
@@ -882,7 +894,10 @@ if [[ $complete_line_payload_words_per_cycle -eq 0 ]]; then
        $complete_line_payload_read_cycles -eq 0 &&
        $complete_line_payload_blocked_cycles -eq 0 &&
        $complete_line_payload_backpressure_cycles -eq 0 &&
-       $complete_line_payload_peak_active -eq 0 ]] || {
+       $complete_line_payload_peak_active -eq 0 &&
+       $complete_line_payload_scheduled_words -eq 0 &&
+       $complete_line_payload_read_words -eq 0 &&
+       $complete_line_payload_serial_read_cycles -eq 0 ]] || {
         echo "disabled complete-line payload staging recorded work" >&2
         exit 1
     }
@@ -892,13 +907,31 @@ else
             ((8 + complete_line_payload_words_per_cycle - 1) /
                 complete_line_payload_words_per_cycle)
     ))
-    [[ $complete_line_payload_starts -eq $full_line_writes &&
-       $complete_line_payload_completions -eq $full_line_writes ]] &&
-        ((complete_line_payload_read_cycles ==
-          expected_payload_read_cycles)) || {
+    expected_payload_words=$((full_line_writes * 8))
+    minimum_payload_read_cycles=$((
+        (expected_payload_words +
+            complete_line_payload_words_per_cycle - 1) /
+            complete_line_payload_words_per_cycle
+    ))
+    if ((complete_line_payload_starts != full_line_writes ||
+        complete_line_payload_completions != full_line_writes ||
+        complete_line_payload_scheduled_words != expected_payload_words ||
+        complete_line_payload_read_words != expected_payload_words ||
+        complete_line_payload_serial_read_cycles !=
+            expected_payload_read_cycles ||
+        complete_line_payload_read_cycles < minimum_payload_read_cycles ||
+        complete_line_payload_read_cycles >
+            complete_line_payload_serial_read_cycles)); then
         echo "complete-line payload staging did not close exactly" >&2
         exit 1
-    }
+    fi
+    if [[ $complete_line_payload_active_lines -eq 1 ]]; then
+        if ((complete_line_payload_read_cycles !=
+            complete_line_payload_serial_read_cycles)); then
+            echo "single-line payload staging cycle count is not exact" >&2
+            exit 1
+        fi
+    fi
     payload_peak_bound=$((
         complete_line_payload_active_lines * maa_indirect_instructions
     ))
@@ -1093,7 +1126,10 @@ fi
     printf '\tcomplete_line_payload_blocked_cycles'
     printf '\tcomplete_line_payload_backpressure_cycles'
     printf '\tcomplete_line_payload_active_lines'
-    printf '\tcomplete_line_payload_peak_active\n'
+    printf '\tcomplete_line_payload_peak_active'
+    printf '\tcomplete_line_payload_scheduled_words'
+    printf '\tcomplete_line_payload_read_words'
+    printf '\tcomplete_line_payload_serial_read_cycles\n'
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
         "$hash" "$roi_ticks" "$final_ticks" "$stats_blocks" \
         "$write_issues" "$write_completions" \
@@ -1130,7 +1166,7 @@ fi
         "$combine_lookup_peak" "$page_ordered_selections" \
         "$page_ordered_deferrals" "$combine_bank_accesses" \
         "$combine_bank_conflicts"
-    printf '\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$complete_line_payload_words_per_cycle" \
         "$complete_line_payload_starts" \
         "$complete_line_payload_completions" \
@@ -1138,7 +1174,10 @@ fi
         "$complete_line_payload_blocked_cycles" \
         "$complete_line_payload_backpressure_cycles" \
         "$complete_line_payload_active_lines" \
-        "$complete_line_payload_peak_active"
+        "$complete_line_payload_peak_active" \
+        "$complete_line_payload_scheduled_words" \
+        "$complete_line_payload_read_words" \
+        "$complete_line_payload_serial_read_cycles"
 } > "$out/result.tsv"
 read -r dram_reads dram_activates dram_precharges < <(
     awk '

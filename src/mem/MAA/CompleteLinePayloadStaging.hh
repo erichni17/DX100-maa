@@ -38,6 +38,9 @@ class CompleteLinePayloadStaging
         uint64_t completions = 0;
         uint64_t readCycles = 0;
         uint64_t blockedCycles = 0;
+        uint64_t scheduledWords = 0;
+        uint64_t readWords = 0;
+        uint64_t serialReadCycles = 0;
         uint32_t peakActive = 0;
     };
 
@@ -109,6 +112,9 @@ class CompleteLinePayloadStaging
         entries[free].wordsRead = 0;
         ++activeEntries;
         ++stagingCounters.starts;
+        stagingCounters.scheduledWords += identity.totalWords;
+        stagingCounters.serialReadCycles +=
+            (identity.totalWords + wordsPerCycle - 1) / wordsPerCycle;
         stagingCounters.peakActive =
             std::max(stagingCounters.peakActive, activeEntries);
         return Result::Accepted;
@@ -250,6 +256,7 @@ class CompleteLinePayloadStaging
                     continue;
                 }
                 ++entry.wordsRead;
+                ++stagingCounters.readWords;
                 --budget;
                 emptySearches = 0;
                 read = true;

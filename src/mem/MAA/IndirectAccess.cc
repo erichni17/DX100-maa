@@ -7946,6 +7946,11 @@ void IndirectAccessUnit::executeInstruction() {
                      my_indirect_id, payload_counters.starts,
                      payload_counters.completions,
                      expected_payload_lines);
+            panic_if(payload_counters.scheduledWords !=
+                         payload_counters.readWords,
+                     "I[%d] payload staging word imbalance %lu/%lu\n",
+                     my_indirect_id, payload_counters.scheduledWords,
+                     payload_counters.readWords);
             (*maa->stats.IND_VirtCompleteLinePayloadStarts[
                 my_indirect_id]) += payload_counters.starts;
             (*maa->stats.IND_VirtCompleteLinePayloadCompletions[
@@ -7956,6 +7961,12 @@ void IndirectAccessUnit::executeInstruction() {
                 my_indirect_id]) += payload_counters.blockedCycles;
             (*maa->stats.IND_VirtCompleteLinePayloadPeakActive[
                 my_indirect_id]) += payload_counters.peakActive;
+            (*maa->stats.IND_VirtCompleteLinePayloadScheduledWords[
+                my_indirect_id]) += payload_counters.scheduledWords;
+            (*maa->stats.IND_VirtCompleteLinePayloadReadWords[
+                my_indirect_id]) += payload_counters.readWords;
+            (*maa->stats.IND_VirtCompleteLinePayloadSerialReadCycles[
+                my_indirect_id]) += payload_counters.serialReadCycles;
             if (completeLineOnlyOperation()) {
                 const uint64_t expected_tail =
                     my_max % my_words_per_cl == 0 ? 0 : 1;

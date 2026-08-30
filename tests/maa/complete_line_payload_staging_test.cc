@@ -35,6 +35,9 @@ checkWidth(uint32_t width, uint8_t words)
     CHECK(cycle == 100 + expected);
     CHECK(stage.progress() == words);
     CHECK(stage.counters().readCycles == expected);
+    CHECK(stage.counters().scheduledWords == words);
+    CHECK(stage.counters().readWords == words);
+    CHECK(stage.counters().serialReadCycles == expected);
     CHECK(stage.complete(line) == Stage::Result::Accepted);
 }
 
@@ -55,6 +58,9 @@ checkSharedWidthPipeline()
     for (const auto &line : lines)
         CHECK(stage.advance(line, 41) == Stage::Result::Accepted);
     CHECK(stage.counters().readCycles == 1);
+    CHECK(stage.counters().scheduledWords == 8);
+    CHECK(stage.counters().readWords == 8);
+    CHECK(stage.counters().serialReadCycles == 8);
     for (const auto &line : lines)
         CHECK(stage.complete(line) == Stage::Result::Accepted);
     CHECK(!stage.isActive());

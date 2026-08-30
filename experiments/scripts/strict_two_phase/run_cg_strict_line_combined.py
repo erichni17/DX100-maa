@@ -380,6 +380,9 @@ def main(argv: list[str] | None = None) -> int:
             "IND_VirtCompleteLinePayloadBlockedCycles",
             "IND_VirtCompleteLinePayloadBackpressureCycles",
             "IND_VirtCompleteLinePayloadPeakActive",
+            "IND_VirtCompleteLinePayloadScheduledWords",
+            "IND_VirtCompleteLinePayloadReadWords",
+            "IND_VirtCompleteLinePayloadSerialReadCycles",
         )
     }
     if args.payload_words_per_cycle == 0:
@@ -410,6 +413,29 @@ def main(argv: list[str] | None = None) -> int:
             0 < payload_stats["IND_VirtCompleteLinePayloadPeakActive"]
             <= args.payload_active_lines * direct_instructions,
             "CG payload active-line peak exceeded its bound",
+        )
+        scheduled_words = payload_stats[
+            "IND_VirtCompleteLinePayloadScheduledWords"
+        ]
+        read_words = payload_stats["IND_VirtCompleteLinePayloadReadWords"]
+        read_cycles = payload_stats[
+            "IND_VirtCompleteLinePayloadReadCycles"
+        ]
+        serial_cycles = payload_stats[
+            "IND_VirtCompleteLinePayloadSerialReadCycles"
+        ]
+        minimum_cycles = (
+            read_words + args.payload_words_per_cycle - 1
+        ) // args.payload_words_per_cycle
+        require(
+            scheduled_words == read_words
+            and read_words > 0
+            and minimum_cycles <= read_cycles <= serial_cycles
+            and (
+                args.payload_active_lines != 1
+                or read_cycles == serial_cycles
+            ),
+            "CG payload word/cycle arithmetic did not close exactly",
         )
     stats.update(payload_stats)
     dense_initializations = gate.base.stat_sum(

@@ -8953,6 +8953,27 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
                     "IND_VirtCompleteLinePayloadPeakActive"),
                 statistics::units::Count::get(),
                 "sum of per-instruction peak active payload lines"));
+        IND_VirtCompleteLinePayloadScheduledWords.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_VirtCompleteLinePayloadScheduledWords"),
+                statistics::units::Count::get(),
+                "valid payload words admitted to finite staging"));
+        IND_VirtCompleteLinePayloadReadWords.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_VirtCompleteLinePayloadReadWords"),
+                statistics::units::Count::get(),
+                "valid payload words consumed by the finite read port"));
+        IND_VirtCompleteLinePayloadSerialReadCycles.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_VirtCompleteLinePayloadSerialReadCycles"),
+                statistics::units::Cycle::get(),
+                "sum of isolated per-line finite-port read cycles"));
         IND_VirtPartialWrites.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtPartialWrites"),
             statistics::units::Count::get(),
