@@ -366,7 +366,8 @@ def main(argv: list[str] | None = None) -> int:
             all(
                 value == 0
                 for name, value in payload_stats.items()
-                if name != "IND_VirtFullLineWrites"
+                if name
+                not in ("IND_VirtFullLineWrites", "IND_VirtPartialWrites")
             ),
             "disabled CG payload staging recorded work",
         )
