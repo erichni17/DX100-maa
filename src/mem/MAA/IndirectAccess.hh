@@ -23,6 +23,7 @@
 #include "mem/MAA/BoundedQuantileRanges.hh"
 #include "mem/MAA/BoundedRangePass.hh"
 #include "mem/MAA/CompleteLineDrainBudget.hh"
+#include "mem/MAA/CompleteLinePayloadPort.hh"
 #include "mem/MAA/DenseBackingLineTracker.hh"
 #include "mem/MAA/DirectIndexFeeder.hh"
 #include "mem/MAA/FusedP16ProductState.hh"
@@ -155,6 +156,7 @@ protected:
         bool valid = false;
         Addr line_vaddr = 0;
         uint16_t valid_words = 0;
+        uint64_t payload_generation = 0;
         VirtualCombinePayloadStore::LineRefs word_refs =
             VirtualCombinePayloadStore::emptyLineRefs();
     };
@@ -179,6 +181,11 @@ protected:
     bool virtual_complete_line_only = false;
     maa::CompleteLineDrainBudget virtual_complete_line_drain_budget;
     Tick virtual_complete_line_drain_retry_tick = 0;
+    maa::CompleteLinePayloadPort virtual_complete_line_payload_port;
+    Tick virtual_complete_line_payload_retry_tick = 0;
+    uint64_t virtual_complete_line_payload_operation_generation = 0;
+    uint64_t virtual_complete_line_payload_next_operation_generation = 0;
+    uint64_t virtual_complete_line_payload_next_line_generation = 0;
     maa::DenseBackingLineTracker dense_backing_lines;
     uint64_t virtual_dense_initialization_writes = 0;
     struct VirtualRetirementSenderState : public Packet::SenderState
@@ -319,6 +326,7 @@ public:
                   bool _virtual_dense_write_allocate,
                   bool _virtual_complete_line_only,
                   int _virtual_complete_line_drain_width,
+                  int _virtual_complete_line_payload_width,
                   int _soa_jit_predicate_active_credits,
                   int _virtual_index_buffer_lines,
                   int _virtual_index_issue_lines_per_cycle,
@@ -929,6 +937,11 @@ protected:
     bool insertVirtualCombineWord(int itr, const uint8_t *data);
     bool completeLineDrainAvailable();
     void recordCompleteLineDrainIssue();
+    maa::CompleteLinePayloadPort::Identity completeLinePayloadIdentity(
+        uint32_t slot) const;
+    bool completeLinePayloadReady(uint32_t slot);
+    void recordCompleteLinePayloadRetry(uint32_t slot);
+    void recordCompleteLinePayloadIssue(uint32_t slot);
     void drainVirtualCombiner(bool flush_partial);
     bool virtualCombinerEmpty() const;
     bool boundedSourceResponsesComplete() const;

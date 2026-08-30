@@ -160,6 +160,8 @@ MAA::MAA(const MAAParams &p)
           p.virtual_page_ordered_combiner_drain),
       virtual_complete_line_drain_lines_per_cycle(
           p.virtual_complete_line_drain_lines_per_cycle),
+      virtual_complete_line_payload_words_per_cycle(
+          p.virtual_complete_line_payload_words_per_cycle),
       virtual_combine_banks(p.virtual_combine_banks),
       virtual_response_slots(p.virtual_response_slots),
       virtual_response_words(p.virtual_response_words),
@@ -397,6 +399,11 @@ MAA::MAA(const MAAParams &p)
              "Virtual complete-line drain width must be one of 0/1/2/4/8, "
              "got %u\n",
              virtual_complete_line_drain_lines_per_cycle);
+    panic_if(!maa::CompleteLinePayloadPort::validWidth(
+                 virtual_complete_line_payload_words_per_cycle),
+             "Virtual complete-line payload width must be one of 0/1/2/4/8, "
+             "got %u\n",
+             virtual_complete_line_payload_words_per_cycle);
     panic_if(virtual_combine_lookup_latency_cycles >
                  maa::VirtualCombineLookupPipeline::MaxLatencyCycles,
              "Virtual combiner lookup latency must be in [0, %u], got %u\n",
@@ -757,6 +764,8 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
     }
     const unsigned int complete_line_drain_width =
         virtual_complete_line_drain_lines_per_cycle;
+    const unsigned int complete_line_payload_width =
+        virtual_complete_line_payload_words_per_cycle;
     for (int i = 0; i < num_indirect_units_total; i++) {
         indirectAccessUnits[i].allocate(i, num_tile_elements,
                                         num_offset_table_entries,
@@ -782,6 +791,7 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
                                         virtual_dense_write_allocate,
                                         virtual_complete_line_only,
                                         complete_line_drain_width,
+                                        complete_line_payload_width,
                                         soa_jit_predicate_active_credits,
                                         virtual_index_buffer_lines,
                                         virtual_index_issue_lines_per_cycle,
@@ -8883,6 +8893,52 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
                 statistics::units::Count::get(),
                 "sum of per-instruction peak complete virtual-combiner "
                 "lines issued in one MAA cycle"));
+        IND_VirtCompleteLinePayloadStarts.push_back(new statistics::Scalar(
+            this,
+            MAKE_INDIRECT_STAT_NAME("IND_VirtCompleteLinePayloadStarts"),
+            statistics::units::Count::get(),
+            "complete virtual-combiner lines admitted to finite payload "
+            "read timing"));
+        IND_VirtCompleteLinePayloadWordReads.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_VirtCompleteLinePayloadWordReads"),
+                statistics::units::Count::get(),
+                "resident combiner payload/reference words consumed before "
+                "complete-line issue"));
+        IND_VirtCompleteLinePayloadReadCycles.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_VirtCompleteLinePayloadReadCycles"),
+                statistics::units::Cycle::get(),
+                "MAA cycles that consumed finite complete-line payload "
+                "read bandwidth"));
+        IND_VirtCompleteLinePayloadReadyRetryCycles.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_VirtCompleteLinePayloadReadyRetryCycles"),
+                statistics::units::Cycle::get(),
+                "MAA cycles with payload-ready complete lines retried by "
+                "downstream issue or write credits"));
+        IND_VirtCompleteLinePayloadPeakStartsPerCycle.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_VirtCompleteLinePayloadPeakStartsPerCycle"),
+                statistics::units::Count::get(),
+                "sum of per-instruction peak complete-line payload starts "
+                "in one MAA cycle"));
+        IND_VirtCompleteLinePayloadPeakWordReadsPerCycle.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_VirtCompleteLinePayloadPeakWordReadsPerCycle"),
+                statistics::units::Count::get(),
+                "sum of per-instruction peak resident payload/reference "
+                "word reads in one MAA cycle"));
         IND_VirtPartialWrites.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtPartialWrites"),
             statistics::units::Count::get(),

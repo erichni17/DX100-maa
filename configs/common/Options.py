@@ -379,6 +379,16 @@ def addNoISAOptions(parser):
         ),
     )
     parser.add_argument(
+        "--maa_virtual_complete_line_payload_words_per_cycle",
+        type=int,
+        default=0,
+        choices=(0, 1, 2, 4, 8),
+        help=(
+            "Complete-line combiner payload/reference words read per MAA "
+            "cycle (0 disables timing)"
+        ),
+    )
+    parser.add_argument(
         "--maa_virtual_response_slots",
         type=int,
         default=8,
