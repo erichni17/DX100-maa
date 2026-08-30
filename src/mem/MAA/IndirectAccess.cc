@@ -11260,6 +11260,14 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
     }
     if (virtual_combine_payload.full())
         drainVirtualCombiner(false);
+    if (virtual_combine_payload.full() && completeLineOnlyOperation() &&
+        virtual_complete_line_payload_staging.isActive()) {
+        // A finite payload port may still be serializing a complete line.
+        // Backpressure the retained response instead of evicting a partial
+        // line that complete-line-only mode cannot legally write.
+        scheduleExecuteInstructionEvent(1);
+        return false;
+    }
     panic_if(virtual_combine_payload.used() !=
                  static_cast<size_t>(virtual_combine_words),
              "I[%d] virtual payload occupancy diverged after drain\n",
