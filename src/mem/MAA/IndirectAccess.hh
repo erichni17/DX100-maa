@@ -937,6 +937,7 @@ protected:
         int slot, const VirtualCombineSlot &line) const;
     bool completeLinePayloadReady(int slot, const VirtualCombineSlot &line);
     void completeLinePayloadIssued(int slot, const VirtualCombineSlot &line);
+    void recordCompleteLinePayloadBackpressure();
     void drainVirtualCombiner(bool flush_partial);
     bool virtualCombinerEmpty() const;
     bool boundedSourceResponsesComplete() const;

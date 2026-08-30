@@ -11266,12 +11266,7 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
         // A finite payload port may still be serializing a complete line.
         // Backpressure the retained response instead of evicting a partial
         // line that complete-line-only mode cannot legally write.
-        if (virtual_complete_line_payload_backpressure_tick != curTick()) {
-            virtual_complete_line_payload_backpressure_tick = curTick();
-            (*maa->stats.IND_VirtCompleteLinePayloadBackpressureCycles[
-                my_indirect_id])++;
-        }
-        scheduleExecuteInstructionEvent(1);
+        recordCompleteLinePayloadBackpressure();
         return false;
     }
     panic_if(virtual_combine_payload.used() !=
@@ -11303,6 +11298,14 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
         const bool victim_is_target = target == &victim;
         const bool victim_was_full =
             victim.valid_words == ((1U << my_words_per_cl) - 1);
+        if (completeLineOnlyOperation() && !victim_was_full &&
+            virtual_complete_line_payload_staging.enabled()) {
+            // Leave this ready response pending. The lookup completion sweep
+            // may then choose another response that completes a resident
+            // line, releasing payload without an illegal partial write.
+            recordCompleteLinePayloadBackpressure();
+            return false;
+        }
         panic_if(completeLineOnlyOperation() && !victim_was_full,
                  "I[%d] complete-line-only capacity pressure selected "
                  "partial victim 0x%lx mask=0x%x\n",
@@ -11565,6 +11568,17 @@ IndirectAccessUnit::completeLinePayloadIssued(
                  maa::CompleteLinePayloadStaging::Result::Accepted,
              "I[%d] complete-line payload completion failed: %d\n",
              my_indirect_id, static_cast<int>(completed));
+}
+
+void
+IndirectAccessUnit::recordCompleteLinePayloadBackpressure()
+{
+    if (virtual_complete_line_payload_backpressure_tick != curTick()) {
+        virtual_complete_line_payload_backpressure_tick = curTick();
+        (*maa->stats.IND_VirtCompleteLinePayloadBackpressureCycles[
+            my_indirect_id])++;
+    }
+    scheduleExecuteInstructionEvent(1);
 }
 
 void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
