@@ -27,6 +27,13 @@ The treatment is the number of FP64 payload words read per MAA cycle. Width 4
 is 32 bytes/cycle, equal to the configured noncoherent MAA crossbar width
 (`maa_ncbus_width=32`).
 
+Widths 0/2/4/8 and the FLAG control curve use simulator source
+`df6a9576bac106848e839c28b8368d760e40dedd` and binary SHA-256
+`733c2b64858f844bd78301cb78626196f184a1801af74bdc1479fcbe1e53ab0a`.
+The width-1 liveness rerun adds only response-aware retry at
+`6a6737a5eef3ef84fcd355bac5d4eb5729ff5d7e`, binary SHA-256
+`8799671e25abfb230767780bd4ab58e45421b41749c72e55a2acc149368392aa`.
+
 ## XRAGE
 
 Native16 remains the historical 42,312,279-tick reference. It is not an
@@ -37,17 +44,22 @@ here is width 0, the same hybrid with ideal payload-copy bandwidth.
 | Words/cycle | `simTicks` | Versus ideal hybrid | Versus native16 | Result |
 |---:|---:|---:|---:|---|
 | 0 | 37,407,256 | 0.000% | -11.592% | exact control |
-| 1 | n/a | n/a | n/a | rejected on partial-line payload pressure |
+| 1 | 43,123,888 | +15.282% | +1.918% | exact after response-aware retry; rejected on performance |
 | 2 | 37,645,136 | +0.636% | -11.030% | exact |
 | 4 | 37,409,134 | +0.005% | -11.588% | exact |
 | 8 | 37,406,317 | -0.003% | -11.595% | exact |
 
-Each successful finite arm staged and completed exactly 8,192 full lines. The
-measured read-cycle totals were exactly 32,768, 16,384, and 8,192 at widths 2,
-4, and 8. No successful XRAGE arm reached result-payload backpressure.
+Each finite arm staged and completed exactly 8,192 full lines. The measured
+read-cycle totals were exactly 65,536, 32,768, 16,384, and 8,192 at widths 1,
+2, 4, and 8. Width 1 incurred 24,259 producer-backpressure cycles. Widths 2,
+4, and 8 incurred none.
 
-Raw campaign:
-`/data1/nier/dx100-runs/2026-08-30-xrage-complete-line-payload-r2`.
+Raw campaigns:
+
+- widths 0/2/4/8:
+  `/data1/nier/dx100-runs/2026-08-30-xrage-complete-line-payload-r2`;
+- width 1 after response-aware retry:
+  `/data1/nier/dx100-runs/2026-08-30-xrage-payload-width1-retry-r1`.
 
 ## FLAG
 
@@ -82,8 +94,9 @@ acceptable.
 
 Width 1 is not selected. Increasing tag capacity, associativity, or assigning
 the full 4K word budget to the combiner did not prevent partial-line pressure.
-A response-aware retry policy is being tested as an optional lower-cost point;
-it is not required by the selected width-4 design.
+Response-aware retry makes it legal without partial writes, but the resulting
+15.282% XRAGE cost and 24,259 backpressure cycles are too high. This retry is
+retained as a liveness fix, not as the selected performance point.
 
 ## Remaining boundary
 

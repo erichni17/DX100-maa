@@ -112,12 +112,12 @@ run_one() {
     local lookup_issues lookup_completions lookup_wait lookup_peak
     local page_selections page_deferrals payload_width payload_starts
     local payload_completions payload_read_cycles payload_blocked_cycles
-    local payload_backpressure_cycles
+    local payload_backpressure_cycles maa_indirect_instructions
     read -r hash ticks writes completions full partial width issued stalls peak \
         lookup_issues lookup_completions lookup_wait lookup_peak \
         page_selections page_deferrals payload_width payload_starts \
         payload_completions payload_read_cycles payload_blocked_cycles \
-        payload_backpressure_cycles < <(
+        payload_backpressure_cycles maa_indirect_instructions < <(
         awk -F '\t' '
             NR == 1 {
                 for (i = 1; i <= NF; i++) col[$i] = i
@@ -144,7 +144,8 @@ run_one() {
                     $(col["complete_line_payload_completions"]),
                     $(col["complete_line_payload_read_cycles"]),
                     $(col["complete_line_payload_blocked_cycles"]),
-                    $(col["complete_line_payload_backpressure_cycles"])
+                    $(col["complete_line_payload_backpressure_cycles"]),
+                    $(col["maa_indirect_instructions"])
             }
         ' "$run_out/result.tsv"
     )
@@ -161,7 +162,9 @@ run_one() {
            $lookup_wait -eq 0 && $lookup_peak -eq 0 ]] || return 1
     else
         [[ $lookup_issues -eq $length && $lookup_completions -eq $length &&
-           $lookup_peak -gt 0 && $lookup_peak -le 1024 ]] || return 1
+           $lookup_peak -gt 0 &&
+           $lookup_peak -le $((1024 * maa_indirect_instructions)) ]] || \
+            return 1
     fi
     if [[ $page_ordered_drain -eq 0 ]]; then
         [[ $page_selections -eq 0 && $page_deferrals -eq 0 ]] || return 1

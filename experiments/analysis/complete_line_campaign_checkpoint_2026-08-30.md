@@ -54,6 +54,9 @@ XRAGE direct-retirement/fusion optimization.
 - 1,536 tags do not cover all FLAG inputs; FLAG retains the 2,048-tag geometry.
 - 8-way low-bit indexing causes a partial XRAGE victim; XOR7/10 remove it.
 - 4-way remains illegal for every tested XOR shift 1-20.
+- A one-word/cycle payload port initially selected partial victims under
+  pressure. Response-aware retry restores exact liveness but costs 15.282% on
+  XRAGE, so the selected point remains four words/cycle.
 - A final-drain bug misclassified a credit-blocked full `0xff` line as an
   illegal partial; `3d28c649` retains and retries it after ACK.
 - The first drain sweep rejected valid finite arms because peak statistics are
