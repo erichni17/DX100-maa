@@ -1,28 +1,32 @@
 # UMT ingress micro harness
 
 `tests/lanl_maa/umt_ingress_micro_harness.py` is a four-arm, evidence-only
-opcode-11 harness: D32/G16, D32/G31, D32/G32, and D64/G32. v4 hard-pins the
+opcode-11 harness: D32/G16, D32/G31, D32/G32, and D64/G32. v5 hard-pins the
 adaptive native test driver (`7db125ac…`), its clean native source commit/tree,
 the `LanlMaaUmtSubmit.cc` ABI source and native ABI tests, and the adaptive-v1
 mapping cookie.  It rejects v1 entirely: v1 accepted an arbitrary native input
 and a three-field build proof.
 
-The v4 build proof has exact schema
-`lanl-maa-umt-ingress-instrumented-gem5-build-proof-v4`. It accepts only the
+The v5 build proof has exact schema
+`lanl-maa-umt-ingress-instrumented-gem5-build-proof-v5`. It accepts only the
 clean, hard-pinned trace-replay source tree at `6d36a1a4`/`3359187e`, its exact
 `build/X86_UMT_T32_W2/gem5.opt` target, six fixed source hashes, exact SCons
-argv/environment/define, and hash-bound stdout/stderr/config artifacts. It
+argv ending in `CCFLAGS_EXTRA=-DLANL_MAA_UMT_INGRESS_TRACE_TEST=1`, an empty
+systemd `Environment=`, and hash-bound stdout/stderr/config artifacts. It
 also requires the actual producing unit
-`umt-ingress-trace-build-v1-20260830.service`, a hash-bound live
+`umt-ingress-trace-build-v5-20260830.service`, a hash-bound live
 `systemctl --user show` snapshot, and a terminal snapshot. Both snapshots
-must exactly agree on unit, invocation ID, original main PID, working
-directory, fixed resources, SCons argv, and environment. The original live
-PID is additionally bound to a hash-bound `/proc` start-tick receipt, so a
+must exactly agree on unit, invocation ID, original wrapper PID, working
+directory, fixed resources, wrapper command, and empty environment. The
+original live wrapper PID is additionally bound to a hash-bound `/proc` start-tick receipt, so a
 terminal snapshot may legally have released `MainPID=0` while retaining the
-same `ExecMainPID` and start witness. The raw `journalctl --output=export`
-snapshot must contain exactly one complete, canonical terminal record with
-the same unit/invocation/PID/start ticks and `result=SUCCESS exit=0`; a
-substring is not a witness. The launch policy maps the frozen
+same `ExecMainPID` and start witness. The wrapper itself runs the exact SCons
+argv, requires a relink, exact target/config/source hashes, compiled ingress
+literals, and a passing source observer gate before it emits success. The raw
+`journalctl --output=export` parser is byte-safe (including binary-length
+fields), permits unrelated records, and requires exactly one wrapper START then
+its exact SUCCESS marker; substrings, duplicates, failure markers, and wrong
+unit/invocation IDs are rejected. The launch policy maps the frozen
 `CPUQuotaPerSecUSec=4s` explicitly to `systemd-run`'s `CPUQuota=400%`, with
 the exact weight, high/max memory, swap, and runtime settings. The observer gate
 must bind its command, six inputs, target binary/hash, report semantics, and
@@ -32,13 +36,13 @@ Freeze and dry-plan commands are deliberately separate from execution:
 
 ```sh
 python3 tests/lanl_maa/umt_ingress_micro_harness.py freeze-contract \
-  --campaign-root CAMPAIGN --output CAMPAIGN/ingress-contract-v4.json \
+  --campaign-root CAMPAIGN --output CAMPAIGN/ingress-contract-v5.json \
   --gem5 GEM5 --gem5-sha256 GEM5_SHA --instrumented-build-proof PROOF \
   --instrumented-build-proof-sha256 PROOF_SHA
 python3 tests/lanl_maa/umt_ingress_micro_harness.py dry-dispatch \
-  --campaign-root CAMPAIGN --contract CAMPAIGN/ingress-contract-v4.json \
+  --campaign-root CAMPAIGN --contract CAMPAIGN/ingress-contract-v5.json \
   --contract-sha256 CONTRACT_SHA \
-  --output CAMPAIGN/identity/ingress-dry-dispatch-v4.json
+  --output CAMPAIGN/identity/ingress-dry-dispatch-v5.json
 ```
 
 The second command only records four `systemd-run --user --collect` commands.
@@ -52,13 +56,13 @@ target, argv, environment, and resource mapping; while it is live, capture
 the property-limited `systemctl --user show` output and the matching PID's
 `/proc` start ticks in one no-clobber receipt; after exit, capture the same
 property-limited terminal show output and the unit's `journalctl --output=export`
-snapshot. Hash every raw snapshot before constructing the v4 proof, then
-freeze the v4 contract and only then record (not execute) its arm commands.
+snapshot. Hash every raw snapshot before constructing the v5 proof, then
+freeze the v5 contract and only then record (not execute) its arm commands.
 The terminal journal protocol is a complete equality check, not a text search.
 
 After a launcher has run one recorded command, `analyze-arm` requires all raw
 outputs, config/stats, debug log, submission report, terminal marker, and the
-test driver's exact result marker. It also takes the frozen v4 contract and
+test driver's exact result marker. It also takes the frozen v5 contract and
 hash, checks the exact arm command and binary hash, and hashes every raw file.
 It accepts only chronological, non-reappearing callback witnesses with source
 and denominator events, complete lane/order/waiter/digest chains, G31's

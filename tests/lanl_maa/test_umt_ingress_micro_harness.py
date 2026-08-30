@@ -25,6 +25,22 @@ def line(label, kind, cycle, waiters, abi=4):
 
 
 class IngressHarnessTest(unittest.TestCase):
+    def test_v5_build_spelling_and_empty_service_environment_are_exact(self):
+        self.assertEqual(
+            ingress.BUILD_ARGV,
+            (
+                "/usr/bin/scons",
+                "--ignore-style",
+                "build/X86_UMT_T32_W2/gem5.opt",
+                "-j4",
+                "CCFLAGS_EXTRA=-DLANL_MAA_UMT_INGRESS_TRACE_TEST=1",
+            ),
+        )
+        self.assertEqual(ingress.BUILD_ENVIRONMENT, {})
+        self.assertEqual(
+            ingress.BUILD_UNIT, "umt-ingress-trace-build-v5-20260830.service"
+        )
+
     def rows(self, case):
         abi, rows, callback_id, digest = (
             (5 if case == "d64-g32" else 4),
@@ -215,6 +231,8 @@ class IngressHarnessTest(unittest.TestCase):
                 return {"path": str(path), "sha256": ingress.sha256(path)}
 
             invocation_id, pid, start_ticks = "a" * 32, 77, "12345"
+            evidence = root / "wrapper-evidence"
+            evidence.mkdir()
 
             def systemd_show(name, terminal=False):
                 fields = {
@@ -226,11 +244,11 @@ class IngressHarnessTest(unittest.TestCase):
                     "WorkingDirectory": str(source),
                     **ingress.RESOURCE_POLICY,
                     "ExecStart": (
-                        "{ path=/usr/bin/scons ; argv[]="
-                        + " ".join(ingress.BUILD_ARGV)
+                        "{ path=/usr/bin/python3 ; argv[]="
+                        + " ".join(ingress.wrapper_command(evidence))
                         + " ; ignore_errors=no ; start_time=[n/a] ; }"
                     ),
-                    "Environment": "CPPDEFINES=" + ingress.TRACE_BUILD_DEFINE,
+                    "Environment": "",
                     "ExecMainCode": "1" if terminal else "",
                     "ExecMainStatus": "0" if terminal else "",
                     "Result": "success" if terminal else "",
@@ -261,24 +279,6 @@ class IngressHarnessTest(unittest.TestCase):
                 "path": str(receipt_path),
                 "sha256": ingress.sha256(receipt_path),
             }
-            marker = (
-                f"{ingress.JOURNAL_TERMINAL_PROTOCOL} unit={ingress.BUILD_UNIT} "
-                f"invocation={invocation_id} pid={pid} "
-                f"proc_start_ticks={start_ticks} result=SUCCESS exit=0"
-            )
-            journal = file(
-                "build.journal",
-                "_SYSTEMD_UNIT="
-                + ingress.BUILD_UNIT
-                + "\n"
-                + "INVOCATION_ID="
-                + invocation_id
-                + "\n"
-                + "MESSAGE="
-                + marker
-                + "\n\n",
-            )
-
             artifacts = {
                 "gem5": {"path": str(gem5), "sha256": ingress.sha256(gem5)},
                 "config_hh": {
@@ -290,11 +290,103 @@ class IngressHarnessTest(unittest.TestCase):
                     "sha256": ingress.sha256(config_cc),
                 },
             }
+            attestation_value = {
+                "schema": "lanl-maa-umt-ingress-build-attestation-v5",
+                "unit": ingress.BUILD_UNIT,
+                "invocation_id": invocation_id,
+                "wrapper_pid": pid,
+                "wrapper_proc_start_ticks": start_ticks,
+                "status": "passed",
+                "build_argv": list(ingress.BUILD_ARGV),
+                "build_environment": {},
+                "build_returncode": 0,
+                "required_relink_observed": True,
+                "instrumentation_source_sha256": source_hashes,
+                "build_artifacts": {
+                    key: value["sha256"] for key, value in artifacts.items()
+                },
+                "compiled_binary_markers": [
+                    "UMT_INGRESS kind=",
+                    "d64_hold cycle=",
+                ],
+                "observer_gate": {
+                    "command": [
+                        "/usr/bin/python3",
+                        str(
+                            source
+                            / "tests/lanl_maa/run_umt_production_ingress_trace_gate.py"
+                        ),
+                        "--cxx",
+                        "g++",
+                    ],
+                    "returncode": 0,
+                    "report_sha256": "b" * 64,
+                },
+                "logs": {},
+            }
+            attestation = evidence / "attestation.json"
+            attestation.write_text(
+                json.dumps(attestation_value), encoding="utf-8"
+            )
+
+            def export_record(fields):
+                return (
+                    b"".join(
+                        key.encode() + b"=" + value + b"\n"
+                        for key, value in fields.items()
+                    )
+                    + b"\n"
+                )
+
+            start_marker = ingress.journal_marker(
+                "START",
+                invocation=invocation_id,
+                pid=pid,
+                proc_start_ticks=start_ticks,
+            )
+            success_marker = ingress.journal_marker(
+                "SUCCESS",
+                invocation=invocation_id,
+                pid=pid,
+                proc_start_ticks=start_ticks,
+                target_sha256=ingress.sha256(gem5),
+            )
+            journal_path = root / "build.journal"
+            journal_path.write_bytes(
+                export_record({"MESSAGE": b"unrelated\x00binary"})
+                + export_record(
+                    {
+                        "_SYSTEMD_USER_UNIT": ingress.BUILD_UNIT.encode(),
+                        "_SYSTEMD_INVOCATION_ID": invocation_id.encode(),
+                        "_PID": str(pid).encode(),
+                        "MESSAGE": start_marker,
+                    }
+                )
+                + export_record(
+                    {
+                        "USER_UNIT": ingress.BUILD_UNIT.encode(),
+                        "USER_INVOCATION_ID": invocation_id.encode(),
+                        "MESSAGE": b"systemd manager record",
+                    }
+                )
+                + export_record(
+                    {
+                        "_SYSTEMD_USER_UNIT": ingress.BUILD_UNIT.encode(),
+                        "_SYSTEMD_INVOCATION_ID": invocation_id.encode(),
+                        "_PID": str(pid).encode(),
+                        "MESSAGE": success_marker,
+                    }
+                )
+            )
+            journal = {
+                "path": str(journal_path),
+                "sha256": ingress.sha256(journal_path),
+            }
             report = root / "observer-report.json"
             report.write_text(
                 json.dumps(
                     {
-                        "schema": "lanl-maa-umt-production-ingress-trace-v1",
+                        "schema": "lanl-maa-umt-production-ingress-trace-v2",
                         "status": "passed",
                         "cells": [
                             {
@@ -314,7 +406,7 @@ class IngressHarnessTest(unittest.TestCase):
             proof = {
                 "schema": ingress.SCHEMA_BUILD_PROOF,
                 "status": "passed",
-                "producer": "systemd-build-proof-v4",
+                "producer": "systemd-build-proof-v5-service-wrapper",
                 "source_worktree": str(source),
                 "source_commit": commit,
                 "source_tree": tree,
@@ -344,10 +436,19 @@ class IngressHarnessTest(unittest.TestCase):
                     "journal_command": list(ingress.BUILD_JOURNAL_COMMAND),
                     "journal": journal,
                     "journal_terminal_protocol": ingress.JOURNAL_TERMINAL_PROTOCOL,
+                    "wrapper": {
+                        "path": str(ingress.BUILD_WRAPPER),
+                        "sha256": ingress.sha256(ingress.BUILD_WRAPPER),
+                    },
+                    "wrapper_command": list(ingress.wrapper_command(evidence)),
+                    "wrapper_attestation": {
+                        "path": str(attestation),
+                        "sha256": ingress.sha256(attestation),
+                    },
                 },
                 "observer_gate": {
                     "command": [
-                        "python3",
+                        "/usr/bin/python3",
                         str(
                             source
                             / "tests/lanl_maa/run_umt_production_ingress_trace_gate.py"
@@ -388,6 +489,34 @@ class IngressHarnessTest(unittest.TestCase):
                 "INSTRUMENTATION_SOURCES": source_hashes,
             }
             with mock.patch.multiple(ingress, **patches):
+                proof["build_invocation"]["wrapper_command"] = list(
+                    ingress.wrapper_command(evidence)
+                )
+                for field in ("live_systemd_show", "terminal_systemd_show"):
+                    old = pathlib.Path(
+                        proof["build_invocation"][field]["path"]
+                    )
+                    updated = old.read_text(encoding="utf-8").replace(
+                        "argv[]="
+                        + " ".join(
+                            (
+                                "/usr/bin/python3",
+                                str(ingress.BUILD_WRAPPER),
+                                "--unit",
+                                ingress.BUILD_UNIT,
+                                "--source",
+                                "/data1/nier/worktrees/DX100-umt-trace-replay-20260830",
+                                "--evidence-dir",
+                                str(evidence.resolve()),
+                            )
+                        ),
+                        "argv[]="
+                        + " ".join(ingress.wrapper_command(evidence)),
+                    )
+                    old.write_text(updated, encoding="utf-8")
+                    proof["build_invocation"][field][
+                        "sha256"
+                    ] = ingress.sha256(old)
                 self.assertEqual(attempt(proof), root / "proof.json")
 
                 def replace_invocation_artifact(
@@ -467,7 +596,9 @@ class IngressHarnessTest(unittest.TestCase):
                     (
                         "live_systemd_show",
                         "bad-command.show",
-                        lambda text: text.replace(" -j4 ", " -j8 "),
+                        lambda text: text.replace(
+                            " --unit ", " --forged-unit "
+                        ),
                     ),
                 ):
                     forged = json.loads(json.dumps(proof))
@@ -498,14 +629,47 @@ class IngressHarnessTest(unittest.TestCase):
                     attempt(forged)
                 for suffix, transform in (
                     (
-                        "journal-substring",
+                        "wrapper-argv",
                         lambda text: text.replace(
-                            marker, "prefix " + marker + " suffix"
+                            "CCFLAGS_EXTRA=-DLANL_MAA_UMT_INGRESS_TRACE_TEST=1",
+                            "CPPDEFINES=LANL_MAA_UMT_INGRESS_TRACE_TEST",
                         ),
                     ),
                     (
-                        "journal-exit",
-                        lambda text: text.replace("exit=0", "exit=1"),
+                        "wrapper-marker",
+                        lambda text: text.replace(
+                            "d64_hold cycle=", "missing-marker"
+                        ),
+                    ),
+                ):
+                    forged = json.loads(json.dumps(proof))
+                    replace_invocation_artifact(
+                        forged,
+                        "wrapper_attestation",
+                        suffix + ".json",
+                        transform,
+                    )
+                    with self.assertRaises(RuntimeError):
+                        attempt(forged)
+                forged = json.loads(json.dumps(proof))
+                forged["build_invocation"]["wrapper_command"][
+                    -1
+                ] = "/forged-evidence"
+                with self.assertRaises(RuntimeError):
+                    attempt(forged)
+                for suffix, transform in (
+                    (
+                        "journal-substring",
+                        lambda text: text.replace(
+                            success_marker.decode(),
+                            "prefix " + success_marker.decode() + " suffix",
+                        ),
+                    ),
+                    (
+                        "journal-target",
+                        lambda text: text.replace(
+                            "target_sha256", "forged_target_sha256"
+                        ),
                     ),
                 ):
                     forged = json.loads(json.dumps(proof))
@@ -562,6 +726,75 @@ class IngressHarnessTest(unittest.TestCase):
             ],
         )
         self.assertNotIn("--property=CPUQuotaPerSecUSec=4s", command)
+
+    def test_binary_export_journal_requires_bound_ordered_wrapper_markers(
+        self,
+    ):
+        """Exercise the real export framing, not a newline-only approximation."""
+        invocation, pid, ticks, digest = "c" * 32, 91, "4567", "d" * 64
+        start = ingress.journal_marker(
+            "START", invocation=invocation, pid=pid, proc_start_ticks=ticks
+        )
+        success = ingress.journal_marker(
+            "SUCCESS",
+            invocation=invocation,
+            pid=pid,
+            proc_start_ticks=ticks,
+            target_sha256=digest,
+        )
+
+        def record(fields):
+            encoded = b""
+            for key, value in fields.items():
+                if isinstance(value, tuple):
+                    encoded += (
+                        key.encode()
+                        + b"\n"
+                        + len(value[0]).to_bytes(8, "little")
+                        + value[0]
+                        + b"\n"
+                    )
+                else:
+                    encoded += key.encode() + b"=" + value + b"\n"
+            return encoded + b"\n"
+
+        bound = {
+            "_SYSTEMD_USER_UNIT": ingress.BUILD_UNIT.encode(),
+            "_SYSTEMD_INVOCATION_ID": invocation.encode(),
+            "_PID": str(pid).encode(),
+        }
+        raw = (
+            record(
+                {"BINARY": (b"unrelated\x00bytes",), "MESSAGE": b"ordinary"}
+            )
+            + record({**bound, "MESSAGE": start})
+            + record(
+                {
+                    "USER_UNIT": ingress.BUILD_UNIT.encode(),
+                    "USER_INVOCATION_ID": invocation.encode(),
+                    "MESSAGE": b"manager",
+                }
+            )
+            + record({**bound, "MESSAGE": success})
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            path = pathlib.Path(temporary) / "journal.export"
+            path.write_bytes(raw)
+            ingress.parse_export_journal(path, invocation, pid, ticks, digest)
+            for bad in (
+                raw + record({**bound, "MESSAGE": success}),
+                raw.replace(success, b"prefix " + success + b" suffix"),
+                raw.replace(
+                    b"_SYSTEMD_INVOCATION_ID=" + invocation.encode(),
+                    b"_SYSTEMD_INVOCATION_ID=" + b"e" * 32,
+                    1,
+                ),
+            ):
+                path.write_bytes(bad)
+                with self.assertRaises(RuntimeError):
+                    ingress.parse_export_journal(
+                        path, invocation, pid, ticks, digest
+                    )
 
 
 if __name__ == "__main__":

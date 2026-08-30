@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed v4 opcode-11 UMT ingress evidence harness.
+"""Fail-closed v5 opcode-11 UMT ingress evidence harness.
 
 This program only freezes, validates, and records launch commands.  It never
 builds, invokes systemd, or executes gem5.  A future launcher must first
@@ -16,22 +16,23 @@ import subprocess
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 TRACE_BUILD_DEFINE = "LANL_MAA_UMT_INGRESS_TRACE_TEST"
 LABEL_PREFIX = "lanl_maa_umt_ingress_micro"
-SCHEMA_BUILD_PROOF = "lanl-maa-umt-ingress-instrumented-gem5-build-proof-v4"
+SCHEMA_BUILD_PROOF = "lanl-maa-umt-ingress-instrumented-gem5-build-proof-v5"
 SCHEMA_SUBMISSION = "umt-lanl-maa-submission-v1"
 CANONICAL_SOURCE_ROOT = "/data1/nier/worktrees/DX100-umt-trace-replay-20260830"
 CANONICAL_SOURCE = pathlib.Path(CANONICAL_SOURCE_ROOT)
 CANONICAL_SOURCE_COMMIT = "6d36a1a4f0d5bdbfb3b80a28c6964fc72539d69a"
 CANONICAL_SOURCE_TREE = "3359187ec074e45aef495aea9675cfedf757eb24"
 CANONICAL_GEM5 = CANONICAL_SOURCE / "build/X86_UMT_T32_W2/gem5.opt"
-BUILD_UNIT = "umt-ingress-trace-build-v1-20260830.service"
+BUILD_UNIT = "umt-ingress-trace-build-v5-20260830.service"
 BUILD_ARGV = (
     "/usr/bin/scons",
     "--ignore-style",
     "build/X86_UMT_T32_W2/gem5.opt",
     "-j4",
-    "CPPDEFINES=LANL_MAA_UMT_INGRESS_TRACE_TEST",
+    "CCFLAGS_EXTRA=-DLANL_MAA_UMT_INGRESS_TRACE_TEST=1",
 )
-BUILD_ENVIRONMENT = {"CPPDEFINES": TRACE_BUILD_DEFINE}
+BUILD_ENVIRONMENT = {}
+BUILD_WRAPPER = ROOT / "tests/lanl_maa/run_umt_ingress_build_attestation.py"
 SYSTEMD_SHOW_PROPERTIES = (
     "Id",
     "InvocationID",
@@ -66,7 +67,7 @@ BUILD_JOURNAL_COMMAND = (
     "--no-pager",
     "--output=export",
 )
-JOURNAL_TERMINAL_PROTOCOL = "lanl-maa-umt-ingress-build-terminal-v1"
+JOURNAL_TERMINAL_PROTOCOL = "LANL_MAA_UMT_INGRESS_BUILD_ATTESTATION_V5"
 DISPATCH_PROPERTIES = (
     ("CPUQuota", "400%"),
     ("CPUWeight", "1000"),
@@ -311,29 +312,34 @@ def parse_proc_start_receipt(path, pid, invocation, show_start_usec):
     return value
 
 
-def show_argv(value, label):
-    # systemd's `show` serializes this field as one ExecStart structure.  The
-    # exact marker boundaries prevent accepting a command merely because its
-    # text happens to occur in an arbitrary string.
+def wrapper_command(evidence_dir):
+    return (
+        "/usr/bin/python3",
+        str(BUILD_WRAPPER),
+        "--unit",
+        BUILD_UNIT,
+        "--source",
+        str(CANONICAL_SOURCE),
+        "--evidence-dir",
+        str(pathlib.Path(evidence_dir).resolve()),
+    )
+
+
+def show_argv(value, label, expected):
+    # No shell is permitted.  The stable `systemctl show` representation is
+    # parsed as a whole field; the nested SCons argv is attested by the
+    # wrapper's own JSON rather than mistaken for the service ExecStart.
     match = re.fullmatch(
-        r"\{ path=/usr/bin/scons ; argv\[\]=(.*?) ; ignore_errors=(?:yes|no)"
+        r"\{ path=/usr/bin/python3 ; argv\[\]=(.*?) ; ignore_errors=(?:yes|no)"
         r"(?: ; .*)? \}",
         value,
     )
-    if not match:
-        raise RuntimeError(
-            f"{label} ExecStart is not the canonical scons record"
-        )
-    argv = tuple(match.group(1).split())
-    if argv != BUILD_ARGV:
-        raise RuntimeError(
-            f"{label} ExecStart argv differs from the frozen build"
-        )
-    return argv
+    if not match or tuple(match.group(1).split()) != tuple(expected):
+        raise RuntimeError(f"{label} ExecStart is not the canonical wrapper")
 
 
 def validate_show_snapshot(
-    fields, *, phase, pid, proc_start_ticks, invocation
+    fields, *, phase, pid, proc_start_ticks, invocation, command
 ):
     if (
         fields["Id"] != BUILD_UNIT
@@ -345,8 +351,8 @@ def validate_show_snapshot(
         raise RuntimeError(
             f"{phase} systemd-show identity/resource binding mismatch"
         )
-    show_argv(fields["ExecStart"], phase)
-    if fields["Environment"] != f"CPPDEFINES={TRACE_BUILD_DEFINE}":
+    show_argv(fields["ExecStart"], phase, command)
+    if fields["Environment"] != "":
         raise RuntimeError(
             f"{phase} systemd-show environment binding mismatch"
         )
@@ -377,43 +383,141 @@ def validate_show_snapshot(
         raise RuntimeError("terminal systemd-show PID/status binding mismatch")
 
 
-def parse_export_journal(path, invocation, pid, proc_start_ticks):
-    raw = pathlib.Path(path).read_text(encoding="utf-8", errors="strict")
-    records = []
-    for block in raw.split("\n\n"):
-        if not block:
-            continue
+def parse_export_journal_bytes(raw):
+    """Parse journal's binary-safe export wire format without text decoding."""
+    records, position, length = [], 0, len(raw)
+    while position < length:
         fields = {}
-        for line in block.splitlines():
-            if "=" not in line:
-                raise RuntimeError("journal export has a malformed field")
-            key, value = line.split("=", 1)
-            if key in fields:
-                raise RuntimeError("journal export has a duplicate field")
+        while True:
+            end = raw.find(b"\n", position)
+            if end < 0:
+                raise RuntimeError("journal export has an unterminated field")
+            line, position = raw[position:end], end + 1
+            if not line:
+                break
+            if b"=" in line:
+                key, value = line.split(b"=", 1)
+            else:
+                key = line
+                if position + 8 > length:
+                    raise RuntimeError(
+                        "journal export binary field lacks length"
+                    )
+                size = int.from_bytes(raw[position : position + 8], "little")
+                position += 8
+                if (
+                    position + size >= length
+                    or raw[position + size : position + size + 1] != b"\n"
+                ):
+                    raise RuntimeError(
+                        "journal export binary field has invalid length"
+                    )
+                value, position = (
+                    raw[position : position + size],
+                    position + size + 1,
+                )
+            try:
+                key = key.decode("ascii")
+            except UnicodeDecodeError as error:
+                raise RuntimeError(
+                    "journal export has a non-ASCII field name"
+                ) from error
+            if not key or key in fields:
+                raise RuntimeError(
+                    "journal export has a duplicate/empty field"
+                )
             fields[key] = value
-        records.append(fields)
+        if fields:
+            records.append(fields)
     if not records:
         raise RuntimeError("journal export is empty")
-    marker = (
-        f"{JOURNAL_TERMINAL_PROTOCOL} unit={BUILD_UNIT} "
-        f"invocation={invocation} pid={pid} proc_start_ticks={proc_start_ticks} "
-        "result=SUCCESS exit=0"
+    return records
+
+
+def journal_marker(
+    kind, *, invocation, pid, proc_start_ticks, target_sha256=None
+):
+    value = {
+        "schema": "lanl-maa-umt-ingress-build-attestation-v5",
+        "unit": BUILD_UNIT,
+        "invocation_id": invocation,
+        "wrapper_pid": pid,
+        "wrapper_proc_start_ticks": proc_start_ticks,
+    }
+    if target_sha256 is not None:
+        value["target_sha256"] = target_sha256
+    return (
+        JOURNAL_TERMINAL_PROTOCOL
+        + " "
+        + kind
+        + " "
+        + json.dumps(value, sort_keys=True, separators=(",", ":"))
+    ).encode()
+
+
+def parse_export_journal(
+    path, invocation, pid, proc_start_ticks, target_sha256
+):
+    start = journal_marker(
+        "START",
+        invocation=invocation,
+        pid=pid,
+        proc_start_ticks=proc_start_ticks,
     )
-    witnessed = 0
-    for record in records:
-        if record.get("_SYSTEMD_UNIT") != BUILD_UNIT:
-            raise RuntimeError(
-                "journal export unit does not bind the build unit"
-            )
-        if record.get("INVOCATION_ID") != invocation:
-            raise RuntimeError(
-                "journal export invocation does not bind the build"
-            )
-        if record.get("MESSAGE") == marker:
-            witnessed += 1
-    if witnessed != 1:
+    success = journal_marker(
+        "SUCCESS",
+        invocation=invocation,
+        pid=pid,
+        proc_start_ticks=proc_start_ticks,
+        target_sha256=target_sha256,
+    )
+    events = []
+    for ordinal, record in enumerate(
+        parse_export_journal_bytes(pathlib.Path(path).read_bytes())
+    ):
+        service_pair = (
+            record.get("_SYSTEMD_USER_UNIT"),
+            record.get("_SYSTEMD_INVOCATION_ID"),
+        )
+        manager_pair = (
+            record.get("USER_UNIT"),
+            record.get("USER_INVOCATION_ID"),
+        )
+        expected = (BUILD_UNIT.encode(), invocation.encode())
+        for pair in (service_pair, manager_pair):
+            if any(value is not None for value in pair) and pair != expected:
+                raise RuntimeError(
+                    "journal export has wrong/incomplete unit or invocation IDs"
+                )
+        bound = service_pair == expected or manager_pair == expected
+        message = record.get("MESSAGE", b"")
+        if JOURNAL_TERMINAL_PROTOCOL.encode() in message:
+            if (
+                not bound
+                or service_pair != expected
+                or record.get("_PID") != str(pid).encode()
+            ):
+                raise RuntimeError(
+                    "journal terminal marker is not emitted by the service wrapper"
+                )
+            if message == start:
+                events.append((ordinal, "start"))
+            elif message == success:
+                events.append((ordinal, "success"))
+            else:
+                raise RuntimeError(
+                    "journal terminal protocol marker is forged, failed, or noncanonical"
+                )
+    if (
+        sum(kind == "start" for _, kind in events) != 1
+        or sum(kind == "success" for _, kind in events) != 1
+    ):
         raise RuntimeError(
-            "journal export lacks one exact terminal SUCCESS/exit=0 marker"
+            "journal export requires one exact wrapper start and SUCCESS marker"
+        )
+    if events[0][1] != "start" or events[-1][1] != "success":
+        raise RuntimeError(
+            "journal wrapper start/terminal ordering is invalid"
         )
 
 
@@ -540,7 +644,7 @@ def read_build_proof(path, digest, gem5, gem5_digest):
         raise RuntimeError(
             "build proof command/environment/source binding mismatch"
         )
-    if proof["producer"] != "systemd-build-proof-v4":
+    if proof["producer"] != "systemd-build-proof-v5-service-wrapper":
         raise RuntimeError("build proof producer is not accepted")
     artifact(proof["build_stdout"], "build stdout")
     artifact(proof["build_stderr"], "build stderr")
@@ -572,9 +676,46 @@ def read_build_proof(path, digest, gem5, gem5_digest):
             "journal_command",
             "journal",
             "journal_terminal_protocol",
+            "wrapper",
+            "wrapper_command",
+            "wrapper_attestation",
         ),
         "build systemd invocation",
     )
+    wrapper = artifact(
+        inv["wrapper"], "service-owned build wrapper", BUILD_WRAPPER
+    )
+    if wrapper != BUILD_WRAPPER.resolve():
+        raise RuntimeError("build wrapper path is not the reviewed wrapper")
+    attestation = artifact(inv["wrapper_attestation"], "wrapper attestation")
+    attest = read_json(attestation)
+    exact_keys(
+        attest,
+        (
+            "schema",
+            "unit",
+            "invocation_id",
+            "wrapper_pid",
+            "wrapper_proc_start_ticks",
+            "status",
+            "build_argv",
+            "build_environment",
+            "build_returncode",
+            "required_relink_observed",
+            "instrumentation_source_sha256",
+            "build_artifacts",
+            "compiled_binary_markers",
+            "observer_gate",
+            "logs",
+        ),
+        "wrapper attestation",
+    )
+    evidence_dir = attestation.parent
+    command = wrapper_command(evidence_dir)
+    if tuple(inv["wrapper_command"]) != command:
+        raise RuntimeError(
+            "service wrapper command differs from the frozen invocation"
+        )
     live_show = artifact(inv["live_systemd_show"], "live systemd-show")
     terminal_show = artifact(
         inv["terminal_systemd_show"], "terminal systemd-show"
@@ -606,6 +747,7 @@ def read_build_proof(path, digest, gem5, gem5_digest):
         pid=pid,
         proc_start_ticks=process["proc_start_ticks"],
         invocation=invocation,
+        command=command,
     )
     validate_show_snapshot(
         terminal,
@@ -613,9 +755,62 @@ def read_build_proof(path, digest, gem5, gem5_digest):
         pid=pid,
         proc_start_ticks=process["proc_start_ticks"],
         invocation=invocation,
+        command=command,
     )
+    if (
+        attest["schema"] != "lanl-maa-umt-ingress-build-attestation-v5"
+        or attest["unit"] != BUILD_UNIT
+        or attest["invocation_id"] != invocation
+        or attest["wrapper_pid"] != pid
+        or attest["wrapper_proc_start_ticks"] != process["proc_start_ticks"]
+        or attest["status"] != "passed"
+        or tuple(attest["build_argv"]) != BUILD_ARGV
+        or attest["build_environment"] != BUILD_ENVIRONMENT
+        or attest["build_returncode"] != 0
+        or attest["required_relink_observed"] is not True
+        or attest["instrumentation_source_sha256"] != INSTRUMENTATION_SOURCES
+        or attest["compiled_binary_markers"]
+        != ["UMT_INGRESS kind=", "d64_hold cycle="]
+    ):
+        raise RuntimeError(
+            "wrapper attestation identity/build/source binding mismatch"
+        )
+    exact_keys(
+        attest["build_artifacts"],
+        ("gem5", "config_hh", "config_cc"),
+        "wrapper build artifacts",
+    )
+    if attest["build_artifacts"] != {
+        key: value["sha256"] for key, value in proof["build_artifacts"].items()
+    }:
+        raise RuntimeError(
+            "wrapper target/config hashes differ from proof artifacts"
+        )
+    if attest["build_artifacts"]["gem5"] != gem5_digest:
+        raise RuntimeError("wrapper target hash differs from canonical gem5")
+    exact_keys(
+        attest["observer_gate"],
+        ("command", "returncode", "report_sha256"),
+        "wrapper observer gate",
+    )
+    if (
+            tuple(attest["observer_gate"]["command"])
+            != (
+                "/usr/bin/python3",
+            str(
+                CANONICAL_SOURCE
+                / "tests/lanl_maa/run_umt_production_ingress_trace_gate.py"
+            ),
+            "--cxx",
+            "g++",
+        )
+        or attest["observer_gate"]["returncode"] != 0
+    ):
+        raise RuntimeError("wrapper observer gate binding mismatch")
     journal = artifact(inv["journal"], "build journal")
-    parse_export_journal(journal, invocation, pid, process["proc_start_ticks"])
+    parse_export_journal(
+        journal, invocation, pid, process["proc_start_ticks"], gem5_digest
+    )
     gate = proof["observer_gate"]
     exact_keys(
         gate,
@@ -639,7 +834,7 @@ def read_build_proof(path, digest, gem5, gem5_digest):
     if (
         gate["status"] != "passed"
         or tuple(gate["command"])
-        != ("python3", str(gate_script), "--cxx", "g++")
+        != ("/usr/bin/python3", str(gate_script), "--cxx", "g++")
         or gate["input_source_sha256"] != INSTRUMENTATION_SOURCES
         or pathlib.Path(gate["binary"]).resolve() != CANONICAL_GEM5.resolve()
         or gate["binary_sha256"] != gem5_digest
@@ -652,7 +847,7 @@ def read_build_proof(path, digest, gem5, gem5_digest):
     transcript = artifact(gate["transcript"], "observer gate transcript")
     report = read_json(artifact(gate["report"], "observer gate report"))
     if (
-        report.get("schema") != "lanl-maa-umt-production-ingress-trace-v1"
+        report.get("schema") != "lanl-maa-umt-production-ingress-trace-v2"
         or report.get("status") != "passed"
         or report.get("cells")
         != [
@@ -706,13 +901,13 @@ def expected_contract(campaign, proof, proof_digest, gem5_digest):
         command = case_command(CANONICAL_GEM5, root, name)
         arms[name] = {
             "root": str(root),
-            "unit": f"umt-ingress-micro-v4-{name}-20260830.service",
+            "unit": f"umt-ingress-micro-v5-{name}-20260830.service",
             "command": command,
             "command_sha256": json_sha256(command),
             "binary_sha256": ADAPTIVE_NATIVE_SHA256,
         }
     return {
-        "schema": "lanl-maa-umt-ingress-contract-v4",
+        "schema": "lanl-maa-umt-ingress-contract-v5",
         "status": "frozen_before_dispatch",
         "campaign_root": str(campaign),
         "harness_source_commit": git_output(ROOT, "rev-parse", "HEAD"),
@@ -781,9 +976,9 @@ def freeze_contract(args):
         pathlib.Path(args.campaign_root).resolve(),
         pathlib.Path(args.output).resolve(),
     )
-    if campaign.exists() or output != campaign / "ingress-contract-v4.json":
+    if campaign.exists() or output != campaign / "ingress-contract-v5.json":
         raise RuntimeError(
-            "v4 contract must be a fresh campaign/ingress-contract-v4.json"
+            "v5 contract must be a fresh campaign/ingress-contract-v5.json"
         )
     contract = expected_contract(
         campaign, proof, args.instrumented_build_proof_sha256, args.gem5_sha256
@@ -797,7 +992,7 @@ def dispatch_plan(contract_path, digest, campaign_root, output):
     campaign, contract_path = pathlib.Path(
         campaign_root
     ).resolve(), verify_hash(contract_path, digest, "frozen contract")
-    if contract_path != campaign / "ingress-contract-v4.json":
+    if contract_path != campaign / "ingress-contract-v5.json":
         raise RuntimeError(
             "externally fixed campaign/contract identity mismatch"
         )
@@ -805,10 +1000,10 @@ def dispatch_plan(contract_path, digest, campaign_root, output):
     if (
         not isinstance(contract, dict)
         or set(contract) != CONTRACT_FIELDS
-        or contract.get("schema") != "lanl-maa-umt-ingress-contract-v4"
+        or contract.get("schema") != "lanl-maa-umt-ingress-contract-v5"
     ):
         raise RuntimeError(
-            "v4 contract semantics, resources, units, roots, or self-hash binding altered"
+            "v5 contract semantics, resources, units, roots, or self-hash binding altered"
         )
     gem5 = verify_hash(
         CANONICAL_GEM5, contract["gem5_sha256"], "canonical gem5"
@@ -827,17 +1022,17 @@ def dispatch_plan(contract_path, digest, campaign_root, output):
     )
     if contract != expected:
         raise RuntimeError(
-            "v4 contract semantics, resources, units, roots, or self-hash binding altered"
+            "v5 contract semantics, resources, units, roots, or self-hash binding altered"
         )
     output = pathlib.Path(output).resolve()
-    if output != campaign / "identity/ingress-dry-dispatch-v4.json":
-        raise RuntimeError("v4 dry dispatch output identity mismatch")
+    if output != campaign / "identity/ingress-dry-dispatch-v5.json":
+        raise RuntimeError("v5 dry dispatch output identity mismatch")
     commands = {
         name: systemd_run_command(arm["unit"], arm["command"])
         for name, arm in contract["arms"].items()
     }
     plan = {
-        "schema": "lanl-maa-umt-ingress-dispatch-plan-v4",
+        "schema": "lanl-maa-umt-ingress-dispatch-plan-v5",
         "status": "dry_only_not_dispatched",
         "campaign_root": str(campaign),
         "contract": str(contract_path),
@@ -1140,9 +1335,9 @@ def analyze_arm(root, case, contract_path, contract_digest):
     if (
         not isinstance(contract, dict)
         or set(contract) != CONTRACT_FIELDS
-        or contract.get("schema") != "lanl-maa-umt-ingress-contract-v4"
+        or contract.get("schema") != "lanl-maa-umt-ingress-contract-v5"
     ):
-        raise RuntimeError("arm is not bound to an unaltered v4 contract")
+        raise RuntimeError("arm is not bound to an unaltered v5 contract")
     campaign = pathlib.Path(contract.get("campaign_root", ".")).resolve()
     gem5 = verify_hash(
         CANONICAL_GEM5, contract["gem5_sha256"], "canonical gem5"
@@ -1154,7 +1349,7 @@ def analyze_arm(root, case, contract_path, contract_digest):
         contract["gem5_sha256"],
     )
     if (
-        contract_path != campaign / "ingress-contract-v4.json"
+        contract_path != campaign / "ingress-contract-v5.json"
         or contract
         != expected_contract(
             campaign,
@@ -1163,7 +1358,7 @@ def analyze_arm(root, case, contract_path, contract_digest):
             contract.get("gem5_sha256", ""),
         )
     ):
-        raise RuntimeError("arm is not bound to an unaltered v4 contract")
+        raise RuntimeError("arm is not bound to an unaltered v5 contract")
     root, arm = pathlib.Path(root).resolve(), contract["arms"].get(case, {})
     if str(root) != arm.get("root") or arm.get("command") != case_command(
         CANONICAL_GEM5, root, case
@@ -1213,7 +1408,7 @@ def analyze_arm(root, case, contract_path, contract_digest):
     ):
         raise RuntimeError("exact D32/D64/group/input counter gate failed")
     return {
-        "schema": "lanl-maa-umt-ingress-arm-report-v4",
+        "schema": "lanl-maa-umt-ingress-arm-report-v5",
         "status": "passed",
         "case": case,
         "contract": str(contract_path),
