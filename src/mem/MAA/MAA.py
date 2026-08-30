@@ -92,6 +92,9 @@ class MAA(ClockedObject):
         0,
         "Virtual destination-combiner associativity (0 is fully associative)",
     )
+    virtual_combine_set_xor_shift = Param.Unsigned(
+        0, "XOR-fold shift for virtual-combiner set indexing (0 disables)"
+    )
     virtual_combine_victim_policy = Param.Unsigned(
         0,
         "Virtual combiner victim policy: 0=round-robin, 1=fewest words, 2=most words",

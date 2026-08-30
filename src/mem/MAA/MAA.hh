@@ -438,6 +438,7 @@ public:
     unsigned int virtual_combine_slots;
     unsigned int virtual_combine_words;
     unsigned int virtual_combine_ways;
+    unsigned int virtual_combine_set_xor_shift;
     unsigned int virtual_combine_victim_policy;
     bool virtual_page_ordered_combiner_drain;
     unsigned int virtual_complete_line_drain_lines_per_cycle;

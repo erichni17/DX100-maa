@@ -349,6 +349,13 @@ def addNoISAOptions(parser):
         help="Virtual destination-combiner associativity (0 is fully associative)",
     )
     parser.add_argument(
+        "--maa_virtual_combine_set_xor_shift",
+        type=int,
+        default=0,
+        choices=range(64),
+        help="XOR-fold shift for virtual-combiner set indexing (0 disables)",
+    )
+    parser.add_argument(
         "--maa_virtual_combine_victim_policy",
         type=int,
         default=0,

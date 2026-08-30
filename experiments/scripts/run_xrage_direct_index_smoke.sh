@@ -29,6 +29,7 @@ retirement_cache_size=${MAA_RETIREMENT_CACHE_SIZE:-1kB}
 combine_slots=${MAA_VIRTUAL_COMBINE_SLOTS:-384}
 combine_words=${MAA_VIRTUAL_COMBINE_WORDS:-4096}
 combine_ways=${MAA_VIRTUAL_COMBINE_WAYS:-4}
+combine_set_xor_shift=${MAA_VIRTUAL_COMBINE_SET_XOR_SHIFT:-0}
 response_slots=${MAA_VIRTUAL_RESPONSE_SLOTS:-128}
 response_word_pool=${MAA_VIRTUAL_RESPONSE_WORD_POOL:-480}
 row_table_slices=${MAA_NUM_INITIAL_ROW_TABLE_SLICES:-32}
@@ -99,6 +100,10 @@ debug_args=()
 [[ $combine_slots -gt 0 && $combine_words -gt 0 && $combine_ways -gt 0 &&
    $((combine_slots % combine_ways)) -eq 0 ]] || {
     echo "virtual combiner capacity must be positive and slots must be divisible by ways" >&2
+    exit 2
+}
+[[ $combine_set_xor_shift -ge 0 && $combine_set_xor_shift -lt 64 ]] || {
+    echo "MAA_VIRTUAL_COMBINE_SET_XOR_SHIFT must be in [0,63]" >&2
     exit 2
 }
 [[ $response_slots -gt 0 && $response_word_pool -ge 0 ]] || {
@@ -369,6 +374,7 @@ fi
     printf 'virtual_combine_slots=%s\n' "$combine_slots"
     printf 'virtual_combine_words=%s\n' "$combine_words"
     printf 'virtual_combine_ways=%s\n' "$combine_ways"
+    printf 'virtual_combine_set_xor_shift=%s\n' "$combine_set_xor_shift"
     printf 'virtual_response_slots=%s\n' "$response_slots"
     printf 'virtual_response_word_pool=%s\n' "$response_word_pool"
     printf 'initial_row_table_slices=%s\n' "$row_table_slices"
@@ -449,6 +455,7 @@ restore_cmd=(
     --maa_virtual_combine_slots="$combine_slots"
     --maa_virtual_combine_words="$combine_words"
     --maa_virtual_combine_ways="$combine_ways" --maa_virtual_combine_banks=0
+    --maa_virtual_combine_set_xor_shift="$combine_set_xor_shift"
     --maa_virtual_complete_line_drain_lines_per_cycle="$complete_line_drain_lines_per_cycle"
     --maa_virtual_response_slots="$response_slots"
     --maa_virtual_response_word_pool="$response_word_pool"
@@ -553,6 +560,11 @@ grep -Fqx \
     "virtual_complete_line_drain_lines_per_cycle=$complete_line_drain_lines_per_cycle" \
     "$out/run/config.ini" || {
     echo "resolved complete-line drain width differs from manifest" >&2
+    exit 1
+}
+grep -Fqx "virtual_combine_set_xor_shift=$combine_set_xor_shift" \
+    "$out/run/config.ini" || {
+    echo "resolved combiner set XOR shift differs from manifest" >&2
     exit 1
 }
 if [[ $guest_arm == direct4x3 ]]; then

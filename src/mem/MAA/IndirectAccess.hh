@@ -151,6 +151,7 @@ protected:
     VirtualCombinerPageOrder virtual_combine_page_ready;
     int virtual_combine_words_configured = 0;
     int virtual_combine_ways = 0;
+    int virtual_combine_set_xor_shift = 0;
     int virtual_combine_victim_policy = 0;
     int virtual_combine_banks = 0;
     std::vector<int> virtual_combine_set_victims;
@@ -293,6 +294,7 @@ public:
                   int _virtual_combine_slots,
                   int _virtual_combine_words,
                   int _virtual_combine_ways,
+                  int _virtual_combine_set_xor_shift,
                   int _virtual_combine_victim_policy,
                   int _virtual_combine_banks,
                   int _virtual_response_slots,
@@ -910,6 +912,7 @@ protected:
                                uint16_t valid_words = 0);
     bool drainVirtualResponses();
     bool reserveVirtualCombineBank(int itr);
+    int virtualCombineSet(Addr line_vaddr) const;
     bool insertVirtualCombineWord(int itr, const uint8_t *data);
     bool completeLineDrainAvailable();
     void recordCompleteLineDrainIssue();

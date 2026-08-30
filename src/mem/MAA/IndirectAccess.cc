@@ -105,6 +105,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
                                   int _virtual_combine_slots,
                                   int _virtual_combine_words,
                                   int _virtual_combine_ways,
+                                  int _virtual_combine_set_xor_shift,
                                   int _virtual_combine_victim_policy,
                                   int _virtual_combine_banks,
                                   int _virtual_response_slots,
@@ -149,6 +150,11 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
     virtual_combine_page_ready.reset(_virtual_combine_slots);
     virtual_combine_words_configured = _virtual_combine_words;
     virtual_combine_ways = _virtual_combine_ways;
+    panic_if(_virtual_combine_set_xor_shift < 0 ||
+                 _virtual_combine_set_xor_shift >= 64,
+             "I[%d] virtual combiner XOR shift %d exceeds [0,63]\n",
+             my_indirect_id, _virtual_combine_set_xor_shift);
+    virtual_combine_set_xor_shift = _virtual_combine_set_xor_shift;
     panic_if(virtual_combine_ways != 0 &&
                  (_virtual_combine_slots % virtual_combine_ways) != 0,
              "I[%d] virtual combiner slots (%d) must divide into %d ways\n",
@@ -10801,9 +10807,7 @@ bool IndirectAccessUnit::reserveVirtualCombineBank(int itr) {
 
     const Addr vaddr = backingWordAddr(itr);
     const Addr line_vaddr = vaddr & ~(block_size - 1);
-    const int ways = virtual_combine_ways;
-    const int num_sets = virtual_combine_slots.size() / ways;
-    const int set = (line_vaddr / block_size) % num_sets;
+    const int set = virtualCombineSet(line_vaddr);
     const int bank = set % virtual_combine_banks;
     if (virtual_combine_bank_used[bank]) {
         const uint64_t current_cycle =
@@ -10817,6 +10821,21 @@ bool IndirectAccessUnit::reserveVirtualCombineBank(int itr) {
     virtual_combine_bank_used[bank] = true;
     (*maa->stats.IND_VirtCombineBankAccesses[my_indirect_id])++;
     return true;
+}
+
+int
+IndirectAccessUnit::virtualCombineSet(Addr line_vaddr) const
+{
+    const int ways = virtual_combine_ways == 0
+        ? virtual_combine_slots.size() : virtual_combine_ways;
+    const int num_sets = virtual_combine_slots.size() / ways;
+    panic_if(num_sets <= 0 || line_vaddr % block_size != 0,
+             "I[%d] invalid combiner set geometry/address 0x%lx\n",
+             my_indirect_id, line_vaddr);
+    uint64_t line_number = line_vaddr / block_size;
+    if (virtual_combine_set_xor_shift != 0)
+        line_number ^= line_number >> virtual_combine_set_xor_shift;
+    return line_number % num_sets;
 }
 
 bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
@@ -10835,9 +10854,7 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
     VirtualCombineSlot *free_slot = nullptr;
     const int ways = virtual_combine_ways == 0
         ? virtual_combine_slots.size() : virtual_combine_ways;
-    const int num_sets = virtual_combine_slots.size() / ways;
-    const int set = virtual_combine_ways == 0
-        ? 0 : (line_vaddr / block_size) % num_sets;
+    const int set = virtualCombineSet(line_vaddr);
     const int set_begin = set * ways;
     const int set_end = set_begin + ways;
     for (int idx = set_begin; idx < set_end; ++idx) {

@@ -142,6 +142,12 @@ class XrageRunnerAbiTest(unittest.TestCase):
         self.assertIn("complete_line_drain_stall_cycles", script)
         self.assertIn("complete_line_drain_peak", script)
 
+    def test_combiner_set_xor_shift_is_explicit_and_recorded(self):
+        script = RUNNER.read_text(encoding="utf-8")
+        self.assertIn("MAA_VIRTUAL_COMBINE_SET_XOR_SHIFT", script)
+        self.assertIn("virtual_combine_set_xor_shift=%s", script)
+        self.assertIn("--maa_virtual_combine_set_xor_shift", script)
+
     def test_partition_combiner_retention_is_explicit_and_recorded(self):
         for runner in (RUNNER, RECOVERY):
             script = runner.read_text(encoding="utf-8")

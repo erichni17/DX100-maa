@@ -152,6 +152,7 @@ MAA::MAA(const MAAParams &p)
       virtual_combine_slots(p.virtual_combine_slots),
       virtual_combine_words(p.virtual_combine_words),
       virtual_combine_ways(p.virtual_combine_ways),
+      virtual_combine_set_xor_shift(p.virtual_combine_set_xor_shift),
       virtual_combine_victim_policy(p.virtual_combine_victim_policy),
       virtual_page_ordered_combiner_drain(
           p.virtual_page_ordered_combiner_drain),
@@ -759,6 +760,7 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
                                         virtual_combine_slots,
                                         virtual_combine_words,
                                         virtual_combine_ways,
+                                        virtual_combine_set_xor_shift,
                                         virtual_combine_victim_policy,
                                         virtual_combine_banks,
                                         virtual_response_slots,
