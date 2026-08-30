@@ -60,3 +60,28 @@ Raw roots:
 - `/data1/nier/dx100-runs/2026-08-30-xrage-payload-pipeline-nonreg-r1`.
 
 Artifact ledger: `masked_payload_pipeline_artifacts_2026-08-30.sha256`.
+
+## Independent review closure
+
+Independent review found two accounting defects, both fixed:
+
+1. The host helper originally embedded 16 identity entries even when the
+   selected capacity was one. It now allocates exactly the configured count;
+   optimized and ASan/UBSan tests assert one and eight physical entries.
+2. The masked CG gate proved line starts/completions but not word-level port
+   work. Final counters independently close scheduled words, read words,
+   shared-port cycles, and isolated serial-cycle demand.
+
+Final-source (`f90a18204b29792d225e66e2a5852e63f19809bd`) reruns use binary
+SHA-256
+`dcc6daf70558a4b8d418dc380438754097b80f2fb505ac791ee39c6d592403a1`:
+
+- CG selected: 26,672 starts/completions, 163,840 scheduled/read words,
+  33,644 shared-port and serial-demand cycles, exact output;
+- XRAGE selected: 8,192 starts/completions, 65,536 scheduled/read words,
+  16,384 shared-port and serial-demand cycles, exact 37,409,134 ticks.
+
+Final raw roots:
+
+- `/data1/nier/dx100-runs/2026-08-30-cg-na256-payload-accounting-*`;
+- `/data1/nier/dx100-runs/2026-08-30-xrage-payload-accounting-final-r1`.

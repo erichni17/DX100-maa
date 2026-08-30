@@ -168,3 +168,10 @@ An independent read-only review found no source correctness, liveness, or
 hidden-payload defect. It identified one P2 experiment-gate gap: the generic
 runner required only a positive staging-cycle count. The accepted runner now
 requires the exact `full_lines * ceil(8 / width)` count.
+
+A later review of the masked/multi-line extension found that inactive identity
+entries were still embedded in the host object and that CG lacked word-level
+arithmetic closure. Both are fixed: storage is sized to the configured active
+count, and final CG/XRAGE runs require scheduled words equal read words plus
+exact selected one-line cycle demand. See
+`masked_payload_pipeline_2026-08-30.md`.

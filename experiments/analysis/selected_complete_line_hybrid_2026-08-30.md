@@ -54,6 +54,11 @@ same 32-byte port. It is exact but adds 4.658% at `CG_NA=256` and 9.538% at
 so the selected point retains one identity. This extension is evidence, not
 the selected direct-gather path.
 
+The selected one-line control allocation is physically specialized in the
+simulator rather than backed by inactive entries. Final evidence also closes
+payload work at word granularity: scheduled words equal read words and the
+selected one-line shared-port cycles equal summed per-line demand.
+
 ## Hardware boundary
 
 Bounded now: result payload, tags/ways, response pool, lookup starts and
