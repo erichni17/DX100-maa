@@ -109,10 +109,17 @@ Every accepted run has one exact verifier pass with hash
 Row/Offset drains or fallbacks.  The selected hybrid closes 8,192 producer
 full-line ACKs plus 8,192 direct-consumer reads, ALUs, and destination writes.
 
-Only the recovered XRAGE gather0 64K configuration is covered.  CG NA256 is
-tick-identical under dense allocation, and IS/HashJoin do not expose this
-virtual-result edge.  Broader claims require more XRAGE/FLAG configurations
-or another dense backed direct-index application.
+The same complete-line mechanism now closes all 14 recovered LANL FLAG gather
+configurations at a fixed 2,048-tag/3,072-word combiner plus 1,024 response
+words.  Same-binary FLAG controls show 7.476% lower geometric-mean latency than
+fused16, a geometric-mean tie with compact16 (-0.009%), and 33.478% lower
+latency than a small bounded direct4 control.  See
+`flag_complete_line_results_2026-08-29.md`.
+
+CG NA256 is tick-identical under dense allocation, and IS/HashJoin do not
+expose this virtual-result edge.  XRAGE and FLAG observations still predate the
+finite complete-line drain model and do not time the 16-way lookup or payload
+ports.
 
 Evidence roots:
 

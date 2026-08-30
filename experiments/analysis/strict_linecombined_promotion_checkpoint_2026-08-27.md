@@ -223,7 +223,14 @@ output while retaining a 63.211% comparable-storage reduction.  See
 `hybrid_safe_combiner_results_2026-08-29.md` and
 `xrage_complete_line_hybrid_results_2026-08-29.md`.
 
+All 14 recovered LANL FLAG gathers now close exactly at the fixed 2,048-tag,
+3,072-word combiner plus 1,024 response words.  Same-binary geometric means
+are 7.476% lower latency than fused16, effectively tied with compact16, and
+33.478% lower than a small bounded direct4 control.  The same-capacity
+guard-disabled arm is tick-identical in every case.  See
+`flag_complete_line_results_2026-08-29.md`.
+
 CG NA256 is tick-identical under the related dense treatment, so no full CG
-run is justified.  Remaining gates are more XRAGE/FLAG configurations,
-finite tag/reference/payload timing and ports, delayed/competing coherence
-stress, and synthesis/calibrated area-energy-Fmax evidence.
+run is justified.  Remaining gates are current finite drain-width results,
+finite tag/reference/payload lookup timing and ports, delayed/competing
+coherence stress, and synthesis/calibrated area-energy-Fmax evidence.
