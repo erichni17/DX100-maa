@@ -15,12 +15,17 @@ class FlagXor8CompleteLineTest(unittest.TestCase):
         self.assertIn("FLAG_COMBINE_WAYS:-8", source)
         self.assertIn("FLAG_COMBINE_XOR_SHIFT:-7", source)
         self.assertIn("FLAG_COMBINE_LOOKUP_LATENCY:-0", source)
+        self.assertIn("FLAG_PAGE_ORDERED_DRAIN:-0", source)
         self.assertIn('MAA_VIRTUAL_COMBINE_WAYS="$combine_ways"', source)
         self.assertIn(
             'MAA_VIRTUAL_COMBINE_SET_XOR_SHIFT="$combine_xor_shift"', source
         )
         self.assertIn(
             'MAA_VIRTUAL_COMBINE_LOOKUP_LATENCY_CYCLES="$combine_lookup_latency"',
+            source,
+        )
+        self.assertIn(
+            'MAA_VIRTUAL_PAGE_ORDERED_COMBINER_DRAIN="$page_ordered_drain"',
             source,
         )
         self.assertIn("MAA_VIRTUAL_COMPLETE_LINE_DRAIN_LINES_PER_CYCLE=1", source)
