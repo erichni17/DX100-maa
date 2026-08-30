@@ -33,6 +33,7 @@ combine_set_xor_shift=${MAA_VIRTUAL_COMBINE_SET_XOR_SHIFT:-0}
 response_slots=${MAA_VIRTUAL_RESPONSE_SLOTS:-128}
 response_word_pool=${MAA_VIRTUAL_RESPONSE_WORD_POOL:-480}
 combine_lookup_latency=${MAA_VIRTUAL_COMBINE_LOOKUP_LATENCY_CYCLES:-0}
+page_ordered_drain=${MAA_VIRTUAL_PAGE_ORDERED_COMBINER_DRAIN:-0}
 row_table_slices=${MAA_NUM_INITIAL_ROW_TABLE_SLICES:-32}
 row_table_rows=${MAA_ROW_TABLE_ROWS_PER_SLICE:-64}
 offset_table_entries=${MAA_NUM_OFFSET_TABLE_ENTRIES:-0}
@@ -113,6 +114,10 @@ debug_args=()
 }
 [[ $combine_lookup_latency -ge 0 && $combine_lookup_latency -le 8 ]] || {
     echo "MAA_VIRTUAL_COMBINE_LOOKUP_LATENCY_CYCLES must be in [0,8]" >&2
+    exit 2
+}
+[[ $page_ordered_drain == 0 || $page_ordered_drain == 1 ]] || {
+    echo "MAA_VIRTUAL_PAGE_ORDERED_COMBINER_DRAIN must be 0 or 1" >&2
     exit 2
 }
 [[ $row_table_slices =~ ^(4|8|16|32)$ ]] || {
@@ -384,6 +389,7 @@ fi
     printf 'virtual_response_word_pool=%s\n' "$response_word_pool"
     printf 'virtual_combine_lookup_latency_cycles=%s\n' \
         "$combine_lookup_latency"
+    printf 'virtual_page_ordered_combiner_drain=%s\n' "$page_ordered_drain"
     printf 'initial_row_table_slices=%s\n' "$row_table_slices"
     printf 'row_table_rows_per_slice=%s\n' "$row_table_rows"
     printf 'offset_table_entries=%s\n' "$offset_table_entries"
@@ -479,6 +485,9 @@ if [[ $direct_retirement_line_handoff == 1 ]]; then
 fi
 if [[ $complete_line_only == 1 ]]; then
     restore_cmd+=(--maa_virtual_complete_line_only)
+fi
+if [[ $page_ordered_drain == 1 ]]; then
+    restore_cmd+=(--maa_virtual_page_ordered_combiner_drain)
 fi
 if [[ $grow_order == 1 ]]; then
     restore_cmd+=(--maa_virtual_grow_order)
@@ -581,6 +590,15 @@ grep -Fqx \
     echo "resolved combiner lookup latency differs from manifest" >&2
     exit 1
 }
+expected_page_ordered_drain=$(
+    [[ $page_ordered_drain -eq 1 ]] && echo true || echo false
+)
+grep -Fqx \
+    "virtual_page_ordered_combiner_drain=$expected_page_ordered_drain" \
+    "$out/run/config.ini" || {
+    echo "resolved page-ordered drain differs from manifest" >&2
+    exit 1
+}
 if [[ $guest_arm == direct4x3 ]]; then
     grep -Fqx "transparent_spd_mode=3" "$out/run/config.ini" || {
         echo "direct4x3 did not activate direct retirement" >&2
@@ -631,6 +649,12 @@ combine_lookup_wait_cycles=$(
 )
 combine_lookup_peak=$(
     sum_indirect_stat IND_VirtCombineLookupPeakOccupancy
+)
+page_ordered_selections=$(
+    sum_indirect_stat IND_VirtPageOrderedDrainSelections
+)
+page_ordered_deferrals=$(
+    sum_indirect_stat IND_VirtPageOrderedDrainDeferrals
 )
 pages_ready=$(sum_indirect_stat IND_VirtPagesReady)
 index_words=$(sum_indirect_stat IND_VirtIndexWords)
@@ -746,6 +770,7 @@ for value in "$write_issues" "$write_completions" "$pages_ready" \
     "$complete_line_drain_peak" \
     "$combine_lookup_issues" "$combine_lookup_completions" \
     "$combine_lookup_wait_cycles" "$combine_lookup_peak" \
+    "$page_ordered_selections" "$page_ordered_deferrals" \
     "$index_words" "$index_filter_words" "$index_filter_cycles" \
     "$index_filter_wait_events" "$index_filter_wait_cycles" \
     "$row_table_full_events" "$offset_table_full_events" \
@@ -759,6 +784,17 @@ for value in "$write_issues" "$write_completions" "$pages_ready" \
         exit 1
     }
 done
+if [[ $page_ordered_drain -eq 0 ]]; then
+    [[ $page_ordered_selections -eq 0 && $page_ordered_deferrals -eq 0 ]] || {
+        echo "disabled page-ordered drain recorded work" >&2
+        exit 1
+    }
+else
+    [[ $page_ordered_selections -eq $full_line_writes ]] || {
+        echo "page-ordered drain did not select every full line" >&2
+        exit 1
+    }
+fi
 if [[ $combine_lookup_latency -eq 0 ]]; then
     [[ $combine_lookup_issues -eq 0 &&
        $combine_lookup_completions -eq 0 &&
@@ -922,8 +958,9 @@ fi
     printf '\tdirect_early_line_overflows'
     printf '\tcombine_lookup_latency\tcombine_lookup_issues'
     printf '\tcombine_lookup_completions\tcombine_lookup_wait_cycles'
-    printf '\tcombine_lookup_peak\n'
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '\tcombine_lookup_peak\tpage_ordered_selections'
+    printf '\tpage_ordered_deferrals\n'
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$hash" "$roi_ticks" "$final_ticks" "$stats_blocks" \
         "$write_issues" "$write_completions" \
         "$full_line_writes" "$partial_writes" \
@@ -956,7 +993,8 @@ fi
         "$direct_fallbacks" "$direct_early_line_overflows" \
         "$combine_lookup_latency" "$combine_lookup_issues" \
         "$combine_lookup_completions" "$combine_lookup_wait_cycles" \
-        "$combine_lookup_peak"
+        "$combine_lookup_peak" "$page_ordered_selections" \
+        "$page_ordered_deferrals"
 } > "$out/result.tsv"
 read -r dram_reads dram_activates dram_precharges < <(
     awk '
