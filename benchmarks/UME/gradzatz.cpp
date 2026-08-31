@@ -294,13 +294,6 @@ void gradzatz_MAA() {
         const int page_min_reg = page_regs0[omp_thread_id];
         const int page_max_reg = page_regs1[omp_thread_id];
         const int page_stride_reg = page_regs2[omp_thread_id];
-#ifdef UME_GRADZATZ_MATCHED_PAGE_ARITHMETIC
-        const bool use_virtual_gather = gzz_matched_uses_virtual_gather();
-        const int consumer_page_elements = gzz_matched_page_elements();
-#else
-        constexpr bool use_virtual_gather = true;
-        constexpr int consumer_page_elements = MAA_CONSUMER_TILE_SIZE;
-#endif
 #endif
 #if defined(MAA_VIRTUAL_GATHER) && !defined(MAA_GENERAL_VIRTUAL_CONSUMER)
         backing_start_reg = backing_start_regs[omp_thread_id];
@@ -320,7 +313,7 @@ void gradzatz_MAA() {
 #pragma omp for
         for (int c = 0; c < num_corners;
 #ifdef MAA_GENERAL_VIRTUAL_CONSUMER
-             c += consumer_page_elements
+             c += MAA_CONSUMER_TILE_SIZE
 #else
              c += TILE_SIZE
 #endif
@@ -328,7 +321,7 @@ void gradzatz_MAA() {
             maa_const<int>(c, reg0);
 #ifdef MAA_GENERAL_VIRTUAL_CONSUMER
             maa_const<int>(std::min(num_corners,
-                                    c + consumer_page_elements), reg1);
+                                    c + MAA_CONSUMER_TILE_SIZE), reg1);
 #endif
             // Step1: Load corner_type
             maa_stream_load<int>(corner_type.data(), reg0, reg1, reg2, tile0);
@@ -372,25 +365,22 @@ void gradzatz_MAA() {
 #ifdef MAA_GENERAL_VIRTUAL_CONSUMER
             maa_const<int>(c, reg0);
             maa_const<int>(c + gather_size, reg1);
-            if (use_virtual_gather) {
-                maa_indirect_load_virtual_index<DATATYPE>(
-                    point_gradient.data(),
-                    reinterpret_cast<uint32_t *>(c_to_p_map.data()), tile0,
-                    virtual_gather_backing[omp_thread_id], reg0, reg1, reg2);
-                if (gather_size == TILE_SIZE)
-                    maa_virtual_consumer_begin(virtual_consumer_mode, tile0);
-                else
-                    // Preserve an exact four-page materializer ABI: partial
-                    // logical tails drain, then reload through ordinary
-                    // STREAM_LD.
-                    wait_ready(tile0);
-            }
+            maa_indirect_load_virtual_index<DATATYPE>(
+                point_gradient.data(),
+                reinterpret_cast<uint32_t *>(c_to_p_map.data()), tile0,
+                virtual_gather_backing[omp_thread_id], reg0, reg1, reg2);
+            if (gather_size == TILE_SIZE)
+                maa_virtual_consumer_begin(virtual_consumer_mode, tile0);
+            else
+                // Preserve an exact four-page materializer ABI: partial
+                // logical tails drain, then reload through ordinary STREAM_LD.
+                wait_ready(tile0);
 
             for (int page_offset = 0; page_offset < gather_size;
-                 page_offset += consumer_page_elements) {
+                 page_offset += MAA_CONSUMER_TILE_SIZE) {
                 const int page_size =
                     std::min(gather_size - page_offset,
-                             consumer_page_elements);
+                             MAA_CONSUMER_TILE_SIZE);
                 const int page_begin = c + page_offset;
                 maa_const<int>(page_begin, reg0);
                 maa_const<int>(page_begin + page_size, reg1);
@@ -404,14 +394,13 @@ void gradzatz_MAA() {
                 maa_indirect_load<DATATYPE>(zone_volume.data(), tile3, tile2,
                                             tileCond);
 
-                int gradient_tile = tile5;
-                if (use_virtual_gather && gather_size == TILE_SIZE) {
+                if (gather_size == TILE_SIZE) {
                     maa_virtual_consumer_load_page<DATATYPE>(
                         virtual_consumer_mode,
                         virtual_gather_backing[omp_thread_id] + page_offset,
                         tile0, page_offset / MAA_CONSUMER_TILE_SIZE,
                         page_min_reg, page_max_reg, page_stride_reg, tile5);
-                } else if (use_virtual_gather) {
+                } else {
                     // The tail backing pointer is already page-relative.
                     // Its ordinary STREAM_LD must therefore use local bounds;
                     // keeping the logical c-based bounds would add page_offset
@@ -421,18 +410,9 @@ void gradzatz_MAA() {
                     maa_stream_load<DATATYPE>(
                         virtual_gather_backing[omp_thread_id] + page_offset,
                         reg0, reg1, reg2, tile5);
-                } else {
-                    // Matched native controls retain the ordinary DX100
-                    // indirect-gather opcode. Only the following page-local
-                    // DIV/MUL arithmetic is shared with the strict arm.
-                    maa_stream_load<int>(c_to_p_map.data(), reg0, reg1, reg2,
-                                         tile5, tileCond);
-                    maa_indirect_load<DATATYPE>(point_gradient.data(), tile5,
-                                                tile0, tileCond);
-                    gradient_tile = tile0;
                 }
                 wait_ready(tile2);
-                wait_ready(gradient_tile);
+                wait_ready(tile5);
 
 #ifdef UME_GRADZATZ_VERIFY
 #ifdef MAA_GENERAL_VIRTUAL_CONSUMER
@@ -475,7 +455,7 @@ void gradzatz_MAA() {
                     page_ratio_tiles[omp_thread_id], Operation_t::DIV_OP,
                     tileCond);
                 maa_alu_vector<DATATYPE>(
-                    gradient_tile, page_ratio_tiles[omp_thread_id],
+                    tile5, page_ratio_tiles[omp_thread_id],
                     page_product_tiles[omp_thread_id], Operation_t::MUL_OP,
                     tileCond);
                 maa_indirect_rmw_vector<DATATYPE>(
@@ -496,7 +476,7 @@ void gradzatz_MAA() {
                     Operation_t::ADD_OP, tileCond);
 #endif
             }
-            if (use_virtual_gather && gather_size == TILE_SIZE)
+            if (gather_size == TILE_SIZE)
                 maa_virtual_consumer_end(virtual_consumer_mode, tile0);
 #else
             maa_const<int>(c, reg0);
@@ -647,6 +627,145 @@ void gradzatz_MAA() {
     m5_exit(0);
 #endif
 }
+
+#ifdef UME_GRADZATZ_MATCHED_PAGE_ARITHMETIC
+// Keep the accepted strict shared-payload implementation above byte-for-byte
+// in its original control flow. Matched native controls dispatch here once,
+// outside the ROI, and retain ordinary DX100 indirect-gather instructions.
+void gradzatz_MAA_matched_native() {
+    if (gzz_matched_uses_virtual_gather())
+        std::abort();
+
+    const int num_corners = corner_type.size();
+    const int page_elements = gzz_matched_page_elements();
+
+#ifdef GEM5
+    clear_mem_region();
+    add_mem_region(zone_gradient.data(),
+                   zone_gradient.data() + zone_gradient.size());
+    add_mem_region(zone_volume.data(),
+                   zone_volume.data() + zone_volume.size());
+    add_mem_region(c_to_p_map.data(), c_to_p_map.data() + c_to_p_map.size());
+    add_mem_region(corner_volume.data(),
+                   corner_volume.data() + corner_volume.size());
+    add_mem_region(c_to_z_map.data(), c_to_z_map.data() + c_to_z_map.size());
+    add_mem_region(corner_type.data(),
+                   corner_type.data() + corner_type.size());
+    add_mem_region(point_gradient.data(),
+                   point_gradient.data() + point_gradient.size());
+    std::cout << "ROI Begin" << std::endl;
+    m5_work_begin(0, 0);
+    m5_reset_stats(0, 0);
+#endif
+
+#pragma omp parallel
+    {
+        const int tid = omp_get_thread_num();
+        const int reg_min = regs0[tid];
+        const int reg_max = regs1[tid];
+        const int reg_stride = regs2[tid];
+        const int tile_data = tiles0[tid];
+        const int tile_zone_volume = tiles1[tid];
+        const int tile_zone_index = tiles2[tid];
+        const int tile_cond = tiles3[tid];
+        const int tile_point_index = tiles4[tid];
+        const int tile_ratio = page_ratio_tiles[tid];
+        const int tile_product = page_product_tiles[tid];
+
+        maa_const<int>(1, reg_stride);
+
+#pragma omp for
+        for (int c = 0; c < num_corners; c += page_elements) {
+            const int end = std::min(num_corners, c + page_elements);
+            maa_const<int>(c, reg_min);
+            maa_const<int>(end, reg_max);
+            maa_stream_load<int>(corner_type.data(), reg_min, reg_max,
+                                 reg_stride, tile_data);
+            maa_alu_scalar<int>(tile_data, reg_stride, tile_cond,
+                                Operation_t::GTE_OP);
+            maa_stream_load<int>(c_to_z_map.data(), reg_min, reg_max,
+                                 reg_stride, tile_zone_index);
+            maa_stream_load<DATATYPE>(corner_volume.data(), reg_min, reg_max,
+                                      reg_stride, tile_data);
+            maa_indirect_rmw_vector<DATATYPE>(
+                zone_volume.data(), tile_zone_index, tile_data,
+                Operation_t::ADD_OP, tile_cond);
+            wait_ready(tile_data);
+        }
+
+#pragma omp for
+        for (int c = 0; c < num_corners; c += TILE_SIZE) {
+            const int gather_size = std::min(num_corners - c, TILE_SIZE);
+            for (int offset = 0; offset < gather_size;
+                 offset += page_elements) {
+                const int page_begin = c + offset;
+                const int page_size =
+                    std::min(gather_size - offset, page_elements);
+                maa_const<int>(page_begin, reg_min);
+                maa_const<int>(page_begin + page_size, reg_max);
+
+                maa_stream_load<int>(corner_type.data(), reg_min, reg_max,
+                                     reg_stride, tile_data);
+                maa_alu_scalar<int>(tile_data, reg_stride, tile_cond,
+                                    Operation_t::GTE_OP);
+                maa_stream_load<int>(c_to_z_map.data(), reg_min, reg_max,
+                                     reg_stride, tile_zone_index, tile_cond);
+                maa_stream_load<int>(c_to_p_map.data(), reg_min, reg_max,
+                                     reg_stride, tile_point_index, tile_cond);
+                maa_indirect_load<DATATYPE>(
+                    point_gradient.data(), tile_point_index, tile_data,
+                    tile_cond);
+                maa_indirect_load<DATATYPE>(
+                    zone_volume.data(), tile_zone_index, tile_zone_volume,
+                    tile_cond);
+                wait_ready(tile_data);
+                wait_ready(tile_zone_volume);
+
+                maa_stream_load<DATATYPE>(corner_volume.data(), reg_min,
+                                          reg_max, reg_stride, tile_product);
+                maa_alu_vector<DATATYPE>(
+                    tile_product, tile_zone_volume, tile_ratio,
+                    Operation_t::DIV_OP, tile_cond);
+                maa_alu_vector<DATATYPE>(
+                    tile_data, tile_ratio, tile_product, Operation_t::MUL_OP,
+                    tile_cond);
+                maa_indirect_rmw_vector<DATATYPE>(
+                    zone_gradient.data(), tile_zone_index, tile_product,
+                    Operation_t::ADD_OP, tile_cond);
+            }
+        }
+        wait_ready(tile_product);
+    }
+
+#ifdef GEM5
+    m5_dump_stats(0, 0);
+    m5_work_end(0, 0);
+    const ReferenceErrors reference = check_scalar_reference();
+    const uint64_t reference_errors = reference.volume + reference.gradient;
+    constexpr uint64_t expected_hash = UME_GRADZATZ_EXPECTED_HASH;
+    if (reference_errors != 0 || reference.nonfinite != 0 ||
+        reference.hash != expected_hash) {
+        std::cerr << "UME_OUTPUT_FP_FAIL output_hash=" << reference.hash
+                  << " expected_hash=" << expected_hash
+                  << " reference_volume_errors=" << reference.volume
+                  << " reference_gradient_errors=" << reference.gradient
+                  << " nonfinite=" << reference.nonfinite << std::endl;
+        std::abort();
+    }
+    std::cout << "UME_OUTPUT_FP output_hash=" << reference.hash
+              << " nonfinite=0" << std::endl;
+    std::cout << "UME_REFERENCE_PASS volume_errors=0 gradient_errors=0"
+              << " elements=" << zone_volume.size() << std::endl;
+    std::cout << "UME_GZZ_PAGE_CONSUMER mode=maa_div_mul"
+              << " treatment=" << gzz_matched_treatment_name()
+              << " arithmetic_pages=" << (TILE_SIZE / page_elements)
+              << " physical_tiles_per_core=7"
+              << " cpu_spd_payload_reads=0 gather=native" << std::endl;
+    std::cout << "ROI Ended" << std::endl;
+    m5_exit(0);
+#endif
+}
+#endif
 
 #ifdef VERIFY
 // Verification function
@@ -873,7 +992,14 @@ int main(int argc, char *argv[]) {
 #endif
         }
     }
+#ifdef UME_GRADZATZ_MATCHED_PAGE_ARITHMETIC
+    if (gzz_matched_uses_virtual_gather())
+        gradzatz_MAA();
+    else
+        gradzatz_MAA_matched_native();
+#else
     gradzatz_MAA();
+#endif
 #ifdef VERIFY
     gradzatz();
     verify_results(zone_gradient_exp, zone_gradient, "zone_gradient");

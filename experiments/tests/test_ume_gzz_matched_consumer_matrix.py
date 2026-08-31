@@ -41,13 +41,16 @@ class UmeGzzMatchedConsumerMatrixTest(unittest.TestCase):
 
     def test_native_gather_semantics_are_not_virtualized(self) -> None:
         source = (ROOT / "benchmarks/UME/gradzatz.cpp").read_text()
+        native_begin = source.index("void gradzatz_MAA_matched_native()")
+        native_end = source.index("#ifdef VERIFY", native_begin)
+        native = source[native_begin:native_end]
+        self.assertIn("maa_indirect_load<DATATYPE>(", native)
+        self.assertIn("point_gradient.data()", native)
+        self.assertNotIn("maa_indirect_load_virtual", native)
         self.assertIn(
-            "maa_indirect_load<DATATYPE>(point_gradient.data(), tile5,",
+            "if (gzz_matched_uses_virtual_gather())\n"
+            "        gradzatz_MAA();",
             source,
-        )
-        self.assertIn("if (use_virtual_gather)", source)
-        self.assertIn(
-            "Matched native controls retain the ordinary DX100", source
         )
         self.assertEqual(
             [arm.gather for arm in matrix.ARMS],
@@ -145,6 +148,16 @@ class UmeGzzMatchedConsumerMatrixTest(unittest.TestCase):
             matrix.parse_args(["--execute"])
         with self.assertRaises(SystemExit):
             matrix.parse_args(["--max-parallel-restores", "4"])
+        with self.assertRaises(SystemExit):
+            matrix.parse_args(["--no-progress-seconds", "29"])
+
+    def test_trace_progress_reader_does_not_scan_whole_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            trace = Path(directory) / "trace.log"
+            trace.write_text("1: first\n2: second\n")
+            self.assertEqual(matrix.last_trace_tick(trace), (2, 19))
+            trace.write_text("not a trace line\n")
+            self.assertIsNone(matrix.last_trace_tick(trace))
 
 
 if __name__ == "__main__":

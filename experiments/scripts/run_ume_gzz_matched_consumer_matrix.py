@@ -17,6 +17,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import (
     asdict,
@@ -201,7 +202,7 @@ def source_contract() -> dict[str, Any]:
         'treatment == "strict_logical16_physical4"',
         "read_gzz_matched_treatment(virtual_consumer_selector)",
         "m5_checkpoint(0, 0)",
-        "maa_indirect_load<DATATYPE>(point_gradient.data(), tile5,",
+        "void gradzatz_MAA_matched_native()",
         "maa_indirect_load_virtual_index<DATATYPE>(",
         "Operation_t::DIV_OP",
         "Operation_t::MUL_OP",
@@ -209,6 +210,15 @@ def source_contract() -> dict[str, Any]:
     )
     missing = [token for token in required if token not in source]
     require(not missing, f"matched benchmark contract missing {missing}")
+    native_begin = source.index("void gradzatz_MAA_matched_native()")
+    native_end = source.index("#ifdef VERIFY", native_begin)
+    native = source[native_begin:native_end]
+    require(
+        "maa_indirect_load<DATATYPE>(" in native
+        and "point_gradient.data()" in native
+        and "maa_indirect_load_virtual" not in native,
+        "matched native helper changed gather semantics",
+    )
     require(
         source.index("read_gzz_matched_treatment(virtual_consumer_selector)")
         < source.index("m5_checkpoint(0, 0)"),
@@ -236,6 +246,7 @@ def source_contract() -> dict[str, Any]:
         "selector_resolved_before_checkpoint": True,
         "one_guest": True,
         "native_gather_opcode_preserved": True,
+        "strict_control_flow_separate_from_native_helper": True,
         "strict_production_sha256": production_hashes,
     }
 
@@ -332,6 +343,109 @@ def build_guest(root: Path) -> tuple[Path, list[list[str]]]:
 
 def arm_options(selector: Path) -> str:
     return f"{ELEMENTS} {selector}"
+
+
+def last_trace_tick(path: Path) -> tuple[int, int] | None:
+    """Return the last flushed trace tick and file size without scanning it."""
+    try:
+        size = path.stat().st_size
+        if size == 0:
+            return None
+        with path.open("rb") as stream:
+            stream.seek(max(0, size - 64 * 1024))
+            tail = stream.read().decode(errors="ignore")
+    except FileNotFoundError:
+        return None
+    matches = re.findall(r"(?:^|\n)([0-9]+):", tail)
+    return (int(matches[-1]), size) if matches else None
+
+
+def run_restore_bounded(
+    command: Sequence[str],
+    directory: Path,
+    environment: Mapping[str, str],
+    *,
+    timeout_seconds: int,
+    no_progress_seconds: int,
+) -> int:
+    """Run one restore with PID identity and a trace-tick progress guard."""
+    atomic_json(directory / "restore.command.json", list(command))
+    log = directory / "restore.log"
+    record_path = directory / "restore.process.json"
+    trace = directory / "run/contract_trace.log"
+    with log.open("wb") as output:
+        process = subprocess.Popen(
+            list(command),
+            stdout=output,
+            stderr=subprocess.STDOUT,
+            env=dict(environment),
+        )
+        start_ticks = legacy.base.proc_start_ticks(process.pid)
+        require(start_ticks is not None, "restore lacks process identity")
+        started = time.monotonic()
+        record: dict[str, Any] = {
+            "pid": process.pid,
+            "proc_start_ticks": start_ticks,
+            "boot_id": Path("/proc/sys/kernel/random/boot_id")
+            .read_text()
+            .strip(),
+            "observed_start_unix_ns": time.time_ns(),
+            "command_sha256": hashlib.sha256(
+                json.dumps(list(command), separators=(",", ":")).encode()
+            ).hexdigest(),
+            "timeout_seconds": timeout_seconds,
+            "no_progress_seconds": no_progress_seconds,
+        }
+        atomic_json(record_path, record)
+        last_tick: int | None = None
+        last_size = 0
+        last_progress = time.monotonic()
+        failure: str | None = None
+        while process.poll() is None:
+            time.sleep(5)
+            now = time.monotonic()
+            observation = last_trace_tick(trace)
+            if observation is not None:
+                tick, size = observation
+                if tick != last_tick:
+                    last_tick = tick
+                    last_progress = now
+                elif (
+                    size > last_size
+                    and now - last_progress >= no_progress_seconds
+                ):
+                    failure = (
+                        f"trace tick {tick} did not advance for "
+                        f"{no_progress_seconds}s while trace grew"
+                    )
+                    break
+                last_size = size
+            if now - started >= timeout_seconds:
+                failure = f"restore exceeded {timeout_seconds}s wall timeout"
+                break
+        if failure is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        returncode = process.wait()
+    record.update(
+        {
+            "returncode": returncode,
+            "observed_end_unix_ns": time.time_ns(),
+            "pid_identity_absent": (
+                legacy.base.proc_start_ticks(process.pid) != start_ticks
+            ),
+            "guard_failure": failure,
+            "last_trace_tick": last_tick,
+        }
+    )
+    atomic_json(record_path, record)
+    atomic_text(directory / "restore.exit", f"{returncode}\n")
+    require(failure is None, failure or "restore progress guard")
+    return returncode
 
 
 def prepare(
@@ -431,6 +545,8 @@ def run_campaign(
     ramulator: Path,
     ramulator_config: Path,
     max_parallel: int,
+    restore_timeout_seconds: int,
+    no_progress_seconds: int,
 ) -> dict[str, Any]:
     prepared = prepare(root, gem5, ramulator, ramulator_config)
     atomic_text(root / "campaign.exit", "running\n")
@@ -473,8 +589,12 @@ def run_campaign(
                 arm_root / "run",
                 arm,
             )
-            rc = legacy.run_logged(
-                command, arm_root, "restore", prepared["environment"]
+            rc = run_restore_bounded(
+                command,
+                arm_root,
+                prepared["environment"],
+                timeout_seconds=restore_timeout_seconds,
+                no_progress_seconds=no_progress_seconds,
             )
             require(rc == 0, f"{arm.name}: restore rc={rc}")
             require(
@@ -918,6 +1038,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--ramulator-config", type=Path, default=DEFAULT_RAMULATOR_CONFIG
     )
     parser.add_argument("--max-parallel-restores", type=int, default=3)
+    parser.add_argument("--restore-timeout-seconds", type=int, default=1800)
+    parser.add_argument("--no-progress-seconds", type=int, default=60)
     args = parser.parse_args(argv)
     if args.execute and args.validate is not None:
         parser.error("--execute and --validate are mutually exclusive")
@@ -927,6 +1049,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("--out requires --execute")
     if args.max_parallel_restores < 1 or args.max_parallel_restores > 3:
         parser.error("--max-parallel-restores must be in [1, 3]")
+    if args.restore_timeout_seconds < 60:
+        parser.error("--restore-timeout-seconds must be at least 60")
+    if args.no_progress_seconds < 30:
+        parser.error("--no-progress-seconds must be at least 30")
     return args
 
 
@@ -940,6 +1066,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.ramulator_library.resolve(),
                 args.ramulator_config.resolve(),
                 args.max_parallel_restores,
+                args.restore_timeout_seconds,
+                args.no_progress_seconds,
             )
         elif args.validate is not None:
             result = validate_campaign(args.validate.resolve())
