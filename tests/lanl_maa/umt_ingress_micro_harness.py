@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed v16 consumer of build-v18 and arm-v7 evidence contracts.
+"""Fail-closed v16 consumer of build-v19 and arm-v7 evidence contracts.
 
 This program only freezes, validates, and records launch commands.  It never
 builds, invokes systemd, or executes gem5.  A future launcher must first
@@ -20,8 +20,9 @@ import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 TRACE_BUILD_DEFINE = "LANL_MAA_UMT_INGRESS_TRACE_TEST"
+CONFORMANCE_BUILD_DEFINE = "LANL_MAA_UMT_PKI4_CONFORMANCE_TEST"
 LABEL_PREFIX = "lanl_maa_umt_ingress_micro"
-SCHEMA_BUILD_PROOF = "lanl-maa-umt-ingress-instrumented-gem5-build-proof-v18"
+SCHEMA_BUILD_PROOF = "lanl-maa-umt-pki4-dual-gem5-build-proof-v19"
 SCHEMA_SUBMISSION = "umt-lanl-maa-submission-v1"
 SCHEMA_CONTRACT = "lanl-maa-umt-ingress-contract-v16"
 SCHEMA_DISPATCH_PLAN = "lanl-maa-umt-ingress-dispatch-plan-v16"
@@ -29,20 +30,22 @@ SCHEMA_ARM_REPORT = "lanl-maa-umt-ingress-arm-report-v16"
 CONTRACT_FILENAME = "ingress-contract-v16.json"
 DISPATCH_FILENAME = "ingress-dry-dispatch-v16.json"
 CANONICAL_SOURCE_ROOT = (
-    "/data1/nier/worktrees/DX100-umt-ingress-source-fixes-20260831"
+    "/data1/nier/worktrees/DX100-umt-pki4-conformance-source-v3-20260831"
 )
 CANONICAL_SOURCE = pathlib.Path(CANONICAL_SOURCE_ROOT)
-CANONICAL_SOURCE_COMMIT = "45a7be343788dce1180c0117ef9004cf00e9da45"
-CANONICAL_SOURCE_TREE = "81188d67ccee00d720e0343f049a4bb70972b708"
+CANONICAL_SOURCE_COMMIT = "45e8e848ff6e1cd2be7901a32d58a93d7109b668"
+CANONICAL_SOURCE_TREE = "0d937910257d088b87303a3ade6642442f9faf22"
 CANONICAL_GEM5 = CANONICAL_SOURCE / "build/X86_UMT_T32_W2/gem5.opt"
 BUILD_ROOT = CANONICAL_SOURCE / "build/X86_UMT_T32_W2"
-GENERATED_ROOT_SENTINEL = BUILD_ROOT / ".lanl-maa-umt-build-owner-v18.json"
-GENERATED_ROOT_OWNERSHIP_SCHEMA = (
-    "lanl-maa-umt-ingress-generated-root-owner-v18"
+GENERATED_ROOT_SENTINEL = BUILD_ROOT / ".lanl-maa-umt-build-owner-v19.json"
+GENERATED_ROOT_OWNERSHIP_SCHEMA = "lanl-maa-umt-pki4-generated-root-owner-v19"
+BUILD_UNIT = "umt-pki4-conformance-build-v19-20260831.service"
+BUILD_EVIDENCE_NAME = "pki4-conformance-build-evidence-v19"
+BUILD_PLAN_SCHEMA = "lanl-maa-umt-pki4-dual-build-plan-v19"
+BUILD_ATTESTATION_SCHEMA = "lanl-maa-umt-pki4-dual-build-attestation-v19"
+BUILD_CAMPAIGN_ROOT = pathlib.Path(
+    "/data1/nier/dx100-runs/" "2026-08-31-umt-pki4-conformance-build-v19-live"
 )
-BUILD_UNIT = "umt-ingress-trace-build-v18-20260831.service"
-BUILD_EVIDENCE_NAME = "ingress-build-evidence-v18"
-BUILD_PLAN_SCHEMA = "lanl-maa-umt-ingress-trace-build-plan-v18"
 BUILD_CLEAN_METHOD = "require-fresh-absent-exact-two-v1"
 BUILD_OBJECT = CANONICAL_SOURCE / "build/X86_UMT_T32_W2/mem/LANLMAA/lanl_maa.o"
 CONFIG_ARTIFACTS = {
@@ -64,7 +67,11 @@ EXPECTED_BUILD_ARGV = (
     "-j4",
 )
 BUILD_ARGV = EXPECTED_BUILD_ARGV
-TRACE_DEFINE_FLAG = "-DLANL_MAA_UMT_INGRESS_TRACE_TEST"
+TRACE_DEFINE_FLAGS = (
+    "-DLANL_MAA_UMT_INGRESS_TRACE_TEST",
+    "-DLANL_MAA_UMT_PKI4_CONFORMANCE_TEST",
+)
+TRACE_DEFINE_VALUE = " ".join(TRACE_DEFINE_FLAGS)
 OBJECT_PREBUILD_ARGV = (
     "/usr/bin/scons",
     "--ignore-style",
@@ -77,7 +84,7 @@ SANITIZED_CHILD_ENV_NAMES = ["CCFLAGS_EXTRA", "LANG", "LC_ALL", "PATH", "TZ"]
 # never their values; `validate_build_environment` checks that shape.
 BUILD_ENVIRONMENT = {
     "sanitized": SANITIZED_CHILD_ENV_NAMES,
-    "fixed_values": {"CCFLAGS_EXTRA": TRACE_DEFINE_FLAG},
+    "fixed_values": {"CCFLAGS_EXTRA": TRACE_DEFINE_VALUE},
     "inherited_tool_affecting_names": [],
     "inherited_tool_affecting_count": 0,
 }
@@ -145,7 +152,7 @@ BUILD_JOURNAL_COMMAND = (
     "--no-pager",
     "--output=export",
 )
-JOURNAL_TERMINAL_PROTOCOL = "LANL_MAA_UMT_INGRESS_BUILD_ATTESTATION_V18"
+JOURNAL_TERMINAL_PROTOCOL = "LANL_MAA_UMT_INGRESS_BUILD_ATTESTATION_V19"
 DISPATCH_PROPERTIES = (
     ("CPUQuota", "400%"),
     ("CPUWeight", "1000"),
@@ -159,7 +166,7 @@ BUILD_CLEANUP_COMMANDS = (
     ("systemctl", "--user", "stop", BUILD_UNIT),
     ("systemctl", "--user", "reset-failed", BUILD_UNIT),
 )
-BUILD_CLEANUP_RECEIPT_SCHEMA = "lanl-maa-umt-ingress-build-cleanup-v18"
+BUILD_CLEANUP_RECEIPT_SCHEMA = "lanl-maa-umt-pki4-build-cleanup-v19"
 BUILD_CLEANUP_SHOW_COMMAND = (
     "systemctl",
     "--user",
@@ -186,18 +193,63 @@ NATIVE_ABI_SOURCES = {
     "tests/lanl_maa/umt64_native_contract_test.cc": "a8b7c9d9004942d50e39f24edda06f1a19821c77e00b9397412d12eb05225384",
     "tests/lanl_maa/test_umt64_native_source.py": "7412b1aa861bbc68eabe7d083eb6cb6c69a679b6c49523893a29d052a03e02eb",
 }
-INSTRUMENTATION_SOURCES = {
+LEGACY_INSTRUMENTATION_SOURCES = {
     "src/base/cprintf.cc": "54e30cca948b267c8384b6c9f2e4d674c7cd79e1e54062d7223805aedb41bf72",
     "src/base/cprintf.hh": "3249e5f3f3b2de0ad5b5c92c75bb45dafb3f605a93ea814d7eba8c45be0fad0a",
     "src/base/cprintf_formats.hh": "c44eaae91d027e0b8cf9c083a15927867fd9be49d8fa4c5375ecb3d130839ae5",
     "src/mem/LANLMAA/UmtOrderedWaveIngressTrace.hh": "b6d3179f58e623c13b3b6afd7174c359085bddc4393d99702df81cf3ab5584bd",
-    "src/mem/LANLMAA/UmtOrderedWaveStreamState.hh": "d783907dd26ec671d6ba4a779719e19eadc75098ab25ba0fd3457cf68438b5c8",
-    "src/mem/LANLMAA/lanl_maa.hh": "0867579688c902f04b86d0fdce0b896f60b61031d61410fbd4789385b4cd5b9a",
-    "src/mem/LANLMAA/lanl_maa.cc": "7cd51cd29ab76ce43a26dcd7711b72dcb6fb7db2c35c935cbcc47d083d014430",
+    "src/mem/LANLMAA/UmtOrderedWaveStreamState.hh": "731e170b9ea29d34ad478381eac1d04fec8fc72948d4c16d274e17194f738ec5",
+    "src/mem/LANLMAA/lanl_maa.hh": "a712bbdb786d5019d97cd0e9e98fec5b707a0293e38aa0b07a42b077f8fabb1c",
+    "src/mem/LANLMAA/lanl_maa.cc": "9b58fe8bf2ceaf0d21dee3fc1d531c711de75f9ffb170072f4c4f490615fb39d",
     "tests/lanl_maa/umt_ingress_default_off_compile_test.cc": "7d3076bf4f8033e3dc11f54ef94bdcdc756469e816a0bf7425705d55122064c2",
     "tests/lanl_maa/umt_production_ingress_trace_test.cc": "07a8bdd412cba3d8e7afb4e86bceec4ad5765cb2e1c24a2e6f754436e4032e32",
     "tests/lanl_maa/run_umt_production_ingress_trace_gate.py": "67cd70ac8d057d5769b7e8e3f0a9e3dd42e05f01b9c432250b1edba0078bea28",
 }
+CONFORMANCE_INSTRUMENTATION_SOURCES = {
+    "src/mem/LANLMAA/UmtPki4ConformanceTrace.hh": "800a85c1415b807e804baa41626e1d6ec657b483639cdf95517799d5595d97c7",
+    "src/mem/LANLMAA/UmtOrderedWaveStreamState.hh": "731e170b9ea29d34ad478381eac1d04fec8fc72948d4c16d274e17194f738ec5",
+    "src/mem/LANLMAA/lanl_maa.hh": "a712bbdb786d5019d97cd0e9e98fec5b707a0293e38aa0b07a42b077f8fabb1c",
+    "src/mem/LANLMAA/lanl_maa.cc": "9b58fe8bf2ceaf0d21dee3fc1d531c711de75f9ffb170072f4c4f490615fb39d",
+    "tests/lanl_maa/umt_pki4_conformance_model_test.cc": "80c2849ab5debe27afa9dc1abc4aa8304a768569e5397ecd22fd68b933708af1",
+    "tests/lanl_maa/umt_pki4_conformance_normalizer.py": "de2c140c638884aa876756c81be3de832ac14ccb938ee863a69f84a006146fb7",
+    "tests/lanl_maa/test_umt_pki4_conformance_normalizer.py": "927f438687a00abc401a98c52629e8d4a47f29b1514ca7b7431e455432ffee4e",
+    "tests/lanl_maa/run_umt_pki4_conformance_gate.py": "3f342bccb058d271895427d51ee84fdfe823bf12ba5592c6cf50d62f1f4e0394",
+}
+INSTRUMENTATION_SOURCES = {
+    **LEGACY_INSTRUMENTATION_SOURCES,
+    **CONFORMANCE_INSTRUMENTATION_SOURCES,
+}
+LEGACY_COMPILED_MARKERS = (
+    b"UMT_INGRESS kind=",
+    b"d64_hold cycle=",
+    b"waiters=%u token=%llu pre=",
+)
+COMPILED_MARKERS = LEGACY_COMPILED_MARKERS + (
+    b"UMT_PKI4_CONFORMANCE ",
+    b"lanl-maa-umt-pki4-conformance-v3",
+    b"7ff5188835462202586fa44a3b0272e9c298aca745293abfae8354cc0988a15d",
+)
+CONFORMANCE_REPORT = pathlib.Path(
+    "/data1/nier/dx100-runs/2026-08-31-umt-pki4-conformance-gate-v3/"
+    "umt-pki4-conformance-host-gate-v3.json"
+)
+CONFORMANCE_REPORT_SHA256 = (
+    "562fde3216e45521e1b289e885ef035983e299003dfb388cb7cf7ecf2461775b"
+)
+TEMPORAL_PLAN = pathlib.Path(
+    "/data1/nier/dx100-runs/2026-08-31-umt-pki4-conformance-gate-v3/"
+    "pki4-temporal-equivalence-plan-v2.json"
+)
+TEMPORAL_PLAN_SHA256 = (
+    "7ff5188835462202586fa44a3b0272e9c298aca745293abfae8354cc0988a15d"
+)
+PROMOTION_REVIEW = pathlib.Path(
+    "/data1/nier/dx100-runs/2026-08-31-umt-pki4-conformance-gate-v3/"
+    "pki4-conformance-independent-promotion-review-v3.json"
+)
+PROMOTION_REVIEW_SHA256 = (
+    "6fd0f46bb2e278e01bfc92502eb1aa4c93f24cf9f30633087475688e9efb5bc4"
+)
 BUILD_SYSTEM_SOURCES = {
     "SConstruct": "566ccd8621b168e9ef29c04f5bf5ba5414190afbb32bfcac4986843e3f476f19",
     "site_scons/gem5_scons/defaults.py": (
@@ -364,7 +416,7 @@ def validate_build_environment(value, label):
     names = value["inherited_tool_affecting_names"]
     if (
         value["sanitized"] != SANITIZED_CHILD_ENV_NAMES
-        or value["fixed_values"] != {"CCFLAGS_EXTRA": TRACE_DEFINE_FLAG}
+        or value["fixed_values"] != {"CCFLAGS_EXTRA": TRACE_DEFINE_VALUE}
         or not isinstance(names, list)
         or names != sorted(set(names))
         or any(not isinstance(name, str) or not name for name in names)
@@ -415,7 +467,7 @@ def verify_hash(path, expected, label):
 
 
 def expected_clean_stdout():
-    """Return the exact build-v18 producer record for the fresh build root."""
+    """Return the exact build-v19 producer record for the fresh build root."""
     relatives = tuple(
         str(path.relative_to(CANONICAL_SOURCE))
         for path in (BUILD_ROOT, CANONICAL_GEM5, BUILD_OBJECT)
@@ -430,7 +482,7 @@ def expected_clean_stdout():
 
 
 def validate_clean_stdout(path):
-    """Require the ordered root, target, and object tuple emitted by v18."""
+    """Require the ordered root, target, and object tuple emitted by v19."""
     if (
         pathlib.Path(path).read_text(encoding="ascii")
         != expected_clean_stdout()
@@ -559,7 +611,7 @@ def validate_build_argv(argv):
 
 
 def validate_fixed_build_environment(value):
-    if value != {"CCFLAGS_EXTRA": TRACE_DEFINE_FLAG}:
+    if value != {"CCFLAGS_EXTRA": TRACE_DEFINE_VALUE}:
         raise RuntimeError("fixed instrumentation environment is not exact")
 
 
@@ -580,18 +632,26 @@ def validate_object_compile_transcript(raw):
         raise RuntimeError(
             "object prebuild command is not parseable"
         ) from error
-    defines = [
-        token
-        for token in tokens
-        if token.startswith("-DLANL_MAA_UMT_INGRESS_TRACE_TEST")
-    ]
+    defines = [token for token in tokens if token in TRACE_DEFINE_FLAGS]
     if (
-        defines != [TRACE_DEFINE_FLAG]
+        defines != list(TRACE_DEFINE_FLAGS)
+        or tokens.count(TRACE_DEFINE_FLAGS[0]) != 1
+        or tokens.count(TRACE_DEFINE_FLAGS[1]) != 1
+        or any(
+            token.startswith("-DLANL_MAA_UMT_INGRESS_TRACE_TEST")
+            and token != TRACE_DEFINE_FLAGS[0]
+            for token in tokens
+        )
+        or any(
+            token.startswith("-DLANL_MAA_UMT_PKI4_CONFORMANCE_TEST")
+            and token != TRACE_DEFINE_FLAGS[1]
+            for token in tokens
+        )
         or any("CPPDEFINES" in token for token in tokens)
         or any(token.startswith("CCFLAGS_EXTRA=") for token in tokens)
     ):
         raise RuntimeError(
-            "object prebuild command lacks the exact sole define"
+            "object prebuild command lacks the exact ordered dual defines"
         )
     return candidates[0]
 
@@ -764,11 +824,11 @@ def validate_systemd_resource_mapping():
 
 
 def build_systemd_run_command(evidence_dir):
-    """Return the exact retained v18 build-unit launch; never execute it."""
+    """Return the exact retained v19 build-unit launch; never execute it."""
     validate_systemd_resource_mapping()
     evidence = pathlib.Path(evidence_dir).resolve()
     if evidence.name != BUILD_EVIDENCE_NAME:
-        raise RuntimeError("v18 build evidence identity is not canonical")
+        raise RuntimeError("v19 build evidence identity is not canonical")
     command = [
         "systemd-run",
         "--user",
@@ -782,7 +842,7 @@ def build_systemd_run_command(evidence_dir):
         *wrapper_command(evidence),
     ]
     if "--collect" in command:
-        raise RuntimeError("v18 build unit must remain for terminal capture")
+        raise RuntimeError("v19 build unit must remain for terminal capture")
     return command
 
 
@@ -790,12 +850,35 @@ def dry_build_plan(campaign_root, output):
     """Freeze one no-clobber build command without invoking systemd/SCons."""
     validate_build_argv(BUILD_ARGV)
     validate_fixed_build_environment(BUILD_ENVIRONMENT["fixed_values"])
+    verify_canonical_source()
     validate_build_system_contract(CANONICAL_SOURCE)
+    conformance_provenance = validate_conformance_provenance(
+        {
+            "host_report": {
+                "path": str(CONFORMANCE_REPORT),
+                "sha256": CONFORMANCE_REPORT_SHA256,
+            },
+            "temporal_plan": {
+                "path": str(TEMPORAL_PLAN),
+                "sha256": TEMPORAL_PLAN_SHA256,
+            },
+            "independent_review": {
+                "path": str(PROMOTION_REVIEW),
+                "sha256": PROMOTION_REVIEW_SHA256,
+            },
+        }
+    )
     campaign = pathlib.Path(campaign_root).resolve()
     output = pathlib.Path(output).resolve()
-    if campaign.exists() or output != campaign / "build-plan-v18.json":
+    if (
+        campaign != BUILD_CAMPAIGN_ROOT
+        or campaign.exists()
+        or output != campaign / "build-plan-v19.json"
+        or BUILD_ROOT.exists()
+        or BUILD_ROOT.is_symlink()
+    ):
         raise RuntimeError(
-            "v18 build plan requires a fresh canonical campaign"
+            "v19 build plan requires its one fresh campaign and build root"
         )
     evidence = campaign / "identity" / BUILD_EVIDENCE_NAME
     value = {
@@ -806,11 +889,18 @@ def dry_build_plan(campaign_root, output):
         "source_commit": CANONICAL_SOURCE_COMMIT,
         "source_tree": CANONICAL_SOURCE_TREE,
         "instrumentation_source_sha256": INSTRUMENTATION_SOURCES,
+        "legacy_observer_source_sha256": LEGACY_INSTRUMENTATION_SOURCES,
+        "conformance_source_sha256": CONFORMANCE_INSTRUMENTATION_SOURCES,
         "build_system_source_sha256": BUILD_SYSTEM_SOURCES,
         "object_prebuild_argv": list(OBJECT_PREBUILD_ARGV),
         "fixed_child_environment": {
-            "CCFLAGS_EXTRA": TRACE_DEFINE_FLAG,
+            "CCFLAGS_EXTRA": TRACE_DEFINE_VALUE,
         },
+        "required_defines": list(TRACE_DEFINE_FLAGS),
+        "compiled_object_and_binary_markers": [
+            marker.decode("ascii") for marker in COMPILED_MARKERS
+        ],
+        "conformance_provenance": conformance_provenance,
         "sanitized_child_environment_names": SANITIZED_CHILD_ENV_NAMES,
         "unit": BUILD_UNIT,
         "evidence_dir": str(evidence),
@@ -844,7 +934,7 @@ def dry_build_plan(campaign_root, output):
         ],
         "cleanup_receipt": {
             "schema": BUILD_CLEANUP_RECEIPT_SCHEMA,
-            "path": str(campaign / "identity/build-cleanup-v18.json"),
+            "path": str(campaign / "identity/build-cleanup-v19.json"),
             "show_command": list(BUILD_CLEANUP_SHOW_COMMAND),
             "required_state": {
                 "LoadState": "not-found",
@@ -854,6 +944,13 @@ def dry_build_plan(campaign_root, output):
             "must_follow_terminal_proof": True,
             "failure_anchor": str(evidence / "failure-restore.json"),
             "accepted_anchor_kinds": ["success_proof", "failure_restore"],
+        },
+        "authorization": {
+            "build_count": 1,
+            "unit": BUILD_UNIT,
+            "campaign_root": str(BUILD_CAMPAIGN_ROOT),
+            "launch_requires_independent_review": True,
+            "launch_status": "not_launched",
         },
         "claim_boundary": (
             "Dry plan only. Capture the terminal 17-property snapshot and "
@@ -1042,7 +1139,7 @@ def journal_marker(
     kind, *, invocation, pid, proc_start_ticks, target_sha256=None
 ):
     value = {
-        "schema": "lanl-maa-umt-ingress-build-attestation-v18",
+        "schema": BUILD_ATTESTATION_SCHEMA,
         "unit": BUILD_UNIT,
         "invocation_id": invocation,
         "wrapper_pid": pid,
@@ -1222,6 +1319,56 @@ def file_contains(path, needle):
     return False
 
 
+def validate_conformance_provenance(value):
+    exact_keys(
+        value,
+        ("host_report", "temporal_plan", "independent_review"),
+        "conformance provenance",
+    )
+    bindings = (
+        (
+            "host_report",
+            CONFORMANCE_REPORT,
+            CONFORMANCE_REPORT_SHA256,
+        ),
+        ("temporal_plan", TEMPORAL_PLAN, TEMPORAL_PLAN_SHA256),
+        (
+            "independent_review",
+            PROMOTION_REVIEW,
+            PROMOTION_REVIEW_SHA256,
+        ),
+    )
+    for key, expected_path, expected_sha256 in bindings:
+        artifact(value[key], f"conformance {key}", expected_path)
+        if value[key]["sha256"] != expected_sha256:
+            raise RuntimeError(f"conformance {key} SHA-256 mismatch")
+    report = read_json(CONFORMANCE_REPORT)
+    review = read_json(PROMOTION_REVIEW)
+    identity = review.get("evidence_identity", {})
+    scope = review.get("review_scope", {})
+    if (
+        report.get("schema") != "lanl-maa-umt-pki4-conformance-host-gate-v3"
+        or report.get("status") != "passed_host_only"
+        or report.get("required_define") != CONFORMANCE_BUILD_DEFINE
+        or report.get("input_source_sha256")
+        != CONFORMANCE_INSTRUMENTATION_SOURCES
+        or report.get("persisted_temporal_plan") != value["temporal_plan"]
+        or review.get("schema")
+        != "lanl-maa-umt-pki4-conformance-independent-promotion-review-v3"
+        or review.get("decision") != "PASS"
+        or review.get("status")
+        != "passed_independent_host_v3_review_not_promoted"
+        or scope.get("commit") != CANONICAL_SOURCE_COMMIT
+        or scope.get("tree") != CANONICAL_SOURCE_TREE
+        or identity.get("umt-pki4-conformance-host-gate-v3.json")
+        != CONFORMANCE_REPORT_SHA256
+        or identity.get("pki4-temporal-equivalence-plan-v2.json")
+        != TEMPORAL_PLAN_SHA256
+    ):
+        raise RuntimeError("conformance report/plan/review semantics mismatch")
+    return value
+
+
 def validate_generated_root_ownership(value, invocation, pid, start_ticks):
     exact_keys(
         value,
@@ -1312,7 +1459,7 @@ def read_build_proof(path, digest, gem5, gem5_digest):
             "build_cwd",
             "build_argv",
             "build_environment",
-            "trace_define",
+            "trace_defines",
             "instrumentation_source_sha256",
             "build_system_source_sha256",
             "clean_method",
@@ -1336,13 +1483,15 @@ def read_build_proof(path, digest, gem5, gem5_digest):
             "build_artifacts",
             "build_invocation",
             "observer_gate",
+            "conformance_gate",
         ),
         "instrumented-build proof",
     )
     if (
         proof["schema"] != SCHEMA_BUILD_PROOF
         or proof["status"] != "passed"
-        or proof["producer"] != "systemd-build-proof-v18-service-wrapper"
+        or proof["producer"]
+        != "systemd-pki4-dual-build-proof-v19-service-wrapper"
     ):
         raise RuntimeError("instrumented-build proof schema/status mismatch")
     if (
@@ -1363,7 +1512,8 @@ def read_build_proof(path, digest, gem5, gem5_digest):
         or pathlib.Path(proof["build_cwd"]).resolve()
         != CANONICAL_SOURCE.resolve()
         or tuple(proof["build_argv"]) != BUILD_ARGV
-        or proof["trace_define"] != TRACE_BUILD_DEFINE
+        or proof["trace_defines"]
+        != [TRACE_BUILD_DEFINE, CONFORMANCE_BUILD_DEFINE]
         or proof["instrumentation_source_sha256"] != INSTRUMENTATION_SOURCES
         or proof["build_system_source_sha256"] != BUILD_SYSTEM_SOURCES
         or proof["clean_method"] != BUILD_CLEAN_METHOD
@@ -1420,15 +1570,14 @@ def read_build_proof(path, digest, gem5, gem5_digest):
         config_path = artifact(artifacts[key], f"build {key}", expected_path)
         if config_path.read_bytes() != expected_text:
             raise RuntimeError("generated UMT variant header is not exact")
-    if artifacts["gem5"]["sha256"] != gem5_digest or not all(
-        file_contains(CANONICAL_GEM5, item)
-        for item in (
-            b"UMT_INGRESS kind=",
-            b"d64_hold cycle=",
-            b"waiters=%u token=%llu pre=",
-        )
+    if artifacts["gem5"]["sha256"] != gem5_digest or any(
+        not file_contains(path, marker)
+        for path in (CANONICAL_GEM5, BUILD_OBJECT)
+        for marker in COMPILED_MARKERS
     ):
-        raise RuntimeError("canonical gem5 lacks exact instrumented identity")
+        raise RuntimeError(
+            "canonical gem5/object lacks exact dual instrumented identity"
+        )
 
     inv = proof["build_invocation"]
     exact_keys(
@@ -1536,12 +1685,13 @@ def read_build_proof(path, digest, gem5, gem5_digest):
             "build_artifacts",
             "compiled_binary_markers",
             "observer_gate",
+            "conformance_gate",
             "evidence",
         ),
         "wrapper attestation",
     )
     if (
-        attest["schema"] != "lanl-maa-umt-ingress-build-attestation-v18"
+        attest["schema"] != BUILD_ATTESTATION_SCHEMA
         or attest["unit"] != BUILD_UNIT
         or attest["invocation_id"] != invocation
         or attest["wrapper_pid"] != pid
@@ -1567,11 +1717,7 @@ def read_build_proof(path, digest, gem5, gem5_digest):
         or attest["instrumentation_source_sha256"] != INSTRUMENTATION_SOURCES
         or attest["build_system_source_sha256"] != BUILD_SYSTEM_SOURCES
         or attest["compiled_binary_markers"]
-        != [
-            "UMT_INGRESS kind=",
-            "d64_hold cycle=",
-            "waiters=%u token=%llu pre=",
-        ]
+        != [marker.decode("ascii") for marker in COMPILED_MARKERS]
     ):
         raise RuntimeError(
             "wrapper attestation identity/build binding mismatch"
@@ -1613,6 +1759,13 @@ def read_build_proof(path, digest, gem5, gem5_digest):
         "observer_report": "observer-report.json",
         "observer_transcript": "observer-transcript.txt",
         "source_manifest": "observer-input-source-sha256.json",
+        "conformance_source_manifest": (
+            "conformance-input-source-sha256.json"
+        ),
+        "conformance_stdout": "conformance.stdout",
+        "conformance_stderr": "conformance.stderr",
+        "conformance_report": "conformance-report.json",
+        "conformance_transcript": "conformance-transcript.txt",
         "build_system_manifest": "build-system-source-sha256.json",
         "target_config_literal_scan": "target-config-literal-scan.json",
     }
@@ -1657,8 +1810,17 @@ def read_build_proof(path, digest, gem5, gem5_digest):
             "observer-input-source-sha256.json",
         )
     )
-    if source_manifest != INSTRUMENTATION_SOURCES:
+    if source_manifest != LEGACY_INSTRUMENTATION_SOURCES:
         raise RuntimeError("wrapper source manifest mismatch")
+    conformance_source_manifest = read_json(
+        evidence_artifact(
+            attest["evidence"]["conformance_source_manifest"],
+            evidence_dir,
+            "conformance-input-source-sha256.json",
+        )
+    )
+    if conformance_source_manifest != CONFORMANCE_INSTRUMENTATION_SOURCES:
+        raise RuntimeError("wrapper conformance source manifest mismatch")
     scan = read_json(
         evidence_artifact(
             attest["evidence"]["target_config_literal_scan"],
@@ -1678,6 +1840,7 @@ def read_build_proof(path, digest, gem5, gem5_digest):
             "config_fp_issue_width",
             "config_fp_issue_width_sha256",
             "compiled_binary_markers",
+            "markers_verified_in",
         ),
         "target/object/config scan",
     )
@@ -1695,11 +1858,9 @@ def read_build_proof(path, digest, gem5, gem5_digest):
         or scan["config_fp_issue_width_sha256"]
         != artifacts["config_fp_issue_width"]["sha256"]
         or scan["compiled_binary_markers"]
-        != [
-            "UMT_INGRESS kind=",
-            "d64_hold cycle=",
-            "waiters=%u token=%llu pre=",
-        ]
+        != [marker.decode("ascii") for marker in COMPILED_MARKERS]
+        or scan["markers_verified_in"]
+        != [str(CANONICAL_GEM5), str(BUILD_OBJECT)]
     ):
         raise RuntimeError("target/object/config scan mismatch")
 
@@ -1733,6 +1894,34 @@ def read_build_proof(path, digest, gem5, gem5_digest):
     ):
         raise RuntimeError("wrapper observer gate binding mismatch")
 
+    expected_conformance_gate = (
+        "/usr/bin/python3",
+        str(
+            CANONICAL_SOURCE
+            / "tests/lanl_maa/run_umt_pki4_conformance_gate.py"
+        ),
+        "--cxx",
+        "g++",
+    )
+    exact_keys(
+        attest["conformance_gate"],
+        ("command", "returncode", "report", "transcript", "provenance"),
+        "wrapper conformance gate",
+    )
+    if (
+        tuple(attest["conformance_gate"]["command"])
+        != expected_conformance_gate
+        or attest["conformance_gate"]["returncode"] != 0
+        or attest["conformance_gate"]["report"]
+        != attest["evidence"]["conformance_report"]
+        or attest["conformance_gate"]["transcript"]
+        != attest["evidence"]["conformance_transcript"]
+    ):
+        raise RuntimeError("wrapper conformance gate binding mismatch")
+    conformance_provenance = validate_conformance_provenance(
+        attest["conformance_gate"]["provenance"]
+    )
+
     journal = artifact(inv["journal"], "build journal")
     parse_export_journal(
         journal, invocation, pid, process["proc_start_ticks"], gem5_digest
@@ -1756,7 +1945,7 @@ def read_build_proof(path, digest, gem5, gem5_digest):
     if (
         gate["status"] != "passed"
         or tuple(gate["command"]) != expected_gate
-        or gate["input_source_sha256"] != INSTRUMENTATION_SOURCES
+        or gate["input_source_sha256"] != LEGACY_INSTRUMENTATION_SOURCES
         or pathlib.Path(gate["binary"]).resolve() != CANONICAL_GEM5.resolve()
         or gate["binary_sha256"] != gem5_digest
         or gate["stdout"] != attest["evidence"]["observer_stdout"]
@@ -1801,7 +1990,7 @@ def read_build_proof(path, digest, gem5, gem5_digest):
         or report["status"] != "passed"
         or pathlib.Path(report["source_root"]).resolve()
         != CANONICAL_SOURCE.resolve()
-        or report["input_source_sha256"] != INSTRUMENTATION_SOURCES
+        or report["input_source_sha256"] != LEGACY_INSTRUMENTATION_SOURCES
         or pathlib.Path(report["binary"]).resolve() != CANONICAL_GEM5.resolve()
         or report["binary_sha256"] != gem5_digest
         or report["required_define"] != TRACE_BUILD_DEFINE
@@ -1818,6 +2007,47 @@ def read_build_proof(path, digest, gem5, gem5_digest):
         .splitlines()
     ):
         raise RuntimeError("observer report/transcript semantics mismatch")
+
+    conformance = proof["conformance_gate"]
+    exact_keys(
+        conformance,
+        (
+            "command",
+            "input_source_sha256",
+            "stdout",
+            "stderr",
+            "report",
+            "transcript",
+            "provenance",
+            "status",
+        ),
+        "conformance gate",
+    )
+    conformance_report = artifact(conformance["report"], "conformance report")
+    conformance_transcript = artifact(
+        conformance["transcript"], "conformance transcript"
+    )
+    if (
+        conformance["status"] != "passed_host_only"
+        or tuple(conformance["command"]) != expected_conformance_gate
+        or conformance["input_source_sha256"]
+        != CONFORMANCE_INSTRUMENTATION_SOURCES
+        or conformance["stdout"] != attest["evidence"]["conformance_stdout"]
+        or conformance["stderr"] != attest["evidence"]["conformance_stderr"]
+        or conformance["report"] != attest["evidence"]["conformance_report"]
+        or conformance["transcript"]
+        != attest["evidence"]["conformance_transcript"]
+        or conformance["provenance"] != conformance_provenance
+        or conformance_report.read_bytes() != CONFORMANCE_REPORT.read_bytes()
+        or sha256(conformance_report) != CONFORMANCE_REPORT_SHA256
+        or "status=0/SUCCESS"
+        not in conformance_transcript.read_text(
+            encoding="utf-8", errors="strict"
+        ).splitlines()
+    ):
+        raise RuntimeError("conformance gate proof semantics mismatch")
+    artifact(conformance["stdout"], "conformance stdout")
+    artifact(conformance["stderr"], "conformance stderr")
     return path
 
 

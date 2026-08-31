@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Adversarial dry tests for combined v16 with build-v18 evidence."""
+"""Adversarial dry tests for combined v16 with build-v19 evidence."""
 import importlib.util
 import json
 import pathlib
@@ -43,14 +43,14 @@ def line(label, kind, cycle, waiters, abi=4):
 
 
 class IngressHarnessTest(unittest.TestCase):
-    def test_v16_contract_accepts_exactly_the_v18_build_proof_generation(self):
+    def test_v16_contract_accepts_exactly_the_v19_build_proof_generation(self):
         self.assertEqual(
             ingress.SCHEMA_CONTRACT,
             "lanl-maa-umt-ingress-contract-v16",
         )
         self.assertEqual(
             ingress.SCHEMA_BUILD_PROOF,
-            "lanl-maa-umt-ingress-instrumented-gem5-build-proof-v18",
+            "lanl-maa-umt-pki4-dual-gem5-build-proof-v19",
         )
         self.assertEqual(
             ingress.SCHEMA_DISPATCH_PLAN,
@@ -77,7 +77,7 @@ class IngressHarnessTest(unittest.TestCase):
             )
         )
 
-    def test_v18_build_spelling_and_sanitized_environment_are_exact(self):
+    def test_v19_build_spelling_and_sanitized_environment_are_exact(self):
         self.assertEqual(
             ingress.BUILD_ARGV,
             (
@@ -98,7 +98,10 @@ class IngressHarnessTest(unittest.TestCase):
                     "TZ",
                 ],
                 "fixed_values": {
-                    "CCFLAGS_EXTRA": "-DLANL_MAA_UMT_INGRESS_TRACE_TEST"
+                    "CCFLAGS_EXTRA": (
+                        "-DLANL_MAA_UMT_INGRESS_TRACE_TEST "
+                        "-DLANL_MAA_UMT_PKI4_CONFORMANCE_TEST"
+                    )
                 },
                 "inherited_tool_affecting_names": [],
                 "inherited_tool_affecting_count": 0,
@@ -115,14 +118,68 @@ class IngressHarnessTest(unittest.TestCase):
             ),
         )
         self.assertEqual(
-            ingress.BUILD_UNIT, "umt-ingress-trace-build-v18-20260831.service"
+            ingress.BUILD_UNIT,
+            "umt-pki4-conformance-build-v19-20260831.service",
         )
         self.assertEqual(
             ingress.SCHEMA_BUILD_PROOF,
-            "lanl-maa-umt-ingress-instrumented-gem5-build-proof-v18",
+            "lanl-maa-umt-pki4-dual-gem5-build-proof-v19",
         )
 
-    def test_v18_clean_stdout_requires_exact_ordered_three_path_tuple(self):
+    def test_v19_producer_consumer_schemas_and_protocol_are_identical(self):
+        self.assertEqual(wrapper.SCHEMA, ingress.BUILD_ATTESTATION_SCHEMA)
+        self.assertEqual(wrapper.PROTOCOL, ingress.JOURNAL_TERMINAL_PROTOCOL)
+        self.assertEqual(
+            wrapper.OWNERSHIP_SCHEMA,
+            ingress.GENERATED_ROOT_OWNERSHIP_SCHEMA,
+        )
+        self.assertEqual(wrapper.BUILD_UNIT, ingress.BUILD_UNIT)
+        self.assertEqual(
+            wrapper.TRACE_DEFINE_FLAGS, ingress.TRACE_DEFINE_FLAGS
+        )
+        marker = ingress.journal_marker(
+            "START",
+            invocation="a" * 32,
+            pid=17,
+            proc_start_ticks="123",
+        )
+        payload = json.loads(marker.split(b" ", 2)[2])
+        self.assertEqual(payload["schema"], wrapper.SCHEMA)
+
+    def test_v19_conformance_provenance_and_source_bindings_fail_closed(self):
+        provenance = {
+            "host_report": {
+                "path": str(ingress.CONFORMANCE_REPORT),
+                "sha256": ingress.CONFORMANCE_REPORT_SHA256,
+            },
+            "temporal_plan": {
+                "path": str(ingress.TEMPORAL_PLAN),
+                "sha256": ingress.TEMPORAL_PLAN_SHA256,
+            },
+            "independent_review": {
+                "path": str(ingress.PROMOTION_REVIEW),
+                "sha256": ingress.PROMOTION_REVIEW_SHA256,
+            },
+        }
+        self.assertEqual(
+            ingress.validate_conformance_provenance(provenance), provenance
+        )
+        for field in provenance:
+            forged = json.loads(json.dumps(provenance))
+            forged[field]["sha256"] = "0" * 64
+            with self.assertRaisesRegex(RuntimeError, "SHA-256"):
+                ingress.validate_conformance_provenance(forged)
+        forged_sources = dict(ingress.CONFORMANCE_INSTRUMENTATION_SOURCES)
+        key = next(iter(forged_sources))
+        forged_sources[key] = "0" * 64
+        with mock.patch.object(
+            ingress,
+            "CONFORMANCE_INSTRUMENTATION_SOURCES",
+            forged_sources,
+        ), self.assertRaisesRegex(RuntimeError, "semantics"):
+            ingress.validate_conformance_provenance(provenance)
+
+    def test_v19_clean_stdout_requires_exact_ordered_three_path_tuple(self):
         expected = (
             "clean_method=require-fresh-absent-exact-two-v1\n"
             "initial_absent=build/X86_UMT_T32_W2,"
@@ -181,11 +238,14 @@ class IngressHarnessTest(unittest.TestCase):
                     validator(invalid)
         wrapper.validate_safe_child_environment(wrapper.SAFE_CHILD_ENV)
         ingress.validate_fixed_build_environment(
-            {"CCFLAGS_EXTRA": ingress.TRACE_DEFINE_FLAG}
+            {"CCFLAGS_EXTRA": ingress.TRACE_DEFINE_VALUE}
         )
         for invalid in (
             {"CCFLAGS_EXTRA": "LANL_MAA_UMT_INGRESS_TRACE_TEST"},
             {"CCFLAGS_EXTRA": "-DLANL_MAA_UMT_INGRESS_TRACE_TEST=1"},
+            {"CCFLAGS_EXTRA": ingress.TRACE_DEFINE_FLAGS[0]},
+            {"CCFLAGS_EXTRA": ingress.TRACE_DEFINE_FLAGS[1]},
+            {"CCFLAGS_EXTRA": " ".join(reversed(ingress.TRACE_DEFINE_FLAGS))},
             {},
         ):
             with self.assertRaisesRegex(RuntimeError, "environment"):
@@ -375,6 +435,8 @@ class IngressHarnessTest(unittest.TestCase):
             "gate_stream_open",
             "report_copy",
             "transcript",
+            "conformance_gate_stream_open",
+            "conformance_report_copy",
             "evidence_hashing",
             "attestation_publication",
         )
@@ -385,7 +447,9 @@ class IngressHarnessTest(unittest.TestCase):
                 root = pathlib.Path(temporary)
                 source = root / "source"
                 source.mkdir()
-                evidence = root / "identity" / "ingress-build-evidence-v18"
+                evidence = (
+                    root / "identity" / "pki4-conformance-build-evidence-v19"
+                )
                 calls = 0
 
                 def fake_run(_argv, **kwargs):
@@ -394,11 +458,14 @@ class IngressHarnessTest(unittest.TestCase):
                     if calls == 1:
                         object_path = source / wrapper.OBJECT_RELATIVE
                         object_path.parent.mkdir(parents=True, exist_ok=True)
-                        object_path.write_bytes(b"fresh object")
+                        object_path.write_bytes(
+                            b"\0".join(wrapper.COMPILED_MARKERS)
+                        )
                         kwargs["stdout"].write(
                             b"g++ -o build/X86_UMT_T32_W2/mem/LANLMAA/lanl_maa.o "
                             b"-c src/mem/LANLMAA/lanl_maa.cc "
-                            b"-DLANL_MAA_UMT_INGRESS_TRACE_TEST\n"
+                            + wrapper.TRACE_DEFINE_VALUE.encode()
+                            + b"\n"
                         )
                     elif calls == 2:
                         target = source / wrapper.TARGET_RELATIVE
@@ -413,7 +480,7 @@ class IngressHarnessTest(unittest.TestCase):
                         kwargs["stdout"].write(
                             b"[ LINK ] X86_UMT_T32_W2/gem5.opt\n"
                         )
-                    else:
+                    elif calls == 3:
                         target = source / wrapper.TARGET_RELATIVE
                         report = {
                             "schema": "lanl-maa-umt-production-ingress-trace-v3",
@@ -425,7 +492,7 @@ class IngressHarnessTest(unittest.TestCase):
                             "required_define": "LANL_MAA_UMT_INGRESS_TRACE_TEST",
                             "compiled_binary_markers": [
                                 item.decode()
-                                for item in wrapper.COMPILED_MARKERS
+                                for item in wrapper.LEGACY_COMPILED_MARKERS
                             ],
                             "cells": [
                                 {
@@ -446,6 +513,10 @@ class IngressHarnessTest(unittest.TestCase):
                             ],
                         }
                         kwargs["stdout"].write(json.dumps(report).encode())
+                    else:
+                        kwargs["stdout"].write(
+                            wrapper.CONFORMANCE_REPORT.read_bytes()
+                        )
                     return mock.Mock(returncode=0)
 
                 def inject(name):
@@ -455,6 +526,7 @@ class IngressHarnessTest(unittest.TestCase):
                 patches = {
                     "SOURCE_ROOT": str(source),
                     "SOURCE_SHA256": {},
+                    "LEGACY_SOURCE_SHA256": {},
                     "BUILD_SYSTEM_SHA256": {},
                 }
                 with mock.patch.multiple(
@@ -571,7 +643,7 @@ class IngressHarnessTest(unittest.TestCase):
             "g++ -o build/X86_UMT_T32_W2/mem/LANLMAA/lanl_maa.o "
             "-c src/mem/LANLMAA/lanl_maa.cc "
         )
-        valid = (prefix + "-DLANL_MAA_UMT_INGRESS_TRACE_TEST\n").encode()
+        valid = (prefix + wrapper.TRACE_DEFINE_VALUE + "\n").encode()
         for validator in (
             wrapper.validate_object_compile_transcript,
             ingress.validate_object_compile_transcript,
@@ -579,7 +651,13 @@ class IngressHarnessTest(unittest.TestCase):
             validator(valid)
             for suffix in (
                 "",
+                wrapper.TRACE_DEFINE_FLAGS[0],
+                wrapper.TRACE_DEFINE_FLAGS[1],
                 "-DLANL_MAA_UMT_INGRESS_TRACE_TEST=1",
+                "-DLANL_MAA_UMT_PKI4_CONFORMANCE_TEST=1",
+                " ".join(reversed(wrapper.TRACE_DEFINE_FLAGS)),
+                wrapper.TRACE_DEFINE_VALUE
+                + " -DLANL_MAA_UMT_PKI4_CONFORMANCE_TEST",
                 "CPPDEFINES=LANL_MAA_UMT_INGRESS_TRACE_TEST",
                 "CCFLAGS_EXTRA=-DLANL_MAA_UMT_INGRESS_TRACE_TEST",
             ):
@@ -605,14 +683,19 @@ class IngressHarnessTest(unittest.TestCase):
     def test_missing_compiled_literal_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
             target = pathlib.Path(temporary) / "gem5.opt"
+            obj = pathlib.Path(temporary) / "lanl_maa.o"
             target.write_bytes(b"UMT_INGRESS kind= but no hold marker")
-            with self.assertRaisesRegex(RuntimeError, "compiled ingress"):
-                wrapper.validate_compiled_literals(target)
-            target.write_bytes(
-                b"UMT_INGRESS kind=\0d64_hold cycle=\0"
-                b"waiters=%u token=%llu pre="
-            )
-            wrapper.validate_compiled_literals(target)
+            obj.write_bytes(b" ".join(wrapper.COMPILED_MARKERS))
+            with self.assertRaisesRegex(RuntimeError, "dual trace"):
+                wrapper.validate_compiled_literals(target, obj)
+            complete = b"\0".join(wrapper.COMPILED_MARKERS)
+            target.write_bytes(complete)
+            for missing in wrapper.COMPILED_MARKERS:
+                obj.write_bytes(complete.replace(missing, b"missing", 1))
+                with self.assertRaisesRegex(RuntimeError, "dual trace"):
+                    wrapper.validate_compiled_literals(target, obj)
+            obj.write_bytes(complete)
+            wrapper.validate_compiled_literals(target, obj)
 
     def test_no_clobber_evidence_writer_rejects_existing_path(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -624,7 +707,7 @@ class IngressHarnessTest(unittest.TestCase):
 
     def test_build_unit_is_retained_for_terminal_snapshot(self):
         evidence = pathlib.Path(
-            "/campaign/identity/ingress-build-evidence-v18"
+            "/campaign/identity/pki4-conformance-build-evidence-v19"
         )
         command = ingress.build_systemd_run_command(evidence)
         self.assertIn("--remain-after-exit", command)
@@ -698,7 +781,7 @@ class IngressHarnessTest(unittest.TestCase):
         self.assertNotIn("RuntimeMaxSec", ingress.SYSTEMD_SHOW_PROPERTIES)
 
         build = ingress.build_systemd_run_command(
-            "/campaign/identity/ingress-build-evidence-v18"
+            "/campaign/identity/pki4-conformance-build-evidence-v19"
         )
         arm = ingress.systemd_run_command("arm.service", ["/bin/true"])
         for command in (build, arm):
@@ -718,7 +801,7 @@ class IngressHarnessTest(unittest.TestCase):
             ingress, "BUILD_DISPATCH_PROPERTIES", rejected
         ), self.assertRaisesRegex(RuntimeError, "resource mapping"):
             ingress.build_systemd_run_command(
-                "/campaign/identity/ingress-build-evidence-v18"
+                "/campaign/identity/pki4-conformance-build-evidence-v19"
             )
         with mock.patch.object(
             ingress, "DISPATCH_PROPERTIES", rejected
@@ -728,8 +811,9 @@ class IngressHarnessTest(unittest.TestCase):
     def test_dry_build_plan_is_fresh_exact_and_no_clobber(self):
         with tempfile.TemporaryDirectory() as temporary:
             campaign = pathlib.Path(temporary) / "campaign"
-            output = campaign / "build-plan-v18.json"
-            plan = ingress.dry_build_plan(campaign, output)
+            output = campaign / "build-plan-v19.json"
+            with mock.patch.object(ingress, "BUILD_CAMPAIGN_ROOT", campaign):
+                plan = ingress.dry_build_plan(campaign, output)
             self.assertEqual(plan["schema"], ingress.BUILD_PLAN_SCHEMA)
             self.assertEqual(plan["status"], "dry_only_not_dispatched")
             self.assertEqual(plan["build_argv"], list(ingress.BUILD_ARGV))
@@ -739,7 +823,7 @@ class IngressHarnessTest(unittest.TestCase):
             )
             self.assertEqual(
                 plan["fixed_child_environment"],
-                {"CCFLAGS_EXTRA": ingress.TRACE_DEFINE_FLAG},
+                {"CCFLAGS_EXTRA": ingress.TRACE_DEFINE_VALUE},
             )
             self.assertIn("--remain-after-exit", plan["launch_command"])
             self.assertNotIn("--collect", plan["launch_command"])
@@ -768,7 +852,7 @@ class IngressHarnessTest(unittest.TestCase):
                 4 * 3600,
             )
             before = output.read_bytes()
-            with self.assertRaisesRegex(RuntimeError, "fresh canonical"):
+            with self.assertRaisesRegex(RuntimeError, "one fresh campaign"):
                 ingress.dry_build_plan(campaign, output)
             self.assertEqual(output.read_bytes(), before)
 
@@ -864,7 +948,10 @@ class IngressHarnessTest(unittest.TestCase):
         self.assertEqual(
             wrapper.SAFE_CHILD_ENV,
             {
-                "CCFLAGS_EXTRA": "-DLANL_MAA_UMT_INGRESS_TRACE_TEST",
+                "CCFLAGS_EXTRA": (
+                    "-DLANL_MAA_UMT_INGRESS_TRACE_TEST "
+                    "-DLANL_MAA_UMT_PKI4_CONFORMANCE_TEST"
+                ),
                 "PATH": "/usr/local/bin:/usr/bin:/bin",
                 "LC_ALL": "C",
                 "LANG": "C",
@@ -1184,6 +1271,14 @@ class IngressHarnessTest(unittest.TestCase):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(relative, encoding="utf-8")
                 source_hashes[relative] = ingress.sha256(target)
+            legacy_source_hashes = {
+                relative: source_hashes[relative]
+                for relative in ingress.LEGACY_INSTRUMENTATION_SOURCES
+            }
+            conformance_source_hashes = {
+                relative: source_hashes[relative]
+                for relative in ingress.CONFORMANCE_INSTRUMENTATION_SOURCES
+            }
             sconstruct = source / "SConstruct"
             defaults = source / "site_scons/gem5_scons/defaults.py"
             defaults.parent.mkdir(parents=True)
@@ -1213,17 +1308,14 @@ class IngressHarnessTest(unittest.TestCase):
             )
             object_file.parent.mkdir(parents=True)
             config_compute_tokens.parent.mkdir(parents=True)
-            object_file.write_text(object_file.name, encoding="utf-8")
+            object_file.write_bytes(b"\0".join(ingress.COMPILED_MARKERS))
             config_compute_tokens.write_bytes(
                 b"#define LANL_MAA_UMT_COMPUTE_TOKENS 32\n"
             )
             config_fp_issue_width.write_bytes(
                 b"#define LANL_MAA_UMT_FP_ISSUE_WIDTH 2\n"
             )
-            gem5.write_bytes(
-                b"gem5 UMT_INGRESS kind= d64_hold cycle= "
-                b"waiters=%u token=%llu pre="
-            )
+            gem5.write_bytes(b"gem5\0" + b"\0".join(ingress.COMPILED_MARKERS))
             root_stat = build.stat()
             ownership_record = {
                 "schema": ingress.GENERATED_ROOT_OWNERSHIP_SCHEMA,
@@ -1346,7 +1438,7 @@ class IngressHarnessTest(unittest.TestCase):
             initial_absent_paths = [str(build), str(gem5), str(object_file)]
             invalidated = {}
             attestation_value = {
-                "schema": "lanl-maa-umt-ingress-build-attestation-v18",
+                "schema": "lanl-maa-umt-pki4-dual-build-attestation-v19",
                 "unit": ingress.BUILD_UNIT,
                 "invocation_id": invocation_id,
                 "wrapper_pid": pid,
@@ -1382,9 +1474,8 @@ class IngressHarnessTest(unittest.TestCase):
                     key: value["sha256"] for key, value in artifacts.items()
                 },
                 "compiled_binary_markers": [
-                    "UMT_INGRESS kind=",
-                    "d64_hold cycle=",
-                    "waiters=%u token=%llu pre=",
+                    marker.decode("ascii")
+                    for marker in ingress.COMPILED_MARKERS
                 ],
                 "observer_gate": {
                     "command": [
@@ -1405,6 +1496,34 @@ class IngressHarnessTest(unittest.TestCase):
                     "returncode": 0,
                     "report": {},
                     "transcript": {},
+                },
+                "conformance_gate": {
+                    "command": [
+                        "/usr/bin/python3",
+                        str(
+                            source
+                            / "tests/lanl_maa/run_umt_pki4_conformance_gate.py"
+                        ),
+                        "--cxx",
+                        "g++",
+                    ],
+                    "returncode": 0,
+                    "report": {},
+                    "transcript": {},
+                    "provenance": {
+                        "host_report": {
+                            "path": str(ingress.CONFORMANCE_REPORT),
+                            "sha256": ingress.CONFORMANCE_REPORT_SHA256,
+                        },
+                        "temporal_plan": {
+                            "path": str(ingress.TEMPORAL_PLAN),
+                            "sha256": ingress.TEMPORAL_PLAN_SHA256,
+                        },
+                        "independent_review": {
+                            "path": str(ingress.PROMOTION_REVIEW),
+                            "sha256": ingress.PROMOTION_REVIEW_SHA256,
+                        },
+                    },
                 },
                 "evidence": {},
             }
@@ -1476,7 +1595,7 @@ class IngressHarnessTest(unittest.TestCase):
                         "schema": "lanl-maa-umt-production-ingress-trace-v3",
                         "status": "passed",
                         "source_root": str(source),
-                        "input_source_sha256": source_hashes,
+                        "input_source_sha256": legacy_source_hashes,
                         "binary": str(gem5),
                         "binary_sha256": ingress.sha256(gem5),
                         "required_define": ingress.TRACE_BUILD_DEFINE,
@@ -1516,7 +1635,8 @@ class IngressHarnessTest(unittest.TestCase):
                     "object-prebuild.stdout",
                     "g++ -o build/X86_UMT_T32_W2/mem/LANLMAA/lanl_maa.o "
                     "-c src/mem/LANLMAA/lanl_maa.cc "
-                    "-DLANL_MAA_UMT_INGRESS_TRACE_TEST\n",
+                    + ingress.TRACE_DEFINE_VALUE
+                    + "\n",
                 ),
                 "object_prebuild_stderr": evidence_file(
                     "object-prebuild.stderr", ""
@@ -1537,7 +1657,23 @@ class IngressHarnessTest(unittest.TestCase):
                 ),
                 "source_manifest": evidence_file(
                     "observer-input-source-sha256.json",
-                    json.dumps(source_hashes),
+                    json.dumps(legacy_source_hashes),
+                ),
+                "conformance_source_manifest": evidence_file(
+                    "conformance-input-source-sha256.json",
+                    json.dumps(conformance_source_hashes),
+                ),
+                "conformance_stdout": evidence_file(
+                    "conformance.stdout",
+                    ingress.CONFORMANCE_REPORT.read_text(encoding="utf-8"),
+                ),
+                "conformance_stderr": evidence_file("conformance.stderr", ""),
+                "conformance_report": evidence_file(
+                    "conformance-report.json",
+                    ingress.CONFORMANCE_REPORT.read_text(encoding="utf-8"),
+                ),
+                "conformance_transcript": evidence_file(
+                    "conformance-transcript.txt", "status=0/SUCCESS\n"
                 ),
                 "build_system_manifest": evidence_file(
                     "build-system-source-sha256.json",
@@ -1564,9 +1700,12 @@ class IngressHarnessTest(unittest.TestCase):
                                 config_fp_issue_width
                             ),
                             "compiled_binary_markers": [
-                                "UMT_INGRESS kind=",
-                                "d64_hold cycle=",
-                                "waiters=%u token=%llu pre=",
+                                marker.decode("ascii")
+                                for marker in ingress.COMPILED_MARKERS
+                            ],
+                            "markers_verified_in": [
+                                str(gem5),
+                                str(object_file),
                             ],
                         }
                     ),
@@ -1579,13 +1718,21 @@ class IngressHarnessTest(unittest.TestCase):
             attestation_value["observer_gate"]["transcript"] = evidence_items[
                 "observer_transcript"
             ]
+            attestation_value["conformance_gate"]["report"] = evidence_items[
+                "conformance_report"
+            ]
+            attestation_value["conformance_gate"][
+                "transcript"
+            ] = evidence_items["conformance_transcript"]
             attestation.write_text(
                 json.dumps(attestation_value), encoding="utf-8"
             )
             proof = {
                 "schema": ingress.SCHEMA_BUILD_PROOF,
                 "status": "passed",
-                "producer": "systemd-build-proof-v18-service-wrapper",
+                "producer": (
+                    "systemd-pki4-dual-build-proof-v19-service-wrapper"
+                ),
                 "source_worktree": str(source),
                 "source_commit": commit,
                 "source_tree": tree,
@@ -1597,7 +1744,10 @@ class IngressHarnessTest(unittest.TestCase):
                 "build_cwd": str(source),
                 "build_argv": list(ingress.BUILD_ARGV),
                 "build_environment": ingress.BUILD_ENVIRONMENT,
-                "trace_define": ingress.TRACE_BUILD_DEFINE,
+                "trace_defines": [
+                    ingress.TRACE_BUILD_DEFINE,
+                    ingress.CONFORMANCE_BUILD_DEFINE,
+                ],
                 "instrumentation_source_sha256": source_hashes,
                 "build_system_source_sha256": build_system_hashes,
                 "clean_method": ingress.BUILD_CLEAN_METHOD,
@@ -1671,7 +1821,7 @@ class IngressHarnessTest(unittest.TestCase):
                         "--input-source-sha256",
                         str(evidence / "observer-input-source-sha256.json"),
                     ],
-                    "input_source_sha256": source_hashes,
+                    "input_source_sha256": legacy_source_hashes,
                     "binary": str(gem5),
                     "binary_sha256": ingress.sha256(gem5),
                     "stdout": evidence_items["observer_stdout"],
@@ -1679,6 +1829,26 @@ class IngressHarnessTest(unittest.TestCase):
                     "report": evidence_items["observer_report"],
                     "transcript": evidence_items["observer_transcript"],
                     "status": "passed",
+                },
+                "conformance_gate": {
+                    "command": [
+                        "/usr/bin/python3",
+                        str(
+                            source
+                            / "tests/lanl_maa/run_umt_pki4_conformance_gate.py"
+                        ),
+                        "--cxx",
+                        "g++",
+                    ],
+                    "input_source_sha256": conformance_source_hashes,
+                    "stdout": evidence_items["conformance_stdout"],
+                    "stderr": evidence_items["conformance_stderr"],
+                    "report": evidence_items["conformance_report"],
+                    "transcript": evidence_items["conformance_transcript"],
+                    "provenance": attestation_value["conformance_gate"][
+                        "provenance"
+                    ],
+                    "status": "passed_host_only",
                 },
             }
 
@@ -1712,9 +1882,17 @@ class IngressHarnessTest(unittest.TestCase):
                     ),
                 },
                 "INSTRUMENTATION_SOURCES": source_hashes,
+                "LEGACY_INSTRUMENTATION_SOURCES": legacy_source_hashes,
+                "CONFORMANCE_INSTRUMENTATION_SOURCES": (
+                    conformance_source_hashes
+                ),
                 "BUILD_SYSTEM_SOURCES": build_system_hashes,
             }
-            with mock.patch.multiple(ingress, **patches):
+            with mock.patch.multiple(ingress, **patches), mock.patch.object(
+                ingress,
+                "validate_conformance_provenance",
+                side_effect=lambda value: value,
+            ):
                 proof["build_invocation"]["wrapper_command"] = list(
                     ingress.wrapper_command(evidence)
                 )
@@ -1734,7 +1912,7 @@ class IngressHarnessTest(unittest.TestCase):
                                 "--unit",
                                 ingress.BUILD_UNIT,
                                 "--source",
-                                "/data1/nier/worktrees/DX100-umt-ingress-source-fixes-20260831",
+                                "/data1/nier/worktrees/DX100-umt-pki4-conformance-source-v3-20260831",
                                 "--evidence-dir",
                                 str(evidence.resolve()),
                             )

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Service-owned, fail-closed v18 ingress-observer build attestation.
+"""Service-owned, fail-closed v19 dual-observer build attestation.
 
 The wrapper requires a fresh source worktree with both build artifacts absent,
 then requires SCons to compile the MAA object before the complete gem5 target.
@@ -21,10 +21,12 @@ import stat
 import subprocess
 import sys
 
-BUILD_UNIT = "umt-ingress-trace-build-v18-20260831.service"
-SOURCE_ROOT = "/data1/nier/worktrees/DX100-umt-ingress-source-fixes-20260831"
-SOURCE_COMMIT = "45a7be343788dce1180c0117ef9004cf00e9da45"
-SOURCE_TREE = "81188d67ccee00d720e0343f049a4bb70972b708"
+BUILD_UNIT = "umt-pki4-conformance-build-v19-20260831.service"
+SOURCE_ROOT = (
+    "/data1/nier/worktrees/DX100-umt-pki4-conformance-source-v3-20260831"
+)
+SOURCE_COMMIT = "45e8e848ff6e1cd2be7901a32d58a93d7109b668"
+SOURCE_TREE = "0d937910257d088b87303a3ade6642442f9faf22"
 TARGET_RELATIVE = "build/X86_UMT_T32_W2/gem5.opt"
 OBJECT_RELATIVE = "build/X86_UMT_T32_W2/mem/LANLMAA/lanl_maa.o"
 BUILD_ROOT_RELATIVE = "build/X86_UMT_T32_W2"
@@ -46,7 +48,11 @@ EXPECTED_BUILD_ARGV = (
     "-j4",
 )
 BUILD_ARGV = EXPECTED_BUILD_ARGV
-TRACE_DEFINE_FLAG = "-DLANL_MAA_UMT_INGRESS_TRACE_TEST"
+TRACE_DEFINE_FLAGS = (
+    "-DLANL_MAA_UMT_INGRESS_TRACE_TEST",
+    "-DLANL_MAA_UMT_PKI4_CONFORMANCE_TEST",
+)
+TRACE_DEFINE_VALUE = " ".join(TRACE_DEFINE_FLAGS)
 OBJECT_PREBUILD_ARGV = (
     "/usr/bin/scons",
     "--ignore-style",
@@ -54,37 +60,74 @@ OBJECT_PREBUILD_ARGV = (
     OBJECT_RELATIVE,
     "-j1",
 )
-SOURCE_SHA256 = {
+LEGACY_SOURCE_SHA256 = {
     "src/base/cprintf.cc": "54e30cca948b267c8384b6c9f2e4d674c7cd79e1e54062d7223805aedb41bf72",
     "src/base/cprintf.hh": "3249e5f3f3b2de0ad5b5c92c75bb45dafb3f605a93ea814d7eba8c45be0fad0a",
     "src/base/cprintf_formats.hh": "c44eaae91d027e0b8cf9c083a15927867fd9be49d8fa4c5375ecb3d130839ae5",
     "src/mem/LANLMAA/UmtOrderedWaveIngressTrace.hh": "b6d3179f58e623c13b3b6afd7174c359085bddc4393d99702df81cf3ab5584bd",
-    "src/mem/LANLMAA/UmtOrderedWaveStreamState.hh": "d783907dd26ec671d6ba4a779719e19eadc75098ab25ba0fd3457cf68438b5c8",
-    "src/mem/LANLMAA/lanl_maa.hh": "0867579688c902f04b86d0fdce0b896f60b61031d61410fbd4789385b4cd5b9a",
-    "src/mem/LANLMAA/lanl_maa.cc": "7cd51cd29ab76ce43a26dcd7711b72dcb6fb7db2c35c935cbcc47d083d014430",
+    "src/mem/LANLMAA/UmtOrderedWaveStreamState.hh": "731e170b9ea29d34ad478381eac1d04fec8fc72948d4c16d274e17194f738ec5",
+    "src/mem/LANLMAA/lanl_maa.hh": "a712bbdb786d5019d97cd0e9e98fec5b707a0293e38aa0b07a42b077f8fabb1c",
+    "src/mem/LANLMAA/lanl_maa.cc": "9b58fe8bf2ceaf0d21dee3fc1d531c711de75f9ffb170072f4c4f490615fb39d",
     "tests/lanl_maa/umt_ingress_default_off_compile_test.cc": "7d3076bf4f8033e3dc11f54ef94bdcdc756469e816a0bf7425705d55122064c2",
     "tests/lanl_maa/umt_production_ingress_trace_test.cc": "07a8bdd412cba3d8e7afb4e86bceec4ad5765cb2e1c24a2e6f754436e4032e32",
     "tests/lanl_maa/run_umt_production_ingress_trace_gate.py": "67cd70ac8d057d5769b7e8e3f0a9e3dd42e05f01b9c432250b1edba0078bea28",
 }
+CONFORMANCE_SOURCE_SHA256 = {
+    "src/mem/LANLMAA/UmtPki4ConformanceTrace.hh": "800a85c1415b807e804baa41626e1d6ec657b483639cdf95517799d5595d97c7",
+    "src/mem/LANLMAA/UmtOrderedWaveStreamState.hh": "731e170b9ea29d34ad478381eac1d04fec8fc72948d4c16d274e17194f738ec5",
+    "src/mem/LANLMAA/lanl_maa.hh": "a712bbdb786d5019d97cd0e9e98fec5b707a0293e38aa0b07a42b077f8fabb1c",
+    "src/mem/LANLMAA/lanl_maa.cc": "9b58fe8bf2ceaf0d21dee3fc1d531c711de75f9ffb170072f4c4f490615fb39d",
+    "tests/lanl_maa/umt_pki4_conformance_model_test.cc": "80c2849ab5debe27afa9dc1abc4aa8304a768569e5397ecd22fd68b933708af1",
+    "tests/lanl_maa/umt_pki4_conformance_normalizer.py": "de2c140c638884aa876756c81be3de832ac14ccb938ee863a69f84a006146fb7",
+    "tests/lanl_maa/test_umt_pki4_conformance_normalizer.py": "927f438687a00abc401a98c52629e8d4a47f29b1514ca7b7431e455432ffee4e",
+    "tests/lanl_maa/run_umt_pki4_conformance_gate.py": "3f342bccb058d271895427d51ee84fdfe823bf12ba5592c6cf50d62f1f4e0394",
+}
+SOURCE_SHA256 = {**LEGACY_SOURCE_SHA256, **CONFORMANCE_SOURCE_SHA256}
 BUILD_SYSTEM_SHA256 = {
     "SConstruct": "566ccd8621b168e9ef29c04f5bf5ba5414190afbb32bfcac4986843e3f476f19",
     "site_scons/gem5_scons/defaults.py": (
         "b10bb7b6aef8b6716a30af1560e8d8e55fae9cdb696cb4ccede7ba5d3a19ed25"
     ),
 }
-PROTOCOL = "LANL_MAA_UMT_INGRESS_BUILD_ATTESTATION_V18"
-SCHEMA = "lanl-maa-umt-ingress-build-attestation-v18"
-OWNERSHIP_SCHEMA = "lanl-maa-umt-ingress-generated-root-owner-v18"
-FAILURE_SCHEMA = "lanl-maa-umt-ingress-build-failure-restore-v18"
-SENTINEL_NAME = ".lanl-maa-umt-build-owner-v18.json"
+PROTOCOL = "LANL_MAA_UMT_INGRESS_BUILD_ATTESTATION_V19"
+SCHEMA = "lanl-maa-umt-pki4-dual-build-attestation-v19"
+OWNERSHIP_SCHEMA = "lanl-maa-umt-pki4-generated-root-owner-v19"
+FAILURE_SCHEMA = "lanl-maa-umt-pki4-build-failure-restore-v19"
+SENTINEL_NAME = ".lanl-maa-umt-build-owner-v19.json"
 CLEAN_METHOD = "require-fresh-absent-exact-two-v1"
-COMPILED_MARKERS = (
+LEGACY_COMPILED_MARKERS = (
     b"UMT_INGRESS kind=",
     b"d64_hold cycle=",
     b"waiters=%u token=%llu pre=",
 )
+COMPILED_MARKERS = LEGACY_COMPILED_MARKERS + (
+    b"UMT_PKI4_CONFORMANCE ",
+    b"lanl-maa-umt-pki4-conformance-v3",
+    b"7ff5188835462202586fa44a3b0272e9c298aca745293abfae8354cc0988a15d",
+)
+CONFORMANCE_REPORT = pathlib.Path(
+    "/data1/nier/dx100-runs/2026-08-31-umt-pki4-conformance-gate-v3/"
+    "umt-pki4-conformance-host-gate-v3.json"
+)
+CONFORMANCE_REPORT_SHA256 = (
+    "562fde3216e45521e1b289e885ef035983e299003dfb388cb7cf7ecf2461775b"
+)
+TEMPORAL_PLAN = pathlib.Path(
+    "/data1/nier/dx100-runs/2026-08-31-umt-pki4-conformance-gate-v3/"
+    "pki4-temporal-equivalence-plan-v2.json"
+)
+TEMPORAL_PLAN_SHA256 = (
+    "7ff5188835462202586fa44a3b0272e9c298aca745293abfae8354cc0988a15d"
+)
+PROMOTION_REVIEW = pathlib.Path(
+    "/data1/nier/dx100-runs/2026-08-31-umt-pki4-conformance-gate-v3/"
+    "pki4-conformance-independent-promotion-review-v3.json"
+)
+PROMOTION_REVIEW_SHA256 = (
+    "6fd0f46bb2e278e01bfc92502eb1aa4c93f24cf9f30633087475688e9efb5bc4"
+)
 SAFE_CHILD_ENV = {
-    "CCFLAGS_EXTRA": TRACE_DEFINE_FLAG,
+    "CCFLAGS_EXTRA": TRACE_DEFINE_VALUE,
     "PATH": "/usr/local/bin:/usr/bin:/bin",
     "LC_ALL": "C",
     "LANG": "C",
@@ -185,7 +228,7 @@ def validate_build_argv(argv):
 
 def validate_safe_child_environment(value):
     if value != {
-        "CCFLAGS_EXTRA": TRACE_DEFINE_FLAG,
+        "CCFLAGS_EXTRA": TRACE_DEFINE_VALUE,
         "PATH": "/usr/local/bin:/usr/bin:/bin",
         "LC_ALL": "C",
         "LANG": "C",
@@ -211,18 +254,26 @@ def validate_object_compile_transcript(raw):
         raise RuntimeError(
             "object prebuild command is not parseable"
         ) from error
-    defines = [
-        token
-        for token in tokens
-        if token.startswith("-DLANL_MAA_UMT_INGRESS_TRACE_TEST")
-    ]
+    defines = [token for token in tokens if token in TRACE_DEFINE_FLAGS]
     if (
-        defines != [TRACE_DEFINE_FLAG]
+        defines != list(TRACE_DEFINE_FLAGS)
+        or tokens.count(TRACE_DEFINE_FLAGS[0]) != 1
+        or tokens.count(TRACE_DEFINE_FLAGS[1]) != 1
+        or any(
+            token.startswith("-DLANL_MAA_UMT_INGRESS_TRACE_TEST")
+            and token != TRACE_DEFINE_FLAGS[0]
+            for token in tokens
+        )
+        or any(
+            token.startswith("-DLANL_MAA_UMT_PKI4_CONFORMANCE_TEST")
+            and token != TRACE_DEFINE_FLAGS[1]
+            for token in tokens
+        )
         or any("CPPDEFINES" in token for token in tokens)
         or any(token.startswith("CCFLAGS_EXTRA=") for token in tokens)
     ):
         raise RuntimeError(
-            "object prebuild command lacks the exact sole define"
+            "object prebuild command lacks the exact ordered dual defines"
         )
     return candidates[0]
 
@@ -547,11 +598,14 @@ def contains_marker(path, marker_bytes):
     return False
 
 
-def validate_compiled_literals(target):
-    if not all(contains_marker(target, value) for value in COMPILED_MARKERS):
-        raise RuntimeError(
-            "rebuilt gem5 lacks compiled ingress trace literals"
-        )
+def validate_compiled_literals(target, obj):
+    for artifact_name, artifact in (("gem5", target), ("object", obj)):
+        if not all(
+            contains_marker(artifact, value) for value in COMPILED_MARKERS
+        ):
+            raise RuntimeError(
+                f"rebuilt {artifact_name} lacks exact dual trace literals"
+            )
 
 
 def validate_gate_report(value, source, target, target_sha256, inputs):
@@ -591,10 +645,73 @@ def validate_gate_report(value, source, target, target_sha256, inputs):
         or value["binary_sha256"] != target_sha256
         or value["required_define"] != "LANL_MAA_UMT_INGRESS_TRACE_TEST"
         or value["compiled_binary_markers"]
-        != [item.decode() for item in COMPILED_MARKERS]
+        != [item.decode() for item in LEGACY_COMPILED_MARKERS]
         or value["cells"] != expected_cells
     ):
         raise RuntimeError("observer gate report is not exact v3 evidence")
+
+
+def validate_bound_file(path, expected_sha256, label):
+    path = pathlib.Path(path)
+    if not path.is_file() or sha256(path) != expected_sha256:
+        raise RuntimeError(f"{label} path/SHA-256 binding failed")
+    return {"path": str(path), "sha256": expected_sha256}
+
+
+def validate_conformance_gate_report(path, inputs):
+    """Bind the executed host gate to the reviewed v3 report/plan/review."""
+    path = pathlib.Path(path)
+    report_binding = validate_bound_file(
+        CONFORMANCE_REPORT,
+        CONFORMANCE_REPORT_SHA256,
+        "preserved v3 conformance report",
+    )
+    plan_binding = validate_bound_file(
+        TEMPORAL_PLAN, TEMPORAL_PLAN_SHA256, "temporal plan v2"
+    )
+    review_binding = validate_bound_file(
+        PROMOTION_REVIEW,
+        PROMOTION_REVIEW_SHA256,
+        "independent v3 promotion review",
+    )
+    if (
+        path.read_bytes() != CONFORMANCE_REPORT.read_bytes()
+        or sha256(path) != CONFORMANCE_REPORT_SHA256
+    ):
+        raise RuntimeError(
+            "executed conformance gate is not the reviewed v3 report"
+        )
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if (
+        value.get("schema") != "lanl-maa-umt-pki4-conformance-host-gate-v3"
+        or value.get("status") != "passed_host_only"
+        or value.get("required_define") != "LANL_MAA_UMT_PKI4_CONFORMANCE_TEST"
+        or value.get("input_source_sha256") != inputs
+        or value.get("persisted_temporal_plan") != plan_binding
+    ):
+        raise RuntimeError("conformance gate report semantics mismatch")
+    review = json.loads(PROMOTION_REVIEW.read_text(encoding="utf-8"))
+    identity = review.get("evidence_identity", {})
+    scope = review.get("review_scope", {})
+    if (
+        review.get("schema")
+        != "lanl-maa-umt-pki4-conformance-independent-promotion-review-v3"
+        or review.get("decision") != "PASS"
+        or review.get("status")
+        != "passed_independent_host_v3_review_not_promoted"
+        or scope.get("commit") != SOURCE_COMMIT
+        or scope.get("tree") != SOURCE_TREE
+        or identity.get("umt-pki4-conformance-host-gate-v3.json")
+        != CONFORMANCE_REPORT_SHA256
+        or identity.get("pki4-temporal-equivalence-plan-v2.json")
+        != TEMPORAL_PLAN_SHA256
+    ):
+        raise RuntimeError("independent v3 review semantics mismatch")
+    return {
+        "host_report": report_binding,
+        "temporal_plan": plan_binding,
+        "independent_review": review_binding,
+    }
 
 
 def main(argv=None):
@@ -609,7 +726,7 @@ def main(argv=None):
     if (
         args.unit != BUILD_UNIT
         or source != pathlib.Path(SOURCE_ROOT)
-        or evidence.name != "ingress-build-evidence-v18"
+        or evidence.name != "pki4-conformance-build-evidence-v19"
         or not re.fullmatch(r"[0-9a-f]{32}", invocation)
     ):
         raise RuntimeError("wrapper identity/invocation binding is invalid")
@@ -699,7 +816,7 @@ def main(argv=None):
 
         phase = "full_build_validation"
         target = source / TARGET_RELATIVE
-        validate_compiled_literals(target)
+        validate_compiled_literals(target, source / OBJECT_RELATIVE)
         configs = {
             key: source / relative
             for key, (relative, expected) in CONFIG_ARTIFACTS.items()
@@ -722,7 +839,11 @@ def main(argv=None):
         phase = "source_manifest"
         fault_injection_point("manifest")
         manifest = evidence / "observer-input-source-sha256.json"
-        no_clobber_json(manifest, inputs)
+        no_clobber_json(manifest, LEGACY_SOURCE_SHA256)
+        conformance_manifest = (
+            evidence / "conformance-input-source-sha256.json"
+        )
+        no_clobber_json(conformance_manifest, CONFORMANCE_SOURCE_SHA256)
         build_system_manifest = evidence / "build-system-source-sha256.json"
         no_clobber_json(build_system_manifest, BUILD_SYSTEM_SHA256)
 
@@ -746,6 +867,10 @@ def main(argv=None):
                 ],
                 "compiled_binary_markers": [
                     x.decode() for x in COMPILED_MARKERS
+                ],
+                "markers_verified_in": [
+                    str(target),
+                    str(source / OBJECT_RELATIVE),
                 ],
             },
         )
@@ -791,13 +916,48 @@ def main(argv=None):
             source,
             target,
             artifacts["gem5"],
-            inputs,
+            LEGACY_SOURCE_SHA256,
         )
 
         phase = "observer_transcript"
         fault_injection_point("transcript")
         transcript = evidence / "observer-transcript.txt"
         no_clobber_text(transcript, "status=0/SUCCESS\n")
+
+        conformance_stdout = evidence / "conformance.stdout"
+        conformance_stderr = evidence / "conformance.stderr"
+        conformance_gate = (
+            "/usr/bin/python3",
+            str(source / "tests/lanl_maa/run_umt_pki4_conformance_gate.py"),
+            "--cxx",
+            "g++",
+        )
+        phase = "conformance_gate_stream_open"
+        fault_injection_point("conformance_gate_stream_open")
+        with conformance_stdout.open("xb") as out, conformance_stderr.open(
+            "xb"
+        ) as err:
+            conformance_result = subprocess.run(
+                conformance_gate,
+                cwd=source,
+                env=SAFE_CHILD_ENV,
+                stdout=out,
+                stderr=err,
+                check=False,
+            )
+        if conformance_result.returncode != 0:
+            raise RuntimeError("conformance host gate failed")
+
+        phase = "conformance_report_copy"
+        fault_injection_point("conformance_report_copy")
+        conformance_report = evidence / "conformance-report.json"
+        with conformance_report.open("xb") as stream:
+            stream.write(conformance_stdout.read_bytes())
+        conformance_provenance = validate_conformance_gate_report(
+            conformance_report, CONFORMANCE_SOURCE_SHA256
+        )
+        conformance_transcript = evidence / "conformance-transcript.txt"
+        no_clobber_text(conformance_transcript, "status=0/SUCCESS\n")
 
         evidence_names = {
             "clean_stdout": "clean.stdout",
@@ -811,6 +971,13 @@ def main(argv=None):
             "observer_report": "observer-report.json",
             "observer_transcript": "observer-transcript.txt",
             "source_manifest": "observer-input-source-sha256.json",
+            "conformance_source_manifest": (
+                "conformance-input-source-sha256.json"
+            ),
+            "conformance_stdout": "conformance.stdout",
+            "conformance_stderr": "conformance.stderr",
+            "conformance_report": "conformance-report.json",
+            "conformance_transcript": "conformance-transcript.txt",
             "build_system_manifest": "build-system-source-sha256.json",
             "target_config_literal_scan": "target-config-literal-scan.json",
         }
@@ -842,7 +1009,7 @@ def main(argv=None):
             "build_argv": list(BUILD_ARGV),
             "build_environment": {
                 "sanitized": sorted(SAFE_CHILD_ENV),
-                "fixed_values": {"CCFLAGS_EXTRA": TRACE_DEFINE_FLAG},
+                "fixed_values": {"CCFLAGS_EXTRA": TRACE_DEFINE_VALUE},
                 "inherited_tool_affecting_names": inherited_names,
                 "inherited_tool_affecting_count": len(inherited_names),
             },
@@ -857,6 +1024,13 @@ def main(argv=None):
                 "returncode": 0,
                 "report": evidence_items["observer_report"],
                 "transcript": evidence_items["observer_transcript"],
+            },
+            "conformance_gate": {
+                "command": list(conformance_gate),
+                "returncode": 0,
+                "report": evidence_items["conformance_report"],
+                "transcript": evidence_items["conformance_transcript"],
+                "provenance": conformance_provenance,
             },
             "evidence": evidence_items,
         }
