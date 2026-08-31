@@ -46,6 +46,9 @@ BUILD_ATTESTATION_SCHEMA = "lanl-maa-umt-pki4-dual-build-attestation-v19"
 BUILD_CAMPAIGN_ROOT = pathlib.Path(
     "/data1/nier/dx100-runs/" "2026-08-31-umt-pki4-conformance-build-v19-live"
 )
+BUILD_PROOF_PATH = (
+    BUILD_CAMPAIGN_ROOT / "identity" / "pki4-conformance-build-proof-v19.json"
+)
 BUILD_CLEAN_METHOD = "require-fresh-absent-exact-two-v1"
 BUILD_OBJECT = CANONICAL_SOURCE / "build/X86_UMT_T32_W2/mem/LANLMAA/lanl_maa.o"
 CONFIG_ARTIFACTS = {
@@ -91,7 +94,7 @@ BUILD_ENVIRONMENT = {
 BUILD_WRAPPER = ROOT / "tests/lanl_maa/run_umt_ingress_build_attestation.py"
 ARM_WRAPPER = ROOT / "tests/lanl_maa/run_umt_ingress_micro_arm.py"
 ARM_WRAPPER_SHA256 = (
-    "82ac2e58999295b47ebfb75f3e135e142656a8720f706361c4e8bce3fcbf6e15"
+    "2d5e64568062ce391677f37cbf089b755729e174d8342c7688eeb22997f01faa"
 )
 ARM_LAUNCH_SCHEMA = "lanl-maa-umt-ingress-arm-launch-v7"
 ARM_OWNERSHIP_SCHEMA = "lanl-maa-umt-ingress-output-ownership-v7"
@@ -264,6 +267,7 @@ CASES = {
     "d32-g16": {"abi": "D32", "groups": 16, "mode": "wave_d32"},
     "d32-g31": {"abi": "D32", "groups": 31, "mode": "wave_d32"},
     "d32-g32": {"abi": "D32", "groups": 32, "mode": "wave_d32"},
+    "d64-g31": {"abi": "D64", "groups": 31, "mode": "wave_d64"},
     "d64-g32": {"abi": "D64", "groups": 32, "mode": "wave_d64"},
 }
 RESOURCE_POLICY = {
@@ -286,6 +290,7 @@ CONTRACT_FIELDS = frozenset(
         "gem5",
         "gem5_sha256",
         "instrumented_build_proof",
+        "instrumented_build_proof_schema",
         "instrumented_build_proof_sha256",
         "required_define",
         "guest_compatibility_environment",
@@ -315,9 +320,12 @@ ARM_EVIDENCE_FILES = (
 )
 HARNESS_REVIEWED_FILES = (
     "docs/plans/umt_ingress_micro_harness_20260830.md",
+    "docs/plans/umt_pki4_live_trace_campaign_20260831.md",
+    "tests/lanl_maa/normalize_umt_pki4_live_trace.py",
     "tests/lanl_maa/run_umt_ingress_build_attestation.py",
     "tests/lanl_maa/run_umt_ingress_micro_arm.py",
     "tests/lanl_maa/test_umt_ingress_micro_harness.py",
+    "tests/lanl_maa/test_umt_pki4_live_trace_harness.py",
     "tests/lanl_maa/umt_ingress_micro_harness.py",
     "tests/lanl_maa/umt_ingress_micro_process_cpu.py",
 )
@@ -2123,6 +2131,7 @@ def expected_contract(campaign, proof, proof_digest, gem5_digest):
         "gem5": str(CANONICAL_GEM5),
         "gem5_sha256": gem5_digest,
         "instrumented_build_proof": str(proof),
+        "instrumented_build_proof_schema": SCHEMA_BUILD_PROOF,
         "instrumented_build_proof_sha256": proof_digest,
         "required_define": TRACE_BUILD_DEFINE,
         "guest_compatibility_environment": guest_compatibility,
@@ -2223,6 +2232,13 @@ def systemd_arm_plan(arm):
 
 def freeze_contract(args):
     verify_harness_identity()
+    if (
+        pathlib.Path(args.instrumented_build_proof).resolve()
+        != BUILD_PROOF_PATH.resolve()
+    ):
+        raise RuntimeError(
+            "v16 freeze requires the exact future v19 proof publication path"
+        )
     gem5 = verify_hash(args.gem5, args.gem5_sha256, "gem5")
     if gem5 != CANONICAL_GEM5.resolve():
         raise RuntimeError("gem5 is not the canonical T32/W2 target")
@@ -2267,6 +2283,14 @@ def dispatch_plan(contract_path, digest, campaign_root, output):
             "binding altered"
         )
     contract_harness_identity(contract)
+    if (
+        pathlib.Path(contract["instrumented_build_proof"]).resolve()
+        != BUILD_PROOF_PATH.resolve()
+        or contract["instrumented_build_proof_schema"] != SCHEMA_BUILD_PROOF
+    ):
+        raise RuntimeError(
+            "v16 contract does not bind the exact v19 proof path/schema"
+        )
     gem5 = verify_hash(
         CANONICAL_GEM5, contract["gem5_sha256"], "canonical gem5"
     )
@@ -2299,6 +2323,11 @@ def dispatch_plan(contract_path, digest, campaign_root, output):
         "campaign_root": str(campaign),
         "contract": str(contract_path),
         "contract_sha256": digest,
+        "concurrency": {
+            "launch_mode": "concurrent_all_arms",
+            "max_parallel": len(CASES),
+            "unique_units_and_roots_required": True,
+        },
         "arms": commands,
         "forbidden_in_dry_mode": [
             "systemd-run execution",
@@ -2476,36 +2505,46 @@ def validate_trace(events, case):
         raise RuntimeError("G31 lacks chronological 7+1 boundary")
     if case in ("d32-g32", "d64-g32") and max(waits) != 8:
         raise RuntimeError("G32 lacks exact eight-waiter response")
+    if case == "d64-g31" and not {7, 8}.issubset(set(waits)):
+        raise RuntimeError("D64/G31 lacks full-line and short-tail callbacks")
     if spec["abi"] == "D32":
         if not lines or any(
             x["abi_label"] != "d32" or x["kind"] != "release" for x in lines
         ):
             raise RuntimeError("D32 line witness invalid")
     else:
-        if (
-            len(lines) != 8
-            or [x["abi_label"] for x in lines] != ["d64"] * 8
-            or [x["kind"] for x in lines] != ["hold"] * 7 + ["release"]
-            or [x["waiters"] for x in lines] != list(range(1, 8)) + [8]
-        ):
-            raise RuntimeError(
-                "D64 must chronologically hold 1..7 then release 8"
+        active, release_waiters = {}, []
+        for item in lines:
+            if item["abi_label"] != "d64":
+                raise RuntimeError("D64 line witness carries another ABI")
+            key = tuple(
+                item[name] for name in ("line", "stage", "group", "corner")
             )
-        first, release = lines[0], lines[-1]
-        if (
-            any(
-                (x["line"], x["stage"], x["group"], x["corner"])
-                != (
-                    first["line"],
-                    first["stage"],
-                    first["group"],
-                    first["corner"],
-                )
-                for x in lines
-            )
-            or release["cycle"] <= lines[-2]["cycle"]
-        ):
-            raise RuntimeError("D64 hold/release identity mismatch")
+            if item["kind"] == "hold":
+                prior = active.setdefault(key, [])
+                if prior and (
+                    item["cycle"] < prior[-1]["cycle"]
+                    or item["waiters"] < prior[-1]["waiters"]
+                ):
+                    raise RuntimeError("D64 hold chronology/count regressed")
+                prior.append(item)
+                continue
+            if item["kind"] != "release":
+                raise RuntimeError("D64 line witness kind is invalid")
+            holds = active.pop(key, [])
+            if (
+                not 1 <= item["waiters"] <= 8
+                or any(hold["waiters"] >= item["waiters"] for hold in holds)
+                or (holds and item["cycle"] <= holds[-1]["cycle"])
+            ):
+                raise RuntimeError("D64 hold/release lifecycle is malformed")
+            release_waiters.append(item["waiters"])
+        if active or not release_waiters:
+            raise RuntimeError("D64 trace ends with an unreleased line")
+        if case == "d64-g32" and set(release_waiters) != {8}:
+            raise RuntimeError("D64/G32 release is not a full line")
+        if case == "d64-g31" and not {7, 8}.issubset(set(release_waiters)):
+            raise RuntimeError("D64/G31 lacks 7-word tail and 8-word line")
     return {
         "callbacks": len(groups),
         "records": len(events),
@@ -2886,6 +2925,14 @@ def analyze_arm(root, case, contract_path, contract_digest):
         raise RuntimeError("arm is not bound to an unaltered v16 contract")
     harness_identity = contract_harness_identity(contract)
     campaign = pathlib.Path(contract.get("campaign_root", ".")).resolve()
+    if (
+        pathlib.Path(contract["instrumented_build_proof"]).resolve()
+        != BUILD_PROOF_PATH.resolve()
+        or contract["instrumented_build_proof_schema"] != SCHEMA_BUILD_PROOF
+    ):
+        raise RuntimeError(
+            "arm contract does not bind the exact v19 proof path/schema"
+        )
     gem5 = verify_hash(
         CANONICAL_GEM5, contract["gem5_sha256"], "canonical gem5"
     )

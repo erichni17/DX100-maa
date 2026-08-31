@@ -27,7 +27,7 @@ RECEIPT_NAMES = (
     "arm-output-ownership.json",
     "arm-terminal.json",
 )
-CASES = ("d32-g16", "d32-g31", "d32-g32", "d64-g32")
+CASES = ("d32-g16", "d32-g31", "d32-g32", "d64-g31", "d64-g32")
 LABEL_PREFIX = "lanl_maa_umt_ingress_micro"
 CSV_HEADER = (
     b"# mpi ranks, Mem for PSI (kb), process rss mem (kb), "

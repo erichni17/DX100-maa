@@ -812,7 +812,19 @@ class IngressHarnessTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             campaign = pathlib.Path(temporary) / "campaign"
             output = campaign / "build-plan-v19.json"
-            with mock.patch.object(ingress, "BUILD_CAMPAIGN_ROOT", campaign):
+            variant = pathlib.Path(temporary) / "absent-variant"
+            target = variant / "gem5.opt"
+            obj = variant / "mem/LANLMAA/lanl_maa.o"
+            sentinel = variant / ".lanl-maa-umt-build-owner-v19.json"
+            with (
+                mock.patch.object(ingress, "BUILD_CAMPAIGN_ROOT", campaign),
+                mock.patch.object(ingress, "BUILD_ROOT", variant),
+                mock.patch.object(ingress, "CANONICAL_GEM5", target),
+                mock.patch.object(ingress, "BUILD_OBJECT", obj),
+                mock.patch.object(
+                    ingress, "GENERATED_ROOT_SENTINEL", sentinel
+                ),
+            ):
                 plan = ingress.dry_build_plan(campaign, output)
             self.assertEqual(plan["schema"], ingress.BUILD_PLAN_SCHEMA)
             self.assertEqual(plan["status"], "dry_only_not_dispatched")
@@ -837,9 +849,9 @@ class IngressHarnessTest(unittest.TestCase):
             self.assertEqual(
                 plan["required_initial_absent_paths"],
                 [
-                    str(ingress.BUILD_ROOT),
-                    str(ingress.CANONICAL_GEM5),
-                    str(ingress.BUILD_OBJECT),
+                    str(variant),
+                    str(target),
+                    str(obj),
                 ],
             )
             self.assertEqual(
@@ -988,7 +1000,7 @@ class IngressHarnessTest(unittest.TestCase):
 
     def rows(self, case):
         abi, rows, callback_id, digest = (
-            (5 if case == "d64-g32" else 4),
+            (5 if case.startswith("d64-") else 4),
             [],
             1,
             1,
@@ -1016,12 +1028,27 @@ class IngressHarnessTest(unittest.TestCase):
         if case == "d32-g31":
             emit("source", 7)
             emit("denominator", 1)
-        if case == "d64-g32":
+        if case == "d64-g31":
+            emit("source", 7)
+            emit("denominator", 7)
+        if case.startswith("d64-"):
             rows += [
                 line("d64", "hold", 110 + count, count, abi)
                 for count in range(1, 8)
             ]
             rows += [line("d64", "release", 118, 8, abi)]
+            if case == "d64-g31":
+                rows += [
+                    line("d64", "hold", 120 + count, count, abi)
+                    .replace("line=0x10", "line=0x50")
+                    .replace("group=0", "group=24")
+                    for count in range(1, 7)
+                ]
+                rows += [
+                    line("d64", "release", 127, 7, abi)
+                    .replace("line=0x10", "line=0x50")
+                    .replace("group=0", "group=24")
+                ]
         else:
             rows += [line("d32", "release", 110, 8, abi)]
         return rows
@@ -2240,7 +2267,13 @@ class IngressHarnessTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             self.assertEqual(
                 set(ingress.CASES),
-                {"d32-g16", "d32-g31", "d32-g32", "d64-g32"},
+                {
+                    "d32-g16",
+                    "d32-g31",
+                    "d32-g32",
+                    "d64-g31",
+                    "d64-g32",
+                },
             )
             for case in ingress.CASES:
                 root = pathlib.Path(temporary) / "arms" / case

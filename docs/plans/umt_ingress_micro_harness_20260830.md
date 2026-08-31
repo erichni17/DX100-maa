@@ -1,7 +1,8 @@
 # UMT ingress micro harness
 
-`tests/lanl_maa/umt_ingress_micro_harness.py` is a four-arm, evidence-only
-opcode-11 harness: D32/G16, D32/G31, D32/G32, and D64/G32. The combined v16
+`tests/lanl_maa/umt_ingress_micro_harness.py` is a five-arm, evidence-only
+opcode-11 harness: D32/G16, D32/G31, D32/G32, D64/G31, and D64/G32. The
+combined v16
 contract hard-pins the
 adaptive native test driver (`7db125ac…`), its clean native source commit/tree,
 the `LanlMaaUmtSubmit.cc` ABI source and native ABI tests, and the adaptive-v1
@@ -10,7 +11,7 @@ and a three-field build proof. It also rejects the v6 arm contract, whose
 `systemd-run` command invoked gem5 directly even though analysis required
 captured `gem5.stdout` and `gem5.stderr`. v16 consumes the independently
 reviewed arm-v7 ownership contract with the build-v19 producer/consumer;
-neither split predecessor is itself accepted as a combined four-arm contract.
+neither split predecessor is itself accepted as a combined contract.
 Build-v19 authorizes exactly one fresh dual-instrumented binary for the legacy
 numeric ingress observer and PKI4 conformance-v3 records;
 it does not reuse or rerun an arm. The admitted build-v14 proof and v16 arms
