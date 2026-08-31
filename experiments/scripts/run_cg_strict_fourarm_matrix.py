@@ -662,9 +662,13 @@ def run_matrix(
     (out / "checkpoint.process.json").write_text(
         json.dumps(record, indent=2, sort_keys=True) + "\n"
     )
+    checkpoint_dirs = [
+        p
+        for p in checkpoint.glob("cpt.*")
+        if p.is_dir() and p.name[4:].isdigit()
+    ]
     require(
-        rc == 0
-        and sum(1 for p in checkpoint.glob("cpt.*") if p.is_dir()) == 1,
+        rc == 0 and len(checkpoint_dirs) == 1,
         "checkpoint did not complete exactly once",
     )
     checkpoint_ledger = out / "input/checkpoint.files.sha256"
