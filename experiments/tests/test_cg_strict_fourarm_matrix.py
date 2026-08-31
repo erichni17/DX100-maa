@@ -83,7 +83,9 @@ class CgFourArmContractTest(unittest.TestCase):
         self.assertLessEqual(256 + 8 * 16, 4096)
         self.assertEqual(
             MODULE.SELECTOR_TARGET,
-            "/tmp/cg_strict_fourarm_selector_20260831",
+            "/data1/nier/worktrees/codex-coordination/sessions/"
+            "cg-strict-fourarm-matrix-20260831-20260831-104028-a26c56c4/"
+            "cg_strict_fourarm_selector_20260831",
         )
 
     def test_terminal_parser_requires_exact_m5_and_reductions(self) -> None:

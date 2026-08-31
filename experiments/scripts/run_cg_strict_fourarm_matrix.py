@@ -45,7 +45,11 @@ SIMULATOR_SOURCE_COMMIT = "9393ef52e47357d9192050e539e013b6ce64df23"
 CG_NA = 256
 TILE = 16_384
 PHYSICAL = 4_096
-SELECTOR_TARGET = "/tmp/cg_strict_fourarm_selector_20260831"
+SELECTOR_TARGET = (
+    "/data1/nier/worktrees/codex-coordination/sessions/"
+    "cg-strict-fourarm-matrix-20260831-20260831-104028-a26c56c4/"
+    "cg_strict_fourarm_selector_20260831"
+)
 M5_EXIT = re.compile(
     r"^Exiting @ tick [0-9]+ because m5_exit instruction encountered$"
 )
