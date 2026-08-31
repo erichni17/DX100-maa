@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Adversarial, dry-only tests for the v6 UMT ingress harness."""
+"""Adversarial, dry-only tests for the v7 UMT ingress harness."""
 import importlib.util
 import json
 import pathlib
@@ -19,10 +19,22 @@ wrapper_spec = importlib.util.spec_from_file_location(
 )
 wrapper = importlib.util.module_from_spec(wrapper_spec)
 wrapper_spec.loader.exec_module(wrapper)
+arm_wrapper_spec = importlib.util.spec_from_file_location(
+    "ingress_arm_wrapper", HERE / "run_umt_ingress_micro_arm.py"
+)
+arm_wrapper = importlib.util.module_from_spec(arm_wrapper_spec)
+arm_wrapper_spec.loader.exec_module(arm_wrapper)
 
 
-def callback(kind, callback_id, lane, waiters, pre, post, abi=4):
-    return f"UMT_INGRESS kind={kind} cycle={100 + callback_id} callback={callback_id} lane={lane} packet=0x10 line=0x10 abi={abi} stage=0 group=0 corner=0 order={lane} waiters={waiters} token={1000 + callback_id * 10 + lane} pre=0x{pre:x} post=0x{post:x} next_engine_tick={200 + callback_id}"
+def callback(kind, callback_id, lane, waiters, pre, post, abi=4, group=0):
+    return (
+        f"UMT_INGRESS kind={kind} cycle={100 + callback_id} "
+        f"callback={callback_id} lane={lane} packet=0x10 line=0x10 "
+        f"abi={abi} stage=0 group={group} corner=0 order={lane} "
+        f"waiters={waiters} token={1000 + callback_id * 10 + lane} "
+        f"pre=0x{pre:x} post=0x{post:x} "
+        f"next_engine_tick={200 + callback_id}"
+    )
 
 
 def line(label, kind, cycle, waiters, abi=4):
@@ -141,6 +153,49 @@ class IngressHarnessTest(unittest.TestCase):
             self.assertGreater(
                 ingress.validate_trace(self.events(case), case)["callbacks"], 0
             )
+
+    def test_source_bank_pressure_is_trace_derived_for_four_banks(self):
+        rows, digest = [], 1
+
+        def emit(callback_id, kind, groups):
+            nonlocal digest
+            for lane_id, group in enumerate(groups):
+                rows.append(
+                    callback(
+                        kind,
+                        callback_id,
+                        lane_id,
+                        len(groups),
+                        digest,
+                        digest + 1,
+                        group=group,
+                    )
+                )
+                digest += 1
+
+        emit(1, "source", [0, 1, 2, 3])
+        emit(2, "source", [0, 4])
+        emit(3, "denominator", list(range(8)))
+        rows.append(line("d32", "release", 110, 8))
+        report = ingress.validate_trace(
+            ingress.parse_debug_file_text("\n".join(rows)), "d32-g16"
+        )["source_bank_pressure"]
+        self.assertEqual(
+            report,
+            {
+                "bank_count": 4,
+                "bank_mapping": "bank=group%4",
+                "source_callbacks": 2,
+                "max_source_writes_per_callback": 4,
+                "max_same_bank_multiplicity": 2,
+                "callbacks_with_duplicate_banks": 1,
+                "four_distinct_bank_accepted_callbacks": 1,
+                "claim_boundary": (
+                    "Trace-derived pressure for the current four-bank stream "
+                    "state; not RTL timing or physical equivalence."
+                ),
+            },
+        )
 
     def test_reversed_d64_holds_fail(self):
         rows = self.rows("d64-g32")
@@ -503,7 +558,8 @@ class IngressHarnessTest(unittest.TestCase):
                             "config_cc": str(config_cc),
                             "config_cc_sha256": ingress.sha256(config_cc),
                             "compiled_binary_markers": [
-                                "UMT_INGRESS kind=", "d64_hold cycle=",
+                                "UMT_INGRESS kind=",
+                                "d64_hold cycle=",
                             ],
                         }
                     ),
@@ -906,6 +962,167 @@ class IngressHarnessTest(unittest.TestCase):
             ],
         )
         self.assertNotIn("--property=CPUQuotaPerSecUSec=4s", command)
+
+    def test_v7_dispatch_runs_the_pinned_wrapper_not_gem5_directly(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            self.assertEqual(
+                set(ingress.CASES),
+                {"d32-g16", "d32-g31", "d32-g32", "d64-g32"},
+            )
+            for case in ingress.CASES:
+                root = pathlib.Path(temporary) / "arms" / case
+                gem5_argv = ingress.case_command(
+                    ingress.CANONICAL_GEM5, root, case
+                )
+                wrapper_argv = ingress.arm_wrapper_argv(root, gem5_argv)
+                arm = self.arm_spec(root, case)
+                plan = ingress.systemd_arm_plan(arm)
+                command = plan["systemd_run_argv"]
+                self.assertEqual(command[10:], wrapper_argv)
+                self.assertEqual(command[10], "/usr/bin/python3")
+                self.assertEqual(
+                    pathlib.Path(command[11]).resolve(),
+                    ingress.ARM_WRAPPER.resolve(),
+                )
+                self.assertEqual(
+                    ingress.sha256(ingress.ARM_WRAPPER),
+                    ingress.ARM_WRAPPER_SHA256,
+                )
+                self.assertEqual(command[command.index("--") + 1 :], gem5_argv)
+                self.assertNotEqual(command[10], str(ingress.CANONICAL_GEM5))
+                self.assertEqual(plan["wrapper"], arm["wrapper"])
+                self.assertEqual(
+                    plan["wrapper_argv_sha256"],
+                    ingress.json_sha256(wrapper_argv),
+                )
+                self.assertEqual(
+                    plan["systemd_run_argv_sha256"],
+                    ingress.json_sha256(command),
+                )
+
+    def arm_spec(self, root, case="d32-g16"):
+        gem5_argv = ingress.case_command(ingress.CANONICAL_GEM5, root, case)
+        wrapper_argv = ingress.arm_wrapper_argv(root, gem5_argv)
+        return {
+            "root": str(root),
+            "unit": f"umt-ingress-micro-v7-{case}-20260830.service",
+            "gem5_argv": gem5_argv,
+            "gem5_argv_sha256": ingress.json_sha256(gem5_argv),
+            "wrapper": {
+                "path": str(ingress.ARM_WRAPPER.resolve()),
+                "sha256": ingress.ARM_WRAPPER_SHA256,
+            },
+            "wrapper_argv": wrapper_argv,
+            "wrapper_argv_sha256": ingress.json_sha256(wrapper_argv),
+            "binary_sha256": ingress.ADAPTIVE_NATIVE_SHA256,
+        }
+
+    def test_arm_wrapper_owns_streams_receipts_and_refuses_clobber(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary) / "arms/d32-g16"
+            arm = self.arm_spec(root)
+
+            def fake_run(argv, **kwargs):
+                self.assertEqual(argv, arm["gem5_argv"])
+                self.assertIs(kwargs["stdin"], subprocess.DEVNULL)
+                kwargs["stdout"].write(b"captured stdout\n")
+                kwargs["stderr"].write(b"captured stderr\n")
+                return subprocess.CompletedProcess(argv, 0)
+
+            with mock.patch.object(
+                arm_wrapper.subprocess, "run", side_effect=fake_run
+            ) as run:
+                wrong_root = pathlib.Path(temporary) / "arms/wrong"
+                with self.assertRaisesRegex(RuntimeError, "identity mismatch"):
+                    arm_wrapper.run_arm(wrong_root, "0" * 64, arm["gem5_argv"])
+                self.assertFalse(wrong_root.exists())
+                self.assertEqual(
+                    arm_wrapper.run_arm(
+                        root,
+                        arm["gem5_argv_sha256"],
+                        arm["gem5_argv"],
+                    ),
+                    0,
+                )
+                self.assertEqual(run.call_count, 1)
+                with self.assertRaises(FileExistsError):
+                    arm_wrapper.run_arm(
+                        root,
+                        arm["gem5_argv_sha256"],
+                        arm["gem5_argv"],
+                    )
+                self.assertEqual(run.call_count, 1)
+
+            existing = pathlib.Path(temporary) / "already-present.stdout"
+            existing.write_bytes(b"preserve")
+            with self.assertRaises(FileExistsError):
+                arm_wrapper.exclusive_stream(existing)
+            self.assertEqual(existing.read_bytes(), b"preserve")
+
+            execution = ingress.validate_arm_execution_evidence(
+                root, "d32-g16", arm
+            )
+            self.assertEqual(
+                execution["wrapper_sha256"], ingress.ARM_WRAPPER_SHA256
+            )
+            self.assertEqual(
+                (root / "gem5.stdout").read_bytes(), b"captured stdout\n"
+            )
+            self.assertEqual(
+                (root / "gem5.stderr").read_bytes(), b"captured stderr\n"
+            )
+
+    def test_arm_analysis_rejects_forged_or_clobbered_wrapper_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary) / "arms/d32-g16"
+            arm = self.arm_spec(root)
+
+            def fake_run(argv, **kwargs):
+                kwargs["stdout"].write(b"stdout\n")
+                kwargs["stderr"].write(b"stderr\n")
+                return subprocess.CompletedProcess(argv, 0)
+
+            with mock.patch.object(
+                arm_wrapper.subprocess, "run", side_effect=fake_run
+            ):
+                arm_wrapper.run_arm(
+                    root, arm["gem5_argv_sha256"], arm["gem5_argv"]
+                )
+            ingress.validate_arm_execution_evidence(root, "d32-g16", arm)
+
+            stdout = root / "gem5.stdout"
+            stdout.write_bytes(stdout.read_bytes() + b"clobber")
+            with self.assertRaisesRegex(RuntimeError, "stdout SHA-256"):
+                ingress.validate_arm_execution_evidence(root, "d32-g16", arm)
+            stdout.write_bytes(b"stdout\n")
+
+            launch_path = root / "arm-launch.json"
+            launch_original = launch_path.read_bytes()
+            launch = json.loads(launch_original)
+            launch["wrapper_sha256"] = "f" * 64
+            launch_path.write_text(json.dumps(launch), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "launch wrapper"):
+                ingress.validate_arm_execution_evidence(root, "d32-g16", arm)
+            launch_path.write_bytes(launch_original)
+
+            terminal_path = root / "arm-terminal.json"
+            terminal_original = terminal_path.read_bytes()
+            terminal = json.loads(terminal_original)
+            terminal["gem5_returncode"] = 9
+            terminal_path.write_text(json.dumps(terminal), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "terminal wrapper"):
+                ingress.validate_arm_execution_evidence(root, "d32-g16", arm)
+            terminal_path.write_bytes(terminal_original)
+
+            forged_arm = json.loads(json.dumps(arm))
+            forged_arm["wrapper_argv"][-1] = "forged-label"
+            forged_arm["wrapper_argv_sha256"] = ingress.json_sha256(
+                forged_arm["wrapper_argv"]
+            )
+            with self.assertRaisesRegex(RuntimeError, "argv contract"):
+                ingress.validate_arm_execution_evidence(
+                    root, "d32-g16", forged_arm
+                )
 
     def test_binary_export_journal_requires_bound_ordered_wrapper_markers(
         self,

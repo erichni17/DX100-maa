@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed v6 opcode-11 UMT ingress evidence harness.
+"""Fail-closed v7 opcode-11 UMT ingress evidence harness.
 
 This program only freezes, validates, and records launch commands.  It never
 builds, invokes systemd, or executes gem5.  A future launcher must first
@@ -40,6 +40,12 @@ BUILD_ENVIRONMENT = {
     "inherited_tool_affecting_count": 0,
 }
 BUILD_WRAPPER = ROOT / "tests/lanl_maa/run_umt_ingress_build_attestation.py"
+ARM_WRAPPER = ROOT / "tests/lanl_maa/run_umt_ingress_micro_arm.py"
+ARM_WRAPPER_SHA256 = (
+    "45ab1fdc055fd997a07e710613c6d6a2a98ef9ac67a50be87112d6e72be91a86"
+)
+ARM_LAUNCH_SCHEMA = "lanl-maa-umt-ingress-arm-launch-v7"
+ARM_TERMINAL_SCHEMA = "lanl-maa-umt-ingress-arm-terminal-v7"
 SYSTEMD_SHOW_PROPERTIES = (
     "Id",
     "InvocationID",
@@ -157,6 +163,7 @@ RAW_FILES = (
     "m5out/config.json",
     "submission.json",
 )
+ARM_EVIDENCE_FILES = ("arm-launch.json", "arm-terminal.json")
 WORK_COUNTERS = (
     "descriptorDoorbells",
     "descriptorFetches",
@@ -900,8 +907,13 @@ def read_build_proof(path, digest, gem5, gem5_digest):
     exact_keys(
         scan,
         (
-            "target", "target_sha256", "config_hh", "config_hh_sha256",
-            "config_cc", "config_cc_sha256", "compiled_binary_markers",
+            "target",
+            "target_sha256",
+            "config_hh",
+            "config_hh_sha256",
+            "config_cc",
+            "config_cc_sha256",
+            "compiled_binary_markers",
         ),
         "wrapper target/config/literal scan",
     )
@@ -1059,20 +1071,44 @@ def case_command(gem5, root, case):
     ]
 
 
+def arm_wrapper_argv(root, gem5_argv):
+    command_digest = json_sha256(gem5_argv)
+    return [
+        "/usr/bin/python3",
+        str(ARM_WRAPPER),
+        "--arm-root",
+        str(pathlib.Path(root).resolve()),
+        "--gem5-argv-sha256",
+        command_digest,
+        "--",
+        *gem5_argv,
+    ]
+
+
 def expected_contract(campaign, proof, proof_digest, gem5_digest):
+    wrapper = verify_hash(
+        ARM_WRAPPER, ARM_WRAPPER_SHA256, "service-owned arm wrapper"
+    )
     arms = {}
     for name in CASES:
         root = campaign / "arms" / name
         command = case_command(CANONICAL_GEM5, root, name)
+        wrapper_command = arm_wrapper_argv(root, command)
         arms[name] = {
             "root": str(root),
-            "unit": f"umt-ingress-micro-v6-{name}-20260830.service",
-            "command": command,
-            "command_sha256": json_sha256(command),
+            "unit": f"umt-ingress-micro-v7-{name}-20260830.service",
+            "gem5_argv": command,
+            "gem5_argv_sha256": json_sha256(command),
+            "wrapper": {
+                "path": str(wrapper),
+                "sha256": ARM_WRAPPER_SHA256,
+            },
+            "wrapper_argv": wrapper_command,
+            "wrapper_argv_sha256": json_sha256(wrapper_command),
             "binary_sha256": ADAPTIVE_NATIVE_SHA256,
         }
     return {
-        "schema": "lanl-maa-umt-ingress-contract-v6",
+        "schema": "lanl-maa-umt-ingress-contract-v7",
         "status": "frozen_before_dispatch",
         "campaign_root": str(campaign),
         "harness_source_commit": git_output(ROOT, "rev-parse", "HEAD"),
@@ -1088,8 +1124,17 @@ def expected_contract(campaign, proof, proof_digest, gem5_digest):
         "predecessors": {
             "v1": {"review_status": "rejected", "reuse": "forbidden"},
             "v2": {"review_status": "rejected", "reuse": "forbidden"},
+            "v6": {
+                "review_status": (
+                    "rejected_direct_gem5_launch_without_stream_capture"
+                ),
+                "reuse": "forbidden",
+            },
         },
-        "claim_boundary": "Correctness and ingress mechanism only; simTicks are not compared or promoted.",
+        "claim_boundary": (
+            "Correctness and ingress mechanism only; simTicks are not "
+            "compared or promoted."
+        ),
     }
 
 
@@ -1127,6 +1172,19 @@ def systemd_run_command(unit, command):
     ]
 
 
+def systemd_arm_plan(arm):
+    command = systemd_run_command(arm["unit"], arm["wrapper_argv"])
+    return {
+        "unit": arm["unit"],
+        "wrapper": arm["wrapper"],
+        "wrapper_argv": arm["wrapper_argv"],
+        "wrapper_argv_sha256": arm["wrapper_argv_sha256"],
+        "gem5_argv_sha256": arm["gem5_argv_sha256"],
+        "systemd_run_argv": command,
+        "systemd_run_argv_sha256": json_sha256(command),
+    }
+
+
 def freeze_contract(args):
     gem5 = verify_hash(args.gem5, args.gem5_sha256, "gem5")
     if gem5 != CANONICAL_GEM5.resolve():
@@ -1141,9 +1199,9 @@ def freeze_contract(args):
         pathlib.Path(args.campaign_root).resolve(),
         pathlib.Path(args.output).resolve(),
     )
-    if campaign.exists() or output != campaign / "ingress-contract-v6.json":
+    if campaign.exists() or output != campaign / "ingress-contract-v7.json":
         raise RuntimeError(
-            "v6 contract must be a fresh campaign/ingress-contract-v6.json"
+            "v7 contract must be a fresh campaign/ingress-contract-v7.json"
         )
     contract = expected_contract(
         campaign, proof, args.instrumented_build_proof_sha256, args.gem5_sha256
@@ -1157,7 +1215,7 @@ def dispatch_plan(contract_path, digest, campaign_root, output):
     campaign, contract_path = pathlib.Path(
         campaign_root
     ).resolve(), verify_hash(contract_path, digest, "frozen contract")
-    if contract_path != campaign / "ingress-contract-v6.json":
+    if contract_path != campaign / "ingress-contract-v7.json":
         raise RuntimeError(
             "externally fixed campaign/contract identity mismatch"
         )
@@ -1165,10 +1223,11 @@ def dispatch_plan(contract_path, digest, campaign_root, output):
     if (
         not isinstance(contract, dict)
         or set(contract) != CONTRACT_FIELDS
-        or contract.get("schema") != "lanl-maa-umt-ingress-contract-v6"
+        or contract.get("schema") != "lanl-maa-umt-ingress-contract-v7"
     ):
         raise RuntimeError(
-            "v6 contract semantics, resources, units, roots, or self-hash binding altered"
+            "v7 contract semantics, resources, units, roots, or self-hash "
+            "binding altered"
         )
     gem5 = verify_hash(
         CANONICAL_GEM5, contract["gem5_sha256"], "canonical gem5"
@@ -1187,17 +1246,17 @@ def dispatch_plan(contract_path, digest, campaign_root, output):
     )
     if contract != expected:
         raise RuntimeError(
-            "v6 contract semantics, resources, units, roots, or self-hash binding altered"
+            "v7 contract semantics, resources, units, roots, or self-hash "
+            "binding altered"
         )
     output = pathlib.Path(output).resolve()
-    if output != campaign / "identity/ingress-dry-dispatch-v6.json":
-        raise RuntimeError("v6 dry dispatch output identity mismatch")
+    if output != campaign / "identity/ingress-dry-dispatch-v7.json":
+        raise RuntimeError("v7 dry dispatch output identity mismatch")
     commands = {
-        name: systemd_run_command(arm["unit"], arm["command"])
-        for name, arm in contract["arms"].items()
+        name: systemd_arm_plan(arm) for name, arm in contract["arms"].items()
     }
     plan = {
-        "schema": "lanl-maa-umt-ingress-dispatch-plan-v6",
+        "schema": "lanl-maa-umt-ingress-dispatch-plan-v7",
         "status": "dry_only_not_dispatched",
         "campaign_root": str(campaign),
         "contract": str(contract_path),
@@ -1329,7 +1388,8 @@ def validate_trace(events, case):
         raise RuntimeError("callback sequence is not contiguous")
     for items in groups.values():
         if (
-            [x["lane"] for x in items] != list(range(len(items)))
+            len({x["kind"] for x in items}) != 1
+            or [x["lane"] for x in items] != list(range(len(items)))
             or [x["order"] for x in items] != list(range(len(items)))
             or len({x["cycle"] for x in items}) != 1
             or len({x["waiters"] for x in items}) != 1
@@ -1342,6 +1402,35 @@ def validate_trace(events, case):
             raise RuntimeError(
                 "callback lane/order/waiter/digest chain is invalid"
             )
+    source_groups = [
+        items for items in groups.values() if items[0]["kind"] == "source"
+    ]
+    if not source_groups:
+        raise RuntimeError("trace lacks source callbacks for bank pressure")
+    source_banks = [
+        [item["group"] % 4 for item in items] for items in source_groups
+    ]
+    source_bank_pressure = {
+        "bank_count": 4,
+        "bank_mapping": "bank=group%4",
+        "source_callbacks": len(source_groups),
+        "max_source_writes_per_callback": max(map(len, source_groups)),
+        "max_same_bank_multiplicity": max(
+            max(banks.count(bank) for bank in set(banks))
+            for banks in source_banks
+        ),
+        "callbacks_with_duplicate_banks": sum(
+            len(set(banks)) != len(banks) for banks in source_banks
+        ),
+        "four_distinct_bank_accepted_callbacks": sum(
+            len(banks) <= 4 and len(set(banks)) == len(banks)
+            for banks in source_banks
+        ),
+        "claim_boundary": (
+            "Trace-derived pressure for the current four-bank stream state; "
+            "not RTL timing or physical equivalence."
+        ),
+    }
     waits = [x["waiters"] for x in callbacks]
     if case == "d32-g31" and not any(
         waits[i : i + 2] == [7, 1] for i in range(len(waits) - 1)
@@ -1390,6 +1479,7 @@ def validate_trace(events, case):
         ),
         "d64_holds": sum(x["kind"] == "hold" for x in lines),
         "releases": sum(x["kind"] == "release" for x in lines),
+        "source_bank_pressure": source_bank_pressure,
     }
 
 
@@ -1492,6 +1582,122 @@ def validate_submission(submission, case):
     }
 
 
+def validate_arm_execution_evidence(root, case, arm):
+    """Bind service-owned streams to the frozen wrapper and gem5 argv."""
+    root = pathlib.Path(root).resolve()
+    wrapper = artifact(
+        arm["wrapper"], "service-owned arm wrapper", ARM_WRAPPER
+    )
+    if arm["wrapper"]["sha256"] != ARM_WRAPPER_SHA256:
+        raise RuntimeError("arm wrapper digest is not the reviewed digest")
+    expected_gem5 = case_command(CANONICAL_GEM5, root, case)
+    expected_wrapper = arm_wrapper_argv(root, expected_gem5)
+    if (
+        arm["gem5_argv"] != expected_gem5
+        or arm["gem5_argv_sha256"] != json_sha256(expected_gem5)
+        or arm["wrapper_argv"] != expected_wrapper
+        or arm["wrapper_argv_sha256"] != json_sha256(expected_wrapper)
+    ):
+        raise RuntimeError("arm wrapper/gem5 argv contract mismatch")
+
+    launch_path, terminal_path = (
+        root / "arm-launch.json",
+        root / "arm-terminal.json",
+    )
+    launch, terminal = read_json(launch_path), read_json(terminal_path)
+    exact_keys(
+        launch,
+        (
+            "schema",
+            "status",
+            "arm_root",
+            "wrapper",
+            "wrapper_sha256",
+            "wrapper_pid",
+            "wrapper_proc_start_ticks",
+            "wrapper_argv",
+            "wrapper_argv_sha256",
+            "gem5_argv",
+            "gem5_argv_sha256",
+            "gem5_stdout",
+            "gem5_stderr",
+        ),
+        "arm launch evidence",
+    )
+    if (
+        launch["schema"] != ARM_LAUNCH_SCHEMA
+        or launch["status"] != "child_launch_authorized"
+        or launch["arm_root"] != str(root)
+        or pathlib.Path(launch["wrapper"]).resolve() != wrapper
+        or launch["wrapper_sha256"] != ARM_WRAPPER_SHA256
+        or not isinstance(launch["wrapper_pid"], int)
+        or launch["wrapper_pid"] <= 0
+        or not isinstance(launch["wrapper_proc_start_ticks"], str)
+        or not re.fullmatch(r"[1-9][0-9]*", launch["wrapper_proc_start_ticks"])
+        or launch["wrapper_argv"] != arm["wrapper_argv"]
+        or launch["wrapper_argv_sha256"] != arm["wrapper_argv_sha256"]
+        or launch["gem5_argv"] != arm["gem5_argv"]
+        or launch["gem5_argv_sha256"] != arm["gem5_argv_sha256"]
+        or launch["gem5_stdout"] != str(root / "gem5.stdout")
+        or launch["gem5_stderr"] != str(root / "gem5.stderr")
+    ):
+        raise RuntimeError("arm launch wrapper/command evidence mismatch")
+
+    exact_keys(
+        terminal,
+        (
+            "schema",
+            "status",
+            "arm_root",
+            "wrapper",
+            "wrapper_sha256",
+            "wrapper_pid",
+            "wrapper_proc_start_ticks",
+            "wrapper_argv_sha256",
+            "gem5_argv_sha256",
+            "launch_evidence",
+            "gem5_returncode",
+            "gem5_stdout",
+            "gem5_stderr",
+        ),
+        "arm terminal evidence",
+    )
+    if (
+        terminal["schema"] != ARM_TERMINAL_SCHEMA
+        or terminal["status"] != "exited"
+        or terminal["gem5_returncode"] != 0
+        or terminal["arm_root"] != str(root)
+        or pathlib.Path(terminal["wrapper"]).resolve() != wrapper
+        or terminal["wrapper_sha256"] != launch["wrapper_sha256"]
+        or terminal["wrapper_pid"] != launch["wrapper_pid"]
+        or terminal["wrapper_proc_start_ticks"]
+        != launch["wrapper_proc_start_ticks"]
+        or terminal["wrapper_argv_sha256"] != launch["wrapper_argv_sha256"]
+        or terminal["gem5_argv_sha256"] != launch["gem5_argv_sha256"]
+    ):
+        raise RuntimeError("arm terminal wrapper/return evidence mismatch")
+    artifact(terminal["launch_evidence"], "arm launch receipt", launch_path)
+    artifact(
+        terminal["gem5_stdout"],
+        "wrapper-owned gem5 stdout",
+        root / "gem5.stdout",
+    )
+    artifact(
+        terminal["gem5_stderr"],
+        "wrapper-owned gem5 stderr",
+        root / "gem5.stderr",
+    )
+    return {
+        "wrapper_sha256": ARM_WRAPPER_SHA256,
+        "wrapper_argv_sha256": arm["wrapper_argv_sha256"],
+        "gem5_argv_sha256": arm["gem5_argv_sha256"],
+        "wrapper_pid": launch["wrapper_pid"],
+        "wrapper_proc_start_ticks": launch["wrapper_proc_start_ticks"],
+        "launch_sha256": sha256(launch_path),
+        "terminal_sha256": sha256(terminal_path),
+    }
+
+
 def analyze_arm(root, case, contract_path, contract_digest):
     contract_path = verify_hash(
         contract_path, contract_digest, "frozen contract"
@@ -1500,9 +1706,9 @@ def analyze_arm(root, case, contract_path, contract_digest):
     if (
         not isinstance(contract, dict)
         or set(contract) != CONTRACT_FIELDS
-        or contract.get("schema") != "lanl-maa-umt-ingress-contract-v6"
+        or contract.get("schema") != "lanl-maa-umt-ingress-contract-v7"
     ):
-        raise RuntimeError("arm is not bound to an unaltered v6 contract")
+        raise RuntimeError("arm is not bound to an unaltered v7 contract")
     campaign = pathlib.Path(contract.get("campaign_root", ".")).resolve()
     gem5 = verify_hash(
         CANONICAL_GEM5, contract["gem5_sha256"], "canonical gem5"
@@ -1514,7 +1720,7 @@ def analyze_arm(root, case, contract_path, contract_digest):
         contract["gem5_sha256"],
     )
     if (
-        contract_path != campaign / "ingress-contract-v6.json"
+        contract_path != campaign / "ingress-contract-v7.json"
         or contract
         != expected_contract(
             campaign,
@@ -1523,20 +1729,23 @@ def analyze_arm(root, case, contract_path, contract_digest):
             contract.get("gem5_sha256", ""),
         )
     ):
-        raise RuntimeError("arm is not bound to an unaltered v6 contract")
+        raise RuntimeError("arm is not bound to an unaltered v7 contract")
     root, arm = pathlib.Path(root).resolve(), contract["arms"].get(case, {})
-    if str(root) != arm.get("root") or arm.get("command") != case_command(
+    if str(root) != arm.get("root") or arm.get("gem5_argv") != case_command(
         CANONICAL_GEM5, root, case
     ):
         raise RuntimeError("arm command/root binding mismatch")
     missing = [
-        str(root / name) for name in RAW_FILES if not (root / name).is_file()
+        str(root / name)
+        for name in RAW_FILES + ARM_EVIDENCE_FILES
+        if not (root / name).is_file()
     ]
     csv = root / f"{LABEL_PREFIX}_{case}.csv"
     if not csv.is_file():
         missing.append(str(csv))
     if missing:
         raise RuntimeError("missing raw evidence: " + ", ".join(missing))
+    execution = validate_arm_execution_evidence(root, case, arm)
     gem5_text = (root / "gem5.stdout").read_text(
         encoding="utf-8", errors="replace"
     )
@@ -1573,20 +1782,23 @@ def analyze_arm(root, case, contract_path, contract_digest):
     ):
         raise RuntimeError("exact D32/D64/group/input counter gate failed")
     return {
-        "schema": "lanl-maa-umt-ingress-arm-report-v6",
+        "schema": "lanl-maa-umt-ingress-arm-report-v7",
         "status": "passed",
         "case": case,
         "contract": str(contract_path),
         "contract_sha256": contract_digest,
-        "command_sha256": arm["command_sha256"],
+        "gem5_argv_sha256": arm["gem5_argv_sha256"],
+        "wrapper_argv_sha256": arm["wrapper_argv_sha256"],
         "native_binary_sha256": ADAPTIVE_NATIVE_SHA256,
+        "execution": execution,
         "mechanism": mechanism,
+        "source_bank_pressure": mechanism["source_bank_pressure"],
         "submission": submission,
         "observed_work": {name: stats[name] for name in WORK_COUNTERS},
         "raw_sha256": {
             **{
                 name.replace("/", "_"): sha256(root / name)
-                for name in RAW_FILES
+                for name in RAW_FILES + ARM_EVIDENCE_FILES
             },
             "csv_sha256": sha256(csv),
         },
