@@ -17,6 +17,11 @@ native4-to-native16 latency gap. This is the first GZZ result in this campaign
 with matched consumer instructions; unlike the earlier reused-control ratios,
 it supports performance attribution to tile geometry and virtualization.
 
+The fixed-active-RowTable storage ledger reports a 1,953,744-byte comparable
+lower bound for the hybrid versus 3,176,448 bytes for native16: 38.49% lower.
+It is 40.39% larger than native4's 1,391,616-byte lower bound. These are packed
+capacity estimates from the simulator configuration, not synthesized area.
+
 Sealed evidence:
 `/data1/nier/dx100-runs/2026-08-31-ume-gzz-matched-consumer-r6`
 
