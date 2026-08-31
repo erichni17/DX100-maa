@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Adversarial dry tests for the combined v12 UMT ingress harness."""
+"""Adversarial dry tests for the combined v13 UMT ingress harness."""
 import importlib.util
 import json
 import pathlib
@@ -42,41 +42,41 @@ def line(label, kind, cycle, waiters, abi=4):
 
 
 class IngressHarnessTest(unittest.TestCase):
-    def test_v12_contract_accepts_exactly_the_v12_build_proof_generation(self):
+    def test_v13_contract_accepts_exactly_the_v13_build_proof_generation(self):
         self.assertEqual(
             ingress.SCHEMA_CONTRACT,
-            "lanl-maa-umt-ingress-contract-v12",
+            "lanl-maa-umt-ingress-contract-v13",
         )
         self.assertEqual(
             ingress.SCHEMA_BUILD_PROOF,
-            "lanl-maa-umt-ingress-instrumented-gem5-build-proof-v12",
+            "lanl-maa-umt-ingress-instrumented-gem5-build-proof-v13",
         )
         self.assertEqual(
             ingress.SCHEMA_DISPATCH_PLAN,
-            "lanl-maa-umt-ingress-dispatch-plan-v12",
+            "lanl-maa-umt-ingress-dispatch-plan-v13",
         )
         self.assertEqual(
             ingress.SCHEMA_ARM_REPORT,
-            "lanl-maa-umt-ingress-arm-report-v12",
+            "lanl-maa-umt-ingress-arm-report-v13",
         )
         self.assertEqual(
-            ingress.CONTRACT_FILENAME, "ingress-contract-v12.json"
+            ingress.CONTRACT_FILENAME, "ingress-contract-v13.json"
         )
         self.assertEqual(
             ingress.DISPATCH_FILENAME,
-            "ingress-dry-dispatch-v12.json",
+            "ingress-dry-dispatch-v13.json",
         )
         self.assertTrue(
             all(
-                value.startswith("umt-ingress-micro-v12-")
+                value.startswith("umt-ingress-micro-v13-")
                 for value in (
-                    f"umt-ingress-micro-v12-{case}-20260830.service"
+                    f"umt-ingress-micro-v13-{case}-20260830.service"
                     for case in ingress.CASES
                 )
             )
         )
 
-    def test_v12_build_spelling_and_sanitized_environment_are_exact(self):
+    def test_v13_build_spelling_and_sanitized_environment_are_exact(self):
         self.assertEqual(
             ingress.BUILD_ARGV,
             (
@@ -114,11 +114,11 @@ class IngressHarnessTest(unittest.TestCase):
             ),
         )
         self.assertEqual(
-            ingress.BUILD_UNIT, "umt-ingress-trace-build-v12-20260830.service"
+            ingress.BUILD_UNIT, "umt-ingress-trace-build-v13-20260830.service"
         )
         self.assertEqual(
             ingress.SCHEMA_BUILD_PROOF,
-            "lanl-maa-umt-ingress-instrumented-gem5-build-proof-v12",
+            "lanl-maa-umt-ingress-instrumented-gem5-build-proof-v13",
         )
 
     def test_build_argv_is_assignment_free_and_fixed_env_has_exact_dash_d(
@@ -228,7 +228,7 @@ class IngressHarnessTest(unittest.TestCase):
     def test_targeted_preservation_and_invalidation_is_inode_bound(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = pathlib.Path(temporary) / "source"
-            evidence = pathlib.Path(temporary) / "ingress-build-evidence-v12"
+            evidence = pathlib.Path(temporary) / "ingress-build-evidence-v13"
             evidence.mkdir()
             values = {}
             for relative in wrapper.INVALIDATED_RELATIVES:
@@ -252,7 +252,7 @@ class IngressHarnessTest(unittest.TestCase):
     def test_failed_clean_and_target_not_removed_are_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = pathlib.Path(temporary) / "source"
-            evidence = pathlib.Path(temporary) / "ingress-build-evidence-v12"
+            evidence = pathlib.Path(temporary) / "ingress-build-evidence-v13"
             evidence.mkdir()
             target = source / wrapper.TARGET_RELATIVE
             target.parent.mkdir(parents=True)
@@ -264,10 +264,12 @@ class IngressHarnessTest(unittest.TestCase):
                 ):
                     wrapper.preserve_and_invalidate(source, evidence)
 
-    def test_failed_phases_restore_absent_paths_and_archive_both_outputs(self):
-        for phase, keep_object in (
+    def test_failed_phases_restore_both_exact_rejected_identities(self):
+        for phase, create_new in (
             ("object_prebuild", False),
             ("full_build", True),
+            ("full_build_validation", True),
+            ("observer_gate", True),
         ):
             with tempfile.TemporaryDirectory() as temporary:
                 root = pathlib.Path(temporary)
@@ -287,14 +289,11 @@ class IngressHarnessTest(unittest.TestCase):
                         "preserved_device": stat_value.st_dev,
                         "preserved_inode": stat_value.st_ino,
                     }
-                if keep_object:
-                    current = source / wrapper.OBJECT_RELATIVE
-                    current.parent.mkdir(parents=True)
-                    current.write_bytes(b"new instrumented object")
-                    current_identity = (
-                        current.stat().st_ino,
-                        wrapper.sha256(current),
-                    )
+                if create_new:
+                    for relative in wrapper.INVALIDATED_RELATIVES:
+                        current = source / relative
+                        current.parent.mkdir(parents=True, exist_ok=True)
+                        current.write_bytes(("new:" + relative).encode())
                 for name in (
                     "object-prebuild.stdout",
                     "object-prebuild.stderr",
@@ -302,7 +301,7 @@ class IngressHarnessTest(unittest.TestCase):
                     "build.stderr",
                 ):
                     (evidence / name).write_text(name, encoding="utf-8")
-                receipt = wrapper.restore_absent_canonical_paths(
+                receipt = wrapper.restore_canonical_paths(
                     source,
                     evidence,
                     invalidated,
@@ -311,36 +310,38 @@ class IngressHarnessTest(unittest.TestCase):
                 )
                 self.assertEqual(receipt["phase"], phase)
                 self.assertEqual(len(receipt["phase_outputs"]), 4)
+                self.assertEqual(
+                    receipt["status"], "failed_phase_restored_exact_identities"
+                )
                 for relative in wrapper.INVALIDATED_RELATIVES:
                     canonical = source / relative
                     self.assertTrue(canonical.is_file())
-                    if keep_object and relative == wrapper.OBJECT_RELATIVE:
-                        self.assertEqual(
-                            (
-                                canonical.stat().st_ino,
-                                wrapper.sha256(canonical),
-                            ),
-                            current_identity,
-                        )
-                        self.assertEqual(
-                            receipt["restored"][relative]["action"],
-                            "canonical_already_present",
-                        )
-                    else:
-                        preserved = pathlib.Path(
-                            invalidated[relative]["preserved"]["path"]
-                        )
-                        self.assertEqual(
-                            canonical.stat().st_ino, preserved.stat().st_ino
-                        )
-                        self.assertEqual(
-                            receipt["restored"][relative]["action"],
-                            "restored_from_preserved",
-                        )
+                    preserved = pathlib.Path(
+                        invalidated[relative]["preserved"]["path"]
+                    )
+                    self.assertEqual(
+                        canonical.stat().st_ino, preserved.stat().st_ino
+                    )
+                    self.assertEqual(
+                        wrapper.sha256(canonical), wrapper.sha256(preserved)
+                    )
+                    self.assertTrue(
+                        receipt["restored"][relative][
+                            "identity_equal_preserved"
+                        ]
+                    )
+                    self.assertEqual(
+                        receipt["restored"][relative]["action"],
+                        (
+                            "replaced_different_with_preserved"
+                            if create_new
+                            else "restored_missing_from_preserved"
+                        ),
+                    )
 
         with tempfile.TemporaryDirectory() as temporary:
             source = pathlib.Path(temporary) / "source"
-            evidence = pathlib.Path(temporary) / "ingress-build-evidence-v12"
+            evidence = pathlib.Path(temporary) / "ingress-build-evidence-v13"
             evidence.mkdir()
             values = {}
             for relative in wrapper.INVALIDATED_RELATIVES:
@@ -432,7 +433,7 @@ class IngressHarnessTest(unittest.TestCase):
 
     def test_build_unit_is_retained_for_terminal_snapshot(self):
         evidence = pathlib.Path(
-            "/campaign/identity/ingress-build-evidence-v12"
+            "/campaign/identity/ingress-build-evidence-v13"
         )
         command = ingress.build_systemd_run_command(evidence)
         self.assertIn("--remain-after-exit", command)
@@ -506,7 +507,7 @@ class IngressHarnessTest(unittest.TestCase):
         self.assertNotIn("RuntimeMaxSec", ingress.SYSTEMD_SHOW_PROPERTIES)
 
         build = ingress.build_systemd_run_command(
-            "/campaign/identity/ingress-build-evidence-v12"
+            "/campaign/identity/ingress-build-evidence-v13"
         )
         arm = ingress.systemd_run_command("arm.service", ["/bin/true"])
         for command in (build, arm):
@@ -526,7 +527,7 @@ class IngressHarnessTest(unittest.TestCase):
             ingress, "BUILD_DISPATCH_PROPERTIES", rejected
         ), self.assertRaisesRegex(RuntimeError, "resource mapping"):
             ingress.build_systemd_run_command(
-                "/campaign/identity/ingress-build-evidence-v12"
+                "/campaign/identity/ingress-build-evidence-v13"
             )
         with mock.patch.object(
             ingress, "DISPATCH_PROPERTIES", rejected
@@ -536,7 +537,7 @@ class IngressHarnessTest(unittest.TestCase):
     def test_dry_build_plan_is_fresh_exact_and_no_clobber(self):
         with tempfile.TemporaryDirectory() as temporary:
             campaign = pathlib.Path(temporary) / "campaign"
-            output = campaign / "build-plan-v12.json"
+            output = campaign / "build-plan-v13.json"
             plan = ingress.dry_build_plan(campaign, output)
             self.assertEqual(plan["schema"], ingress.BUILD_PLAN_SCHEMA)
             self.assertEqual(plan["status"], "dry_only_not_dispatched")
@@ -613,7 +614,7 @@ class IngressHarnessTest(unittest.TestCase):
 
             failure_anchor = root / "failure-restore.json"
             failure_anchor.write_text(
-                '{"status":"failed_phase_restored_absent_paths"}\n',
+                '{"status":"failed_phase_restored_exact_identities"}\n',
                 encoding="utf-8",
             )
             failure_receipt = ingress.record_build_cleanup_receipt(
@@ -1137,7 +1138,7 @@ class IngressHarnessTest(unittest.TestCase):
                 },
             }
             attestation_value = {
-                "schema": "lanl-maa-umt-ingress-build-attestation-v12",
+                "schema": "lanl-maa-umt-ingress-build-attestation-v13",
                 "unit": ingress.BUILD_UNIT,
                 "invocation_id": invocation_id,
                 "wrapper_pid": pid,
@@ -1366,7 +1367,7 @@ class IngressHarnessTest(unittest.TestCase):
             proof = {
                 "schema": ingress.SCHEMA_BUILD_PROOF,
                 "status": "passed",
-                "producer": "systemd-build-proof-v12-service-wrapper",
+                "producer": "systemd-build-proof-v13-service-wrapper",
                 "source_worktree": str(source),
                 "source_commit": commit,
                 "source_tree": tree,
@@ -1520,7 +1521,7 @@ class IngressHarnessTest(unittest.TestCase):
                 predecessor = json.loads(json.dumps(proof))
                 predecessor[
                     "schema"
-                ] = "lanl-maa-umt-ingress-instrumented-gem5-build-proof-v11"
+                ] = "lanl-maa-umt-ingress-instrumented-gem5-build-proof-v12"
                 with self.assertRaisesRegex(RuntimeError, "schema/status"):
                     attempt(predecessor)
 
@@ -1773,7 +1774,7 @@ class IngressHarnessTest(unittest.TestCase):
                     root / "identity/ingress-dry-dispatch-v4.json",
                 )
 
-    def test_v11_combined_contract_schema_is_rejected(self):
+    def test_v12_combined_contract_schema_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
             campaign = pathlib.Path(temporary) / "campaign"
             campaign.mkdir()
@@ -1781,14 +1782,14 @@ class IngressHarnessTest(unittest.TestCase):
             contract.write_text(
                 json.dumps(
                     {
-                        "schema": "lanl-maa-umt-ingress-contract-v11",
+                        "schema": "lanl-maa-umt-ingress-contract-v12",
                         "status": "frozen_before_dispatch",
                     }
                 ),
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(
-                RuntimeError, "v12 contract semantics"
+                RuntimeError, "v13 contract semantics"
             ):
                 ingress.dispatch_plan(
                     contract,
@@ -1816,7 +1817,7 @@ class IngressHarnessTest(unittest.TestCase):
         )
         self.assertNotIn("--property=CPUQuotaPerSecUSec=4s", command)
 
-    def test_v12_dispatch_runs_the_pinned_wrapper_not_gem5_directly(self):
+    def test_v13_dispatch_runs_the_pinned_wrapper_not_gem5_directly(self):
         with tempfile.TemporaryDirectory() as temporary:
             self.assertEqual(
                 set(ingress.CASES),
@@ -1859,7 +1860,7 @@ class IngressHarnessTest(unittest.TestCase):
         wrapper_argv = ingress.arm_wrapper_argv(root, gem5_argv)
         return {
             "root": str(root),
-            "unit": f"umt-ingress-micro-v12-{case}-20260830.service",
+            "unit": f"umt-ingress-micro-v13-{case}-20260830.service",
             "gem5_argv": gem5_argv,
             "gem5_argv_sha256": ingress.json_sha256(gem5_argv),
             "wrapper": {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Service-owned, fail-closed v12 ingress-observer build attestation.
+"""Service-owned, fail-closed v13 ingress-observer build attestation.
 
 The wrapper preserves the two rejected build artifacts with hard links,
 invalidates only their canonical paths, and then requires SCons to compile the
@@ -17,7 +17,7 @@ import shlex
 import subprocess
 import sys
 
-BUILD_UNIT = "umt-ingress-trace-build-v12-20260830.service"
+BUILD_UNIT = "umt-ingress-trace-build-v13-20260830.service"
 SOURCE_ROOT = "/data1/nier/worktrees/DX100-umt-trace-replay-20260830"
 SOURCE_COMMIT = "493c043ef0bc3dee0d91c5511371cedf77f15b5c"
 SOURCE_TREE = "9f7f0866005260f92bde81d516b520032535a92b"
@@ -71,8 +71,8 @@ BUILD_SYSTEM_SHA256 = {
         "b10bb7b6aef8b6716a30af1560e8d8e55fae9cdb696cb4ccede7ba5d3a19ed25"
     ),
 }
-PROTOCOL = "LANL_MAA_UMT_INGRESS_BUILD_ATTESTATION_V12"
-SCHEMA = "lanl-maa-umt-ingress-build-attestation-v12"
+PROTOCOL = "LANL_MAA_UMT_INGRESS_BUILD_ATTESTATION_V13"
+SCHEMA = "lanl-maa-umt-ingress-build-attestation-v13"
 CLEAN_METHOD = "hardlink-preserve-unlink-exact-two-v1"
 COMPILED_MARKERS = (b"UMT_INGRESS kind=", b"d64_hold cycle=")
 SAFE_CHILD_ENV = {
@@ -403,9 +403,7 @@ def validate_unchanged_identity(path, expected):
         raise RuntimeError("object identity changed during the full build")
 
 
-def restore_absent_canonical_paths(
-    source, evidence, invalidated, phase, error
-):
+def restore_canonical_paths(source, evidence, invalidated, phase, error):
     restored = {}
     for relative in INVALIDATED_RELATIVES:
         canonical = source / relative
@@ -414,17 +412,34 @@ def restore_absent_canonical_paths(
         preserved_hash = invalidated[relative]["preserved"]["sha256"]
         if sha256(preserved) != preserved_hash:
             raise RuntimeError("preserved recovery artifact hash changed")
-        action = "canonical_already_present"
-        if not canonical.exists():
+        action = "retained_preserved_identity"
+        canonical_matches = False
+        if canonical.exists():
+            current = canonical.stat()
+            canonical_matches = (current.st_dev, current.st_ino) == (
+                preserved_stat.st_dev,
+                preserved_stat.st_ino,
+            ) and sha256(canonical) == preserved_hash
+        if not canonical_matches:
             canonical.parent.mkdir(parents=True, exist_ok=True)
+            action = (
+                "restored_missing_from_preserved"
+                if not canonical.exists()
+                else "replaced_different_with_preserved"
+            )
+            if canonical.exists():
+                canonical.unlink()
             os.link(preserved, canonical)
-            action = "restored_from_preserved"
+            directory = os.open(canonical.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
         current = canonical.stat()
-        if action == "restored_from_preserved" and (
-            (current.st_dev, current.st_ino)
-            != (preserved_stat.st_dev, preserved_stat.st_ino)
-            or sha256(canonical) != preserved_hash
-        ):
+        if (current.st_dev, current.st_ino) != (
+            preserved_stat.st_dev,
+            preserved_stat.st_ino,
+        ) or sha256(canonical) != preserved_hash:
             raise RuntimeError("canonical recovery identity mismatch")
         restored[relative] = {
             "action": action,
@@ -432,6 +447,7 @@ def restore_absent_canonical_paths(
             "sha256": sha256(canonical),
             "device": current.st_dev,
             "inode": current.st_ino,
+            "identity_equal_preserved": True,
             "preserved": {"path": str(preserved), "sha256": preserved_hash},
         }
     phase_outputs = {
@@ -444,8 +460,8 @@ def restore_absent_canonical_paths(
         )
     }
     value = {
-        "schema": "lanl-maa-umt-ingress-build-failure-restore-v12",
-        "status": "failed_phase_restored_absent_paths",
+        "schema": "lanl-maa-umt-ingress-build-failure-restore-v13",
+        "status": "failed_phase_restored_exact_identities",
         "unit": BUILD_UNIT,
         "phase": phase,
         "error_type": type(error).__name__,
@@ -527,7 +543,7 @@ def main(argv=None):
     if (
         args.unit != BUILD_UNIT
         or source != pathlib.Path(SOURCE_ROOT)
-        or evidence.name != "ingress-build-evidence-v12"
+        or evidence.name != "ingress-build-evidence-v13"
         or not re.fullmatch(r"[0-9a-f]{32}", invocation)
     ):
         raise RuntimeError("wrapper identity/invocation binding is invalid")
@@ -590,7 +606,7 @@ def main(argv=None):
             source, OBJECT_RELATIVE, invalidated
         )
     except Exception as error:
-        restore_absent_canonical_paths(
+        restore_canonical_paths(
             source, evidence, invalidated, "object_prebuild", error
         )
         raise
@@ -613,7 +629,7 @@ def main(argv=None):
         )
         validate_unchanged_identity(source / OBJECT_RELATIVE, object_artifact)
     except Exception as error:
-        restore_absent_canonical_paths(
+        restore_canonical_paths(
             source, evidence, invalidated, "full_build", error
         )
         raise
@@ -635,7 +651,7 @@ def main(argv=None):
             "config_cc": sha256(config_cc),
         }
     except Exception as error:
-        restore_absent_canonical_paths(
+        restore_canonical_paths(
             source, evidence, invalidated, "full_build_validation", error
         )
         raise
@@ -686,7 +702,7 @@ def main(argv=None):
         )
     if result.returncode != 0:
         error = RuntimeError("observer gate failed")
-        restore_absent_canonical_paths(
+        restore_canonical_paths(
             source, evidence, invalidated, "observer_gate", error
         )
         raise error
@@ -702,7 +718,7 @@ def main(argv=None):
             inputs,
         )
     except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as error:
-        restore_absent_canonical_paths(
+        restore_canonical_paths(
             source, evidence, invalidated, "observer_report", error
         )
         raise RuntimeError("observer gate report is invalid") from error
