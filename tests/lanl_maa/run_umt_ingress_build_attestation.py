@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Service-owned, fail-closed v11 ingress-observer build attestation.
+"""Service-owned, fail-closed v12 ingress-observer build attestation.
 
 The wrapper preserves the two rejected build artifacts with hard links,
 invalidates only their canonical paths, and then requires SCons to compile the
@@ -17,7 +17,7 @@ import shlex
 import subprocess
 import sys
 
-BUILD_UNIT = "umt-ingress-trace-build-v11-20260830.service"
+BUILD_UNIT = "umt-ingress-trace-build-v12-20260830.service"
 SOURCE_ROOT = "/data1/nier/worktrees/DX100-umt-trace-replay-20260830"
 SOURCE_COMMIT = "493c043ef0bc3dee0d91c5511371cedf77f15b5c"
 SOURCE_TREE = "9f7f0866005260f92bde81d516b520032535a92b"
@@ -50,10 +50,9 @@ EXPECTED_BUILD_ARGV = (
 )
 BUILD_ARGV = EXPECTED_BUILD_ARGV
 TRACE_DEFINE_FLAG = "-DLANL_MAA_UMT_INGRESS_TRACE_TEST"
-DRY_COMPILE_ARGV = (
+OBJECT_PREBUILD_ARGV = (
     "/usr/bin/scons",
     "--ignore-style",
-    "--dry-run",
     "--verbose",
     OBJECT_RELATIVE,
     "-j1",
@@ -72,8 +71,8 @@ BUILD_SYSTEM_SHA256 = {
         "b10bb7b6aef8b6716a30af1560e8d8e55fae9cdb696cb4ccede7ba5d3a19ed25"
     ),
 }
-PROTOCOL = "LANL_MAA_UMT_INGRESS_BUILD_ATTESTATION_V11"
-SCHEMA = "lanl-maa-umt-ingress-build-attestation-v11"
+PROTOCOL = "LANL_MAA_UMT_INGRESS_BUILD_ATTESTATION_V12"
+SCHEMA = "lanl-maa-umt-ingress-build-attestation-v12"
 CLEAN_METHOD = "hardlink-preserve-unlink-exact-two-v1"
 COMPILED_MARKERS = (b"UMT_INGRESS kind=", b"d64_hold cycle=")
 SAFE_CHILD_ENV = {
@@ -187,7 +186,7 @@ def validate_safe_child_environment(value):
         raise RuntimeError("sanitized child environment is not exact")
 
 
-def validate_dry_compile_transcript(raw):
+def validate_object_compile_transcript(raw):
     candidates = [
         re.sub(rb"\x1b\[[0-9;]*m", b"", line)
         for line in raw.splitlines()
@@ -196,12 +195,14 @@ def validate_dry_compile_transcript(raw):
     ]
     if len(candidates) != 1:
         raise RuntimeError(
-            "dry compile transcript lacks one exact MAA command"
+            "object prebuild transcript lacks one exact MAA command"
         )
     try:
         tokens = shlex.split(candidates[0].decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as error:
-        raise RuntimeError("dry compile command is not parseable") from error
+        raise RuntimeError(
+            "object prebuild command is not parseable"
+        ) from error
     defines = [
         token
         for token in tokens
@@ -212,7 +213,9 @@ def validate_dry_compile_transcript(raw):
         or any("CPPDEFINES" in token for token in tokens)
         or any(token.startswith("CCFLAGS_EXTRA=") for token in tokens)
     ):
-        raise RuntimeError("dry compile command lacks the exact sole define")
+        raise RuntimeError(
+            "object prebuild command lacks the exact sole define"
+        )
     return candidates[0]
 
 
@@ -359,47 +362,98 @@ def preserve_and_invalidate(source, evidence):
     return records
 
 
-def validate_rebuild_transcript(raw):
+def validate_link_transcript(raw):
     lines = raw.splitlines()
-    object_name = b"X86_UMT_T32_W2/mem/LANLMAA/lanl_maa.o"
     target_name = b"X86_UMT_T32_W2/gem5.opt"
-    compiled = any(
-        object_name in line
-        and re.search(rb"(?:\bCXX\b|\bCompil|\bg\+\+\b|\bc\+\+\b)", line)
-        for line in lines
-    )
     linked = any(
         target_name in line
         and re.search(rb"(?:\bLINK\b|\bLinking\b|\bg\+\+\b|\bc\+\+\b)", line)
         for line in lines
     )
-    if not compiled or not linked:
-        raise RuntimeError(
-            "SCons transcript lacks exact object compile and link"
-        )
+    if not linked:
+        raise RuntimeError("SCons transcript lacks the exact gem5 link")
 
 
-def validate_rebuilt_paths(source, invalidated):
-    rebuilt = {}
+def validate_rebuilt_path(source, relative, invalidated):
+    path = source / relative
+    if not path.is_file():
+        raise RuntimeError("SCons did not recreate the required build path")
+    current = path.stat()
+    old = invalidated[relative]
+    digest = sha256(path)
+    if (current.st_dev, current.st_ino) == (
+        old["preserved_device"],
+        old["preserved_inode"],
+    ) or digest == old["preserved"]["sha256"]:
+        raise RuntimeError("rebuilt artifact reuses rejected identity")
+    return {
+        "path": str(path),
+        "sha256": digest,
+        "device": current.st_dev,
+        "inode": current.st_ino,
+    }
+
+
+def validate_unchanged_identity(path, expected):
+    current = pathlib.Path(path).stat()
+    if (current.st_dev, current.st_ino) != (
+        expected["device"],
+        expected["inode"],
+    ) or sha256(path) != expected["sha256"]:
+        raise RuntimeError("object identity changed during the full build")
+
+
+def restore_absent_canonical_paths(
+    source, evidence, invalidated, phase, error
+):
+    restored = {}
     for relative in INVALIDATED_RELATIVES:
-        path = source / relative
-        if not path.is_file():
-            raise RuntimeError("SCons did not recreate an invalidated path")
-        current = path.stat()
-        old = invalidated[relative]
-        digest = sha256(path)
-        if (current.st_dev, current.st_ino) == (
-            old["preserved_device"],
-            old["preserved_inode"],
-        ) or digest == old["preserved"]["sha256"]:
-            raise RuntimeError("rebuilt artifact reuses rejected identity")
-        rebuilt[relative] = {
-            "path": str(path),
-            "sha256": digest,
+        canonical = source / relative
+        preserved = pathlib.Path(invalidated[relative]["preserved"]["path"])
+        preserved_stat = preserved.stat()
+        preserved_hash = invalidated[relative]["preserved"]["sha256"]
+        if sha256(preserved) != preserved_hash:
+            raise RuntimeError("preserved recovery artifact hash changed")
+        action = "canonical_already_present"
+        if not canonical.exists():
+            canonical.parent.mkdir(parents=True, exist_ok=True)
+            os.link(preserved, canonical)
+            action = "restored_from_preserved"
+        current = canonical.stat()
+        if action == "restored_from_preserved" and (
+            (current.st_dev, current.st_ino)
+            != (preserved_stat.st_dev, preserved_stat.st_ino)
+            or sha256(canonical) != preserved_hash
+        ):
+            raise RuntimeError("canonical recovery identity mismatch")
+        restored[relative] = {
+            "action": action,
+            "path": str(canonical),
+            "sha256": sha256(canonical),
             "device": current.st_dev,
             "inode": current.st_ino,
+            "preserved": {"path": str(preserved), "sha256": preserved_hash},
         }
-    return rebuilt
+    phase_outputs = {
+        name: evidence_artifact(evidence, name)
+        for name in (
+            "object-prebuild.stdout",
+            "object-prebuild.stderr",
+            "build.stdout",
+            "build.stderr",
+        )
+    }
+    value = {
+        "schema": "lanl-maa-umt-ingress-build-failure-restore-v12",
+        "status": "failed_phase_restored_absent_paths",
+        "unit": BUILD_UNIT,
+        "phase": phase,
+        "error_type": type(error).__name__,
+        "restored": restored,
+        "phase_outputs": phase_outputs,
+    }
+    no_clobber_json(evidence / "failure-restore.json", value)
+    return value
 
 
 def contains_marker(path, marker_bytes):
@@ -473,7 +527,7 @@ def main(argv=None):
     if (
         args.unit != BUILD_UNIT
         or source != pathlib.Path(SOURCE_ROOT)
-        or evidence.name != "ingress-build-evidence-v11"
+        or evidence.name != "ingress-build-evidence-v12"
         or not re.fullmatch(r"[0-9a-f]{32}", invocation)
     ):
         raise RuntimeError("wrapper identity/invocation binding is invalid")
@@ -511,53 +565,80 @@ def main(argv=None):
             no_clobber_text(clean_stderr, type(error).__name__ + "\n")
         raise
 
-    dry_stdout = evidence / "dry-compile.stdout"
-    dry_stderr = evidence / "dry-compile.stderr"
-    with dry_stdout.open("xb") as out, dry_stderr.open("xb") as err:
-        dry = subprocess.run(
-            DRY_COMPILE_ARGV,
-            cwd=source,
-            env=SAFE_CHILD_ENV,
-            stdout=out,
-            stderr=err,
-            check=False,
-        )
-    if dry.returncode != 0:
-        raise RuntimeError("dry verbose SCons compile returned nonzero")
-    validate_dry_compile_transcript(dry_stdout.read_bytes())
-    if any((source / relative).exists() for relative in INVALIDATED_RELATIVES):
-        raise RuntimeError("dry compile modified an invalidated target")
-
+    object_stdout = evidence / "object-prebuild.stdout"
+    object_stderr = evidence / "object-prebuild.stderr"
     build_stdout = evidence / "build.stdout"
     build_stderr = evidence / "build.stderr"
-    with build_stdout.open("xb") as out, build_stderr.open("xb") as err:
-        completed = subprocess.run(
-            BUILD_ARGV,
-            cwd=source,
-            env=SAFE_CHILD_ENV,
-            stdout=out,
-            stderr=err,
-            check=False,
+    for path in (object_stdout, object_stderr, build_stdout, build_stderr):
+        path.open("xb").close()
+    try:
+        with object_stdout.open("wb") as out, object_stderr.open("wb") as err:
+            object_result = subprocess.run(
+                OBJECT_PREBUILD_ARGV,
+                cwd=source,
+                env=SAFE_CHILD_ENV,
+                stdout=out,
+                stderr=err,
+                check=False,
+            )
+        if object_result.returncode != 0:
+            raise RuntimeError("object-only SCons prebuild returned nonzero")
+        validate_object_compile_transcript(object_stdout.read_bytes())
+        if (source / TARGET_RELATIVE).exists():
+            raise RuntimeError("object-only prebuild recreated gem5")
+        object_artifact = validate_rebuilt_path(
+            source, OBJECT_RELATIVE, invalidated
         )
-    if completed.returncode != 0:
-        raise RuntimeError("SCons returned nonzero")
-    validate_rebuild_transcript(build_stdout.read_bytes())
-    rebuilt = validate_rebuilt_paths(source, invalidated)
+    except Exception as error:
+        restore_absent_canonical_paths(
+            source, evidence, invalidated, "object_prebuild", error
+        )
+        raise
+
+    try:
+        with build_stdout.open("wb") as out, build_stderr.open("wb") as err:
+            completed = subprocess.run(
+                BUILD_ARGV,
+                cwd=source,
+                env=SAFE_CHILD_ENV,
+                stdout=out,
+                stderr=err,
+                check=False,
+            )
+        if completed.returncode != 0:
+            raise RuntimeError("SCons returned nonzero")
+        validate_link_transcript(build_stdout.read_bytes())
+        target_artifact = validate_rebuilt_path(
+            source, TARGET_RELATIVE, invalidated
+        )
+        validate_unchanged_identity(source / OBJECT_RELATIVE, object_artifact)
+    except Exception as error:
+        restore_absent_canonical_paths(
+            source, evidence, invalidated, "full_build", error
+        )
+        raise
+
     target = source / TARGET_RELATIVE
-    validate_compiled_literals(target)
-    config_hh, config_cc = (source / item for item in CONFIG_RELATIVES)
-    inputs = {
-        relative: sha256(source / relative) for relative in SOURCE_SHA256
-    }
-    if inputs != SOURCE_SHA256:
-        raise RuntimeError("instrumentation source changed during build")
-    validate_source(source)
-    artifacts = {
-        "gem5": rebuilt[TARGET_RELATIVE]["sha256"],
-        "lanl_maa_o": rebuilt[OBJECT_RELATIVE]["sha256"],
-        "config_hh": sha256(config_hh),
-        "config_cc": sha256(config_cc),
-    }
+    try:
+        validate_compiled_literals(target)
+        config_hh, config_cc = (source / item for item in CONFIG_RELATIVES)
+        inputs = {
+            relative: sha256(source / relative) for relative in SOURCE_SHA256
+        }
+        if inputs != SOURCE_SHA256:
+            raise RuntimeError("instrumentation source changed during build")
+        validate_source(source)
+        artifacts = {
+            "gem5": target_artifact["sha256"],
+            "lanl_maa_o": object_artifact["sha256"],
+            "config_hh": sha256(config_hh),
+            "config_cc": sha256(config_cc),
+        }
+    except Exception as error:
+        restore_absent_canonical_paths(
+            source, evidence, invalidated, "full_build_validation", error
+        )
+        raise
 
     manifest = evidence / "observer-input-source-sha256.json"
     no_clobber_json(manifest, inputs)
@@ -604,7 +685,11 @@ def main(argv=None):
             check=False,
         )
     if result.returncode != 0:
-        raise RuntimeError("observer gate failed")
+        error = RuntimeError("observer gate failed")
+        restore_absent_canonical_paths(
+            source, evidence, invalidated, "observer_gate", error
+        )
+        raise error
     report_copy = evidence / "observer-report.json"
     with report_copy.open("xb") as stream:
         stream.write(gate_stdout.read_bytes())
@@ -617,6 +702,9 @@ def main(argv=None):
             inputs,
         )
     except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as error:
+        restore_absent_canonical_paths(
+            source, evidence, invalidated, "observer_report", error
+        )
         raise RuntimeError("observer gate report is invalid") from error
     transcript = evidence / "observer-transcript.txt"
     no_clobber_text(transcript, "status=0/SUCCESS\n")
@@ -624,8 +712,8 @@ def main(argv=None):
     evidence_names = {
         "clean_stdout": "clean.stdout",
         "clean_stderr": "clean.stderr",
-        "dry_compile_stdout": "dry-compile.stdout",
-        "dry_compile_stderr": "dry-compile.stderr",
+        "object_prebuild_stdout": "object-prebuild.stdout",
+        "object_prebuild_stderr": "object-prebuild.stderr",
         "build_stdout": "build.stdout",
         "build_stderr": "build.stderr",
         "observer_stdout": "observer.stdout",
@@ -653,9 +741,11 @@ def main(argv=None):
         "clean_method": CLEAN_METHOD,
         "invalidated_artifacts": invalidated,
         "target_paths_absent_after_clean": True,
-        "dry_compile_argv": list(DRY_COMPILE_ARGV),
-        "dry_compile_returncode": 0,
-        "dry_compile_define_verified": True,
+        "object_prebuild_argv": list(OBJECT_PREBUILD_ARGV),
+        "object_prebuild_returncode": 0,
+        "object_prebuild_define_verified": True,
+        "object_prebuild_artifact": object_artifact,
+        "object_identity_unchanged_after_link": True,
         "build_argv": list(BUILD_ARGV),
         "build_environment": {
             "sanitized": sorted(SAFE_CHILD_ENV),
@@ -664,7 +754,7 @@ def main(argv=None):
             "inherited_tool_affecting_count": len(inherited_names),
         },
         "build_returncode": 0,
-        "required_compile_and_relink_observed": True,
+        "required_link_observed": True,
         "instrumentation_source_sha256": inputs,
         "build_system_source_sha256": dict(BUILD_SYSTEM_SHA256),
         "build_artifacts": artifacts,
