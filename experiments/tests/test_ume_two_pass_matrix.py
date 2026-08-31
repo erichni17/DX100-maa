@@ -130,6 +130,13 @@ class UmeTwoPassMatrixTest(unittest.TestCase):
             self.assertFalse(rejection["full_run_authorized"])
             self.assertEqual((root / "campaign.exit").read_text(), "1\n")
 
+    def test_gzz_resolves_selector_before_checkpoint(self) -> None:
+        source = (ROOT / "benchmarks/UME/gradzatz.cpp").read_text()
+        self.assertLess(
+            source.index("maa_read_virtual_consumer_mode"),
+            source.index("m5_checkpoint(0, 0)"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

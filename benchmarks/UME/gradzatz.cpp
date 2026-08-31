@@ -641,11 +641,10 @@ int main(int argc, char *argv[]) {
     build_scalar_reference();
 #endif
 
-#ifdef GEM5
-    cout << "Starting checkpoint" << endl;
-    m5_checkpoint(0, 0);
-    cout << "checkpoint done" << endl;
 #ifdef MAA_GENERAL_VIRTUAL_CONSUMER
+    // Resolve the arm before checkpoint. SE checkpoints restore guest memory,
+    // but a post-restore host-file open is not a portable treatment channel.
+    // Each virtual-consumer arm already owns a selector-specific checkpoint.
     try {
         virtual_consumer_mode =
             maa_read_virtual_consumer_mode(virtual_consumer_selector);
@@ -658,6 +657,13 @@ int main(int argc, char *argv[]) {
                   << std::endl;
         return 2;
     }
+#endif
+
+#ifdef GEM5
+    cout << "Starting checkpoint" << endl;
+    m5_checkpoint(0, 0);
+    cout << "checkpoint done" << endl;
+#ifdef MAA_GENERAL_VIRTUAL_CONSUMER
     std::cout << "UME_GZZ_VIRTUAL_CONSUMER mode="
               << maa_virtual_consumer_mode_name(virtual_consumer_mode)
               << " logical=" << TILE_SIZE
