@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Recover only the two GZZ hybrid arms with mounted selectors."""
+"""Recover the GZZ strict hybrid after selector and payload fixes."""
 
 from __future__ import annotations
 
@@ -19,7 +19,9 @@ sys.path.insert(0, str(ROOT))
 from experiments.scripts import run_ume_two_pass_matrix as base  # noqa: E402
 
 AUTHORITY = Path("/tmp/ume-gzz-two-pass-20260831-39080929")
+DEFAULT_GEM5 = ROOT / "build/X86/gem5.opt"
 HYBRID_ARMS = tuple(arm for arm in base.ARMS if arm.selector is not None)
+RECOVERY_ARMS = tuple(arm for arm in HYBRID_ARMS if arm.name == "strict_bounded_hybrid")
 
 
 class BridgeError(RuntimeError):
@@ -84,8 +86,7 @@ def artifact_paths(root: Path) -> list[Path]:
 
 def write_ledger(root: Path) -> None:
     lines = [
-        f"{sha256(path)}  {path.relative_to(root)}"
-        for path in artifact_paths(root)
+        f"{sha256(path)}  {path.relative_to(root)}" for path in artifact_paths(root)
     ]
     (root / "artifacts.sha256").write_text("\n".join(lines) + "\n")
 
@@ -114,16 +115,20 @@ def classify(root: Path) -> dict[str, Any]:
         else authority["manifest"]
     )
     hybrids = {
-        arm.name: base.classify_arm(root, arm, manifest) for arm in HYBRID_ARMS
+        arm.name: base.classify_arm(root, arm, manifest) for arm in RECOVERY_ARMS
     }
-    for arm in HYBRID_ARMS:
+    for arm in RECOVERY_ARMS:
         command = json.loads(
             (root / "arms" / arm.name / "restore.command.json").read_text()
         )
+        simulator = Path(command[0])
         guest = Path(command[command.index("--cmd") + 1])
         require(
-            guest.is_file()
-            and sha256(guest) == manifest["guest_sha256"][arm.guest],
+            simulator.is_file() and sha256(simulator) == manifest["gem5_sha256"],
+            f"{arm.name}: simulator identity",
+        )
+        require(
+            guest.is_file() and sha256(guest) == manifest["guest_sha256"][arm.guest],
             f"{arm.name}: guest identity",
         )
     require(
@@ -137,40 +142,31 @@ def classify(root: Path) -> dict[str, Any]:
         == 1,
         "cross-arm output mismatch",
     )
-    original = hybrids["original_hybrid"]["counters"]
     strict = hybrids["strict_bounded_hybrid"]["counters"]
+    native16 = authority["native"]["native16"]["counters"]
     for field in ("numInst_INDRD", "numInst_INDRMW", "index_words"):
-        require(
-            original[field] == strict[field], f"hybrid work differs: {field}"
-        )
+        require(strict[field] == native16[field], f"work differs: {field}")
     ticks = {
         **{
             name: item["counters"]["simTicks"]
             for name, item in authority["native"].items()
         },
-        **{
-            name: item["counters"]["simTicks"]
-            for name, item in hybrids.items()
-        },
+        **{name: item["counters"]["simTicks"] for name, item in hybrids.items()},
     }
     return {
-        "schema": "dx100.ume_gzz_selector_bridge.v1",
+        "schema": "dx100.ume_gzz_shared_payload.v2",
         "terminal": True,
-        "decision": "ACCEPT_GZZ_SELECTOR_BRIDGE",
+        "decision": "ACCEPT_GZZ_SHARED_PAYLOAD_STRICT",
         "authority": str(AUTHORITY),
         "native_controls_reused": True,
+        "cross_binary_orientation_only": True,
         "hybrids": hybrids,
         "ticks": ticks,
         "comparisons": {
-            "original_over_strict": (
-                ticks["original_hybrid"] / ticks["strict_bounded_hybrid"]
-            ),
-            "native16_over_original": (
-                ticks["native16"] / ticks["original_hybrid"]
-            ),
             "native16_over_strict": (
                 ticks["native16"] / ticks["strict_bounded_hybrid"]
             ),
+            "native4_over_strict": (ticks["native4"] / ticks["strict_bounded_hybrid"]),
         },
     }
 
@@ -240,12 +236,13 @@ def run_hybrid_arm(
     arm: base.Arm,
     guest: Path,
     selector: Path,
+    gem5: Path,
     environment: dict[str, str],
 ) -> None:
     checkpoint = root / "checkpoints" / arm.name
     checkpoint.mkdir(parents=True)
     checkpoint_command = base.checkpoint_command(
-        AUTHORITY / "inputs/gem5.opt",
+        gem5,
         guest,
         checkpoint / "gem5",
         base.arm_options(arm, selector),
@@ -264,7 +261,7 @@ def run_hybrid_arm(
     arm_root = root / "arms" / arm.name
     arm_root.mkdir(parents=True)
     command = base.common_restore_command(
-        AUTHORITY / "inputs/gem5.opt",
+        gem5,
         AUTHORITY / "inputs/ramulator.yaml",
         checkpoint / "gem5",
         guest,
@@ -275,13 +272,12 @@ def run_hybrid_arm(
     returncode = base.run_logged(command, arm_root, "restore", environment)
     require(returncode == 0, f"{arm.name}: restore failed")
     require(
-        base.tree_identity(checkpoint / "gem5")["sha256"]
-        == identity["sha256"],
+        base.tree_identity(checkpoint / "gem5")["sha256"] == identity["sha256"],
         f"{arm.name}: checkpoint mutated",
     )
 
 
-def run(root: Path) -> dict[str, Any]:
+def run(root: Path, gem5: Path) -> dict[str, Any]:
     require(not root.exists(), f"output exists: {root}")
     require(
         not subprocess.check_output(
@@ -290,13 +286,16 @@ def run(root: Path) -> dict[str, Any]:
         "refusing launch from dirty worktree",
     )
     authority = verify_authority()
+    require(gem5.is_file(), f"missing simulator: {gem5}")
+    simulator_sha256 = sha256(gem5)
     root.mkdir(parents=True)
     (root / "authority.json").write_text(
         json.dumps(
             {
                 "root": str(AUTHORITY),
                 "manifest_sha256": sha256(AUTHORITY / "manifest.json"),
-                "gem5_sha256": authority["manifest"]["gem5_sha256"],
+                "native_control_gem5_sha256": authority["manifest"]["gem5_sha256"],
+                "candidate_gem5_sha256": simulator_sha256,
             },
             indent=2,
             sort_keys=True,
@@ -306,12 +305,13 @@ def run(root: Path) -> dict[str, Any]:
     (root / "inputs").mkdir()
     guest, build_commands = build_hybrid_guest(root)
     selectors = {}
-    for arm in HYBRID_ARMS:
+    for arm in RECOVERY_ARMS:
         selector = root / "inputs" / f"{arm.name}.selector"
         selector.write_text(arm.selector + "\n")
         selector.chmod(0o444)
         selectors[arm.name] = selector
     manifest = dict(authority["manifest"])
+    manifest["gem5_sha256"] = simulator_sha256
     manifest["guest_sha256"] = dict(manifest["guest_sha256"])
     manifest["guest_sha256"]["hybrid"] = sha256(guest)
     manifest["build_commands"] = build_commands
@@ -319,6 +319,8 @@ def run(root: Path) -> dict[str, Any]:
         ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
     ).strip()
     manifest["selector_resolved_before_checkpoint"] = True
+    manifest["native_controls_reused"] = True
+    manifest["native_controls_cross_binary_default_off"] = True
     (root / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n"
     )
@@ -328,7 +330,7 @@ def run(root: Path) -> dict[str, Any]:
         OMP_NUM_THREADS="4",
         OMP_PROC_BIND="false",
     )
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    with ThreadPoolExecutor(max_workers=len(RECOVERY_ARMS)) as pool:
         futures = [
             pool.submit(
                 run_hybrid_arm,
@@ -336,9 +338,10 @@ def run(root: Path) -> dict[str, Any]:
                 arm,
                 guest,
                 selectors[arm.name],
+                gem5,
                 environment,
             )
-            for arm in HYBRID_ARMS
+            for arm in RECOVERY_ARMS
         ]
         for future in futures:
             future.result()
@@ -367,6 +370,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("run", "validate", "preflight"))
     parser.add_argument("out", nargs="?", type=Path)
+    parser.add_argument("--gem5", type=Path, default=DEFAULT_GEM5)
     args = parser.parse_args()
     if args.command == "preflight":
         result: dict[str, Any] = {
@@ -376,7 +380,7 @@ def main() -> int:
     else:
         require(args.out is not None, f"{args.command} requires OUT")
         result = (
-            run(args.out.resolve())
+            run(args.out.resolve(), args.gem5.resolve())
             if args.command == "run"
             else validate(args.out.resolve())
         )

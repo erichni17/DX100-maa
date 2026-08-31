@@ -8,16 +8,16 @@ from experiments.scripts import run_ume_gzz_selector_bridge as runner
 
 
 class UmeGzzSelectorBridgeTest(unittest.TestCase):
-    def test_only_failed_hybrid_arms_are_relaunched(self) -> None:
+    def test_only_strict_shared_payload_arm_is_relaunched(self) -> None:
         self.assertEqual(
-            [arm.name for arm in runner.HYBRID_ARMS],
-            ["original_hybrid", "strict_bounded_hybrid"],
+            [arm.name for arm in runner.RECOVERY_ARMS],
+            ["strict_bounded_hybrid"],
         )
 
     def test_fresh_checkpoint_options_bind_each_selector(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for arm in runner.HYBRID_ARMS:
+            for arm in runner.RECOVERY_ARMS:
                 selector = root / f"{arm.name}.selector"
                 self.assertEqual(
                     runner.base.arm_options(arm, selector),
@@ -46,9 +46,7 @@ class UmeGzzSelectorBridgeTest(unittest.TestCase):
             runner.write_ledger(root)
             runner.verify_ledger(root)
             artifact.write_text("two\n")
-            with self.assertRaisesRegex(
-                runner.BridgeError, "artifact changed"
-            ):
+            with self.assertRaisesRegex(runner.BridgeError, "artifact changed"):
                 runner.verify_ledger(root)
 
 
