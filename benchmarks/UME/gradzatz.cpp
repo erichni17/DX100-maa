@@ -7,8 +7,10 @@
 #include <cstdlib>   // For rand()
 #include <cstring>
 #include <ctime>
+#include <fstream>
 #include <iostream>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -126,6 +128,72 @@ static ReferenceErrors check_scalar_reference() {
 
 static MAAVirtualConsumerMode virtual_consumer_mode =
     MAAVirtualConsumerMode::StreamControl;
+
+#ifdef UME_GRADZATZ_MATCHED_PAGE_ARITHMETIC
+enum class GzzMatchedTreatment
+{
+    Native16,
+    Native4x4,
+    StrictLogical16Physical4,
+};
+
+static GzzMatchedTreatment gzz_matched_treatment =
+    GzzMatchedTreatment::Native16;
+
+static const char *
+gzz_matched_treatment_name()
+{
+    switch (gzz_matched_treatment) {
+      case GzzMatchedTreatment::Native16:
+        return "native16";
+      case GzzMatchedTreatment::Native4x4:
+        return "native4x4";
+      case GzzMatchedTreatment::StrictLogical16Physical4:
+        return "strict_logical16_physical4";
+    }
+    std::abort();
+}
+
+static bool
+gzz_matched_uses_virtual_gather()
+{
+    return gzz_matched_treatment ==
+           GzzMatchedTreatment::StrictLogical16Physical4;
+}
+
+static int
+gzz_matched_page_elements()
+{
+    return gzz_matched_treatment == GzzMatchedTreatment::Native16
+               ? TILE_SIZE
+               : MAA_CONSUMER_TILE_SIZE;
+}
+
+static void
+read_gzz_matched_treatment(const std::string &path)
+{
+    std::ifstream selector(path);
+    std::string treatment;
+    std::string extra;
+    if (!(selector >> treatment) || selector >> extra)
+        throw std::runtime_error(
+            "matched selector must contain exactly one treatment");
+    if (treatment == "native16") {
+        gzz_matched_treatment = GzzMatchedTreatment::Native16;
+    } else if (treatment == "native4x4") {
+        gzz_matched_treatment = GzzMatchedTreatment::Native4x4;
+    } else if (treatment == "strict_logical16_physical4") {
+        gzz_matched_treatment =
+            GzzMatchedTreatment::StrictLogical16Physical4;
+        virtual_consumer_mode =
+            MAAVirtualConsumerMode::TokenStreamLoad;
+    } else {
+        throw std::runtime_error(
+            "matched treatment must be native16, native4x4, or "
+            "strict_logical16_physical4");
+    }
+}
+#endif
 #endif
 int tiles0[NUM_CORES], tiles1[NUM_CORES], tiles2[NUM_CORES];
 int tiles3[NUM_CORES], tiles4[NUM_CORES];
@@ -226,6 +294,13 @@ void gradzatz_MAA() {
         const int page_min_reg = page_regs0[omp_thread_id];
         const int page_max_reg = page_regs1[omp_thread_id];
         const int page_stride_reg = page_regs2[omp_thread_id];
+#ifdef UME_GRADZATZ_MATCHED_PAGE_ARITHMETIC
+        const bool use_virtual_gather = gzz_matched_uses_virtual_gather();
+        const int consumer_page_elements = gzz_matched_page_elements();
+#else
+        constexpr bool use_virtual_gather = true;
+        constexpr int consumer_page_elements = MAA_CONSUMER_TILE_SIZE;
+#endif
 #endif
 #if defined(MAA_VIRTUAL_GATHER) && !defined(MAA_GENERAL_VIRTUAL_CONSUMER)
         backing_start_reg = backing_start_regs[omp_thread_id];
@@ -245,7 +320,7 @@ void gradzatz_MAA() {
 #pragma omp for
         for (int c = 0; c < num_corners;
 #ifdef MAA_GENERAL_VIRTUAL_CONSUMER
-             c += MAA_CONSUMER_TILE_SIZE
+             c += consumer_page_elements
 #else
              c += TILE_SIZE
 #endif
@@ -253,7 +328,7 @@ void gradzatz_MAA() {
             maa_const<int>(c, reg0);
 #ifdef MAA_GENERAL_VIRTUAL_CONSUMER
             maa_const<int>(std::min(num_corners,
-                                    c + MAA_CONSUMER_TILE_SIZE), reg1);
+                                    c + consumer_page_elements), reg1);
 #endif
             // Step1: Load corner_type
             maa_stream_load<int>(corner_type.data(), reg0, reg1, reg2, tile0);
@@ -297,22 +372,25 @@ void gradzatz_MAA() {
 #ifdef MAA_GENERAL_VIRTUAL_CONSUMER
             maa_const<int>(c, reg0);
             maa_const<int>(c + gather_size, reg1);
-            maa_indirect_load_virtual_index<DATATYPE>(
-                point_gradient.data(),
-                reinterpret_cast<uint32_t *>(c_to_p_map.data()), tile0,
-                virtual_gather_backing[omp_thread_id], reg0, reg1, reg2);
-            if (gather_size == TILE_SIZE)
-                maa_virtual_consumer_begin(virtual_consumer_mode, tile0);
-            else
-                // Preserve an exact four-page materializer ABI: partial
-                // logical tails drain, then reload through ordinary STREAM_LD.
-                wait_ready(tile0);
+            if (use_virtual_gather) {
+                maa_indirect_load_virtual_index<DATATYPE>(
+                    point_gradient.data(),
+                    reinterpret_cast<uint32_t *>(c_to_p_map.data()), tile0,
+                    virtual_gather_backing[omp_thread_id], reg0, reg1, reg2);
+                if (gather_size == TILE_SIZE)
+                    maa_virtual_consumer_begin(virtual_consumer_mode, tile0);
+                else
+                    // Preserve an exact four-page materializer ABI: partial
+                    // logical tails drain, then reload through ordinary
+                    // STREAM_LD.
+                    wait_ready(tile0);
+            }
 
             for (int page_offset = 0; page_offset < gather_size;
-                 page_offset += MAA_CONSUMER_TILE_SIZE) {
+                 page_offset += consumer_page_elements) {
                 const int page_size =
                     std::min(gather_size - page_offset,
-                             MAA_CONSUMER_TILE_SIZE);
+                             consumer_page_elements);
                 const int page_begin = c + page_offset;
                 maa_const<int>(page_begin, reg0);
                 maa_const<int>(page_begin + page_size, reg1);
@@ -326,13 +404,14 @@ void gradzatz_MAA() {
                 maa_indirect_load<DATATYPE>(zone_volume.data(), tile3, tile2,
                                             tileCond);
 
-                if (gather_size == TILE_SIZE) {
+                int gradient_tile = tile5;
+                if (use_virtual_gather && gather_size == TILE_SIZE) {
                     maa_virtual_consumer_load_page<DATATYPE>(
                         virtual_consumer_mode,
                         virtual_gather_backing[omp_thread_id] + page_offset,
                         tile0, page_offset / MAA_CONSUMER_TILE_SIZE,
                         page_min_reg, page_max_reg, page_stride_reg, tile5);
-                } else {
+                } else if (use_virtual_gather) {
                     // The tail backing pointer is already page-relative.
                     // Its ordinary STREAM_LD must therefore use local bounds;
                     // keeping the logical c-based bounds would add page_offset
@@ -342,9 +421,18 @@ void gradzatz_MAA() {
                     maa_stream_load<DATATYPE>(
                         virtual_gather_backing[omp_thread_id] + page_offset,
                         reg0, reg1, reg2, tile5);
+                } else {
+                    // Matched native controls retain the ordinary DX100
+                    // indirect-gather opcode. Only the following page-local
+                    // DIV/MUL arithmetic is shared with the strict arm.
+                    maa_stream_load<int>(c_to_p_map.data(), reg0, reg1, reg2,
+                                         tile5, tileCond);
+                    maa_indirect_load<DATATYPE>(point_gradient.data(), tile5,
+                                                tile0, tileCond);
+                    gradient_tile = tile0;
                 }
                 wait_ready(tile2);
-                wait_ready(tile5);
+                wait_ready(gradient_tile);
 
 #ifdef UME_GRADZATZ_VERIFY
 #ifdef MAA_GENERAL_VIRTUAL_CONSUMER
@@ -387,7 +475,7 @@ void gradzatz_MAA() {
                     page_ratio_tiles[omp_thread_id], Operation_t::DIV_OP,
                     tileCond);
                 maa_alu_vector<DATATYPE>(
-                    tile5, page_ratio_tiles[omp_thread_id],
+                    gradient_tile, page_ratio_tiles[omp_thread_id],
                     page_product_tiles[omp_thread_id], Operation_t::MUL_OP,
                     tileCond);
                 maa_indirect_rmw_vector<DATATYPE>(
@@ -408,7 +496,7 @@ void gradzatz_MAA() {
                     Operation_t::ADD_OP, tileCond);
 #endif
             }
-            if (gather_size == TILE_SIZE)
+            if (use_virtual_gather && gather_size == TILE_SIZE)
                 maa_virtual_consumer_end(virtual_consumer_mode, tile0);
 #else
             maa_const<int>(c, reg0);
@@ -539,7 +627,18 @@ void gradzatz_MAA() {
               << " elements=" << zone_volume.size() << std::endl;
 #endif
 #endif
-#ifdef MAA_GENERAL_VIRTUAL_CONSUMER
+#if defined(MAA_GENERAL_VIRTUAL_CONSUMER) && \
+    defined(UME_GRADZATZ_MATCHED_PAGE_ARITHMETIC)
+    std::cout << "UME_GZZ_PAGE_CONSUMER mode=maa_div_mul"
+              << " treatment=" << gzz_matched_treatment_name()
+              << " arithmetic_pages="
+              << (TILE_SIZE / gzz_matched_page_elements())
+              << " physical_tiles_per_core=7"
+              << " cpu_spd_payload_reads=0"
+              << " gather="
+              << (gzz_matched_uses_virtual_gather() ? "virtual" : "native")
+              << std::endl;
+#elif defined(MAA_GENERAL_VIRTUAL_CONSUMER)
     std::cout << "UME_GZZ_PAGE_CONSUMER mode=maa_div_mul"
               << " physical_tiles_per_core=7"
               << " cpu_spd_payload_reads=0" << std::endl;
@@ -694,12 +793,16 @@ int main(int argc, char *argv[]) {
     // but a post-restore host-file open is not a portable treatment channel.
     // Each virtual-consumer arm already owns a selector-specific checkpoint.
     try {
+#ifdef UME_GRADZATZ_MATCHED_PAGE_ARITHMETIC
+        read_gzz_matched_treatment(virtual_consumer_selector);
+#else
         virtual_consumer_mode =
             maa_read_virtual_consumer_mode(virtual_consumer_selector);
         if (virtual_consumer_mode ==
             MAAVirtualConsumerMode::TokenStreamLoadPingPong)
             throw std::runtime_error(
                 "GZZ does not have two free alternating consumer tiles");
+#endif
     } catch (const std::exception &error) {
         std::cerr << "GZZ virtual consumer selector: " << error.what()
                   << std::endl;
@@ -712,10 +815,20 @@ int main(int argc, char *argv[]) {
     m5_checkpoint(0, 0);
     cout << "checkpoint done" << endl;
 #ifdef MAA_GENERAL_VIRTUAL_CONSUMER
+#ifdef UME_GRADZATZ_MATCHED_PAGE_ARITHMETIC
+    std::cout << "UME_GZZ_MATCHED_SELECTOR treatment="
+              << gzz_matched_treatment_name()
+              << " logical=" << TILE_SIZE
+              << " consumer=" << gzz_matched_page_elements()
+              << " gather="
+              << (gzz_matched_uses_virtual_gather() ? "virtual" : "native")
+              << std::endl;
+#else
     std::cout << "UME_GZZ_VIRTUAL_CONSUMER mode="
               << maa_virtual_consumer_mode_name(virtual_consumer_mode)
               << " logical=" << TILE_SIZE
               << " consumer=" << MAA_CONSUMER_TILE_SIZE << std::endl;
+#endif
 #endif
 #endif
     alloc_MAA();
