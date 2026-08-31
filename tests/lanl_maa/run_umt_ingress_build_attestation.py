@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Service-owned, fail-closed v10 ingress-observer build attestation.
+"""Service-owned, fail-closed v11 ingress-observer build attestation.
 
 The wrapper preserves the two rejected build artifacts with hard links,
 invalidates only their canonical paths, and then requires SCons to compile the
@@ -13,10 +13,11 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import subprocess
 import sys
 
-BUILD_UNIT = "umt-ingress-trace-build-v10-20260830.service"
+BUILD_UNIT = "umt-ingress-trace-build-v11-20260830.service"
 SOURCE_ROOT = "/data1/nier/worktrees/DX100-umt-trace-replay-20260830"
 SOURCE_COMMIT = "493c043ef0bc3dee0d91c5511371cedf77f15b5c"
 SOURCE_TREE = "9f7f0866005260f92bde81d516b520032535a92b"
@@ -46,9 +47,17 @@ EXPECTED_BUILD_ARGV = (
     "--ignore-style",
     TARGET_RELATIVE,
     "-j4",
-    "CCFLAGS_EXTRA=-DLANL_MAA_UMT_INGRESS_TRACE_TEST",
 )
 BUILD_ARGV = EXPECTED_BUILD_ARGV
+TRACE_DEFINE_FLAG = "-DLANL_MAA_UMT_INGRESS_TRACE_TEST"
+DRY_COMPILE_ARGV = (
+    "/usr/bin/scons",
+    "--ignore-style",
+    "--dry-run",
+    "--verbose",
+    OBJECT_RELATIVE,
+    "-j1",
+)
 SOURCE_SHA256 = {
     "src/mem/LANLMAA/UmtOrderedWaveIngressTrace.hh": "31b46207da10d149c59fa5841085458810f037b6a59105ff5fee41b376c48189",
     "src/mem/LANLMAA/UmtOrderedWaveStreamState.hh": "d783907dd26ec671d6ba4a779719e19eadc75098ab25ba0fd3457cf68438b5c8",
@@ -63,11 +72,12 @@ BUILD_SYSTEM_SHA256 = {
         "b10bb7b6aef8b6716a30af1560e8d8e55fae9cdb696cb4ccede7ba5d3a19ed25"
     ),
 }
-PROTOCOL = "LANL_MAA_UMT_INGRESS_BUILD_ATTESTATION_V10"
-SCHEMA = "lanl-maa-umt-ingress-build-attestation-v10"
+PROTOCOL = "LANL_MAA_UMT_INGRESS_BUILD_ATTESTATION_V11"
+SCHEMA = "lanl-maa-umt-ingress-build-attestation-v11"
 CLEAN_METHOD = "hardlink-preserve-unlink-exact-two-v1"
 COMPILED_MARKERS = (b"UMT_INGRESS kind=", b"d64_hold cycle=")
 SAFE_CHILD_ENV = {
+    "CCFLAGS_EXTRA": TRACE_DEFINE_FLAG,
     "PATH": "/usr/local/bin:/usr/bin:/bin",
     "LC_ALL": "C",
     "LANG": "C",
@@ -160,14 +170,50 @@ def git_output(source, *argv):
 
 def validate_build_argv(argv):
     argv = tuple(argv)
-    if (
-        argv != EXPECTED_BUILD_ARGV
-        or any("CPPDEFINES" in item for item in argv)
-        or argv[-1] != "CCFLAGS_EXTRA=-DLANL_MAA_UMT_INGRESS_TRACE_TEST"
+    if argv != EXPECTED_BUILD_ARGV or any(
+        "=" in item or "CPPDEFINES" in item for item in argv
     ):
+        raise RuntimeError("SCons build argv must be assignment-free")
+
+
+def validate_safe_child_environment(value):
+    if value != {
+        "CCFLAGS_EXTRA": TRACE_DEFINE_FLAG,
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "LC_ALL": "C",
+        "LANG": "C",
+        "TZ": "UTC",
+    }:
+        raise RuntimeError("sanitized child environment is not exact")
+
+
+def validate_dry_compile_transcript(raw):
+    candidates = [
+        re.sub(rb"\x1b\[[0-9;]*m", b"", line)
+        for line in raw.splitlines()
+        if b"src/mem/LANLMAA/lanl_maa.cc" in line
+        and b"X86_UMT_T32_W2/mem/LANLMAA/lanl_maa.o" in line
+    ]
+    if len(candidates) != 1:
         raise RuntimeError(
-            "instrumented SCons argv is not the exact -D contract"
+            "dry compile transcript lacks one exact MAA command"
         )
+    try:
+        tokens = shlex.split(candidates[0].decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as error:
+        raise RuntimeError("dry compile command is not parseable") from error
+    defines = [
+        token
+        for token in tokens
+        if token.startswith("-DLANL_MAA_UMT_INGRESS_TRACE_TEST")
+    ]
+    if (
+        defines != [TRACE_DEFINE_FLAG]
+        or any("CPPDEFINES" in token for token in tokens)
+        or any(token.startswith("CCFLAGS_EXTRA=") for token in tokens)
+    ):
+        raise RuntimeError("dry compile command lacks the exact sole define")
+    return candidates[0]
 
 
 def validate_build_system_contract(source):
@@ -193,6 +239,18 @@ def validate_build_system_contract(source):
     ]
     if len(functions) != 1:
         raise RuntimeError("defaults.py lacks exact EnvDefaults declaration")
+    expected_flow = ast.dump(
+        ast.parse('env[key] = env["ENV"].get(key, default)').body[0],
+        include_attributes=False,
+    )
+    flows = [
+        node
+        for node in ast.walk(functions[0])
+        if isinstance(node, ast.Assign)
+        and ast.dump(node, include_attributes=False) == expected_flow
+    ]
+    if len(flows) != 1:
+        raise RuntimeError("defaults.py lacks exact ENV.get assignment flow")
     use_vars, overrides = None, None
     for node in ast.walk(functions[0]):
         if not isinstance(node, ast.Assign) or len(node.targets) != 1:
@@ -242,6 +300,7 @@ def validate_source(source):
                 "canonical instrumentation source hash mismatch"
             )
     validate_build_argv(BUILD_ARGV)
+    validate_safe_child_environment(SAFE_CHILD_ENV)
     validate_build_system_contract(source)
 
 
@@ -414,7 +473,7 @@ def main(argv=None):
     if (
         args.unit != BUILD_UNIT
         or source != pathlib.Path(SOURCE_ROOT)
-        or evidence.name != "ingress-build-evidence-v10"
+        or evidence.name != "ingress-build-evidence-v11"
         or not re.fullmatch(r"[0-9a-f]{32}", invocation)
     ):
         raise RuntimeError("wrapper identity/invocation binding is invalid")
@@ -451,6 +510,23 @@ def main(argv=None):
         if not clean_stderr.exists():
             no_clobber_text(clean_stderr, type(error).__name__ + "\n")
         raise
+
+    dry_stdout = evidence / "dry-compile.stdout"
+    dry_stderr = evidence / "dry-compile.stderr"
+    with dry_stdout.open("xb") as out, dry_stderr.open("xb") as err:
+        dry = subprocess.run(
+            DRY_COMPILE_ARGV,
+            cwd=source,
+            env=SAFE_CHILD_ENV,
+            stdout=out,
+            stderr=err,
+            check=False,
+        )
+    if dry.returncode != 0:
+        raise RuntimeError("dry verbose SCons compile returned nonzero")
+    validate_dry_compile_transcript(dry_stdout.read_bytes())
+    if any((source / relative).exists() for relative in INVALIDATED_RELATIVES):
+        raise RuntimeError("dry compile modified an invalidated target")
 
     build_stdout = evidence / "build.stdout"
     build_stderr = evidence / "build.stderr"
@@ -548,6 +624,8 @@ def main(argv=None):
     evidence_names = {
         "clean_stdout": "clean.stdout",
         "clean_stderr": "clean.stderr",
+        "dry_compile_stdout": "dry-compile.stdout",
+        "dry_compile_stderr": "dry-compile.stderr",
         "build_stdout": "build.stdout",
         "build_stderr": "build.stderr",
         "observer_stdout": "observer.stdout",
@@ -575,9 +653,13 @@ def main(argv=None):
         "clean_method": CLEAN_METHOD,
         "invalidated_artifacts": invalidated,
         "target_paths_absent_after_clean": True,
+        "dry_compile_argv": list(DRY_COMPILE_ARGV),
+        "dry_compile_returncode": 0,
+        "dry_compile_define_verified": True,
         "build_argv": list(BUILD_ARGV),
         "build_environment": {
             "sanitized": sorted(SAFE_CHILD_ENV),
+            "fixed_values": {"CCFLAGS_EXTRA": TRACE_DEFINE_FLAG},
             "inherited_tool_affecting_names": inherited_names,
             "inherited_tool_affecting_count": len(inherited_names),
         },

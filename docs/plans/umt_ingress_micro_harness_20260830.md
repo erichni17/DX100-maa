@@ -1,29 +1,33 @@
 # UMT ingress micro harness
 
 `tests/lanl_maa/umt_ingress_micro_harness.py` is a four-arm, evidence-only
-opcode-11 harness: D32/G16, D32/G31, D32/G32, and D64/G32. The combined v10
+opcode-11 harness: D32/G16, D32/G31, D32/G32, and D64/G32. The combined v11
 contract hard-pins the
 adaptive native test driver (`7db125ac…`), its clean native source commit/tree,
 the `LanlMaaUmtSubmit.cc` ABI source and native ABI tests, and the adaptive-v1
 mapping cookie.  It rejects v1 entirely: v1 accepted an arbitrary native input
 and a three-field build proof. It also rejects the v6 arm contract, whose
 `systemd-run` command invoked gem5 directly even though analysis required
-captured `gem5.stdout` and `gem5.stderr`. v10 composes the independently
-reviewed arm-v7 ownership contract with the build-v10 producer/consumer;
+captured `gem5.stdout` and `gem5.stderr`. v11 composes the independently
+reviewed arm-v7 ownership contract with the build-v11 producer/consumer;
 neither split predecessor is itself accepted as a combined four-arm contract.
 
-The required v10 build proof has exact schema
-`lanl-maa-umt-ingress-instrumented-gem5-build-proof-v10`. It accepts only the
+The required v11 build proof has exact schema
+`lanl-maa-umt-ingress-instrumented-gem5-build-proof-v11`. It accepts only the
 clean, hard-pinned trace-replay source tree at `493c043e`/`9f7f0866`, its exact
 `build/X86_UMT_T32_W2/gem5.opt` target, six fixed source hashes, exact SCons
-argv ending in `CCFLAGS_EXTRA=-DLANL_MAA_UMT_INGRESS_TRACE_TEST`, and a sanitized
-child environment.  It records only inherited tool-affecting variable names
-and count, never values, and rejects the inert v9 `CPPDEFINES` spelling. The
+assignment-free argv `/usr/bin/scons --ignore-style
+build/X86_UMT_T32_W2/gem5.opt -j4`, and a sanitized child environment with
+the fixed `CCFLAGS_EXTRA=-DLANL_MAA_UMT_INGRESS_TRACE_TEST`. The proof records
+that fixed value while continuing to record only names/count—not values—for
+inherited tool-affecting variables. It rejects both the inert v9 `CPPDEFINES`
+spelling and v10's overwritten command-line `CCFLAGS_EXTRA` assignment. The
 source contract pins `SConstruct` and `site_scons/gem5_scons/defaults.py`, then
 parses them to require the exact `env.Append(CCFLAGS='$CCFLAGS_EXTRA')`, the
-declared `CCFLAGS_EXTRA` environment input, and its empty default. It
+declared `CCFLAGS_EXTRA` environment input, its empty default, and the exact
+`env[key] = env['ENV'].get(key, default)` assignment flow. It
 also requires the actual producing unit
-`umt-ingress-trace-build-v10-20260830.service`, a hash-bound live
+`umt-ingress-trace-build-v11-20260830.service`, a hash-bound live
 `systemctl --user show` snapshot, and a terminal snapshot. Both snapshots
 must exactly agree on unit, invocation ID, original wrapper PID, working
 directory, fixed resources, wrapper command, and empty environment. The
@@ -33,6 +37,11 @@ same `ExecMainPID` and start witness. The wrapper first hard-links the rejected
 `gem5.opt` and `mem/LANLMAA/lanl_maa.o` into the fresh evidence directory,
 binding their pinned hashes, devices, and inodes. It unlinks exactly those two
 canonical paths and proves both absent before the instrumented SCons target.
+Before the full build, the wrapper runs an exact dry/verbose object-target
+command. It hashes stdout/stderr, requires the real `lanl_maa.cc` compiler line
+to contain exactly one bare `-DLANL_MAA_UMT_INGRESS_TRACE_TEST`, rejects any
+predecessor assignment/injection, and proves the dry command recreated neither
+invalidated path.
 Success requires a new MAA-object compile and gem5 link in the transcript, new
 hashes/inodes, both compiled ingress literals, and the exact observer gate. The raw
 `journalctl --output=export` parser is byte-safe (including binary-length
@@ -49,7 +58,7 @@ The build dry-plan is separate from execution:
 ```sh
 python3 tests/lanl_maa/umt_ingress_micro_harness.py dry-build-plan \
   --campaign-root BUILD_CAMPAIGN \
-  --output BUILD_CAMPAIGN/build-plan-v10.json
+  --output BUILD_CAMPAIGN/build-plan-v11.json
 ```
 
 It records `systemd-run --user --remain-after-exit`, deliberately without
@@ -60,13 +69,13 @@ Freeze and dry-plan commands are deliberately separate from execution:
 
 ```sh
 python3 tests/lanl_maa/umt_ingress_micro_harness.py freeze-contract \
-  --campaign-root CAMPAIGN --output CAMPAIGN/ingress-contract-v10.json \
+  --campaign-root CAMPAIGN --output CAMPAIGN/ingress-contract-v11.json \
   --gem5 GEM5 --gem5-sha256 GEM5_SHA --instrumented-build-proof PROOF \
   --instrumented-build-proof-sha256 PROOF_SHA
 python3 tests/lanl_maa/umt_ingress_micro_harness.py dry-dispatch \
-  --campaign-root CAMPAIGN --contract CAMPAIGN/ingress-contract-v10.json \
+  --campaign-root CAMPAIGN --contract CAMPAIGN/ingress-contract-v11.json \
   --contract-sha256 CONTRACT_SHA \
-  --output CAMPAIGN/identity/ingress-dry-dispatch-v10.json
+  --output CAMPAIGN/identity/ingress-dry-dispatch-v11.json
 ```
 
 The second command only records four `systemd-run --user --collect` commands.
@@ -99,8 +108,8 @@ target, argv, environment, and resource mapping; while it is live, capture
 the property-limited `systemctl --user show` output and the matching PID's
 `/proc` start ticks in one no-clobber receipt; after exit, capture the same
 property-limited terminal show output and the unit's `journalctl --output=export`
-snapshot. Hash every raw snapshot before constructing the v10 proof, then
-freeze the combined v10 contract and only then record (not execute) its arms.
+snapshot. Hash every raw snapshot before constructing the v11 proof, then
+freeze the combined v11 contract and only then record (not execute) its arms.
 The terminal journal protocol is a complete equality check, not a text search.
 
 After the terminal proof and journal are durable, execute the plan's exact
@@ -133,7 +142,7 @@ non-admissible terminal receipt.
 
 After a launcher has run one recorded command, `analyze-arm` requires all raw
 outputs, config/stats, debug log, submission report, terminal marker, and the
-test driver's exact result marker. It also takes the frozen v10 contract and
+test driver's exact result marker. It also takes the frozen v11 contract and
 hash, checks the exact wrapper and gem5 commands, wrapper/binary hashes,
 successful wrapper return receipt, and hashes every raw file. The stream
 hashes must still match the terminal receipt, so post-run clobber is rejected.
