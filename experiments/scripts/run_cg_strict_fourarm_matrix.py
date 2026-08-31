@@ -81,8 +81,14 @@ def sha256(path: Path) -> str:
 
 
 def stat_sum(path: Path, suffix: str) -> int:
+    section = 0
     total = 0
     for line in path.read_text(errors="replace").splitlines():
+        if line.startswith("---------- Begin Simulation Statistics"):
+            section += 1
+            continue
+        if section != 1:
+            continue
         fields = line.split()
         if len(fields) >= 2 and fields[0].endswith(suffix):
             try:
@@ -244,7 +250,7 @@ def common_command(
         f"--outdir={out}",
         *(
             [
-                "--debug-flags=MAAVirtualTrace",
+                "--debug-flags=MAAVirtualTrace,MAAMacroEvent,MAATrace",
                 "--debug-file=strict_trace.log",
             ]
             if trace
@@ -824,6 +830,87 @@ def run_matrix(
     return manifest
 
 
+def classify_existing(out: Path) -> dict[str, object]:
+    require(out.is_dir(), f"missing evidence root: {out}")
+    require(
+        (out / "checkpoint.files.sha256").is_file()
+        or (out / "input/checkpoint.files.sha256").is_file(),
+        "missing checkpoint ledger",
+    )
+    results: dict[str, dict[str, object]] = {}
+    reference = None
+    for arm in ARMS:
+        result = validate_arm(out, arm, reference)
+        if reference is None:
+            reference = result
+        results[arm.name] = result
+    strict_storage = out / "arms/strict_two_pass/storage_classified"
+    subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "experiments/scripts/report_maa_storage.py"),
+            str(out / "arms/strict_two_pass/config.ini"),
+            "--output-dir",
+            str(strict_storage),
+            "--mechanism",
+            "generic-virtual",
+            "--word-bytes",
+            "4",
+            "--dram-subslices",
+            "32",
+            "--dram-ranks",
+            "2",
+        ],
+        check=True,
+    )
+    storage = json.loads((strict_storage / "maa_storage.json").read_text())
+    virtual = storage["virtual_data_buffers"]
+    manifest = {
+        "schema": "dx100.cg.strict_fourarm_matrix.v1",
+        "cg_na": CG_NA,
+        "source_commit": subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
+        ).strip(),
+        "simulator_source_commit": SIMULATOR_SOURCE_COMMIT,
+        "gem5_sha256": sha256(out / "input/gem5.opt"),
+        "ramulator_sha256": sha256(out / "input/libramulator.so"),
+        "same_guest": sha256(out / "input/cg_guest"),
+        "same_checkpoint_identity": sha256(
+            out / "input/checkpoint.files.sha256"
+        ),
+        "arms": results,
+        "treatment_delta": {
+            arm.name: {
+                "selector": arm.selector,
+                "physical_tile_elements": arm.physical,
+                "strict_two_phase": arm.strict,
+            }
+            for arm in ARMS
+        },
+        "bounded_storage": {
+            "combiner_words_per_unit": virtual[
+                "destination_combiner_word_pool_per_indirect_unit"
+            ],
+            "response_slots_per_unit": virtual[
+                "source_response_slots_per_indirect_unit"
+            ],
+            "payload_words_per_cycle": 8,
+            "payload_banks": 32,
+            "active_lines": 1,
+            "physical_result_budget_words": 4096,
+        },
+    }
+    (out / "manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+    )
+    write_tree_ledger(out, out / "raw_root.sha256")
+    (out / "matrix.complete").write_text(
+        "COMPLETE_CG_STRICT_FOURARM\n"
+        "correctness=EXACT_FINGERPRINT_AND_REDUCTIONS\n"
+    )
+    return manifest
+
+
 def validate_existing(out: Path) -> dict[str, object]:
     verify_ledger(out)
     manifest = json.loads((out / "manifest.json").read_text())
@@ -841,7 +928,7 @@ def validate_existing(out: Path) -> dict[str, object]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("run", "validate"))
+    parser.add_argument("command", choices=("run", "classify", "validate"))
     parser.add_argument("out", type=Path)
     parser.add_argument("--gem5", type=Path, default=DEFAULT_GEM5)
     parser.add_argument("--ramulator", type=Path, default=DEFAULT_RAMULATOR)
@@ -851,6 +938,8 @@ def main(argv: list[str] | None = None) -> int:
             args.out.resolve(), args.gem5.resolve(), args.ramulator.resolve()
         )
         if args.command == "run"
+        else classify_existing(args.out.resolve())
+        if args.command == "classify"
         else validate_existing(args.out.resolve())
     )
     print(json.dumps(result, sort_keys=True))

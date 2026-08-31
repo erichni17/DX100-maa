@@ -1,0 +1,45 @@
+{
+  "schema": "dx100.cg.strict_fourarm_matrix.v1",
+  "cg_na": 256,
+  "source_commit": "84c26f2084c515ed9c31e0fe42ea216ada33dbfd",
+  "simulator_source_commit": "9393ef52e47357d9192050e539e013b6ce64df23",
+  "gem5_sha256": "aa5c70b140b6fb66bfb9f4a28b34f009f025cf639eb288c01dbb91b0d2f609bb",
+  "ramulator_sha256": "76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753",
+  "guest_sha256": "e93288cc8c9ff74f97783f5bbc0b9e8a65769e55374c61a76c6ef01760740001",
+  "checkpoint_identity": "c72c0075a7628cecb49419e3e2acb200f5deb501b7ac910e771c58029644e40f",
+  "evidence_root": "/data1/nier/worktrees/codex-coordination/sessions/cg-strict-fourarm-matrix-20260831-20260831-104028-a26c56c4/evidence/cg-strict-fourarm-na256-r5",
+  "arms": {
+    "native16": {"selector": "native_16k", "physical_tile_elements": 16384, "strict_two_phase": false, "simTicks": 93534103},
+    "native4x4": {"selector": "native_4kx4", "physical_tile_elements": 4096, "strict_two_phase": false, "simTicks": 98347730},
+    "original_hybrid": {"selector": "legacy_4k", "physical_tile_elements": 4096, "strict_two_phase": false, "simTicks": 183294991},
+    "strict_two_pass": {"selector": "page_fed_product_soa_jit", "physical_tile_elements": 4096, "strict_two_phase": true, "simTicks": 266578031}
+  },
+  "exact_fingerprint_and_reductions": true,
+  "strict_b_close_before_a": true,
+  "strict": {
+    "b_fetch_lines": 20480,
+    "descriptors": 327680,
+    "a_issues": 243,
+    "backing_issues": 26747,
+    "p_writes": 26672,
+    "p_write_completions": 26672,
+    "partial_writes": 26667,
+    "full_writes": 5,
+    "payload_scheduled_words": 163840,
+    "payload_read_words": 163840,
+    "payload_read_cycles": 38571,
+    "payload_bank_conflict_cycles": 5536,
+    "payload_backpressure_cycles": 0,
+    "offset_epoch_drains": 0
+  },
+  "bounded_storage": {
+    "combiner_slots_per_unit": 16,
+    "combiner_words_per_unit": 256,
+    "response_slots_per_unit": 8,
+    "payload_words_per_cycle": 8,
+    "payload_banks": 32,
+    "active_payload_lines": 1,
+    "physical_result_budget_words": 4096
+  },
+  "full_cg_launched": false
+}
