@@ -52,6 +52,12 @@ decomposition. The exact fingerprint and reductions prove equivalent CG
 results, but they do not make the internal instruction streams identical.
 This result therefore rejects promotion of the current strict CG path.
 
+A same-checkpoint successor removes only the strict-ordering flag from the
+page-fed arm and reproduces `266,578,031` ticks exactly. The explicit
+B-before-A fence contributes no measured latency here; the page-fed
+execution/publication path causes the regression. See
+`cg_strict_bit_ablation_2026-08-31.md`.
+
 The strict arm's partial-mask retirement counters are `26,672` issues and
 `26,672` completions, with `26,667` partial and `5` full lines.  Its finite
 payload staging reads exactly `163,840` scheduled words in `38,571` serialized

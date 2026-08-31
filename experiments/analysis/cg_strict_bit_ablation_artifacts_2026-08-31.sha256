@@ -1,0 +1,11 @@
+af4fce14e4567f22b0d07efcbd5e10afaa96a9795793b8c25d966167a9f5de24  /data1/nier/dx100-runs/2026-08-31-cg-na256-pagefed-strict-bit-r1/artifacts.sha256
+9af5e1a882226dc398773d9623e9e6a699a439961caa6000f53671b2590eafa3  /data1/nier/dx100-runs/2026-08-31-cg-na256-pagefed-strict-bit-r1/result.json
+63076f5cd341be645399b3cf82e6982399b9d5ad68efc17b6a6f53a6b48d81e0  /data1/nier/dx100-runs/2026-08-31-cg-na256-pagefed-strict-bit-r1/gate.complete
+439389a6f0ed94b2ef7f807433a8115c8a86f870db128d6bee3c71dea159694a  /data1/nier/dx100-runs/2026-08-31-cg-na256-pagefed-strict-bit-r1/arms/page_fed_nonstrict/command.json
+4f80bbbc37232310b9599ccd49291d8ed2747138bdc681508ce16e74663e12b8  /data1/nier/dx100-runs/2026-08-31-cg-na256-pagefed-strict-bit-r1/arms/page_fed_nonstrict/config.ini
+6c4a1620e77a9fd2436af6216b49ea759dd65db8e31274477870976b855adb6e  /data1/nier/dx100-runs/2026-08-31-cg-na256-pagefed-strict-bit-r1/arms/page_fed_nonstrict/process.json
+9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa  /data1/nier/dx100-runs/2026-08-31-cg-na256-pagefed-strict-bit-r1/arms/page_fed_nonstrict/restore.exit
+e52e10723d3621bc37bbd32546f250d0b9b5f86e310abbe469785ec7887a52f6  /data1/nier/dx100-runs/2026-08-31-cg-na256-pagefed-strict-bit-r1/arms/page_fed_nonstrict/restore.log
+da5c2e81600a829643fe803a6ed5ad19f6b489e5b9c23717271422d59f7c7b2d  /data1/nier/dx100-runs/2026-08-31-cg-na256-pagefed-strict-bit-r1/arms/page_fed_nonstrict/result.json
+cabdc87bf1f82b5a9d16189bcb3d3d96a899fe77171ffb61f75d98f6945a2f9a  /data1/nier/dx100-runs/2026-08-31-cg-na256-pagefed-strict-bit-r1/arms/page_fed_nonstrict/stats.txt
+3d8b96c1a61734d3ee89d1593de4ce31dbf829447e1467d52e00a889ec99a7a0  /data1/nier/dx100-runs/2026-08-31-cg-na256-pagefed-strict-bit-r1/arms/page_fed_nonstrict/treatment.selector

@@ -134,6 +134,12 @@ recorded in `cg_fixed_storage_combiner_sweep_2026-08-27.md`.
 
 ## Remaining promotion gates
 
+The fresh same-path strict-bit ablation closes one suspected bottleneck:
+`page_fed_product_soa_jit` takes exactly `266,578,031` ticks with strict
+ordering on and off at `CG_NA=256`. The strict fence is not the regression;
+future CG work must reduce page-fed publication/consumer overhead rather than
+relax ordering. See `cg_strict_bit_ablation_2026-08-31.md`.
+
 The one-line full-CG candidate is accepted as one correctness/mechanism
 observation at 160,746,544,242 ticks: 10,960 P/Q/whole windows, 43,840 product
 pages, 147,554,350 masked P writes, frozen numerical tolerances, and zero
