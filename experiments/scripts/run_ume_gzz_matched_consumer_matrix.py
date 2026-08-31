@@ -745,8 +745,10 @@ def classify_arm(
         counters["numInst_ALUV"] == 2 * arm.arithmetic_pages,
         f"{arm.name}: DIV/MUL page signature",
     )
+    expected_virtual_index_words = ELEMENTS if arm.gather == "virtual" else 0
     require(
-        counters["index_words"] == ELEMENTS, f"{arm.name}: gather index work"
+        counters["index_words"] == expected_virtual_index_words,
+        f"{arm.name}: gather index work",
     )
     config = legacy.base.parse_config(arm_root / "run/config.ini")
     expected_config = {

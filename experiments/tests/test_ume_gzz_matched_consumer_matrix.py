@@ -56,6 +56,9 @@ class UmeGzzMatchedConsumerMatrixTest(unittest.TestCase):
             [arm.gather for arm in matrix.ARMS],
             ["native", "native", "virtual"],
         )
+        self.assertIn(
+            'ELEMENTS if arm.gather == "virtual" else 0', SCRIPT.read_text()
+        )
 
     def test_selector_is_exact_and_resolved_before_checkpoint(self) -> None:
         proof = matrix.source_contract()
