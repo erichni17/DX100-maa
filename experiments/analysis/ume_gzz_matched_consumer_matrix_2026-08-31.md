@@ -57,3 +57,10 @@ still needs an explicit hardware report. The C++ response arrays are host-side
 simulation storage; the modeled hardware assumes compact useful-word storage
 and fanout counts, not one physical cache line per software response object.
 
+The successor replaces host-dynamic spilled-line identity with that fixed
+bitmap and charges it in `report_maa_storage.py`. Candidate-only replay at
+commit `8ac798e4` with simulator SHA-256
+`cd36ea5acd0ee660ae66ba384cdef0acad265d48acc73e62bd2b13a2f161b8d0`
+exactly reproduces 25,470,375 ticks, the output hash, 1,037/1,037 write closure,
+and all strict counters. The sealed r6 matrix remains the same-binary
+performance authority.
