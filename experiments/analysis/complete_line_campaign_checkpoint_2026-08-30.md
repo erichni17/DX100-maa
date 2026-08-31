@@ -72,6 +72,14 @@ XRAGE direct-retirement/fusion optimization.
   were rerun on final binary `aa5c70b1...`; all timings and counters reproduced
   exactly, and a separate same-binary ledger now backs the selected 32-bank
   point.
+- The delayed existing-micro stress handoff `5d8b7cb1` reproduced the legal
+  global-payload-full/empty-incoming-set victim panic, but is not integrated:
+  current commits `b125c665` and `85b1b2b3` already contain a stronger bounded
+  global-victim selector, preserve the incoming free slot, update the actual
+  victim set, charge the global pointer, and test exact masked ACK identity.
+  The worker's two gem5 preflights were rejected before correctness markers,
+  so they add no stress-pattern or performance evidence and do not change the
+  selected promotion point.
 
 ## Hardware boundary
 
