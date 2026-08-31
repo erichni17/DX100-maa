@@ -1147,6 +1147,23 @@ def validate_ledger(root: Path) -> None:
     require(seen == expected, "ledger path set")
 
 
+def record_rejection(root: Path, reason: str) -> None:
+    """Make a failed execute/validation attempt terminal and auditable."""
+    if not root.is_dir():
+        return
+    atomic_json(
+        root / "failure.json",
+        {
+            "schema": "dx100.ume_gzz_two_pass.rejection.v1",
+            "decision": "REJECT",
+            "reason": reason,
+            "strict_activation_accepted": False,
+            "full_run_authorized": False,
+        },
+    )
+    atomic_text(root / "campaign.exit", "1\n")
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--execute", action="store_true")
@@ -1191,6 +1208,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             print(json.dumps(plan(), indent=2, sort_keys=True))
     except (OSError, subprocess.SubprocessError, MatrixError) as error:
+        failed_root = args.out if args.execute else args.validate
+        if failed_root is not None:
+            record_rejection(failed_root.resolve(), str(error))
         print(f"error: {error}", file=sys.stderr)
         return 1
     return 0

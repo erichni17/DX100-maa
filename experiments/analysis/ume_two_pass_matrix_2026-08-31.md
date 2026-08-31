@@ -66,6 +66,61 @@ record. No full application run is authorized by this contract.
 
 ## Execution record
 
-Pending the committed contract. Raw evidence will be written outside Git and
-this section will be replaced with the accepted one-window measurements or the
-exact rejection reason.
+**Decision: REJECT the GZZ four-arm matrix; do not launch a full run.** Raw
+evidence is preserved at
+`/tmp/ume-gzz-two-pass-20260831-39080929`. The terminal rejection record is
+`failure.json` SHA-256
+`3f755c0fe00d7deec3b7c21694af5c46828268004b7cd243010f9be47077de38`;
+`campaign.exit` is `1`, `strict_activation_accepted=false`, and
+`full_run_authorized=false`.
+
+The fresh native controls completed and passed the exact oracle:
+
+| arm | `simTicks` | `numInst_INDRD` | `numInst_INDRMW` | result |
+|---|---:|---:|---:|---|
+| native16 | 52,625,003 | 2 | 2 | exact hash/reference, terminal `m5_exit` |
+| equal-work native4 | 34,594,638 | 8 | 8 | exact hash/reference, terminal `m5_exit` |
+
+Both produced hash `7602200327591349891`, zero nonfinite values, and zero
+volume/gradient reference errors over 196,384 entries. Native16 `stats.txt`
+SHA-256 is
+`c523d290a0b3b95932a2305c160de5b99e09c9f5106b213773b0a63fc517326a`;
+native4 is
+`75ed4cb178c276b8b7e18de64dc209afdff4dfe70f7fdccb42ba1795d55db65c`.
+These are fresh functional controls, not a valid performance matrix without
+the hybrid arms.
+
+Both hybrid restores failed before ROI at the same production ABI edge:
+
+```text
+GZZ virtual consumer selector: virtual consumer selector must contain exactly one mode
+Simulated exit code not 0! Exit code is 2
+```
+
+The original selector is exactly `stream_control\n` (SHA-256
+`a2bf9f95ce5fb2619c5a7f91b30f4a65d4133d4de4e3e3e03cdd787e3a270cfc`),
+and the candidate selector is exactly `token_stream_ld\n` (SHA-256
+`e0057a11bddb77040674671fbbe847e0f1b0eb4d853abc3c53f11bf6b7bd7d55`).
+Thus malformed multi-token content is ruled out. The current
+`maa_read_virtual_consumer_mode` ABI collapses inability to open/read the
+checkpoint-restored host path and malformed token count into the same error,
+so the log cannot distinguish those two conditions further. The wrapper
+process returned zero, but the guest exit code was 2; neither hybrid emitted a
+terminal `m5_exit`, ROI stats, a virtual trace byte, or any
+`strict_two_phase_begin`/terminal record.
+
+The final simulator identity is the required
+`aa5c70b140b6fb66bfb9f4a28b34f009f025cf639eb288c01dbb91b0d2f609bb`.
+The shared hybrid guest SHA-256 is
+`d1706682386fa047463ad6460fd88a34077cddc89c9fc586406f5f368d41d086`.
+Therefore the missing evidence is not explained by mixed simulator or hybrid
+guest binaries.
+
+Source inspection still shows a potentially applicable direct-result GZZ
+edge, but the existing production guest/checkpoint selector ABI cannot
+positively activate it in this fresh matched smoke. Repairing selector
+transport or adding an inline runtime selector would change the production
+guest ABI and require a new matched checkpoint/matrix. That bridge is not
+implemented here because the bounded task explicitly required proof from the
+existing production guest before proceeding. No speedup, bounded-hybrid
+correctness, or UME promotion claim is supported.

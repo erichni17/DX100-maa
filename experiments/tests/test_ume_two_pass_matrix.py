@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -116,6 +117,18 @@ class UmeTwoPassMatrixTest(unittest.TestCase):
             matrix.parse_args(["--execute"])
         with self.assertRaises(SystemExit):
             matrix.parse_args(["--max-parallel-restores", "5"])
+
+    def test_rejection_record_is_terminal_and_cannot_authorize_full_run(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            matrix.record_rejection(root, "strict path did not activate")
+            rejection = json.loads((root / "failure.json").read_text())
+            self.assertEqual(rejection["decision"], "REJECT")
+            self.assertFalse(rejection["strict_activation_accepted"])
+            self.assertFalse(rejection["full_run_authorized"])
+            self.assertEqual((root / "campaign.exit").read_text(), "1\n")
 
 
 if __name__ == "__main__":
