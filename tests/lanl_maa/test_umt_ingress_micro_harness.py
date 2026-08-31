@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Adversarial, dry-only tests for the v7 UMT ingress harness."""
+"""Adversarial dry tests for the combined v8 UMT ingress harness."""
 import importlib.util
 import json
 import pathlib
@@ -42,7 +42,39 @@ def line(label, kind, cycle, waiters, abi=4):
 
 
 class IngressHarnessTest(unittest.TestCase):
-    def test_v6_build_spelling_and_sanitized_environment_are_exact(self):
+    def test_v8_contract_accepts_exactly_the_v7_build_proof_generation(self):
+        self.assertEqual(
+            ingress.SCHEMA_CONTRACT,
+            "lanl-maa-umt-ingress-contract-v8",
+        )
+        self.assertEqual(
+            ingress.SCHEMA_BUILD_PROOF,
+            "lanl-maa-umt-ingress-instrumented-gem5-build-proof-v7",
+        )
+        self.assertEqual(
+            ingress.SCHEMA_DISPATCH_PLAN,
+            "lanl-maa-umt-ingress-dispatch-plan-v8",
+        )
+        self.assertEqual(
+            ingress.SCHEMA_ARM_REPORT,
+            "lanl-maa-umt-ingress-arm-report-v8",
+        )
+        self.assertEqual(ingress.CONTRACT_FILENAME, "ingress-contract-v8.json")
+        self.assertEqual(
+            ingress.DISPATCH_FILENAME,
+            "ingress-dry-dispatch-v8.json",
+        )
+        self.assertTrue(
+            all(
+                value.startswith("umt-ingress-micro-v8-")
+                for value in (
+                    f"umt-ingress-micro-v8-{case}-20260830.service"
+                    for case in ingress.CASES
+                )
+            )
+        )
+
+    def test_v7_build_spelling_and_sanitized_environment_are_exact(self):
         self.assertEqual(
             ingress.BUILD_ARGV,
             (
@@ -62,8 +94,186 @@ class IngressHarnessTest(unittest.TestCase):
             },
         )
         self.assertEqual(
-            ingress.BUILD_UNIT, "umt-ingress-trace-build-v6-20260830.service"
+            ingress.BUILD_UNIT, "umt-ingress-trace-build-v7-20260830.service"
         )
+        self.assertEqual(
+            ingress.SCHEMA_BUILD_PROOF,
+            "lanl-maa-umt-ingress-instrumented-gem5-build-proof-v7",
+        )
+
+    def test_targeted_preservation_and_invalidation_is_inode_bound(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = pathlib.Path(temporary) / "source"
+            evidence = pathlib.Path(temporary) / "ingress-build-evidence-v7"
+            evidence.mkdir()
+            values = {}
+            for relative in wrapper.INVALIDATED_RELATIVES:
+                path = source / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes((relative + " rejected").encode())
+                values[relative] = wrapper.sha256(path)
+            with mock.patch.object(wrapper, "REJECTED_SHA256", values):
+                records = wrapper.preserve_and_invalidate(source, evidence)
+            self.assertEqual(set(records), set(wrapper.INVALIDATED_RELATIVES))
+            for relative, record in records.items():
+                self.assertFalse((source / relative).exists())
+                preserved = pathlib.Path(record["preserved"]["path"])
+                self.assertTrue(preserved.is_file())
+                self.assertEqual(
+                    (record["original_device"], record["original_inode"]),
+                    (record["preserved_device"], record["preserved_inode"]),
+                )
+                self.assertEqual(wrapper.sha256(preserved), values[relative])
+
+    def test_failed_clean_and_target_not_removed_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = pathlib.Path(temporary) / "source"
+            evidence = pathlib.Path(temporary) / "ingress-build-evidence-v7"
+            evidence.mkdir()
+            target = source / wrapper.TARGET_RELATIVE
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b"rejected")
+            values = {wrapper.TARGET_RELATIVE: wrapper.sha256(target)}
+            with mock.patch.object(wrapper, "REJECTED_SHA256", values):
+                with self.assertRaisesRegex(
+                    RuntimeError, "absent|clean input"
+                ):
+                    wrapper.preserve_and_invalidate(source, evidence)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            source = pathlib.Path(temporary) / "source"
+            evidence = pathlib.Path(temporary) / "ingress-build-evidence-v7"
+            evidence.mkdir()
+            values = {}
+            for relative in wrapper.INVALIDATED_RELATIVES:
+                path = source / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(relative.encode())
+                values[relative] = wrapper.sha256(path)
+            with mock.patch.object(
+                wrapper, "REJECTED_SHA256", values
+            ), mock.patch.object(
+                pathlib.Path, "unlink", autospec=True, return_value=None
+            ):
+                with self.assertRaisesRegex(RuntimeError, "did not remove"):
+                    wrapper.preserve_and_invalidate(source, evidence)
+
+    def test_up_to_date_or_partial_transcript_is_not_a_rebuild(self):
+        with self.assertRaisesRegex(RuntimeError, "compile and link"):
+            wrapper.validate_rebuild_transcript(
+                b"scons: `build/X86_UMT_T32_W2/gem5.opt' is up to date.\n"
+            )
+        with self.assertRaisesRegex(RuntimeError, "compile and link"):
+            wrapper.validate_rebuild_transcript(
+                b"[ CXX ] X86_UMT_T32_W2/mem/LANLMAA/lanl_maa.o\n"
+            )
+        wrapper.validate_rebuild_transcript(
+            b"[ CXX ] X86_UMT_T32_W2/mem/LANLMAA/lanl_maa.o\n"
+            b"[ LINK ] X86_UMT_T32_W2/gem5.opt\n"
+        )
+
+    def test_rebuild_requires_both_invalidated_paths(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = pathlib.Path(temporary)
+            records = {
+                relative: {
+                    "preserved_device": 1,
+                    "preserved_inode": index + 1,
+                    "preserved": {"sha256": str(index) * 64},
+                }
+                for index, relative in enumerate(wrapper.INVALIDATED_RELATIVES)
+            }
+            with self.assertRaisesRegex(RuntimeError, "recreate"):
+                wrapper.validate_rebuilt_paths(source, records)
+            target = source / wrapper.TARGET_RELATIVE
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b"new target")
+            with self.assertRaisesRegex(RuntimeError, "recreate"):
+                wrapper.validate_rebuilt_paths(source, records)
+
+    def test_missing_compiled_literal_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            target = pathlib.Path(temporary) / "gem5.opt"
+            target.write_bytes(b"UMT_INGRESS kind= but no hold marker")
+            with self.assertRaisesRegex(RuntimeError, "compiled ingress"):
+                wrapper.validate_compiled_literals(target)
+            target.write_bytes(b"UMT_INGRESS kind=\0d64_hold cycle=")
+            wrapper.validate_compiled_literals(target)
+
+    def test_no_clobber_evidence_writer_rejects_existing_path(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = pathlib.Path(temporary) / "attestation.json"
+            path.write_text("preserve", encoding="utf-8")
+            with self.assertRaises(FileExistsError):
+                wrapper.no_clobber_json(path, {"forged": True})
+            self.assertEqual(path.read_text(encoding="utf-8"), "preserve")
+
+    def test_build_unit_is_retained_for_terminal_snapshot(self):
+        evidence = pathlib.Path("/campaign/identity/ingress-build-evidence-v7")
+        command = ingress.build_systemd_run_command(evidence)
+        self.assertIn("--remain-after-exit", command)
+        self.assertNotIn("--collect", command)
+        self.assertIn("--property=CPUQuota=400%", command)
+        self.assertIn("--property=MemoryHigh=" + str(14 * 1024**3), command)
+        self.assertIn("--property=MemoryMax=" + str(16 * 1024**3), command)
+        self.assertIn("--property=MemorySwapMax=0", command)
+        self.assertIn("--property=RuntimeMaxUSec=4h", command)
+
+        pid, invocation, ticks = 77, "a" * 32, "1234"
+        fields = {
+            "Id": ingress.BUILD_UNIT,
+            "InvocationID": invocation,
+            "MainPID": "0",
+            "ExecMainPID": str(pid),
+            "ExecMainStartTimestampMonotonic": "9999",
+            "WorkingDirectory": str(ingress.CANONICAL_SOURCE),
+            **ingress.RESOURCE_POLICY,
+            "ExecStart": (
+                "{ path=/usr/bin/python3 ; argv[]="
+                + " ".join(ingress.wrapper_command(evidence))
+                + " ; ignore_errors=no ; start_time=[n/a] ; }"
+            ),
+            "Environment": "",
+            "ExecMainCode": "1",
+            "ExecMainStatus": "0",
+            "Result": "success",
+        }
+        ingress.validate_show_snapshot(
+            fields,
+            phase="terminal",
+            pid=pid,
+            proc_start_ticks=ticks,
+            invocation=invocation,
+            command=ingress.wrapper_command(evidence),
+        )
+        fields["ExecMainStatus"] = "1"
+        with self.assertRaisesRegex(RuntimeError, "terminal"):
+            ingress.validate_show_snapshot(
+                fields,
+                phase="terminal",
+                pid=pid,
+                proc_start_ticks=ticks,
+                invocation=invocation,
+                command=ingress.wrapper_command(evidence),
+            )
+
+    def test_dry_build_plan_is_fresh_exact_and_no_clobber(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            campaign = pathlib.Path(temporary) / "campaign"
+            output = campaign / "build-plan-v7.json"
+            plan = ingress.dry_build_plan(campaign, output)
+            self.assertEqual(plan["schema"], ingress.BUILD_PLAN_SCHEMA)
+            self.assertEqual(plan["status"], "dry_only_not_dispatched")
+            self.assertIn("--remain-after-exit", plan["launch_command"])
+            self.assertNotIn("--collect", plan["launch_command"])
+            self.assertEqual(
+                plan["rejected_sha256"][str(ingress.CANONICAL_GEM5)],
+                ingress.REJECTED_TARGET_SHA256,
+            )
+            before = output.read_bytes()
+            with self.assertRaisesRegex(RuntimeError, "fresh canonical"):
+                ingress.dry_build_plan(campaign, output)
+            self.assertEqual(output.read_bytes(), before)
 
     def test_wrapper_environment_names_and_v1_gate_report_are_rejected(self):
         names = wrapper.inherited_tool_affecting_names(
@@ -289,6 +499,93 @@ class IngressHarnessTest(unittest.TestCase):
                     ingress.sha256(gem5),
                 )
 
+    def test_atomic_publication_rejects_concurrent_precreation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            target = root / "identity/contract-or-dispatch.json"
+            real_link = ingress.os.link
+
+            def concurrent_winner(source, destination, **kwargs):
+                destination = pathlib.Path(destination)
+                descriptor = ingress.os.open(
+                    destination,
+                    ingress.os.O_WRONLY
+                    | ingress.os.O_CREAT
+                    | ingress.os.O_EXCL,
+                    0o600,
+                )
+                with ingress.os.fdopen(descriptor, "wb") as stream:
+                    stream.write(b"concurrent winner\n")
+                return real_link(source, destination, **kwargs)
+
+            with mock.patch.object(
+                ingress.os, "link", side_effect=concurrent_winner
+            ):
+                with self.assertRaises(FileExistsError):
+                    ingress.atomic_no_clobber(target, {"ours": True})
+            self.assertEqual(target.read_bytes(), b"concurrent winner\n")
+            self.assertEqual(
+                list(target.parent.glob(f".{target.name}.*.tmp")), []
+            )
+            target.unlink()
+            ingress.atomic_no_clobber(target, {"ours": True})
+            self.assertEqual(
+                json.loads(target.read_text(encoding="utf-8")),
+                {"ours": True},
+            )
+            with self.assertRaises(FileExistsError):
+                ingress.atomic_no_clobber(target, {"overwrite": True})
+            self.assertEqual(
+                json.loads(target.read_text(encoding="utf-8")),
+                {"ours": True},
+            )
+
+    def test_harness_identity_requires_clean_commit_tree_and_file_hashes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            reviewed = root / "reviewed.py"
+            reviewed.write_text("VALUE = 1\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "add", "reviewed.py"], cwd=root, check=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "commit",
+                    "-qm",
+                    "fixture",
+                ],
+                cwd=root,
+                check=True,
+            )
+            identity = ingress.verify_harness_identity(
+                root=root, reviewed_files=("reviewed.py",)
+            )
+            self.assertEqual(
+                identity["reviewed_file_sha256"]["reviewed.py"],
+                ingress.sha256(reviewed),
+            )
+            forged = json.loads(json.dumps(identity))
+            forged["source_tree"] = "f" * 40
+            with self.assertRaisesRegex(RuntimeError, "identity mismatch"):
+                ingress.verify_harness_identity(
+                    forged, root=root, reviewed_files=("reviewed.py",)
+                )
+            forged = json.loads(json.dumps(identity))
+            forged["reviewed_file_sha256"]["reviewed.py"] = "f" * 64
+            with self.assertRaisesRegex(RuntimeError, "identity mismatch"):
+                ingress.verify_harness_identity(
+                    forged, root=root, reviewed_files=("reviewed.py",)
+                )
+            reviewed.write_text("VALUE = 2\n", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "not clean"):
+                ingress.verify_harness_identity(
+                    identity, root=root, reviewed_files=("reviewed.py",)
+                )
+
     def test_complete_proof_rejects_relink_return_resources_and_observer_attacks(
         self,
     ):
@@ -305,13 +602,16 @@ class IngressHarnessTest(unittest.TestCase):
                 source_hashes[relative] = ingress.sha256(target)
             build = source / "build/X86_UMT_T32_W2"
             build.mkdir(parents=True)
-            gem5, config_hh, config_cc = (
+            gem5, object_file, config_hh, config_cc = (
                 build / "gem5.opt",
+                build / "mem/LANLMAA/lanl_maa.o",
                 build / "config.hh",
                 build / "config.cc",
             )
-            for item in (gem5, config_hh, config_cc):
+            object_file.parent.mkdir(parents=True)
+            for item in (object_file, config_hh, config_cc):
                 item.write_text(item.name, encoding="utf-8")
+            gem5.write_bytes(b"gem5 UMT_INGRESS kind= d64_hold cycle=")
             subprocess.run(["git", "init", "-q"], cwd=source, check=True)
             subprocess.run(["git", "add", "."], cwd=source, check=True)
             subprocess.run(
@@ -338,7 +638,7 @@ class IngressHarnessTest(unittest.TestCase):
                 return {"path": str(path), "sha256": ingress.sha256(path)}
 
             invocation_id, pid, start_ticks = "a" * 32, 77, "12345"
-            evidence = root / "wrapper-evidence"
+            evidence = root / ingress.BUILD_EVIDENCE_NAME
             evidence.mkdir()
 
             def evidence_file(name, text="ok"):
@@ -393,6 +693,10 @@ class IngressHarnessTest(unittest.TestCase):
             }
             artifacts = {
                 "gem5": {"path": str(gem5), "sha256": ingress.sha256(gem5)},
+                "lanl_maa_o": {
+                    "path": str(object_file),
+                    "sha256": ingress.sha256(object_file),
+                },
                 "config_hh": {
                     "path": str(config_hh),
                     "sha256": ingress.sha256(config_hh),
@@ -402,17 +706,59 @@ class IngressHarnessTest(unittest.TestCase):
                     "sha256": ingress.sha256(config_cc),
                 },
             }
+            rejected_gem5 = evidence / "rejected-gem5.opt"
+            rejected_object = evidence / "rejected-lanl_maa.o"
+            rejected_gem5.write_bytes(b"rejected gem5")
+            rejected_object.write_bytes(b"rejected object")
+            rejected_hashes = {
+                "gem5": ingress.sha256(rejected_gem5),
+                "object": ingress.sha256(rejected_object),
+            }
+            invalidated = {
+                "build/X86_UMT_T32_W2/gem5.opt": {
+                    "canonical_path": str(gem5),
+                    "preserved": {
+                        "path": str(rejected_gem5),
+                        "sha256": rejected_hashes["gem5"],
+                    },
+                    "original_device": rejected_gem5.stat().st_dev,
+                    "original_inode": rejected_gem5.stat().st_ino,
+                    "preserved_device": rejected_gem5.stat().st_dev,
+                    "preserved_inode": rejected_gem5.stat().st_ino,
+                    "canonical_absent_after_clean": True,
+                },
+                "build/X86_UMT_T32_W2/mem/LANLMAA/lanl_maa.o": {
+                    "canonical_path": str(object_file),
+                    "preserved": {
+                        "path": str(rejected_object),
+                        "sha256": rejected_hashes["object"],
+                    },
+                    "original_device": rejected_object.stat().st_dev,
+                    "original_inode": rejected_object.stat().st_ino,
+                    "preserved_device": rejected_object.stat().st_dev,
+                    "preserved_inode": rejected_object.stat().st_ino,
+                    "canonical_absent_after_clean": True,
+                },
+            }
             attestation_value = {
-                "schema": "lanl-maa-umt-ingress-build-attestation-v6",
+                "schema": "lanl-maa-umt-ingress-build-attestation-v7",
                 "unit": ingress.BUILD_UNIT,
                 "invocation_id": invocation_id,
                 "wrapper_pid": pid,
                 "wrapper_proc_start_ticks": start_ticks,
                 "status": "passed",
+                "source_commit": commit,
+                "source_tree": tree,
+                "source_clean_before": True,
+                "source_clean_after": True,
+                "source_identity_unchanged": True,
+                "clean_method": ingress.BUILD_CLEAN_METHOD,
+                "invalidated_artifacts": invalidated,
+                "target_paths_absent_after_clean": True,
                 "build_argv": list(ingress.BUILD_ARGV),
                 "build_environment": ingress.BUILD_ENVIRONMENT,
                 "build_returncode": 0,
-                "required_relink_observed": True,
+                "required_compile_and_relink_observed": True,
                 "instrumentation_source_sha256": source_hashes,
                 "build_artifacts": {
                     key: value["sha256"] for key, value in artifacts.items()
@@ -532,8 +878,21 @@ class IngressHarnessTest(unittest.TestCase):
                 encoding="utf-8",
             )
             evidence_items = {
-                "scons_stdout": evidence_file("scons.stdout"),
-                "scons_stderr": evidence_file("scons.stderr"),
+                "clean_stdout": evidence_file(
+                    "clean.stdout",
+                    "clean_method="
+                    + ingress.BUILD_CLEAN_METHOD
+                    + "\ninvalidated=build/X86_UMT_T32_W2/gem5.opt,"
+                    "build/X86_UMT_T32_W2/mem/LANLMAA/lanl_maa.o\n"
+                    "status=0/SUCCESS\n",
+                ),
+                "clean_stderr": evidence_file("clean.stderr", ""),
+                "build_stdout": evidence_file(
+                    "build.stdout",
+                    "[ CXX ] X86_UMT_T32_W2/mem/LANLMAA/lanl_maa.o\n"
+                    "[ LINK ] X86_UMT_T32_W2/gem5.opt\n",
+                ),
+                "build_stderr": evidence_file("build.stderr", ""),
                 "observer_stdout": evidence_file("observer.stdout"),
                 "observer_stderr": evidence_file("observer.stderr"),
                 "observer_report": {
@@ -553,6 +912,8 @@ class IngressHarnessTest(unittest.TestCase):
                         {
                             "target": str(gem5),
                             "target_sha256": ingress.sha256(gem5),
+                            "object": str(object_file),
+                            "object_sha256": ingress.sha256(object_file),
                             "config_hh": str(config_hh),
                             "config_hh_sha256": ingress.sha256(config_hh),
                             "config_cc": str(config_cc),
@@ -564,6 +925,14 @@ class IngressHarnessTest(unittest.TestCase):
                         }
                     ),
                 ),
+                "rejected_gem5": {
+                    "path": str(rejected_gem5),
+                    "sha256": ingress.sha256(rejected_gem5),
+                },
+                "rejected_lanl_maa_o": {
+                    "path": str(rejected_object),
+                    "sha256": ingress.sha256(rejected_object),
+                },
             }
             attestation_value["evidence"] = evidence_items
             attestation_value["observer_gate"]["report"] = evidence_items[
@@ -578,7 +947,7 @@ class IngressHarnessTest(unittest.TestCase):
             proof = {
                 "schema": ingress.SCHEMA_BUILD_PROOF,
                 "status": "passed",
-                "producer": "systemd-build-proof-v6-service-wrapper",
+                "producer": "systemd-build-proof-v7-service-wrapper",
                 "source_worktree": str(source),
                 "source_commit": commit,
                 "source_tree": tree,
@@ -592,13 +961,21 @@ class IngressHarnessTest(unittest.TestCase):
                 "build_environment": ingress.BUILD_ENVIRONMENT,
                 "trace_define": ingress.TRACE_BUILD_DEFINE,
                 "instrumentation_source_sha256": source_hashes,
+                "clean_method": ingress.BUILD_CLEAN_METHOD,
+                "invalidated_artifacts": invalidated,
+                "target_paths_absent_after_clean": True,
+                "clean_stdout": evidence_items["clean_stdout"],
+                "clean_stderr": evidence_items["clean_stderr"],
                 "build_returncode": 0,
-                "required_relink_observed": True,
-                "build_stdout": evidence_items["scons_stdout"],
-                "build_stderr": evidence_items["scons_stderr"],
+                "required_compile_and_relink_observed": True,
+                "build_stdout": evidence_items["build_stdout"],
+                "build_stderr": evidence_items["build_stderr"],
                 "build_artifacts": artifacts,
                 "build_invocation": {
                     "unit": ingress.BUILD_UNIT,
+                    "launch_command": ingress.build_systemd_run_command(
+                        evidence
+                    ),
                     "show_command": list(ingress.BUILD_SHOW_COMMAND),
                     "live_systemd_show": systemd_show("live.show"),
                     "terminal_systemd_show": systemd_show(
@@ -617,6 +994,9 @@ class IngressHarnessTest(unittest.TestCase):
                         "path": str(attestation),
                         "sha256": ingress.sha256(attestation),
                     },
+                    "cleanup_commands_after_terminal_capture": [
+                        list(item) for item in ingress.BUILD_CLEANUP_COMMANDS
+                    ],
                 },
                 "observer_gate": {
                     "command": [
@@ -661,12 +1041,18 @@ class IngressHarnessTest(unittest.TestCase):
                 "CANONICAL_SOURCE_COMMIT": commit,
                 "CANONICAL_SOURCE_TREE": tree,
                 "CANONICAL_GEM5": gem5,
+                "BUILD_OBJECT": object_file,
                 "INSTRUMENTATION_SOURCES": source_hashes,
+                "REJECTED_TARGET_SHA256": rejected_hashes["gem5"],
+                "REJECTED_OBJECT_SHA256": rejected_hashes["object"],
             }
             with mock.patch.multiple(ingress, **patches):
                 proof["build_invocation"]["wrapper_command"] = list(
                     ingress.wrapper_command(evidence)
                 )
+                proof["build_invocation"][
+                    "launch_command"
+                ] = ingress.build_systemd_run_command(evidence)
                 for field in ("live_systemd_show", "terminal_systemd_show"):
                     old = pathlib.Path(
                         proof["build_invocation"][field]["path"]
@@ -694,6 +1080,13 @@ class IngressHarnessTest(unittest.TestCase):
                     ] = ingress.sha256(old)
                 self.assertEqual(attempt(proof), root / "proof.json")
 
+                predecessor = json.loads(json.dumps(proof))
+                predecessor[
+                    "schema"
+                ] = "lanl-maa-umt-ingress-instrumented-gem5-build-proof-v6"
+                with self.assertRaisesRegex(RuntimeError, "schema/status"):
+                    attempt(predecessor)
+
                 # v1 looked superficially valid to the earlier harness.  It
                 # lacks the source/binary binding fields and must be rejected
                 # even when every enclosing evidence hash is refreshed.
@@ -717,7 +1110,7 @@ class IngressHarnessTest(unittest.TestCase):
                     "path": str(attestation),
                     "sha256": ingress.sha256(attestation),
                 }
-                with self.assertRaisesRegex(RuntimeError, "report/transcript"):
+                with self.assertRaisesRegex(RuntimeError, "report"):
                     attempt(v1_proof)
                 report.write_text(
                     json.dumps(
@@ -774,13 +1167,13 @@ class IngressHarnessTest(unittest.TestCase):
                     }
 
                 for field, value in (
-                    ("required_relink_observed", False),
+                    ("required_compile_and_relink_observed", False),
                     ("build_returncode", 1),
                 ):
                     forged = dict(proof)
                     forged[field] = value
                     with self.assertRaisesRegex(
-                        RuntimeError, "command/environment"
+                        RuntimeError, "command/clean/source"
                     ):
                         attempt(forged)
                 forged = json.loads(json.dumps(proof))
@@ -920,9 +1313,7 @@ class IngressHarnessTest(unittest.TestCase):
                     attempt(forged)
                 forged = json.loads(json.dumps(proof))
                 forged["source_worktree"] = str(root / "arbitrary-repo")
-                with self.assertRaisesRegex(
-                    RuntimeError, "canonical instrumented source"
-                ):
+                with self.assertRaisesRegex(RuntimeError, "canonical source"):
                     attempt(forged)
 
     def test_forged_resources_self_hash_and_wrong_unit_fail(self):
@@ -963,7 +1354,7 @@ class IngressHarnessTest(unittest.TestCase):
         )
         self.assertNotIn("--property=CPUQuotaPerSecUSec=4s", command)
 
-    def test_v7_dispatch_runs_the_pinned_wrapper_not_gem5_directly(self):
+    def test_v8_dispatch_runs_the_pinned_wrapper_not_gem5_directly(self):
         with tempfile.TemporaryDirectory() as temporary:
             self.assertEqual(
                 set(ingress.CASES),
@@ -989,6 +1380,7 @@ class IngressHarnessTest(unittest.TestCase):
                     ingress.ARM_WRAPPER_SHA256,
                 )
                 self.assertEqual(command[command.index("--") + 1 :], gem5_argv)
+                self.assertIn("--dot-config=", gem5_argv)
                 self.assertNotEqual(command[10], str(ingress.CANONICAL_GEM5))
                 self.assertEqual(plan["wrapper"], arm["wrapper"])
                 self.assertEqual(
@@ -1005,7 +1397,7 @@ class IngressHarnessTest(unittest.TestCase):
         wrapper_argv = ingress.arm_wrapper_argv(root, gem5_argv)
         return {
             "root": str(root),
-            "unit": f"umt-ingress-micro-v7-{case}-20260830.service",
+            "unit": f"umt-ingress-micro-v8-{case}-20260830.service",
             "gem5_argv": gem5_argv,
             "gem5_argv_sha256": ingress.json_sha256(gem5_argv),
             "wrapper": {
@@ -1025,6 +1417,33 @@ class IngressHarnessTest(unittest.TestCase):
             def fake_run(argv, **kwargs):
                 self.assertEqual(argv, arm["gem5_argv"])
                 self.assertIs(kwargs["stdin"], subprocess.DEVNULL)
+                evidence = root / arm_wrapper.EVIDENCE_DIRECTORY
+                self.assertEqual(
+                    evidence.stat().st_mode & 0o222,
+                    0,
+                )
+                for name in arm_wrapper.RECEIPT_NAMES:
+                    receipt = evidence / name
+                    self.assertTrue(receipt.is_file())
+                    with self.assertRaises(FileExistsError):
+                        arm_wrapper.reserve_file(receipt)
+                self.assertEqual(
+                    (evidence / "arm-terminal.json").read_bytes(), b""
+                )
+                with self.assertRaises(PermissionError):
+                    (evidence / "arm-terminal.json").unlink()
+                for relative in (
+                    "app.stdout",
+                    "app.stderr",
+                    "debug.log",
+                    "submission.json",
+                    f"{ingress.LABEL_PREFIX}_d32-g16.csv",
+                    "m5out/stats.txt",
+                    "m5out/config.ini",
+                    "m5out/config.json",
+                ):
+                    with self.assertRaises(FileExistsError):
+                        arm_wrapper.reserve_file(root / relative)
                 kwargs["stdout"].write(b"captured stdout\n")
                 kwargs["stderr"].write(b"captured stderr\n")
                 return subprocess.CompletedProcess(argv, 0)
@@ -1056,7 +1475,7 @@ class IngressHarnessTest(unittest.TestCase):
             existing = pathlib.Path(temporary) / "already-present.stdout"
             existing.write_bytes(b"preserve")
             with self.assertRaises(FileExistsError):
-                arm_wrapper.exclusive_stream(existing)
+                arm_wrapper.reserve_file(existing)
             self.assertEqual(existing.read_bytes(), b"preserve")
 
             execution = ingress.validate_arm_execution_evidence(
@@ -1070,6 +1489,11 @@ class IngressHarnessTest(unittest.TestCase):
             )
             self.assertEqual(
                 (root / "gem5.stderr").read_bytes(), b"captured stderr\n"
+            )
+            csv = root / f"{ingress.LABEL_PREFIX}_d32-g16.csv"
+            self.assertEqual(csv.read_bytes(), arm_wrapper.CSV_HEADER)
+            self.assertEqual(
+                ingress.sha256(csv), ingress.ARM_CSV_HEADER_SHA256
             )
 
     def test_arm_analysis_rejects_forged_or_clobbered_wrapper_evidence(self):
@@ -1096,23 +1520,28 @@ class IngressHarnessTest(unittest.TestCase):
                 ingress.validate_arm_execution_evidence(root, "d32-g16", arm)
             stdout.write_bytes(b"stdout\n")
 
-            launch_path = root / "arm-launch.json"
+            evidence = root / ingress.ARM_EVIDENCE_DIRECTORY
+            launch_path = evidence / "arm-launch.json"
             launch_original = launch_path.read_bytes()
             launch = json.loads(launch_original)
             launch["wrapper_sha256"] = "f" * 64
+            launch_path.chmod(0o600)
             launch_path.write_text(json.dumps(launch), encoding="utf-8")
-            with self.assertRaisesRegex(RuntimeError, "launch wrapper"):
+            with self.assertRaisesRegex(RuntimeError, "launch/ownership"):
                 ingress.validate_arm_execution_evidence(root, "d32-g16", arm)
             launch_path.write_bytes(launch_original)
+            launch_path.chmod(0o400)
 
-            terminal_path = root / "arm-terminal.json"
+            terminal_path = evidence / "arm-terminal.json"
             terminal_original = terminal_path.read_bytes()
             terminal = json.loads(terminal_original)
             terminal["gem5_returncode"] = 9
+            terminal_path.chmod(0o600)
             terminal_path.write_text(json.dumps(terminal), encoding="utf-8")
             with self.assertRaisesRegex(RuntimeError, "terminal wrapper"):
                 ingress.validate_arm_execution_evidence(root, "d32-g16", arm)
             terminal_path.write_bytes(terminal_original)
+            terminal_path.chmod(0o400)
 
             forged_arm = json.loads(json.dumps(arm))
             forged_arm["wrapper_argv"][-1] = "forged-label"
@@ -1123,6 +1552,44 @@ class IngressHarnessTest(unittest.TestCase):
                 ingress.validate_arm_execution_evidence(
                     root, "d32-g16", forged_arm
                 )
+
+    def test_arm_wrapper_detects_runner_output_replacement_race(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary) / "arms/d32-g16"
+            arm = self.arm_spec(root)
+
+            def replace_after_admission(argv, **kwargs):
+                target = root / "submission.json"
+                target.unlink()
+                target.write_text("racing replacement", encoding="utf-8")
+                return subprocess.CompletedProcess(argv, 0)
+
+            with mock.patch.object(
+                arm_wrapper.subprocess,
+                "run",
+                side_effect=replace_after_admission,
+            ):
+                self.assertEqual(
+                    arm_wrapper.run_arm(
+                        root,
+                        arm["gem5_argv_sha256"],
+                        arm["gem5_argv"],
+                    ),
+                    125,
+                )
+            terminal = json.loads(
+                (
+                    root / ingress.ARM_EVIDENCE_DIRECTORY / "arm-terminal.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(terminal["status"], "output_identity_failed")
+            self.assertFalse(
+                terminal["outputs"]["submission.json"][
+                    "reservation_identity_match"
+                ]
+            )
+            with self.assertRaisesRegex(RuntimeError, "ownership|identity"):
+                ingress.validate_arm_execution_evidence(root, "d32-g16", arm)
 
     def test_binary_export_journal_requires_bound_ordered_wrapper_markers(
         self,
