@@ -146,6 +146,18 @@ class UmeTwoPassMatrixTest(unittest.TestCase):
         )
         self.assertIn("!virtualSourceCreditAvailable(virtual_words)", source)
 
+    def test_page_materializer_closes_strict_consumer_lifetime(self) -> None:
+        source = (ROOT / "src/mem/MAA/MAA.cc").read_text()
+        self.assertIn(
+            "observeStrictTwoPhaseConsumerBegin(token, generation, curTick())",
+            source,
+        )
+        self.assertIn(
+            "completeStrictTwoPhaseConsumer(\n"
+            "            key.tokenTile, key.generation, curTick())",
+            source,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

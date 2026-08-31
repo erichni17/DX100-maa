@@ -1816,6 +1816,7 @@ MAA::submitPageMaterialization(InstructionPtr instruction)
         execution->backingRangeID = instruction->addrRangeID;
         execution->contextID = instruction->CID;
         execution->pc = instruction->PC;
+        observeStrictTwoPhaseConsumerBegin(token, generation, curTick());
         newContext = true;
     }
 
@@ -3444,6 +3445,8 @@ MAA::finishPageMaterialization(
                 sizeof(inactiveProducerLinePayloadCapture),
                 sizeof(inactivePayloadLookup) +
                     sizeof(inactivePayloadFallbacks));
+        completeStrictTwoPhaseConsumer(
+            key.tokenTile, key.generation, curTick());
         panic_if(!directRetirementContexts.retire(key),
              "Page materializer could not retire its 16K lifetime\n");
         (void)directRetirementEarlyLineLedger.clear(
