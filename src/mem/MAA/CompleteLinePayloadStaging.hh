@@ -209,6 +209,7 @@ class CompleteLinePayloadStaging
         Identity identity{};
         std::array<uint8_t, 16> remainingBanks{};
         uint32_t wordsRead = 0;
+        uint32_t bankCursor = 0;
         bool active = false;
     };
 
@@ -296,11 +297,15 @@ class CompleteLinePayloadStaging
                 }
                 int selected_bank = -1;
                 if (payloadBanks != 0) {
-                    for (uint32_t bank = 0; bank < payloadBanks; ++bank) {
-                        if (entry.remainingBanks[bank] != 0 &&
+                    uint8_t selected_words = 0;
+                    for (uint32_t offset = 0; offset < payloadBanks;
+                         ++offset) {
+                        const uint32_t bank =
+                            (entry.bankCursor + offset) % payloadBanks;
+                        if (entry.remainingBanks[bank] > selected_words &&
                             (used_banks & (uint16_t(1) << bank)) == 0) {
                             selected_bank = bank;
-                            break;
+                            selected_words = entry.remainingBanks[bank];
                         }
                     }
                     if (selected_bank == -1) {
@@ -308,6 +313,8 @@ class CompleteLinePayloadStaging
                         continue;
                     }
                     --entry.remainingBanks[selected_bank];
+                    entry.bankCursor =
+                        (selected_bank + 1) % payloadBanks;
                     used_banks |= uint16_t(1) << selected_bank;
                 }
                 ++entry.wordsRead;

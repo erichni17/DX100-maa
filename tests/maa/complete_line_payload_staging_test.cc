@@ -99,6 +99,21 @@ checkBankedPayloadReads()
     CHECK(conflicted.counters().serialReadCycles == 8);
     CHECK(conflicted.counters().bankConflictCycles == 7);
     CHECK(conflicted.complete(line) == Stage::Result::Accepted);
+
+    Stage imbalanced;
+    CHECK(imbalanced.configure(4, 1, 8));
+    Stage::Identity sparse{17, 2, 0x7000, 0x3f, 6};
+    sparse.bankCount = 8;
+    sparse.bankWords[3] = 1;
+    sparse.bankWords[4] = 1;
+    sparse.bankWords[5] = 1;
+    sparse.bankWords[6] = 1;
+    sparse.bankWords[7] = 2;
+    CHECK(imbalanced.claim(sparse, 30) == Stage::Result::Accepted);
+    CHECK(imbalanced.advance(sparse, 32) == Stage::Result::Accepted);
+    CHECK(imbalanced.counters().readCycles == 2);
+    CHECK(imbalanced.counters().serialReadCycles == 2);
+    CHECK(imbalanced.complete(sparse) == Stage::Result::Accepted);
 }
 
 int main()
