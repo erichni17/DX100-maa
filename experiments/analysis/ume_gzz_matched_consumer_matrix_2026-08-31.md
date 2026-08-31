@@ -59,6 +59,28 @@ line can deadlock. The implementation spills a populated partial line to
 coherent backing only under source-credit starvation, then tracks that line
 until its remaining fragment is acknowledged.
 
+## Remaining bottleneck
+
+The end-to-end gap to native16 is 4,923,490 ticks, or 15,730 MAA cycles at the
+configured clock. The MAA total-cycle counter is also exactly 15,730 cycles
+higher: 81,375 for the hybrid versus 65,645 for native16.
+
+| Counter | native16 | strict hybrid | Delta |
+|---|---:|---:|---:|
+| MAA total cycles | 65,645 | 81,375 | +15,730 |
+| MAA busy cycles | 58,551 | 73,331 | +14,780 |
+| stream SPD-write access cycles | 7,174 | 21,865 | +14,691 |
+| indirect-read cycles | 19,094 | 22,905 | +3,811 |
+| indirect-RMW cycles | 28,339 | 33,049 | +4,710 |
+
+These counters overlap, so the stream delta is not an additive causal proof.
+It is nevertheless 93% of the total gap's magnitude and is far larger than the
+1.27% backing-transport overhead. The next optimization should overlap page
+materialization into an alternate physical tile with computation/RMW on the
+current page. The configuration already provisions eight tiles per core and
+the matched consumer currently uses seven, so a one-tile ping-pong experiment
+does not increase configured tile capacity.
+
 ## Hardware caveat
 
 The shared data pool remains bounded to 4,096 words. Tracking pressure-spilled
