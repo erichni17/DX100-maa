@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Service-owned, fail-closed v17 ingress-observer build attestation.
+"""Service-owned, fail-closed v18 ingress-observer build attestation.
 
 The wrapper requires a fresh source worktree with both build artifacts absent,
 then requires SCons to compile the MAA object before the complete gem5 target.
@@ -14,12 +14,14 @@ import json
 import os
 import pathlib
 import re
+import secrets
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 
-BUILD_UNIT = "umt-ingress-trace-build-v17-20260831.service"
+BUILD_UNIT = "umt-ingress-trace-build-v18-20260831.service"
 SOURCE_ROOT = "/data1/nier/worktrees/DX100-umt-ingress-source-fixes-20260831"
 SOURCE_COMMIT = "45a7be343788dce1180c0117ef9004cf00e9da45"
 SOURCE_TREE = "81188d67ccee00d720e0343f049a4bb70972b708"
@@ -70,8 +72,11 @@ BUILD_SYSTEM_SHA256 = {
         "b10bb7b6aef8b6716a30af1560e8d8e55fae9cdb696cb4ccede7ba5d3a19ed25"
     ),
 }
-PROTOCOL = "LANL_MAA_UMT_INGRESS_BUILD_ATTESTATION_V17"
-SCHEMA = "lanl-maa-umt-ingress-build-attestation-v17"
+PROTOCOL = "LANL_MAA_UMT_INGRESS_BUILD_ATTESTATION_V18"
+SCHEMA = "lanl-maa-umt-ingress-build-attestation-v18"
+OWNERSHIP_SCHEMA = "lanl-maa-umt-ingress-generated-root-owner-v18"
+FAILURE_SCHEMA = "lanl-maa-umt-ingress-build-failure-restore-v18"
+SENTINEL_NAME = ".lanl-maa-umt-build-owner-v18.json"
 CLEAN_METHOD = "require-fresh-absent-exact-two-v1"
 COMPILED_MARKERS = (
     b"UMT_INGRESS kind=",
@@ -319,6 +324,100 @@ def require_initial_absence(source):
     return [str(build_root), *(str(path) for path in paths)]
 
 
+def fault_injection_point(_name):
+    """Test-only seam; production execution is intentionally a no-op."""
+
+
+def canonical_json_bytes(value):
+    return (json.dumps(value, sort_keys=True, indent=2) + "\n").encode()
+
+
+def create_generated_root_ownership(source, common):
+    """Create the variant root and its exclusive job-ownership sentinel."""
+    build_root = source / BUILD_ROOT_RELATIVE
+    build_root.parent.mkdir(parents=True, exist_ok=True)
+    build_root.mkdir(exist_ok=False)
+    root_stat = build_root.stat()
+    nonce = secrets.token_hex(32)
+    sentinel = build_root / SENTINEL_NAME
+    record = {
+        "schema": OWNERSHIP_SCHEMA,
+        "unit": common["unit"],
+        "invocation_id": common["invocation_id"],
+        "wrapper_pid": common["wrapper_pid"],
+        "wrapper_proc_start_ticks": common["wrapper_proc_start_ticks"],
+        "nonce": nonce,
+        "source_root": str(source),
+        "generated_root": str(build_root),
+        "root_device": root_stat.st_dev,
+        "root_inode": root_stat.st_ino,
+    }
+    raw = canonical_json_bytes(record)
+    with sentinel.open("xb") as stream:
+        stream.write(raw)
+        stream.flush()
+        os.fsync(stream.fileno())
+    sentinel_stat = sentinel.stat()
+    directory = os.open(build_root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+    ownership = {
+        **record,
+        "sentinel": str(sentinel),
+        "sentinel_sha256": hashlib.sha256(raw).hexdigest(),
+        "sentinel_device": sentinel_stat.st_dev,
+        "sentinel_inode": sentinel_stat.st_ino,
+        "success_state": "retained_in_generated_root",
+    }
+    validate_generated_root_ownership(source, ownership)
+    return ownership
+
+
+def validate_generated_root_ownership(source, ownership, root=None):
+    """Validate exact root/sentinel identity before retaining or deleting it."""
+    build_root = pathlib.Path(root or (source / BUILD_ROOT_RELATIVE))
+    sentinel = build_root / SENTINEL_NAME
+    if not build_root.is_dir() or build_root.is_symlink():
+        raise RuntimeError("generated root is absent, replaced, or a symlink")
+    root_stat = build_root.stat()
+    sentinel_stat = sentinel.lstat()
+    if (
+        (root_stat.st_dev, root_stat.st_ino)
+        != (ownership["root_device"], ownership["root_inode"])
+        or not stat.S_ISREG(sentinel_stat.st_mode)
+        or sentinel_stat.st_nlink != 1
+        or (sentinel_stat.st_dev, sentinel_stat.st_ino)
+        != (ownership["sentinel_device"], ownership["sentinel_inode"])
+    ):
+        raise RuntimeError("generated-root sentinel ownership is not exact")
+    expected = {
+        key: ownership[key]
+        for key in (
+            "schema",
+            "unit",
+            "invocation_id",
+            "wrapper_pid",
+            "wrapper_proc_start_ticks",
+            "nonce",
+            "source_root",
+            "generated_root",
+            "root_device",
+            "root_inode",
+        )
+    }
+    raw = sentinel.read_bytes()
+    if (
+        raw != canonical_json_bytes(expected)
+        or hashlib.sha256(raw).hexdigest() != ownership["sentinel_sha256"]
+        or pathlib.Path(ownership["generated_root"]).resolve()
+        != (source / BUILD_ROOT_RELATIVE).resolve()
+    ):
+        raise RuntimeError("generated-root sentinel content is not exact")
+    return sentinel
+
+
 def validate_link_transcript(raw):
     lines = raw.splitlines()
     target_name = b"X86_UMT_T32_W2/gem5.opt"
@@ -354,49 +453,85 @@ def validate_unchanged_identity(path, expected):
         raise RuntimeError("object identity changed during the full build")
 
 
-def restore_canonical_paths(source, evidence, phase, error):
-    """Remove the scoped variant tree and attest exact fresh absence."""
+def best_effort_phase_artifacts(evidence):
+    records = {}
+    for name in (
+        "object-prebuild.stdout",
+        "object-prebuild.stderr",
+        "build.stdout",
+        "build.stderr",
+    ):
+        path = evidence / name
+        try:
+            records[name] = evidence_artifact(evidence, name)
+        except Exception as artifact_error:
+            records[name] = {
+                "path": str(path),
+                "status": "unavailable",
+                "error_type": type(artifact_error).__name__,
+            }
+    return records
+
+
+def restore_canonical_paths(source, evidence, ownership, phase, error):
+    """Remove only the sentinel-owned tree and publish best-effort failure."""
     build_root = source / BUILD_ROOT_RELATIVE
-    action = "already_absent"
-    if build_root.exists() or build_root.is_symlink():
-        if build_root.is_dir() and not build_root.is_symlink():
-            shutil.rmtree(build_root)
-        else:
-            build_root.unlink()
-        action = "removed_generated_variant_tree"
+    cleanup_status = "blocked_before_ownership"
+    cleanup_error = None
+    restored = {"path": str(build_root), "restored_state": "unknown"}
+    try:
+        if ownership is None:
+            raise RuntimeError("generated-root ownership was not established")
+        validate_generated_root_ownership(source, ownership)
+        quarantine = build_root.parent / (
+            ".X86_UMT_T32_W2.failed-" + ownership["nonce"]
+        )
+        if quarantine.exists() or quarantine.is_symlink():
+            raise RuntimeError("generated-root quarantine already exists")
+        os.rename(build_root, quarantine)
+        try:
+            validate_generated_root_ownership(source, ownership, quarantine)
+        except Exception:
+            if not build_root.exists() and not build_root.is_symlink():
+                os.rename(quarantine, build_root)
+            raise
+        shutil.rmtree(quarantine)
         directory = os.open(build_root.parent, os.O_RDONLY | os.O_DIRECTORY)
         try:
             os.fsync(directory)
         finally:
             os.close(directory)
-    if build_root.exists() or build_root.is_symlink():
-        raise RuntimeError("failure cleanup did not restore variant absence")
-    restored = {
-        BUILD_ROOT_RELATIVE: {
-            "action": action,
-            "path": str(build_root),
-            "restored_state": "absent",
+        for relative in (BUILD_ROOT_RELATIVE, *BUILD_RELATIVES):
+            path = source / relative
+            if path.exists() or path.is_symlink():
+                raise RuntimeError(
+                    "owned cleanup did not restore exact absence"
+                )
+        cleanup_status = "owned_variant_removed_exact_absence"
+        restored["restored_state"] = "absent"
+    except Exception as recovery_error:
+        cleanup_error = {
+            "type": type(recovery_error).__name__,
+            "message": str(recovery_error),
         }
-    }
-    phase_outputs = {
-        name: evidence_artifact(evidence, name)
-        for name in (
-            "object-prebuild.stdout",
-            "object-prebuild.stderr",
-            "build.stdout",
-            "build.stderr",
-        )
-    }
+        cleanup_status = "blocked_unowned_or_concurrent_root_retained"
     value = {
-        "schema": "lanl-maa-umt-ingress-build-failure-restore-v17",
-        "status": "failed_phase_restored_exact_absence",
+        "schema": FAILURE_SCHEMA,
+        "status": cleanup_status,
         "unit": BUILD_UNIT,
         "phase": phase,
         "error_type": type(error).__name__,
+        "ownership": ownership,
         "restored": restored,
-        "phase_outputs": phase_outputs,
+        "phase_outputs": best_effort_phase_artifacts(evidence),
+        "cleanup_error": cleanup_error,
     }
-    no_clobber_json(evidence / "failure-restore.json", value)
+    try:
+        no_clobber_json(evidence / "failure-restore.json", value)
+    except Exception:
+        pass
+    if cleanup_error is not None:
+        raise RuntimeError("refusing to remove unowned generated root")
     return value
 
 
@@ -474,7 +609,7 @@ def main(argv=None):
     if (
         args.unit != BUILD_UNIT
         or source != pathlib.Path(SOURCE_ROOT)
-        or evidence.name != "ingress-build-evidence-v17"
+        or evidence.name != "ingress-build-evidence-v18"
         or not re.fullmatch(r"[0-9a-f]{32}", invocation)
     ):
         raise RuntimeError("wrapper identity/invocation binding is invalid")
@@ -492,33 +627,44 @@ def main(argv=None):
     print(marker("START", **common), flush=True)
     inherited_names = inherited_tool_affecting_names(os.environ)
     evidence.mkdir(parents=True, exist_ok=False)
-    clean_stdout = evidence / "clean.stdout"
-    clean_stderr = evidence / "clean.stderr"
+    clean_stdout, clean_stderr = (
+        evidence / "clean.stdout",
+        evidence / "clean.stderr",
+    )
+    object_stdout, object_stderr = (
+        evidence / "object-prebuild.stdout",
+        evidence / "object-prebuild.stderr",
+    )
+    build_stdout, build_stderr = (
+        evidence / "build.stdout",
+        evidence / "build.stderr",
+    )
+    for path in (
+        clean_stderr,
+        object_stdout,
+        object_stderr,
+        build_stdout,
+        build_stderr,
+    ):
+        path.open("xb").close()
+    ownership = None
+    phase = "initial_absence"
     try:
         initial_absent_paths = require_initial_absence(source)
+        phase = "generated_root_ownership"
+        ownership = create_generated_root_ownership(source, common)
         no_clobber_text(
             clean_stdout,
             "clean_method="
             + CLEAN_METHOD
             + "\n"
             + "initial_absent="
-            + ",".join(BUILD_RELATIVES)
+            + ",".join((BUILD_ROOT_RELATIVE, *BUILD_RELATIVES))
             + "\n"
             + "status=0/SUCCESS\n",
         )
-        no_clobber_text(clean_stderr, "")
-    except Exception as error:
-        if not clean_stderr.exists():
-            no_clobber_text(clean_stderr, type(error).__name__ + "\n")
-        raise
 
-    object_stdout = evidence / "object-prebuild.stdout"
-    object_stderr = evidence / "object-prebuild.stderr"
-    build_stdout = evidence / "build.stdout"
-    build_stderr = evidence / "build.stderr"
-    for path in (object_stdout, object_stderr, build_stdout, build_stderr):
-        path.open("xb").close()
-    try:
+        phase = "object_prebuild"
         with object_stdout.open("wb") as out, object_stderr.open("wb") as err:
             object_result = subprocess.run(
                 OBJECT_PREBUILD_ARGV,
@@ -534,11 +680,8 @@ def main(argv=None):
         if (source / TARGET_RELATIVE).exists():
             raise RuntimeError("object-only prebuild recreated gem5")
         object_artifact = validate_rebuilt_path(source, OBJECT_RELATIVE)
-    except Exception as error:
-        restore_canonical_paths(source, evidence, "object_prebuild", error)
-        raise
 
-    try:
+        phase = "full_build"
         with build_stdout.open("wb") as out, build_stderr.open("wb") as err:
             completed = subprocess.run(
                 BUILD_ARGV,
@@ -553,12 +696,9 @@ def main(argv=None):
         validate_link_transcript(build_stdout.read_bytes())
         target_artifact = validate_rebuilt_path(source, TARGET_RELATIVE)
         validate_unchanged_identity(source / OBJECT_RELATIVE, object_artifact)
-    except Exception as error:
-        restore_canonical_paths(source, evidence, "full_build", error)
-        raise
 
-    target = source / TARGET_RELATIVE
-    try:
+        phase = "full_build_validation"
+        target = source / TARGET_RELATIVE
         validate_compiled_literals(target)
         configs = {
             key: source / relative
@@ -578,64 +718,74 @@ def main(argv=None):
             "lanl_maa_o": object_artifact["sha256"],
             **{key: sha256(path) for key, path in configs.items()},
         }
-    except Exception as error:
-        restore_canonical_paths(
-            source, evidence, "full_build_validation", error
-        )
-        raise
 
-    manifest = evidence / "observer-input-source-sha256.json"
-    no_clobber_json(manifest, inputs)
-    build_system_manifest = evidence / "build-system-source-sha256.json"
-    no_clobber_json(build_system_manifest, BUILD_SYSTEM_SHA256)
-    literal_scan = evidence / "target-config-literal-scan.json"
-    no_clobber_json(
-        literal_scan,
-        {
-            "target": str(target),
-            "target_sha256": artifacts["gem5"],
-            "object": str(source / OBJECT_RELATIVE),
-            "object_sha256": artifacts["lanl_maa_o"],
-            "config_compute_tokens": str(configs["config_compute_tokens"]),
-            "config_compute_tokens_sha256": artifacts["config_compute_tokens"],
-            "config_fp_issue_width": str(configs["config_fp_issue_width"]),
-            "config_fp_issue_width_sha256": artifacts["config_fp_issue_width"],
-            "compiled_binary_markers": [x.decode() for x in COMPILED_MARKERS],
-        },
-    )
-    gate_stdout = evidence / "observer.stdout"
-    gate_stderr = evidence / "observer.stderr"
-    gate = (
-        "/usr/bin/python3",
-        str(
-            source / "tests/lanl_maa/run_umt_production_ingress_trace_gate.py"
-        ),
-        "--cxx",
-        "g++",
-        "--binary",
-        str(target),
-        "--binary-sha256",
-        artifacts["gem5"],
-        "--input-source-sha256",
-        str(manifest),
-    )
-    with gate_stdout.open("xb") as out, gate_stderr.open("xb") as err:
-        result = subprocess.run(
-            gate,
-            cwd=source,
-            env=SAFE_CHILD_ENV,
-            stdout=out,
-            stderr=err,
-            check=False,
+        phase = "source_manifest"
+        fault_injection_point("manifest")
+        manifest = evidence / "observer-input-source-sha256.json"
+        no_clobber_json(manifest, inputs)
+        build_system_manifest = evidence / "build-system-source-sha256.json"
+        no_clobber_json(build_system_manifest, BUILD_SYSTEM_SHA256)
+
+        phase = "literal_scan"
+        fault_injection_point("literal_scan")
+        literal_scan = evidence / "target-config-literal-scan.json"
+        no_clobber_json(
+            literal_scan,
+            {
+                "target": str(target),
+                "target_sha256": artifacts["gem5"],
+                "object": str(source / OBJECT_RELATIVE),
+                "object_sha256": artifacts["lanl_maa_o"],
+                "config_compute_tokens": str(configs["config_compute_tokens"]),
+                "config_compute_tokens_sha256": artifacts[
+                    "config_compute_tokens"
+                ],
+                "config_fp_issue_width": str(configs["config_fp_issue_width"]),
+                "config_fp_issue_width_sha256": artifacts[
+                    "config_fp_issue_width"
+                ],
+                "compiled_binary_markers": [
+                    x.decode() for x in COMPILED_MARKERS
+                ],
+            },
         )
-    if result.returncode != 0:
-        error = RuntimeError("observer gate failed")
-        restore_canonical_paths(source, evidence, "observer_gate", error)
-        raise error
-    report_copy = evidence / "observer-report.json"
-    with report_copy.open("xb") as stream:
-        stream.write(gate_stdout.read_bytes())
-    try:
+
+        gate_stdout = evidence / "observer.stdout"
+        gate_stderr = evidence / "observer.stderr"
+        gate = (
+            "/usr/bin/python3",
+            str(
+                source
+                / "tests/lanl_maa/run_umt_production_ingress_trace_gate.py"
+            ),
+            "--cxx",
+            "g++",
+            "--binary",
+            str(target),
+            "--binary-sha256",
+            artifacts["gem5"],
+            "--input-source-sha256",
+            str(manifest),
+        )
+        phase = "observer_gate_stream_open"
+        fault_injection_point("gate_stream_open")
+        with gate_stdout.open("xb") as out, gate_stderr.open("xb") as err:
+            result = subprocess.run(
+                gate,
+                cwd=source,
+                env=SAFE_CHILD_ENV,
+                stdout=out,
+                stderr=err,
+                check=False,
+            )
+        if result.returncode != 0:
+            raise RuntimeError("observer gate failed")
+
+        phase = "observer_report_copy"
+        fault_injection_point("report_copy")
+        report_copy = evidence / "observer-report.json"
+        with report_copy.open("xb") as stream:
+            stream.write(gate_stdout.read_bytes())
         validate_gate_report(
             json.loads(report_copy.read_text(encoding="utf-8")),
             source,
@@ -643,70 +793,84 @@ def main(argv=None):
             artifacts["gem5"],
             inputs,
         )
-    except Exception as error:
-        restore_canonical_paths(source, evidence, "observer_report", error)
-        raise RuntimeError("observer gate report is invalid") from error
-    transcript = evidence / "observer-transcript.txt"
-    no_clobber_text(transcript, "status=0/SUCCESS\n")
 
-    evidence_names = {
-        "clean_stdout": "clean.stdout",
-        "clean_stderr": "clean.stderr",
-        "object_prebuild_stdout": "object-prebuild.stdout",
-        "object_prebuild_stderr": "object-prebuild.stderr",
-        "build_stdout": "build.stdout",
-        "build_stderr": "build.stderr",
-        "observer_stdout": "observer.stdout",
-        "observer_stderr": "observer.stderr",
-        "observer_report": "observer-report.json",
-        "observer_transcript": "observer-transcript.txt",
-        "source_manifest": "observer-input-source-sha256.json",
-        "build_system_manifest": "build-system-source-sha256.json",
-        "target_config_literal_scan": "target-config-literal-scan.json",
-    }
-    evidence_items = {
-        key: evidence_artifact(evidence, name)
-        for key, name in evidence_names.items()
-    }
-    value = {
-        **common,
-        "status": "passed",
-        "source_commit": SOURCE_COMMIT,
-        "source_tree": SOURCE_TREE,
-        "source_clean_before": True,
-        "source_clean_after": True,
-        "source_identity_unchanged": True,
-        "clean_method": CLEAN_METHOD,
-        "initial_absent_paths": initial_absent_paths,
-        "invalidated_artifacts": {},
-        "target_paths_absent_after_clean": True,
-        "object_prebuild_argv": list(OBJECT_PREBUILD_ARGV),
-        "object_prebuild_returncode": 0,
-        "object_prebuild_define_verified": True,
-        "object_prebuild_artifact": object_artifact,
-        "object_identity_unchanged_after_link": True,
-        "build_argv": list(BUILD_ARGV),
-        "build_environment": {
-            "sanitized": sorted(SAFE_CHILD_ENV),
-            "fixed_values": {"CCFLAGS_EXTRA": TRACE_DEFINE_FLAG},
-            "inherited_tool_affecting_names": inherited_names,
-            "inherited_tool_affecting_count": len(inherited_names),
-        },
-        "build_returncode": 0,
-        "required_link_observed": True,
-        "instrumentation_source_sha256": inputs,
-        "build_system_source_sha256": dict(BUILD_SYSTEM_SHA256),
-        "build_artifacts": artifacts,
-        "compiled_binary_markers": [x.decode() for x in COMPILED_MARKERS],
-        "observer_gate": {
-            "command": list(gate),
-            "returncode": 0,
-            "report": evidence_items["observer_report"],
-            "transcript": evidence_items["observer_transcript"],
-        },
-        "evidence": evidence_items,
-    }
-    no_clobber_json(evidence / "attestation.json", value)
+        phase = "observer_transcript"
+        fault_injection_point("transcript")
+        transcript = evidence / "observer-transcript.txt"
+        no_clobber_text(transcript, "status=0/SUCCESS\n")
+
+        evidence_names = {
+            "clean_stdout": "clean.stdout",
+            "clean_stderr": "clean.stderr",
+            "object_prebuild_stdout": "object-prebuild.stdout",
+            "object_prebuild_stderr": "object-prebuild.stderr",
+            "build_stdout": "build.stdout",
+            "build_stderr": "build.stderr",
+            "observer_stdout": "observer.stdout",
+            "observer_stderr": "observer.stderr",
+            "observer_report": "observer-report.json",
+            "observer_transcript": "observer-transcript.txt",
+            "source_manifest": "observer-input-source-sha256.json",
+            "build_system_manifest": "build-system-source-sha256.json",
+            "target_config_literal_scan": "target-config-literal-scan.json",
+        }
+        phase = "evidence_hashing"
+        fault_injection_point("evidence_hashing")
+        evidence_items = {
+            key: evidence_artifact(evidence, name)
+            for key, name in evidence_names.items()
+        }
+        validate_generated_root_ownership(source, ownership)
+        value = {
+            **common,
+            "status": "passed",
+            "source_commit": SOURCE_COMMIT,
+            "source_tree": SOURCE_TREE,
+            "source_clean_before": True,
+            "source_clean_after": True,
+            "source_identity_unchanged": True,
+            "clean_method": CLEAN_METHOD,
+            "initial_absent_paths": initial_absent_paths,
+            "invalidated_artifacts": {},
+            "target_paths_absent_after_clean": True,
+            "generated_root_ownership": ownership,
+            "object_prebuild_argv": list(OBJECT_PREBUILD_ARGV),
+            "object_prebuild_returncode": 0,
+            "object_prebuild_define_verified": True,
+            "object_prebuild_artifact": object_artifact,
+            "object_identity_unchanged_after_link": True,
+            "build_argv": list(BUILD_ARGV),
+            "build_environment": {
+                "sanitized": sorted(SAFE_CHILD_ENV),
+                "fixed_values": {"CCFLAGS_EXTRA": TRACE_DEFINE_FLAG},
+                "inherited_tool_affecting_names": inherited_names,
+                "inherited_tool_affecting_count": len(inherited_names),
+            },
+            "build_returncode": 0,
+            "required_link_observed": True,
+            "instrumentation_source_sha256": inputs,
+            "build_system_source_sha256": dict(BUILD_SYSTEM_SHA256),
+            "build_artifacts": artifacts,
+            "compiled_binary_markers": [x.decode() for x in COMPILED_MARKERS],
+            "observer_gate": {
+                "command": list(gate),
+                "returncode": 0,
+                "report": evidence_items["observer_report"],
+                "transcript": evidence_items["observer_transcript"],
+            },
+            "evidence": evidence_items,
+        }
+        phase = "attestation_publication"
+        fault_injection_point("attestation_publication")
+        no_clobber_json(evidence / "attestation.json", value)
+    except Exception as error:
+        try:
+            restore_canonical_paths(source, evidence, ownership, phase, error)
+        except Exception as recovery_error:
+            raise RuntimeError(
+                "build failed and owned-root recovery was blocked"
+            ) from recovery_error
+        raise
     print(
         marker("SUCCESS", **common, target_sha256=artifacts["gem5"]),
         flush=True,

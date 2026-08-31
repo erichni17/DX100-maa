@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Adversarial dry tests for combined v16 with build-v17 evidence."""
+"""Adversarial dry tests for combined v16 with build-v18 evidence."""
 import importlib.util
 import json
 import pathlib
@@ -43,14 +43,14 @@ def line(label, kind, cycle, waiters, abi=4):
 
 
 class IngressHarnessTest(unittest.TestCase):
-    def test_v16_contract_accepts_exactly_the_v17_build_proof_generation(self):
+    def test_v16_contract_accepts_exactly_the_v18_build_proof_generation(self):
         self.assertEqual(
             ingress.SCHEMA_CONTRACT,
             "lanl-maa-umt-ingress-contract-v16",
         )
         self.assertEqual(
             ingress.SCHEMA_BUILD_PROOF,
-            "lanl-maa-umt-ingress-instrumented-gem5-build-proof-v17",
+            "lanl-maa-umt-ingress-instrumented-gem5-build-proof-v18",
         )
         self.assertEqual(
             ingress.SCHEMA_DISPATCH_PLAN,
@@ -77,7 +77,7 @@ class IngressHarnessTest(unittest.TestCase):
             )
         )
 
-    def test_v17_build_spelling_and_sanitized_environment_are_exact(self):
+    def test_v18_build_spelling_and_sanitized_environment_are_exact(self):
         self.assertEqual(
             ingress.BUILD_ARGV,
             (
@@ -115,11 +115,11 @@ class IngressHarnessTest(unittest.TestCase):
             ),
         )
         self.assertEqual(
-            ingress.BUILD_UNIT, "umt-ingress-trace-build-v17-20260831.service"
+            ingress.BUILD_UNIT, "umt-ingress-trace-build-v18-20260831.service"
         )
         self.assertEqual(
             ingress.SCHEMA_BUILD_PROOF,
-            "lanl-maa-umt-ingress-instrumented-gem5-build-proof-v17",
+            "lanl-maa-umt-ingress-instrumented-gem5-build-proof-v18",
         )
 
     def test_build_argv_is_assignment_free_and_fixed_env_has_exact_dash_d(
@@ -289,8 +289,18 @@ class IngressHarnessTest(unittest.TestCase):
             with tempfile.TemporaryDirectory() as temporary:
                 root = pathlib.Path(temporary)
                 source = root / "source"
+                source.mkdir()
                 evidence = root / "evidence"
                 evidence.mkdir()
+                ownership = wrapper.create_generated_root_ownership(
+                    source,
+                    {
+                        "unit": wrapper.BUILD_UNIT,
+                        "invocation_id": "a" * 32,
+                        "wrapper_pid": 70,
+                        "wrapper_proc_start_ticks": "1234",
+                    },
+                )
                 if create_new:
                     for relative in wrapper.BUILD_RELATIVES:
                         current = source / relative
@@ -306,25 +316,205 @@ class IngressHarnessTest(unittest.TestCase):
                 receipt = wrapper.restore_canonical_paths(
                     source,
                     evidence,
+                    ownership,
                     phase,
                     RuntimeError("failed"),
                 )
                 self.assertEqual(receipt["phase"], phase)
                 self.assertEqual(len(receipt["phase_outputs"]), 4)
                 self.assertEqual(
-                    receipt["status"], "failed_phase_restored_exact_absence"
+                    receipt["status"], "owned_variant_removed_exact_absence"
                 )
                 build_root = source / wrapper.BUILD_ROOT_RELATIVE
                 self.assertFalse(build_root.exists())
-                restored = receipt["restored"][wrapper.BUILD_ROOT_RELATIVE]
+                restored = receipt["restored"]
                 self.assertEqual(restored["restored_state"], "absent")
+
+    def test_outer_transaction_recovers_every_post_build_publication_failure(
+        self,
+    ):
+        injection_points = (
+            "manifest",
+            "literal_scan",
+            "gate_stream_open",
+            "report_copy",
+            "transcript",
+            "evidence_hashing",
+            "attestation_publication",
+        )
+        for injected in injection_points:
+            with self.subTest(
+                injected=injected
+            ), tempfile.TemporaryDirectory() as temporary:
+                root = pathlib.Path(temporary)
+                source = root / "source"
+                source.mkdir()
+                evidence = root / "identity" / "ingress-build-evidence-v18"
+                calls = 0
+
+                def fake_run(_argv, **kwargs):
+                    nonlocal calls
+                    calls += 1
+                    if calls == 1:
+                        object_path = source / wrapper.OBJECT_RELATIVE
+                        object_path.parent.mkdir(parents=True, exist_ok=True)
+                        object_path.write_bytes(b"fresh object")
+                        kwargs["stdout"].write(
+                            b"g++ -o build/X86_UMT_T32_W2/mem/LANLMAA/lanl_maa.o "
+                            b"-c src/mem/LANLMAA/lanl_maa.cc "
+                            b"-DLANL_MAA_UMT_INGRESS_TRACE_TEST\n"
+                        )
+                    elif calls == 2:
+                        target = source / wrapper.TARGET_RELATIVE
+                        target.write_bytes(b" ".join(wrapper.COMPILED_MARKERS))
+                        for (
+                            relative,
+                            expected,
+                        ) in wrapper.CONFIG_ARTIFACTS.values():
+                            path = source / relative
+                            path.parent.mkdir(parents=True, exist_ok=True)
+                            path.write_bytes(expected)
+                        kwargs["stdout"].write(
+                            b"[ LINK ] X86_UMT_T32_W2/gem5.opt\n"
+                        )
+                    else:
+                        target = source / wrapper.TARGET_RELATIVE
+                        report = {
+                            "schema": "lanl-maa-umt-production-ingress-trace-v3",
+                            "status": "passed",
+                            "source_root": str(source),
+                            "input_source_sha256": {},
+                            "binary": str(target),
+                            "binary_sha256": wrapper.sha256(target),
+                            "required_define": "LANL_MAA_UMT_INGRESS_TRACE_TEST",
+                            "compiled_binary_markers": [
+                                item.decode()
+                                for item in wrapper.COMPILED_MARKERS
+                            ],
+                            "cells": [
+                                {
+                                    "tokens": tokens,
+                                    "issue_width": width,
+                                    "waiter_counts": [1, 7, 8],
+                                    "abi_boundaries": ["D32", "D64"],
+                                    "two_lane_serialization": "rejected_by_trace_difference",
+                                    "selected_token_text": "numeric_for_denominator_and_source_sentinel",
+                                    "default_off": "compiled_without_observer_macro",
+                                }
+                                for tokens, width in (
+                                    (24, 1),
+                                    (24, 2),
+                                    (32, 1),
+                                    (32, 2),
+                                )
+                            ],
+                        }
+                        kwargs["stdout"].write(json.dumps(report).encode())
+                    return mock.Mock(returncode=0)
+
+                def inject(name):
+                    if name == injected:
+                        raise OSError("injected " + name)
+
+                patches = {
+                    "SOURCE_ROOT": str(source),
+                    "SOURCE_SHA256": {},
+                    "BUILD_SYSTEM_SHA256": {},
+                }
+                with mock.patch.multiple(
+                    wrapper, **patches
+                ), mock.patch.object(
+                    wrapper, "validate_source", return_value=None
+                ), mock.patch.object(
+                    wrapper.subprocess, "run", side_effect=fake_run
+                ), mock.patch.object(
+                    wrapper, "fault_injection_point", side_effect=inject
+                ), mock.patch.dict(
+                    wrapper.os.environ, {"INVOCATION_ID": "a" * 32}
+                ), self.assertRaises(
+                    OSError
+                ):
+                    wrapper.main(
+                        [
+                            "--unit",
+                            wrapper.BUILD_UNIT,
+                            "--source",
+                            str(source),
+                            "--evidence-dir",
+                            str(evidence),
+                        ]
+                    )
+                build_root = source / wrapper.BUILD_ROOT_RELATIVE
+                self.assertFalse(build_root.exists())
+                receipt = json.loads(
+                    (evidence / "failure-restore.json").read_text()
+                )
+                self.assertEqual(receipt["schema"], wrapper.FAILURE_SCHEMA)
                 self.assertEqual(
-                    restored["action"],
-                    (
-                        "removed_generated_variant_tree"
-                        if create_new
-                        else "already_absent"
-                    ),
+                    receipt["status"], "owned_variant_removed_exact_absence"
+                )
+                self.assertEqual(
+                    receipt["phase_outputs"].keys(),
+                    {
+                        "object-prebuild.stdout",
+                        "object-prebuild.stderr",
+                        "build.stdout",
+                        "build.stderr",
+                    },
+                )
+
+    def test_unowned_or_concurrent_generated_root_is_never_removed(self):
+        for mode in ("mutated_sentinel", "replaced_root"):
+            with self.subTest(
+                mode=mode
+            ), tempfile.TemporaryDirectory() as temporary:
+                root = pathlib.Path(temporary)
+                source, evidence = root / "source", root / "evidence"
+                source.mkdir()
+                evidence.mkdir()
+                for name in (
+                    "object-prebuild.stdout",
+                    "object-prebuild.stderr",
+                    "build.stdout",
+                    "build.stderr",
+                ):
+                    (evidence / name).write_bytes(b"phase")
+                common = {
+                    "unit": wrapper.BUILD_UNIT,
+                    "invocation_id": "a" * 32,
+                    "wrapper_pid": 71,
+                    "wrapper_proc_start_ticks": "1234",
+                }
+                ownership = wrapper.create_generated_root_ownership(
+                    source, common
+                )
+                build_root = source / wrapper.BUILD_ROOT_RELATIVE
+                if mode == "mutated_sentinel":
+                    pathlib.Path(ownership["sentinel"]).write_text("forged")
+                else:
+                    owned_aside = root / "owned-aside"
+                    build_root.rename(owned_aside)
+                    build_root.mkdir()
+                    (build_root / "concurrent").write_text("keep")
+                with self.assertRaisesRegex(RuntimeError, "unowned"):
+                    wrapper.restore_canonical_paths(
+                        source,
+                        evidence,
+                        ownership,
+                        "injected",
+                        RuntimeError("failed"),
+                    )
+                self.assertTrue(build_root.exists())
+                if mode == "replaced_root":
+                    self.assertEqual(
+                        (build_root / "concurrent").read_text(), "keep"
+                    )
+                receipt = json.loads(
+                    (evidence / "failure-restore.json").read_text()
+                )
+                self.assertEqual(
+                    receipt["status"],
+                    "blocked_unowned_or_concurrent_root_retained",
                 )
 
     def test_full_build_requires_link_but_not_a_second_compile(self):
@@ -398,7 +588,7 @@ class IngressHarnessTest(unittest.TestCase):
 
     def test_build_unit_is_retained_for_terminal_snapshot(self):
         evidence = pathlib.Path(
-            "/campaign/identity/ingress-build-evidence-v17"
+            "/campaign/identity/ingress-build-evidence-v18"
         )
         command = ingress.build_systemd_run_command(evidence)
         self.assertIn("--remain-after-exit", command)
@@ -472,7 +662,7 @@ class IngressHarnessTest(unittest.TestCase):
         self.assertNotIn("RuntimeMaxSec", ingress.SYSTEMD_SHOW_PROPERTIES)
 
         build = ingress.build_systemd_run_command(
-            "/campaign/identity/ingress-build-evidence-v17"
+            "/campaign/identity/ingress-build-evidence-v18"
         )
         arm = ingress.systemd_run_command("arm.service", ["/bin/true"])
         for command in (build, arm):
@@ -492,7 +682,7 @@ class IngressHarnessTest(unittest.TestCase):
             ingress, "BUILD_DISPATCH_PROPERTIES", rejected
         ), self.assertRaisesRegex(RuntimeError, "resource mapping"):
             ingress.build_systemd_run_command(
-                "/campaign/identity/ingress-build-evidence-v17"
+                "/campaign/identity/ingress-build-evidence-v18"
             )
         with mock.patch.object(
             ingress, "DISPATCH_PROPERTIES", rejected
@@ -502,7 +692,7 @@ class IngressHarnessTest(unittest.TestCase):
     def test_dry_build_plan_is_fresh_exact_and_no_clobber(self):
         with tempfile.TemporaryDirectory() as temporary:
             campaign = pathlib.Path(temporary) / "campaign"
-            output = campaign / "build-plan-v17.json"
+            output = campaign / "build-plan-v18.json"
             plan = ingress.dry_build_plan(campaign, output)
             self.assertEqual(plan["schema"], ingress.BUILD_PLAN_SCHEMA)
             self.assertEqual(plan["status"], "dry_only_not_dispatched")
@@ -976,6 +1166,7 @@ class IngressHarnessTest(unittest.TestCase):
                 "SConstruct": ingress.sha256(sconstruct),
                 "site_scons/gem5_scons/defaults.py": ingress.sha256(defaults),
             }
+            invocation_id, pid, start_ticks = "a" * 32, 77, "12345"
             build = source / "build/X86_UMT_T32_W2"
             build.mkdir(parents=True)
             gem5, object_file, config_compute_tokens, config_fp_issue_width = (
@@ -997,6 +1188,32 @@ class IngressHarnessTest(unittest.TestCase):
                 b"gem5 UMT_INGRESS kind= d64_hold cycle= "
                 b"waiters=%u token=%llu pre="
             )
+            root_stat = build.stat()
+            ownership_record = {
+                "schema": ingress.GENERATED_ROOT_OWNERSHIP_SCHEMA,
+                "unit": ingress.BUILD_UNIT,
+                "invocation_id": invocation_id,
+                "wrapper_pid": pid,
+                "wrapper_proc_start_ticks": start_ticks,
+                "nonce": "b" * 64,
+                "source_root": str(source),
+                "generated_root": str(build),
+                "root_device": root_stat.st_dev,
+                "root_inode": root_stat.st_ino,
+            }
+            sentinel = build / wrapper.SENTINEL_NAME
+            sentinel.write_bytes(
+                wrapper.canonical_json_bytes(ownership_record)
+            )
+            sentinel_stat = sentinel.stat()
+            ownership = {
+                **ownership_record,
+                "sentinel": str(sentinel),
+                "sentinel_sha256": ingress.sha256(sentinel),
+                "sentinel_device": sentinel_stat.st_dev,
+                "sentinel_inode": sentinel_stat.st_ino,
+                "success_state": "retained_in_generated_root",
+            }
             subprocess.run(["git", "init", "-q"], cwd=source, check=True)
             subprocess.run(["git", "add", "."], cwd=source, check=True)
             subprocess.run(
@@ -1022,7 +1239,6 @@ class IngressHarnessTest(unittest.TestCase):
                 path.write_text(text, encoding="utf-8")
                 return {"path": str(path), "sha256": ingress.sha256(path)}
 
-            invocation_id, pid, start_ticks = "a" * 32, 77, "12345"
             evidence = root / ingress.BUILD_EVIDENCE_NAME
             evidence.mkdir()
 
@@ -1094,7 +1310,7 @@ class IngressHarnessTest(unittest.TestCase):
             initial_absent_paths = [str(build), str(gem5), str(object_file)]
             invalidated = {}
             attestation_value = {
-                "schema": "lanl-maa-umt-ingress-build-attestation-v17",
+                "schema": "lanl-maa-umt-ingress-build-attestation-v18",
                 "unit": ingress.BUILD_UNIT,
                 "invocation_id": invocation_id,
                 "wrapper_pid": pid,
@@ -1109,6 +1325,7 @@ class IngressHarnessTest(unittest.TestCase):
                 "initial_absent_paths": initial_absent_paths,
                 "invalidated_artifacts": invalidated,
                 "target_paths_absent_after_clean": True,
+                "generated_root_ownership": ownership,
                 "object_prebuild_argv": list(ingress.OBJECT_PREBUILD_ARGV),
                 "object_prebuild_returncode": 0,
                 "object_prebuild_define_verified": True,
@@ -1331,7 +1548,7 @@ class IngressHarnessTest(unittest.TestCase):
             proof = {
                 "schema": ingress.SCHEMA_BUILD_PROOF,
                 "status": "passed",
-                "producer": "systemd-build-proof-v17-service-wrapper",
+                "producer": "systemd-build-proof-v18-service-wrapper",
                 "source_worktree": str(source),
                 "source_commit": commit,
                 "source_tree": tree,
@@ -1350,6 +1567,7 @@ class IngressHarnessTest(unittest.TestCase):
                 "initial_absent_paths": initial_absent_paths,
                 "invalidated_artifacts": invalidated,
                 "target_paths_absent_after_clean": True,
+                "generated_root_ownership": ownership,
                 "clean_stdout": evidence_items["clean_stdout"],
                 "clean_stderr": evidence_items["clean_stderr"],
                 "object_prebuild_argv": list(ingress.OBJECT_PREBUILD_ARGV),
@@ -1444,6 +1662,7 @@ class IngressHarnessTest(unittest.TestCase):
                 "CANONICAL_SOURCE_TREE": tree,
                 "CANONICAL_GEM5": gem5,
                 "BUILD_ROOT": build,
+                "GENERATED_ROOT_SENTINEL": sentinel,
                 "BUILD_OBJECT": object_file,
                 "CONFIG_ARTIFACTS": {
                     "config_compute_tokens": (

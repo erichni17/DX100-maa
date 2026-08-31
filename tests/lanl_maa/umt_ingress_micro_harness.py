@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed v16 consumer of build-v17 and arm-v7 evidence contracts.
+"""Fail-closed v16 consumer of build-v18 and arm-v7 evidence contracts.
 
 This program only freezes, validates, and records launch commands.  It never
 builds, invokes systemd, or executes gem5.  A future launcher must first
@@ -21,7 +21,7 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 TRACE_BUILD_DEFINE = "LANL_MAA_UMT_INGRESS_TRACE_TEST"
 LABEL_PREFIX = "lanl_maa_umt_ingress_micro"
-SCHEMA_BUILD_PROOF = "lanl-maa-umt-ingress-instrumented-gem5-build-proof-v17"
+SCHEMA_BUILD_PROOF = "lanl-maa-umt-ingress-instrumented-gem5-build-proof-v18"
 SCHEMA_SUBMISSION = "umt-lanl-maa-submission-v1"
 SCHEMA_CONTRACT = "lanl-maa-umt-ingress-contract-v16"
 SCHEMA_DISPATCH_PLAN = "lanl-maa-umt-ingress-dispatch-plan-v16"
@@ -36,9 +36,13 @@ CANONICAL_SOURCE_COMMIT = "45a7be343788dce1180c0117ef9004cf00e9da45"
 CANONICAL_SOURCE_TREE = "81188d67ccee00d720e0343f049a4bb70972b708"
 CANONICAL_GEM5 = CANONICAL_SOURCE / "build/X86_UMT_T32_W2/gem5.opt"
 BUILD_ROOT = CANONICAL_SOURCE / "build/X86_UMT_T32_W2"
-BUILD_UNIT = "umt-ingress-trace-build-v17-20260831.service"
-BUILD_EVIDENCE_NAME = "ingress-build-evidence-v17"
-BUILD_PLAN_SCHEMA = "lanl-maa-umt-ingress-trace-build-plan-v17"
+GENERATED_ROOT_SENTINEL = BUILD_ROOT / ".lanl-maa-umt-build-owner-v18.json"
+GENERATED_ROOT_OWNERSHIP_SCHEMA = (
+    "lanl-maa-umt-ingress-generated-root-owner-v18"
+)
+BUILD_UNIT = "umt-ingress-trace-build-v18-20260831.service"
+BUILD_EVIDENCE_NAME = "ingress-build-evidence-v18"
+BUILD_PLAN_SCHEMA = "lanl-maa-umt-ingress-trace-build-plan-v18"
 BUILD_CLEAN_METHOD = "require-fresh-absent-exact-two-v1"
 BUILD_OBJECT = CANONICAL_SOURCE / "build/X86_UMT_T32_W2/mem/LANLMAA/lanl_maa.o"
 CONFIG_ARTIFACTS = {
@@ -141,7 +145,7 @@ BUILD_JOURNAL_COMMAND = (
     "--no-pager",
     "--output=export",
 )
-JOURNAL_TERMINAL_PROTOCOL = "LANL_MAA_UMT_INGRESS_BUILD_ATTESTATION_V17"
+JOURNAL_TERMINAL_PROTOCOL = "LANL_MAA_UMT_INGRESS_BUILD_ATTESTATION_V18"
 DISPATCH_PROPERTIES = (
     ("CPUQuota", "400%"),
     ("CPUWeight", "1000"),
@@ -155,7 +159,7 @@ BUILD_CLEANUP_COMMANDS = (
     ("systemctl", "--user", "stop", BUILD_UNIT),
     ("systemctl", "--user", "reset-failed", BUILD_UNIT),
 )
-BUILD_CLEANUP_RECEIPT_SCHEMA = "lanl-maa-umt-ingress-build-cleanup-v17"
+BUILD_CLEANUP_RECEIPT_SCHEMA = "lanl-maa-umt-ingress-build-cleanup-v18"
 BUILD_CLEANUP_SHOW_COMMAND = (
     "systemctl",
     "--user",
@@ -736,11 +740,11 @@ def validate_systemd_resource_mapping():
 
 
 def build_systemd_run_command(evidence_dir):
-    """Return the exact retained v17 build-unit launch; never execute it."""
+    """Return the exact retained v18 build-unit launch; never execute it."""
     validate_systemd_resource_mapping()
     evidence = pathlib.Path(evidence_dir).resolve()
     if evidence.name != BUILD_EVIDENCE_NAME:
-        raise RuntimeError("v17 build evidence identity is not canonical")
+        raise RuntimeError("v18 build evidence identity is not canonical")
     command = [
         "systemd-run",
         "--user",
@@ -754,7 +758,7 @@ def build_systemd_run_command(evidence_dir):
         *wrapper_command(evidence),
     ]
     if "--collect" in command:
-        raise RuntimeError("v17 build unit must remain for terminal capture")
+        raise RuntimeError("v18 build unit must remain for terminal capture")
     return command
 
 
@@ -765,9 +769,9 @@ def dry_build_plan(campaign_root, output):
     validate_build_system_contract(CANONICAL_SOURCE)
     campaign = pathlib.Path(campaign_root).resolve()
     output = pathlib.Path(output).resolve()
-    if campaign.exists() or output != campaign / "build-plan-v17.json":
+    if campaign.exists() or output != campaign / "build-plan-v18.json":
         raise RuntimeError(
-            "v17 build plan requires a fresh canonical campaign"
+            "v18 build plan requires a fresh canonical campaign"
         )
     evidence = campaign / "identity" / BUILD_EVIDENCE_NAME
     value = {
@@ -800,6 +804,12 @@ def dry_build_plan(campaign_root, output):
             "wall_time_seconds_range": [3600, 10800],
             "hard_runtime_cap_seconds": 4 * 3600,
         },
+        "generated_root_ownership_policy": {
+            "schema": GENERATED_ROOT_OWNERSHIP_SCHEMA,
+            "sentinel": str(GENERATED_ROOT_SENTINEL),
+            "success_state": "retained_in_generated_root",
+            "failure_action": "remove_only_exact_sentinel_owned_root",
+        },
         "build_argv": list(BUILD_ARGV),
         "resource_policy": RESOURCE_POLICY,
         "launch_command": build_systemd_run_command(evidence),
@@ -810,7 +820,7 @@ def dry_build_plan(campaign_root, output):
         ],
         "cleanup_receipt": {
             "schema": BUILD_CLEANUP_RECEIPT_SCHEMA,
-            "path": str(campaign / "identity/build-cleanup-v17.json"),
+            "path": str(campaign / "identity/build-cleanup-v18.json"),
             "show_command": list(BUILD_CLEANUP_SHOW_COMMAND),
             "required_state": {
                 "LoadState": "not-found",
@@ -1008,7 +1018,7 @@ def journal_marker(
     kind, *, invocation, pid, proc_start_ticks, target_sha256=None
 ):
     value = {
-        "schema": "lanl-maa-umt-ingress-build-attestation-v17",
+        "schema": "lanl-maa-umt-ingress-build-attestation-v18",
         "unit": BUILD_UNIT,
         "invocation_id": invocation,
         "wrapper_pid": pid,
@@ -1188,6 +1198,76 @@ def file_contains(path, needle):
     return False
 
 
+def validate_generated_root_ownership(value, invocation, pid, start_ticks):
+    exact_keys(
+        value,
+        (
+            "schema",
+            "unit",
+            "invocation_id",
+            "wrapper_pid",
+            "wrapper_proc_start_ticks",
+            "nonce",
+            "source_root",
+            "generated_root",
+            "root_device",
+            "root_inode",
+            "sentinel",
+            "sentinel_sha256",
+            "sentinel_device",
+            "sentinel_inode",
+            "success_state",
+        ),
+        "generated-root ownership",
+    )
+    root_stat = BUILD_ROOT.stat()
+    sentinel = verify_hash(
+        value["sentinel"], value["sentinel_sha256"], "ownership sentinel"
+    )
+    sentinel_stat = sentinel.stat()
+    if (
+        value["schema"] != GENERATED_ROOT_OWNERSHIP_SCHEMA
+        or value["unit"] != BUILD_UNIT
+        or value["invocation_id"] != invocation
+        or value["wrapper_pid"] != pid
+        or value["wrapper_proc_start_ticks"] != start_ticks
+        or not re.fullmatch(r"[0-9a-f]{64}", value["nonce"])
+        or pathlib.Path(value["source_root"]).resolve()
+        != CANONICAL_SOURCE.resolve()
+        or pathlib.Path(value["generated_root"]).resolve()
+        != BUILD_ROOT.resolve()
+        or pathlib.Path(value["sentinel"]).resolve()
+        != GENERATED_ROOT_SENTINEL.resolve()
+        or (value["root_device"], value["root_inode"])
+        != (root_stat.st_dev, root_stat.st_ino)
+        or (value["sentinel_device"], value["sentinel_inode"])
+        != (sentinel_stat.st_dev, sentinel_stat.st_ino)
+        or value["success_state"] != "retained_in_generated_root"
+    ):
+        raise RuntimeError("generated-root ownership binding mismatch")
+    record = {
+        key: value[key]
+        for key in (
+            "schema",
+            "unit",
+            "invocation_id",
+            "wrapper_pid",
+            "wrapper_proc_start_ticks",
+            "nonce",
+            "source_root",
+            "generated_root",
+            "root_device",
+            "root_inode",
+        )
+    }
+    if (
+        sentinel.read_bytes()
+        != (json.dumps(record, sort_keys=True, indent=2) + "\n").encode()
+    ):
+        raise RuntimeError("generated-root sentinel content mismatch")
+    return value
+
+
 def read_build_proof(path, digest, gem5, gem5_digest):
     path = verify_hash(path, digest, "instrumented-build proof")
     proof = read_json(path)
@@ -1215,6 +1295,7 @@ def read_build_proof(path, digest, gem5, gem5_digest):
             "initial_absent_paths",
             "invalidated_artifacts",
             "target_paths_absent_after_clean",
+            "generated_root_ownership",
             "clean_stdout",
             "clean_stderr",
             "object_prebuild_argv",
@@ -1237,7 +1318,7 @@ def read_build_proof(path, digest, gem5, gem5_digest):
     if (
         proof["schema"] != SCHEMA_BUILD_PROOF
         or proof["status"] != "passed"
-        or proof["producer"] != "systemd-build-proof-v17-service-wrapper"
+        or proof["producer"] != "systemd-build-proof-v18-service-wrapper"
     ):
         raise RuntimeError("instrumented-build proof schema/status mismatch")
     if (
@@ -1416,6 +1497,7 @@ def read_build_proof(path, digest, gem5, gem5_digest):
             "initial_absent_paths",
             "invalidated_artifacts",
             "target_paths_absent_after_clean",
+            "generated_root_ownership",
             "object_prebuild_argv",
             "object_prebuild_returncode",
             "object_prebuild_define_verified",
@@ -1435,7 +1517,7 @@ def read_build_proof(path, digest, gem5, gem5_digest):
         "wrapper attestation",
     )
     if (
-        attest["schema"] != "lanl-maa-umt-ingress-build-attestation-v17"
+        attest["schema"] != "lanl-maa-umt-ingress-build-attestation-v18"
         or attest["unit"] != BUILD_UNIT
         or attest["invocation_id"] != invocation
         or attest["wrapper_pid"] != pid
@@ -1477,10 +1559,17 @@ def read_build_proof(path, digest, gem5, gem5_digest):
         attest["build_environment"]["fixed_values"]
     )
     validate_build_argv(attest["build_argv"])
+    ownership = validate_generated_root_ownership(
+        attest["generated_root_ownership"],
+        invocation,
+        pid,
+        process["proc_start_ticks"],
+    )
     if (
         attest["build_environment"] != proof["build_environment"]
         or attest["object_prebuild_artifact"] != object_prebuild
         or attest["invalidated_artifacts"] != proof["invalidated_artifacts"]
+        or ownership != proof["generated_root_ownership"]
         or attest["build_artifacts"]
         != {key: value["sha256"] for key, value in artifacts.items()}
     ):

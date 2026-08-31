@@ -9,15 +9,16 @@ mapping cookie.  It rejects v1 entirely: v1 accepted an arbitrary native input
 and a three-field build proof. It also rejects the v6 arm contract, whose
 `systemd-run` command invoked gem5 directly even though analysis required
 captured `gem5.stdout` and `gem5.stderr`. v16 consumes the independently
-reviewed arm-v7 ownership contract with the build-v17 producer/consumer;
+reviewed arm-v7 ownership contract with the build-v18 producer/consumer;
 neither split predecessor is itself accepted as a combined four-arm contract.
-Build-v17 authorizes one fresh instrumented binary and observer-v3 trace format;
+Build-v18 authorizes one fresh instrumented binary and observer-v3 trace format;
 it does not reuse or rerun an arm. The admitted build-v14 proof and v16 arms
 remain historical predecessors whose binary and `%zu` token text cannot
-authorize selected-token analysis or a v17 arm.
+authorize selected-token analysis or a v18 arm. Build-v17 is rejected because
+post-build evidence publication failures could escape its split recovery paths.
 
-The required v17 build proof has exact schema
-`lanl-maa-umt-ingress-instrumented-gem5-build-proof-v17`. It accepts only the
+The required v18 build proof has exact schema
+`lanl-maa-umt-ingress-instrumented-gem5-build-proof-v18`. It accepts only the
 clean, hard-pinned ingress-source-fixes tree at `45a7be34`/`81188d67`, its exact
 `build/X86_UMT_T32_W2/gem5.opt` target, ten fixed source hashes, exact SCons
 assignment-free argv `/usr/bin/scons --ignore-style
@@ -32,7 +33,7 @@ parses them to require the exact `env.Append(CCFLAGS='$CCFLAGS_EXTRA')`, the
 declared `CCFLAGS_EXTRA` environment input, its empty default, and the exact
 `env[key] = env['ENV'].get(key, default)` assignment flow. It
 also requires the actual producing unit
-`umt-ingress-trace-build-v17-20260831.service`, a hash-bound live
+`umt-ingress-trace-build-v18-20260831.service`, a hash-bound live
 `systemctl --user show` snapshot, and a terminal snapshot. Both snapshots
 must exactly agree on unit, invocation ID, original wrapper PID, working
 directory, fixed resources, wrapper command, and empty environment. The
@@ -42,6 +43,14 @@ same `ExecMainPID` and start witness. The wrapper requires the complete
 `build/X86_UMT_T32_W2` variant root—and therefore `gem5.opt` and
 `mem/LANLMAA/lanl_maa.o`—to be absent. It rejects any stale file, directory, or
 symlink and does not copy, reflink, hard-link, or trust a predecessor build tree.
+Before SCons can mutate the root, the wrapper creates an exclusive v18 sentinel
+whose nonce binds the unit, invocation, wrapper PID/start tick, canonical root,
+and root/sentinel device and inode identities. One outer exception path covers
+every operation from this fresh precondition through final attestation
+publication. Recovery revalidates the sentinel, atomically quarantines and
+revalidates the owned inode, removes only that quarantine, fsyncs the parent,
+and asserts the root, target, and object are absent. A replaced root or altered
+sentinel is retained and reported; it is never removed as if job-owned.
 Before the full build, the wrapper runs an actual isolated verbose object-only
 build. It hashes stdout/stderr, requires the real `lanl_maa.cc` compiler line
 to contain exactly one bare `-DLANL_MAA_UMT_INGRESS_TRACE_TEST`, rejects any
@@ -50,7 +59,9 @@ new object hash/inode. The full assignment-free target build then requires the
 gem5 link and proves the object identity remained unchanged. On either phase
 failure, all four phase streams are retained and the generated variant tree is
 removed. Its parent directory is fsynced and the root must again be absent
-before a no-clobber failure-restore-v17 receipt is published. Success also
+before a no-clobber failure-restore-v18 receipt is published. Success retains
+the ownership sentinel in the generated root and binds it in the attestation.
+Success also
 requires a new gem5/object, all three compiled ingress literals—including exact
 `waiters=%u token=%llu pre=`—and the exact observer-v3 gate. The raw
 `journalctl --output=export` parser is byte-safe (including binary-length
@@ -74,7 +85,7 @@ The build dry-plan is separate from execution:
 ```sh
 python3 tests/lanl_maa/umt_ingress_micro_harness.py dry-build-plan \
   --campaign-root BUILD_CAMPAIGN \
-  --output BUILD_CAMPAIGN/build-plan-v17.json
+  --output BUILD_CAMPAIGN/build-plan-v18.json
 ```
 
 It records `systemd-run --user --remain-after-exit`, deliberately without
@@ -127,7 +138,7 @@ target, argv, environment, and resource mapping; while it is live, capture
 the property-limited `systemctl --user show` output and the matching PID's
 `/proc` start ticks in one no-clobber receipt; after exit, capture the same
 property-limited terminal show output and the unit's `journalctl --output=export`
-snapshot. Hash every raw snapshot before constructing the v17 proof, then
+snapshot. Hash every raw snapshot before constructing the v18 proof, then
 freeze the combined v16 contract and only then record (not execute) its arms.
 The terminal journal protocol is a complete equality check, not a text search.
 
