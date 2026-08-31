@@ -146,6 +146,14 @@ def classify(root: Path) -> dict[str, Any]:
     native16 = authority["native"]["native16"]["counters"]
     for field in ("numInst_INDRD", "numInst_INDRMW", "index_words"):
         require(strict[field] == native16[field], f"work differs: {field}")
+    strict_log = (root / "arms/strict_bounded_hybrid/restore.log").read_text(
+        errors="replace"
+    )
+    require(
+        "UME_GZZ_PAGE_CONSUMER mode=maa_div_mul "
+        "physical_tiles_per_core=7 cpu_spd_payload_reads=0" in strict_log,
+        "strict GZZ MAA page consumer did not activate",
+    )
     ticks = {
         **{
             name: item["counters"]["simTicks"]
@@ -160,6 +168,7 @@ def classify(root: Path) -> dict[str, Any]:
         "authority": str(AUTHORITY),
         "native_controls_reused": True,
         "cross_binary_orientation_only": True,
+        "page_consumer": "maa_div_mul",
         "hybrids": hybrids,
         "ticks": ticks,
         "comparisons": {

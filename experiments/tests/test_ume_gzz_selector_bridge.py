@@ -38,6 +38,18 @@ class UmeGzzSelectorBridgeTest(unittest.TestCase):
         self.assertIn("base.copy_stable(gem5, frozen_gem5)", source)
         self.assertIn("frozen_gem5,", source)
 
+    def test_gzz_page_consumer_stays_inside_maa(self) -> None:
+        source = (runner.ROOT / "benchmarks/UME/gradzatz.cpp").read_text()
+        for token in (
+            "page_ratio_tiles",
+            "page_product_tiles",
+            "Operation_t::DIV_OP",
+            "Operation_t::MUL_OP",
+            "UME_GZZ_PAGE_CONSUMER mode=maa_div_mul",
+            "cpu_spd_payload_reads=0",
+        ):
+            self.assertIn(token, source)
+
     def test_authority_native_controls_are_exact(self) -> None:
         authority = runner.verify_authority()
         self.assertEqual(
