@@ -81,7 +81,10 @@ class CgFourArmContractTest(unittest.TestCase):
 
     def test_storage_bound_is_explicit(self) -> None:
         self.assertLessEqual(256 + 8 * 16, 4096)
-        self.assertEqual(MODULE.SELECTOR_FD, 198)
+        self.assertEqual(
+            MODULE.SELECTOR_TARGET,
+            "/tmp/cg_strict_fourarm_selector_20260831",
+        )
 
     def test_terminal_parser_requires_exact_m5_and_reductions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

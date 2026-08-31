@@ -45,7 +45,7 @@ SIMULATOR_SOURCE_COMMIT = "9393ef52e47357d9192050e539e013b6ce64df23"
 CG_NA = 256
 TILE = 16_384
 PHYSICAL = 4_096
-SELECTOR_FD = 198
+SELECTOR_TARGET = "/tmp/cg_strict_fourarm_selector_20260831"
 M5_EXIT = re.compile(
     r"^Exiting @ tick [0-9]+ because m5_exit instruction encountered$"
 )
@@ -201,9 +201,11 @@ def launch_with_selector(
     command: list[str], selector: Path, log: Path, environment: dict[str, str]
 ) -> tuple[subprocess.Popen[bytes], object, dict[str, object]]:
     wrapped = [
+        "/usr/bin/unshare",
+        "-Urnm",
         "/bin/bash",
         "-c",
-        'exec 198<"$1"; shift; exec "$@"',
+        f'mount --bind "$1" {SELECTOR_TARGET}; shift; exec "$@"',
         "cg-selector",
         str(selector),
         *command,
@@ -311,7 +313,7 @@ def common_command(
         "--cmd",
         str(guest),
         "--options",
-        "MAA_DEFERRED /proc/self/fd/198",
+        f"MAA_DEFERRED {SELECTOR_TARGET}",
     ]
     if strict:
         command.append("--maa_virtual_strict_two_phase")
@@ -643,6 +645,7 @@ def run_matrix(
     selector = out / "input/checkpoint.selector"
     selector.write_text("token_stream_ld legacy_4k\n")
     selector.chmod(0o444)
+    Path(SELECTOR_TARGET).write_text("token_stream_ld legacy_4k\n")
     checkpoint = out / "checkpoint"
     checkpoint_command = [
         str(gem5),
@@ -657,7 +660,7 @@ def run_matrix(
         "--cmd",
         str(guest),
         "--options",
-        "MAA_DEFERRED /proc/self/fd/198",
+        f"MAA_DEFERRED {SELECTOR_TARGET}",
     ]
     rc, record = run_logged(
         checkpoint_command, out / "checkpoint.log", environment
