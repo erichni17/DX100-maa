@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed v16 consumer of build-v14 and arm-v7 evidence contracts.
+"""Fail-closed v16 consumer of build-v17 and arm-v7 evidence contracts.
 
 This program only freezes, validates, and records launch commands.  It never
 builds, invokes systemd, or executes gem5.  A future launcher must first
@@ -21,22 +21,25 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 TRACE_BUILD_DEFINE = "LANL_MAA_UMT_INGRESS_TRACE_TEST"
 LABEL_PREFIX = "lanl_maa_umt_ingress_micro"
-SCHEMA_BUILD_PROOF = "lanl-maa-umt-ingress-instrumented-gem5-build-proof-v14"
+SCHEMA_BUILD_PROOF = "lanl-maa-umt-ingress-instrumented-gem5-build-proof-v17"
 SCHEMA_SUBMISSION = "umt-lanl-maa-submission-v1"
 SCHEMA_CONTRACT = "lanl-maa-umt-ingress-contract-v16"
 SCHEMA_DISPATCH_PLAN = "lanl-maa-umt-ingress-dispatch-plan-v16"
 SCHEMA_ARM_REPORT = "lanl-maa-umt-ingress-arm-report-v16"
 CONTRACT_FILENAME = "ingress-contract-v16.json"
 DISPATCH_FILENAME = "ingress-dry-dispatch-v16.json"
-CANONICAL_SOURCE_ROOT = "/data1/nier/worktrees/DX100-umt-trace-replay-20260830"
+CANONICAL_SOURCE_ROOT = (
+    "/data1/nier/worktrees/DX100-umt-ingress-source-fixes-20260831"
+)
 CANONICAL_SOURCE = pathlib.Path(CANONICAL_SOURCE_ROOT)
-CANONICAL_SOURCE_COMMIT = "493c043ef0bc3dee0d91c5511371cedf77f15b5c"
-CANONICAL_SOURCE_TREE = "9f7f0866005260f92bde81d516b520032535a92b"
+CANONICAL_SOURCE_COMMIT = "45a7be343788dce1180c0117ef9004cf00e9da45"
+CANONICAL_SOURCE_TREE = "81188d67ccee00d720e0343f049a4bb70972b708"
 CANONICAL_GEM5 = CANONICAL_SOURCE / "build/X86_UMT_T32_W2/gem5.opt"
-BUILD_UNIT = "umt-ingress-trace-build-v14-20260830.service"
-BUILD_EVIDENCE_NAME = "ingress-build-evidence-v14"
-BUILD_PLAN_SCHEMA = "lanl-maa-umt-ingress-trace-build-plan-v14"
-BUILD_CLEAN_METHOD = "hardlink-preserve-unlink-exact-two-v1"
+BUILD_ROOT = CANONICAL_SOURCE / "build/X86_UMT_T32_W2"
+BUILD_UNIT = "umt-ingress-trace-build-v17-20260831.service"
+BUILD_EVIDENCE_NAME = "ingress-build-evidence-v17"
+BUILD_PLAN_SCHEMA = "lanl-maa-umt-ingress-trace-build-plan-v17"
+BUILD_CLEAN_METHOD = "require-fresh-absent-exact-two-v1"
 BUILD_OBJECT = CANONICAL_SOURCE / "build/X86_UMT_T32_W2/mem/LANLMAA/lanl_maa.o"
 CONFIG_ARTIFACTS = {
     "config_compute_tokens": (
@@ -50,12 +53,6 @@ CONFIG_ARTIFACTS = {
         b"#define LANL_MAA_UMT_FP_ISSUE_WIDTH 2\n",
     ),
 }
-REJECTED_TARGET_SHA256 = (
-    "886ee47a1877ec365333d03b9729575de41febad74935f53575c91b42a46e00c"
-)
-REJECTED_OBJECT_SHA256 = (
-    "bf06d900ea4385f69ae4045a4fbbc5ebdce34a5cb0d6b1ee937f5af59b164ed9"
-)
 EXPECTED_BUILD_ARGV = (
     "/usr/bin/scons",
     "--ignore-style",
@@ -144,7 +141,7 @@ BUILD_JOURNAL_COMMAND = (
     "--no-pager",
     "--output=export",
 )
-JOURNAL_TERMINAL_PROTOCOL = "LANL_MAA_UMT_INGRESS_BUILD_ATTESTATION_V14"
+JOURNAL_TERMINAL_PROTOCOL = "LANL_MAA_UMT_INGRESS_BUILD_ATTESTATION_V17"
 DISPATCH_PROPERTIES = (
     ("CPUQuota", "400%"),
     ("CPUWeight", "1000"),
@@ -158,7 +155,7 @@ BUILD_CLEANUP_COMMANDS = (
     ("systemctl", "--user", "stop", BUILD_UNIT),
     ("systemctl", "--user", "reset-failed", BUILD_UNIT),
 )
-BUILD_CLEANUP_RECEIPT_SCHEMA = "lanl-maa-umt-ingress-build-cleanup-v14"
+BUILD_CLEANUP_RECEIPT_SCHEMA = "lanl-maa-umt-ingress-build-cleanup-v17"
 BUILD_CLEANUP_SHOW_COMMAND = (
     "systemctl",
     "--user",
@@ -186,12 +183,16 @@ NATIVE_ABI_SOURCES = {
     "tests/lanl_maa/test_umt64_native_source.py": "7412b1aa861bbc68eabe7d083eb6cb6c69a679b6c49523893a29d052a03e02eb",
 }
 INSTRUMENTATION_SOURCES = {
-    "src/mem/LANLMAA/UmtOrderedWaveIngressTrace.hh": "31b46207da10d149c59fa5841085458810f037b6a59105ff5fee41b376c48189",
+    "src/base/cprintf.cc": "54e30cca948b267c8384b6c9f2e4d674c7cd79e1e54062d7223805aedb41bf72",
+    "src/base/cprintf.hh": "3249e5f3f3b2de0ad5b5c92c75bb45dafb3f605a93ea814d7eba8c45be0fad0a",
+    "src/base/cprintf_formats.hh": "c44eaae91d027e0b8cf9c083a15927867fd9be49d8fa4c5375ecb3d130839ae5",
+    "src/mem/LANLMAA/UmtOrderedWaveIngressTrace.hh": "b6d3179f58e623c13b3b6afd7174c359085bddc4393d99702df81cf3ab5584bd",
     "src/mem/LANLMAA/UmtOrderedWaveStreamState.hh": "d783907dd26ec671d6ba4a779719e19eadc75098ab25ba0fd3457cf68438b5c8",
     "src/mem/LANLMAA/lanl_maa.hh": "0867579688c902f04b86d0fdce0b896f60b61031d61410fbd4789385b4cd5b9a",
-    "src/mem/LANLMAA/lanl_maa.cc": "dfeb641477a9bf8820b32e8b2231efdc7a968504f34da9b6146e7ed5834e714b",
-    "tests/lanl_maa/umt_production_ingress_trace_test.cc": "1364d75af5b1305775b5d0dceeda5a1e1d4dd188d241b1b3db9667684cf3b436",
-    "tests/lanl_maa/run_umt_production_ingress_trace_gate.py": "25ba79b5acc85b5a8cfb412ff71654b11b0bfa54c50d92a25794d7bf157ede89",
+    "src/mem/LANLMAA/lanl_maa.cc": "7cd51cd29ab76ce43a26dcd7711b72dcb6fb7db2c35c935cbcc47d083d014430",
+    "tests/lanl_maa/umt_ingress_default_off_compile_test.cc": "7d3076bf4f8033e3dc11f54ef94bdcdc756469e816a0bf7425705d55122064c2",
+    "tests/lanl_maa/umt_production_ingress_trace_test.cc": "07a8bdd412cba3d8e7afb4e86bceec4ad5765cb2e1c24a2e6f754436e4032e32",
+    "tests/lanl_maa/run_umt_production_ingress_trace_gate.py": "67cd70ac8d057d5769b7e8e3f0a9e3dd42e05f01b9c432250b1edba0078bea28",
 }
 BUILD_SYSTEM_SOURCES = {
     "SConstruct": "566ccd8621b168e9ef29c04f5bf5ba5414190afbb32bfcac4986843e3f476f19",
@@ -735,11 +736,11 @@ def validate_systemd_resource_mapping():
 
 
 def build_systemd_run_command(evidence_dir):
-    """Return the exact retained v14 build-unit launch; never execute it."""
+    """Return the exact retained v17 build-unit launch; never execute it."""
     validate_systemd_resource_mapping()
     evidence = pathlib.Path(evidence_dir).resolve()
     if evidence.name != BUILD_EVIDENCE_NAME:
-        raise RuntimeError("v14 build evidence identity is not canonical")
+        raise RuntimeError("v17 build evidence identity is not canonical")
     command = [
         "systemd-run",
         "--user",
@@ -753,7 +754,7 @@ def build_systemd_run_command(evidence_dir):
         *wrapper_command(evidence),
     ]
     if "--collect" in command:
-        raise RuntimeError("v14 build unit must remain for terminal capture")
+        raise RuntimeError("v17 build unit must remain for terminal capture")
     return command
 
 
@@ -764,9 +765,9 @@ def dry_build_plan(campaign_root, output):
     validate_build_system_contract(CANONICAL_SOURCE)
     campaign = pathlib.Path(campaign_root).resolve()
     output = pathlib.Path(output).resolve()
-    if campaign.exists() or output != campaign / "build-plan-v14.json":
+    if campaign.exists() or output != campaign / "build-plan-v17.json":
         raise RuntimeError(
-            "v14 build plan requires a fresh canonical campaign"
+            "v17 build plan requires a fresh canonical campaign"
         )
     evidence = campaign / "identity" / BUILD_EVIDENCE_NAME
     value = {
@@ -786,10 +787,18 @@ def dry_build_plan(campaign_root, output):
         "unit": BUILD_UNIT,
         "evidence_dir": str(evidence),
         "clean_method": BUILD_CLEAN_METHOD,
-        "invalidated_paths": [str(CANONICAL_GEM5), str(BUILD_OBJECT)],
-        "rejected_sha256": {
-            str(CANONICAL_GEM5): REJECTED_TARGET_SHA256,
-            str(BUILD_OBJECT): REJECTED_OBJECT_SHA256,
+        "required_initial_absent_paths": [
+            str(BUILD_ROOT),
+            str(CANONICAL_GEM5),
+            str(BUILD_OBJECT),
+        ],
+        "fresh_full_build_expected_cost": {
+            "estimate_only": True,
+            "cpu_cores": 4,
+            "memory_max_bytes": 16 * 1024**3,
+            "disk_output_bytes_range": [7 * 1024**3, 12 * 1024**3],
+            "wall_time_seconds_range": [3600, 10800],
+            "hard_runtime_cap_seconds": 4 * 3600,
         },
         "build_argv": list(BUILD_ARGV),
         "resource_policy": RESOURCE_POLICY,
@@ -801,7 +810,7 @@ def dry_build_plan(campaign_root, output):
         ],
         "cleanup_receipt": {
             "schema": BUILD_CLEANUP_RECEIPT_SCHEMA,
-            "path": str(campaign / "identity/build-cleanup-v14.json"),
+            "path": str(campaign / "identity/build-cleanup-v17.json"),
             "show_command": list(BUILD_CLEANUP_SHOW_COMMAND),
             "required_state": {
                 "LoadState": "not-found",
@@ -999,7 +1008,7 @@ def journal_marker(
     kind, *, invocation, pid, proc_start_ticks, target_sha256=None
 ):
     value = {
-        "schema": "lanl-maa-umt-ingress-build-attestation-v14",
+        "schema": "lanl-maa-umt-ingress-build-attestation-v17",
         "unit": BUILD_UNIT,
         "invocation_id": invocation,
         "wrapper_pid": pid,
@@ -1203,6 +1212,7 @@ def read_build_proof(path, digest, gem5, gem5_digest):
             "instrumentation_source_sha256",
             "build_system_source_sha256",
             "clean_method",
+            "initial_absent_paths",
             "invalidated_artifacts",
             "target_paths_absent_after_clean",
             "clean_stdout",
@@ -1227,7 +1237,7 @@ def read_build_proof(path, digest, gem5, gem5_digest):
     if (
         proof["schema"] != SCHEMA_BUILD_PROOF
         or proof["status"] != "passed"
-        or proof["producer"] != "systemd-build-proof-v14-service-wrapper"
+        or proof["producer"] != "systemd-build-proof-v17-service-wrapper"
     ):
         raise RuntimeError("instrumented-build proof schema/status mismatch")
     if (
@@ -1253,6 +1263,9 @@ def read_build_proof(path, digest, gem5, gem5_digest):
         or proof["build_system_source_sha256"] != BUILD_SYSTEM_SOURCES
         or proof["clean_method"] != BUILD_CLEAN_METHOD
         or proof["target_paths_absent_after_clean"] is not True
+        or proof["initial_absent_paths"]
+        != [str(BUILD_ROOT), str(CANONICAL_GEM5), str(BUILD_OBJECT)]
+        or proof["invalidated_artifacts"] != {}
         or tuple(proof["object_prebuild_argv"]) != OBJECT_PREBUILD_ARGV
         or proof["object_prebuild_returncode"] != 0
         or proof["object_prebuild_define_verified"] is not True
@@ -1304,7 +1317,11 @@ def read_build_proof(path, digest, gem5, gem5_digest):
             raise RuntimeError("generated UMT variant header is not exact")
     if artifacts["gem5"]["sha256"] != gem5_digest or not all(
         file_contains(CANONICAL_GEM5, item)
-        for item in (b"UMT_INGRESS kind=", b"d64_hold cycle=")
+        for item in (
+            b"UMT_INGRESS kind=",
+            b"d64_hold cycle=",
+            b"waiters=%u token=%llu pre=",
+        )
     ):
         raise RuntimeError("canonical gem5 lacks exact instrumented identity")
 
@@ -1396,6 +1413,7 @@ def read_build_proof(path, digest, gem5, gem5_digest):
             "source_clean_after",
             "source_identity_unchanged",
             "clean_method",
+            "initial_absent_paths",
             "invalidated_artifacts",
             "target_paths_absent_after_clean",
             "object_prebuild_argv",
@@ -1417,7 +1435,7 @@ def read_build_proof(path, digest, gem5, gem5_digest):
         "wrapper attestation",
     )
     if (
-        attest["schema"] != "lanl-maa-umt-ingress-build-attestation-v14"
+        attest["schema"] != "lanl-maa-umt-ingress-build-attestation-v17"
         or attest["unit"] != BUILD_UNIT
         or attest["invocation_id"] != invocation
         or attest["wrapper_pid"] != pid
@@ -1430,6 +1448,9 @@ def read_build_proof(path, digest, gem5, gem5_digest):
         or attest["source_identity_unchanged"] is not True
         or attest["clean_method"] != BUILD_CLEAN_METHOD
         or attest["target_paths_absent_after_clean"] is not True
+        or attest["initial_absent_paths"]
+        != [str(BUILD_ROOT), str(CANONICAL_GEM5), str(BUILD_OBJECT)]
+        or attest["invalidated_artifacts"] != {}
         or tuple(attest["object_prebuild_argv"]) != OBJECT_PREBUILD_ARGV
         or attest["object_prebuild_returncode"] != 0
         or attest["object_prebuild_define_verified"] is not True
@@ -1440,7 +1461,11 @@ def read_build_proof(path, digest, gem5, gem5_digest):
         or attest["instrumentation_source_sha256"] != INSTRUMENTATION_SOURCES
         or attest["build_system_source_sha256"] != BUILD_SYSTEM_SOURCES
         or attest["compiled_binary_markers"]
-        != ["UMT_INGRESS kind=", "d64_hold cycle="]
+        != [
+            "UMT_INGRESS kind=",
+            "d64_hold cycle=",
+            "waiters=%u token=%llu pre=",
+        ]
     ):
         raise RuntimeError(
             "wrapper attestation identity/build binding mismatch"
@@ -1463,55 +1488,6 @@ def read_build_proof(path, digest, gem5, gem5_digest):
             "proof/wrapper clean or artifact cross-binding mismatch"
         )
 
-    invalidated = proof["invalidated_artifacts"]
-    expected_old = {
-        str(CANONICAL_GEM5.relative_to(CANONICAL_SOURCE)): (
-            "rejected-gem5.opt",
-            REJECTED_TARGET_SHA256,
-            CANONICAL_GEM5,
-        ),
-        str(BUILD_OBJECT.relative_to(CANONICAL_SOURCE)): (
-            "rejected-lanl_maa.o",
-            REJECTED_OBJECT_SHA256,
-            BUILD_OBJECT,
-        ),
-    }
-    exact_keys(invalidated, expected_old, "invalidated artifacts")
-    for relative, (name, old_hash, canonical) in expected_old.items():
-        record = invalidated[relative]
-        exact_keys(
-            record,
-            (
-                "canonical_path",
-                "preserved",
-                "original_device",
-                "original_inode",
-                "preserved_device",
-                "preserved_inode",
-                "canonical_absent_after_clean",
-            ),
-            "invalidated artifact",
-        )
-        preserved = evidence_artifact(record["preserved"], evidence_dir, name)
-        current = canonical.stat()
-        if (
-            pathlib.Path(record["canonical_path"]).resolve()
-            != canonical.resolve()
-            or record["canonical_absent_after_clean"] is not True
-            or record["original_device"] != record["preserved_device"]
-            or record["original_inode"] != record["preserved_inode"]
-            or sha256(preserved) != old_hash
-            or (current.st_dev, current.st_ino)
-            == (record["preserved_device"], record["preserved_inode"])
-            or artifacts[
-                "gem5" if canonical == CANONICAL_GEM5 else "lanl_maa_o"
-            ]["sha256"]
-            == old_hash
-        ):
-            raise RuntimeError(
-                "invalidated/rebuilt artifact identity mismatch"
-            )
-
     evidence_names = {
         "clean_stdout": "clean.stdout",
         "clean_stderr": "clean.stderr",
@@ -1526,8 +1502,6 @@ def read_build_proof(path, digest, gem5, gem5_digest):
         "source_manifest": "observer-input-source-sha256.json",
         "build_system_manifest": "build-system-source-sha256.json",
         "target_config_literal_scan": "target-config-literal-scan.json",
-        "rejected_gem5": "rejected-gem5.opt",
-        "rejected_lanl_maa_o": "rejected-lanl_maa.o",
     }
     exact_keys(attest["evidence"], evidence_names, "wrapper evidence")
     for key, name in evidence_names.items():
@@ -1557,8 +1531,13 @@ def read_build_proof(path, digest, gem5, gem5_digest):
         != (
             "clean_method="
             + BUILD_CLEAN_METHOD
-            + "\ninvalidated="
-            + ",".join(expected_old)
+            + "\ninitial_absent="
+            + ",".join(
+                (
+                    str(CANONICAL_GEM5.relative_to(CANONICAL_SOURCE)),
+                    str(BUILD_OBJECT.relative_to(CANONICAL_SOURCE)),
+                )
+            )
             + "\nstatus=0/SUCCESS\n"
         )
     ):
@@ -1617,7 +1596,11 @@ def read_build_proof(path, digest, gem5, gem5_digest):
         or scan["config_fp_issue_width_sha256"]
         != artifacts["config_fp_issue_width"]["sha256"]
         or scan["compiled_binary_markers"]
-        != ["UMT_INGRESS kind=", "d64_hold cycle="]
+        != [
+            "UMT_INGRESS kind=",
+            "d64_hold cycle=",
+            "waiters=%u token=%llu pre=",
+        ]
     ):
         raise RuntimeError("target/object/config scan mismatch")
 
@@ -1694,6 +1677,9 @@ def read_build_proof(path, digest, gem5, gem5_digest):
             "waiter_counts": [1, 7, 8],
             "abi_boundaries": ["D32", "D64"],
             "two_lane_serialization": "rejected_by_trace_difference",
+            "selected_token_text": (
+                "numeric_for_denominator_and_source_sentinel"
+            ),
             "default_off": "compiled_without_observer_macro",
         }
         for t, w in ((24, 1), (24, 2), (32, 1), (32, 2))
@@ -1712,7 +1698,7 @@ def read_build_proof(path, digest, gem5, gem5_digest):
             "compiled_binary_markers",
             "cells",
         }
-        or report["schema"] != "lanl-maa-umt-production-ingress-trace-v2"
+        or report["schema"] != "lanl-maa-umt-production-ingress-trace-v3"
         or report["status"] != "passed"
         or pathlib.Path(report["source_root"]).resolve()
         != CANONICAL_SOURCE.resolve()
@@ -1721,7 +1707,11 @@ def read_build_proof(path, digest, gem5, gem5_digest):
         or report["binary_sha256"] != gem5_digest
         or report["required_define"] != TRACE_BUILD_DEFINE
         or report["compiled_binary_markers"]
-        != ["UMT_INGRESS kind=", "d64_hold cycle="]
+        != [
+            "UMT_INGRESS kind=",
+            "d64_hold cycle=",
+            "waiters=%u token=%llu pre=",
+        ]
         or report["cells"] != expected_cells
         or "status=0/SUCCESS"
         not in pathlib.Path(transcript)

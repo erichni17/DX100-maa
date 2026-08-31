@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Service-owned, fail-closed v14 ingress-observer build attestation.
+"""Service-owned, fail-closed v17 ingress-observer build attestation.
 
-The wrapper preserves the two rejected build artifacts with hard links,
-invalidates only their canonical paths, and then requires SCons to compile the
-MAA object and relink gem5.  It never overwrites an evidence directory.
+The wrapper requires a fresh source worktree with both build artifacts absent,
+then requires SCons to compile the MAA object before the complete gem5 target.
+On failure it restores the exact absent pre-state.  It never overwrites an
+evidence directory.
 """
 
 import argparse
@@ -14,15 +15,17 @@ import os
 import pathlib
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 
-BUILD_UNIT = "umt-ingress-trace-build-v14-20260830.service"
-SOURCE_ROOT = "/data1/nier/worktrees/DX100-umt-trace-replay-20260830"
-SOURCE_COMMIT = "493c043ef0bc3dee0d91c5511371cedf77f15b5c"
-SOURCE_TREE = "9f7f0866005260f92bde81d516b520032535a92b"
+BUILD_UNIT = "umt-ingress-trace-build-v17-20260831.service"
+SOURCE_ROOT = "/data1/nier/worktrees/DX100-umt-ingress-source-fixes-20260831"
+SOURCE_COMMIT = "45a7be343788dce1180c0117ef9004cf00e9da45"
+SOURCE_TREE = "81188d67ccee00d720e0343f049a4bb70972b708"
 TARGET_RELATIVE = "build/X86_UMT_T32_W2/gem5.opt"
 OBJECT_RELATIVE = "build/X86_UMT_T32_W2/mem/LANLMAA/lanl_maa.o"
+BUILD_ROOT_RELATIVE = "build/X86_UMT_T32_W2"
 CONFIG_ARTIFACTS = {
     "config_compute_tokens": (
         "build/X86_UMT_T32_W2/config/lanl_maa_umt_compute_tokens.hh",
@@ -33,21 +36,7 @@ CONFIG_ARTIFACTS = {
         b"#define LANL_MAA_UMT_FP_ISSUE_WIDTH 2\n",
     ),
 }
-INVALIDATED_RELATIVES = (TARGET_RELATIVE, OBJECT_RELATIVE)
-PRESERVED_NAMES = {
-    TARGET_RELATIVE: "rejected-gem5.opt",
-    OBJECT_RELATIVE: "rejected-lanl_maa.o",
-}
-REJECTED_TARGET_SHA256 = (
-    "886ee47a1877ec365333d03b9729575de41febad74935f53575c91b42a46e00c"
-)
-REJECTED_OBJECT_SHA256 = (
-    "bf06d900ea4385f69ae4045a4fbbc5ebdce34a5cb0d6b1ee937f5af59b164ed9"
-)
-REJECTED_SHA256 = {
-    TARGET_RELATIVE: REJECTED_TARGET_SHA256,
-    OBJECT_RELATIVE: REJECTED_OBJECT_SHA256,
-}
+BUILD_RELATIVES = (TARGET_RELATIVE, OBJECT_RELATIVE)
 EXPECTED_BUILD_ARGV = (
     "/usr/bin/scons",
     "--ignore-style",
@@ -64,12 +53,16 @@ OBJECT_PREBUILD_ARGV = (
     "-j1",
 )
 SOURCE_SHA256 = {
-    "src/mem/LANLMAA/UmtOrderedWaveIngressTrace.hh": "31b46207da10d149c59fa5841085458810f037b6a59105ff5fee41b376c48189",
+    "src/base/cprintf.cc": "54e30cca948b267c8384b6c9f2e4d674c7cd79e1e54062d7223805aedb41bf72",
+    "src/base/cprintf.hh": "3249e5f3f3b2de0ad5b5c92c75bb45dafb3f605a93ea814d7eba8c45be0fad0a",
+    "src/base/cprintf_formats.hh": "c44eaae91d027e0b8cf9c083a15927867fd9be49d8fa4c5375ecb3d130839ae5",
+    "src/mem/LANLMAA/UmtOrderedWaveIngressTrace.hh": "b6d3179f58e623c13b3b6afd7174c359085bddc4393d99702df81cf3ab5584bd",
     "src/mem/LANLMAA/UmtOrderedWaveStreamState.hh": "d783907dd26ec671d6ba4a779719e19eadc75098ab25ba0fd3457cf68438b5c8",
     "src/mem/LANLMAA/lanl_maa.hh": "0867579688c902f04b86d0fdce0b896f60b61031d61410fbd4789385b4cd5b9a",
-    "src/mem/LANLMAA/lanl_maa.cc": "dfeb641477a9bf8820b32e8b2231efdc7a968504f34da9b6146e7ed5834e714b",
-    "tests/lanl_maa/umt_production_ingress_trace_test.cc": "1364d75af5b1305775b5d0dceeda5a1e1d4dd188d241b1b3db9667684cf3b436",
-    "tests/lanl_maa/run_umt_production_ingress_trace_gate.py": "25ba79b5acc85b5a8cfb412ff71654b11b0bfa54c50d92a25794d7bf157ede89",
+    "src/mem/LANLMAA/lanl_maa.cc": "7cd51cd29ab76ce43a26dcd7711b72dcb6fb7db2c35c935cbcc47d083d014430",
+    "tests/lanl_maa/umt_ingress_default_off_compile_test.cc": "7d3076bf4f8033e3dc11f54ef94bdcdc756469e816a0bf7425705d55122064c2",
+    "tests/lanl_maa/umt_production_ingress_trace_test.cc": "07a8bdd412cba3d8e7afb4e86bceec4ad5765cb2e1c24a2e6f754436e4032e32",
+    "tests/lanl_maa/run_umt_production_ingress_trace_gate.py": "67cd70ac8d057d5769b7e8e3f0a9e3dd42e05f01b9c432250b1edba0078bea28",
 }
 BUILD_SYSTEM_SHA256 = {
     "SConstruct": "566ccd8621b168e9ef29c04f5bf5ba5414190afbb32bfcac4986843e3f476f19",
@@ -77,10 +70,14 @@ BUILD_SYSTEM_SHA256 = {
         "b10bb7b6aef8b6716a30af1560e8d8e55fae9cdb696cb4ccede7ba5d3a19ed25"
     ),
 }
-PROTOCOL = "LANL_MAA_UMT_INGRESS_BUILD_ATTESTATION_V14"
-SCHEMA = "lanl-maa-umt-ingress-build-attestation-v14"
-CLEAN_METHOD = "hardlink-preserve-unlink-exact-two-v1"
-COMPILED_MARKERS = (b"UMT_INGRESS kind=", b"d64_hold cycle=")
+PROTOCOL = "LANL_MAA_UMT_INGRESS_BUILD_ATTESTATION_V17"
+SCHEMA = "lanl-maa-umt-ingress-build-attestation-v17"
+CLEAN_METHOD = "require-fresh-absent-exact-two-v1"
+COMPILED_MARKERS = (
+    b"UMT_INGRESS kind=",
+    b"d64_hold cycle=",
+    b"waiters=%u token=%llu pre=",
+)
 SAFE_CHILD_ENV = {
     "CCFLAGS_EXTRA": TRACE_DEFINE_FLAG,
     "PATH": "/usr/local/bin:/usr/bin:/bin",
@@ -313,59 +310,13 @@ def validate_source(source):
     validate_build_system_contract(source)
 
 
-def preserve_and_invalidate(source, evidence):
-    """Hard-link, attest, and unlink exactly the target and MAA object."""
-    preflight = {}
-    for relative in INVALIDATED_RELATIVES:
-        original = source / relative
-        preserved = evidence / PRESERVED_NAMES[relative]
-        if not original.is_file() or preserved.exists():
-            raise RuntimeError(
-                "clean input is absent or preservation clobbers"
-            )
-        before = original.stat()
-        digest = sha256(original)
-        if digest != REJECTED_SHA256[relative]:
-            raise RuntimeError("rejected build-artifact identity mismatch")
-        preflight[relative] = (original, preserved, before, digest)
-
-    # Preserve both inputs before unlinking either canonical path.  A failure
-    # can leave partial evidence, but never an unpreserved rejected artifact.
-    for original, preserved, before, digest in preflight.values():
-        os.link(original, preserved)
-        linked = preserved.stat()
-        if (before.st_dev, before.st_ino) != (
-            linked.st_dev,
-            linked.st_ino,
-        ) or sha256(preserved) != digest:
-            raise RuntimeError("preserved artifact is not the original inode")
-
-    records = {}
-    for relative, (original, preserved, before, digest) in preflight.items():
-        linked = preserved.stat()
-        original.unlink()
-        if original.exists():
-            raise RuntimeError("clean did not remove canonical build path")
-        after = preserved.stat()
-        if (after.st_dev, after.st_ino) != (
-            linked.st_dev,
-            linked.st_ino,
-        ) or sha256(preserved) != digest:
-            raise RuntimeError(
-                "preserved artifact changed during invalidation"
-            )
-        records[relative] = {
-            "canonical_path": str(original),
-            "preserved": {"path": str(preserved), "sha256": digest},
-            "original_device": before.st_dev,
-            "original_inode": before.st_ino,
-            "preserved_device": after.st_dev,
-            "preserved_inode": after.st_ino,
-            "canonical_absent_after_clean": True,
-        }
-    if any((source / relative).exists() for relative in INVALIDATED_RELATIVES):
-        raise RuntimeError("clean left an invalidated build path present")
-    return records
+def require_initial_absence(source):
+    """Require an entirely absent variant root before a fresh full build."""
+    build_root = source / BUILD_ROOT_RELATIVE
+    paths = [source / relative for relative in BUILD_RELATIVES]
+    if build_root.exists() or build_root.is_symlink():
+        raise RuntimeError("fresh build requires the variant root absent")
+    return [str(build_root), *(str(path) for path in paths)]
 
 
 def validate_link_transcript(raw):
@@ -380,18 +331,12 @@ def validate_link_transcript(raw):
         raise RuntimeError("SCons transcript lacks the exact gem5 link")
 
 
-def validate_rebuilt_path(source, relative, invalidated):
+def validate_rebuilt_path(source, relative):
     path = source / relative
     if not path.is_file():
         raise RuntimeError("SCons did not recreate the required build path")
     current = path.stat()
-    old = invalidated[relative]
     digest = sha256(path)
-    if (current.st_dev, current.st_ino) == (
-        old["preserved_device"],
-        old["preserved_inode"],
-    ) or digest == old["preserved"]["sha256"]:
-        raise RuntimeError("rebuilt artifact reuses rejected identity")
     return {
         "path": str(path),
         "sha256": digest,
@@ -409,53 +354,30 @@ def validate_unchanged_identity(path, expected):
         raise RuntimeError("object identity changed during the full build")
 
 
-def restore_canonical_paths(source, evidence, invalidated, phase, error):
-    restored = {}
-    for relative in INVALIDATED_RELATIVES:
-        canonical = source / relative
-        preserved = pathlib.Path(invalidated[relative]["preserved"]["path"])
-        preserved_stat = preserved.stat()
-        preserved_hash = invalidated[relative]["preserved"]["sha256"]
-        if sha256(preserved) != preserved_hash:
-            raise RuntimeError("preserved recovery artifact hash changed")
-        action = "retained_preserved_identity"
-        canonical_matches = False
-        if canonical.exists():
-            current = canonical.stat()
-            canonical_matches = (current.st_dev, current.st_ino) == (
-                preserved_stat.st_dev,
-                preserved_stat.st_ino,
-            ) and sha256(canonical) == preserved_hash
-        if not canonical_matches:
-            canonical.parent.mkdir(parents=True, exist_ok=True)
-            action = (
-                "restored_missing_from_preserved"
-                if not canonical.exists()
-                else "replaced_different_with_preserved"
-            )
-            if canonical.exists():
-                canonical.unlink()
-            os.link(preserved, canonical)
-            directory = os.open(canonical.parent, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
-        current = canonical.stat()
-        if (current.st_dev, current.st_ino) != (
-            preserved_stat.st_dev,
-            preserved_stat.st_ino,
-        ) or sha256(canonical) != preserved_hash:
-            raise RuntimeError("canonical recovery identity mismatch")
-        restored[relative] = {
+def restore_canonical_paths(source, evidence, phase, error):
+    """Remove the scoped variant tree and attest exact fresh absence."""
+    build_root = source / BUILD_ROOT_RELATIVE
+    action = "already_absent"
+    if build_root.exists() or build_root.is_symlink():
+        if build_root.is_dir() and not build_root.is_symlink():
+            shutil.rmtree(build_root)
+        else:
+            build_root.unlink()
+        action = "removed_generated_variant_tree"
+        directory = os.open(build_root.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    if build_root.exists() or build_root.is_symlink():
+        raise RuntimeError("failure cleanup did not restore variant absence")
+    restored = {
+        BUILD_ROOT_RELATIVE: {
             "action": action,
-            "path": str(canonical),
-            "sha256": sha256(canonical),
-            "device": current.st_dev,
-            "inode": current.st_ino,
-            "identity_equal_preserved": True,
-            "preserved": {"path": str(preserved), "sha256": preserved_hash},
+            "path": str(build_root),
+            "restored_state": "absent",
         }
+    }
     phase_outputs = {
         name: evidence_artifact(evidence, name)
         for name in (
@@ -466,8 +388,8 @@ def restore_canonical_paths(source, evidence, invalidated, phase, error):
         )
     }
     value = {
-        "schema": "lanl-maa-umt-ingress-build-failure-restore-v14",
-        "status": "failed_phase_restored_exact_identities",
+        "schema": "lanl-maa-umt-ingress-build-failure-restore-v17",
+        "status": "failed_phase_restored_exact_absence",
         "unit": BUILD_UNIT,
         "phase": phase,
         "error_type": type(error).__name__,
@@ -505,6 +427,9 @@ def validate_gate_report(value, source, target, target_sha256, inputs):
             "waiter_counts": [1, 7, 8],
             "abi_boundaries": ["D32", "D64"],
             "two_lane_serialization": "rejected_by_trace_difference",
+            "selected_token_text": (
+                "numeric_for_denominator_and_source_sentinel"
+            ),
             "default_off": "compiled_without_observer_macro",
         }
         for tokens, width in ((24, 1), (24, 2), (32, 1), (32, 2))
@@ -523,7 +448,7 @@ def validate_gate_report(value, source, target, target_sha256, inputs):
             "compiled_binary_markers",
             "cells",
         }
-        or value["schema"] != "lanl-maa-umt-production-ingress-trace-v2"
+        or value["schema"] != "lanl-maa-umt-production-ingress-trace-v3"
         or value["status"] != "passed"
         or pathlib.Path(value["source_root"]).resolve() != source
         or value["input_source_sha256"] != inputs
@@ -534,7 +459,7 @@ def validate_gate_report(value, source, target, target_sha256, inputs):
         != [item.decode() for item in COMPILED_MARKERS]
         or value["cells"] != expected_cells
     ):
-        raise RuntimeError("observer gate report is not exact v2 evidence")
+        raise RuntimeError("observer gate report is not exact v3 evidence")
 
 
 def main(argv=None):
@@ -549,7 +474,7 @@ def main(argv=None):
     if (
         args.unit != BUILD_UNIT
         or source != pathlib.Path(SOURCE_ROOT)
-        or evidence.name != "ingress-build-evidence-v14"
+        or evidence.name != "ingress-build-evidence-v17"
         or not re.fullmatch(r"[0-9a-f]{32}", invocation)
     ):
         raise RuntimeError("wrapper identity/invocation binding is invalid")
@@ -570,14 +495,14 @@ def main(argv=None):
     clean_stdout = evidence / "clean.stdout"
     clean_stderr = evidence / "clean.stderr"
     try:
-        invalidated = preserve_and_invalidate(source, evidence)
+        initial_absent_paths = require_initial_absence(source)
         no_clobber_text(
             clean_stdout,
             "clean_method="
             + CLEAN_METHOD
             + "\n"
-            + "invalidated="
-            + ",".join(INVALIDATED_RELATIVES)
+            + "initial_absent="
+            + ",".join(BUILD_RELATIVES)
             + "\n"
             + "status=0/SUCCESS\n",
         )
@@ -608,13 +533,9 @@ def main(argv=None):
         validate_object_compile_transcript(object_stdout.read_bytes())
         if (source / TARGET_RELATIVE).exists():
             raise RuntimeError("object-only prebuild recreated gem5")
-        object_artifact = validate_rebuilt_path(
-            source, OBJECT_RELATIVE, invalidated
-        )
+        object_artifact = validate_rebuilt_path(source, OBJECT_RELATIVE)
     except Exception as error:
-        restore_canonical_paths(
-            source, evidence, invalidated, "object_prebuild", error
-        )
+        restore_canonical_paths(source, evidence, "object_prebuild", error)
         raise
 
     try:
@@ -630,14 +551,10 @@ def main(argv=None):
         if completed.returncode != 0:
             raise RuntimeError("SCons returned nonzero")
         validate_link_transcript(build_stdout.read_bytes())
-        target_artifact = validate_rebuilt_path(
-            source, TARGET_RELATIVE, invalidated
-        )
+        target_artifact = validate_rebuilt_path(source, TARGET_RELATIVE)
         validate_unchanged_identity(source / OBJECT_RELATIVE, object_artifact)
     except Exception as error:
-        restore_canonical_paths(
-            source, evidence, invalidated, "full_build", error
-        )
+        restore_canonical_paths(source, evidence, "full_build", error)
         raise
 
     target = source / TARGET_RELATIVE
@@ -663,7 +580,7 @@ def main(argv=None):
         }
     except Exception as error:
         restore_canonical_paths(
-            source, evidence, invalidated, "full_build_validation", error
+            source, evidence, "full_build_validation", error
         )
         raise
 
@@ -713,9 +630,7 @@ def main(argv=None):
         )
     if result.returncode != 0:
         error = RuntimeError("observer gate failed")
-        restore_canonical_paths(
-            source, evidence, invalidated, "observer_gate", error
-        )
+        restore_canonical_paths(source, evidence, "observer_gate", error)
         raise error
     report_copy = evidence / "observer-report.json"
     with report_copy.open("xb") as stream:
@@ -728,10 +643,8 @@ def main(argv=None):
             artifacts["gem5"],
             inputs,
         )
-    except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as error:
-        restore_canonical_paths(
-            source, evidence, invalidated, "observer_report", error
-        )
+    except Exception as error:
+        restore_canonical_paths(source, evidence, "observer_report", error)
         raise RuntimeError("observer gate report is invalid") from error
     transcript = evidence / "observer-transcript.txt"
     no_clobber_text(transcript, "status=0/SUCCESS\n")
@@ -750,8 +663,6 @@ def main(argv=None):
         "source_manifest": "observer-input-source-sha256.json",
         "build_system_manifest": "build-system-source-sha256.json",
         "target_config_literal_scan": "target-config-literal-scan.json",
-        "rejected_gem5": PRESERVED_NAMES[TARGET_RELATIVE],
-        "rejected_lanl_maa_o": PRESERVED_NAMES[OBJECT_RELATIVE],
     }
     evidence_items = {
         key: evidence_artifact(evidence, name)
@@ -766,7 +677,8 @@ def main(argv=None):
         "source_clean_after": True,
         "source_identity_unchanged": True,
         "clean_method": CLEAN_METHOD,
-        "invalidated_artifacts": invalidated,
+        "initial_absent_paths": initial_absent_paths,
+        "invalidated_artifacts": {},
         "target_paths_absent_after_clean": True,
         "object_prebuild_argv": list(OBJECT_PREBUILD_ARGV),
         "object_prebuild_returncode": 0,
