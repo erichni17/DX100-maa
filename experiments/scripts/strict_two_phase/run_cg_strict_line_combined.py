@@ -128,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--payload-banks",
         type=int,
-        choices=(0, 1, 2, 4, 8, 16),
+        choices=(0, 1, 2, 4, 8, 16, 32, 64),
         default=0,
         help="payload RAM banks with one word read per bank each cycle",
     )

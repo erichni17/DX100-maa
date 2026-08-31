@@ -419,7 +419,7 @@ MAA::MAA(const MAAParams &p)
                  virtual_complete_line_payload_banks) ||
                  (virtual_complete_line_payload_banks != 0 &&
                   virtual_complete_line_payload_words_per_cycle == 0),
-             "Virtual payload banks must be 0/1/2/4/8/16 and require a "
+             "Virtual payload banks must be 0/1/2/4/8/16/32/64 and require a "
              "finite payload width, got %u\n",
              virtual_complete_line_payload_banks);
     panic_if(virtual_complete_line_payload_stage_partial &&

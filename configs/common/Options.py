@@ -396,7 +396,7 @@ def addNoISAOptions(parser):
         "--maa_virtual_complete_line_payload_banks",
         type=int,
         default=0,
-        choices=(0, 1, 2, 4, 8, 16),
+        choices=(0, 1, 2, 4, 8, 16, 32, 64),
         help="Payload RAM banks with one word read per bank each cycle",
     )
     parser.add_argument(

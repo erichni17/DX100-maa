@@ -13,6 +13,7 @@ class CompleteLinePayloadStaging
 {
   public:
     static constexpr uint32_t MaxActiveLines = 16;
+    static constexpr uint32_t MaxPayloadBanks = 64;
 
     // This is a read-port timing model. Payload remains in the bounded
     // combiner store; entries retain only identity and progress.
@@ -24,7 +25,7 @@ class CompleteLinePayloadStaging
         uint16_t validWords = 0;
         uint8_t totalWords = 0;
         uint8_t bankCount = 0;
-        std::array<uint8_t, 16> bankWords{};
+        std::array<uint8_t, MaxPayloadBanks> bankWords{};
 
         bool operator==(const Identity &other) const
         {
@@ -76,7 +77,8 @@ class CompleteLinePayloadStaging
     static constexpr bool validBanks(uint32_t banks)
     {
         return banks == 0 || banks == 1 || banks == 2 || banks == 4 ||
-               banks == 8 || banks == 16;
+               banks == 8 || banks == 16 || banks == 32 ||
+               banks == MaxPayloadBanks;
     }
 
     bool configure(uint32_t width, uint32_t lines = 1, uint32_t banks = 0)
@@ -207,7 +209,7 @@ class CompleteLinePayloadStaging
     struct Entry
     {
         Identity identity{};
-        std::array<uint8_t, 16> remainingBanks{};
+        std::array<uint8_t, MaxPayloadBanks> remainingBanks{};
         uint32_t wordsRead = 0;
         uint32_t bankCursor = 0;
         bool active = false;
@@ -285,7 +287,7 @@ class CompleteLinePayloadStaging
         uint64_t elapsed = cycle - lastCycle;
         while (elapsed != 0) {
             uint32_t budget = wordsPerCycle;
-            uint16_t used_banks = 0;
+            uint64_t used_banks = 0;
             bool read = false;
             uint32_t emptySearches = 0;
             while (budget != 0 && emptySearches < activeLimit) {
@@ -303,7 +305,7 @@ class CompleteLinePayloadStaging
                         const uint32_t bank =
                             (entry.bankCursor + offset) % payloadBanks;
                         if (entry.remainingBanks[bank] > selected_words &&
-                            (used_banks & (uint16_t(1) << bank)) == 0) {
+                            (used_banks & (uint64_t(1) << bank)) == 0) {
                             selected_bank = bank;
                             selected_words = entry.remainingBanks[bank];
                         }
@@ -315,7 +317,7 @@ class CompleteLinePayloadStaging
                     --entry.remainingBanks[selected_bank];
                     entry.bankCursor =
                         (selected_bank + 1) % payloadBanks;
-                    used_banks |= uint16_t(1) << selected_bank;
+                    used_banks |= uint64_t(1) << selected_bank;
                 }
                 ++entry.wordsRead;
                 ++stagingCounters.readWords;

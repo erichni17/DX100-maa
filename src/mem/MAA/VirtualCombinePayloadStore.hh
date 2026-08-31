@@ -163,7 +163,7 @@ class VirtualCombinePayloadStore
     Result
     bankFor(WordRef ref, uint32_t banks, uint32_t &bank) const
     {
-        if (banks == 0 || banks > MaxLineWords ||
+        if (banks == 0 || banks > 64 ||
             (banks & (banks - 1)) != 0)
             return Result::InvalidCapacity;
         uint32_t index = 0;

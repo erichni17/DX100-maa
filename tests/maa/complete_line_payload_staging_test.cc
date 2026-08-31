@@ -114,6 +114,15 @@ checkBankedPayloadReads()
     CHECK(imbalanced.counters().readCycles == 2);
     CHECK(imbalanced.counters().serialReadCycles == 2);
     CHECK(imbalanced.complete(sparse) == Stage::Result::Accepted);
+
+    Stage wide_banks;
+    CHECK(wide_banks.configure(8, 1, 32));
+    Stage::Identity wide{19, 3, 0x8000, 1, 1};
+    wide.bankCount = 32;
+    wide.bankWords[31] = 1;
+    CHECK(wide_banks.claim(wide, 40) == Stage::Result::Accepted);
+    CHECK(wide_banks.advance(wide, 41) == Stage::Result::Accepted);
+    CHECK(wide_banks.complete(wide) == Stage::Result::Accepted);
 }
 
 int main()

@@ -195,9 +195,9 @@ esac
     exit 2
 }
 case "$complete_line_payload_banks" in
-    0|1|2|4|8|16) ;;
+    0|1|2|4|8|16|32|64) ;;
     *)
-        echo "MAA_VIRTUAL_COMPLETE_LINE_PAYLOAD_BANKS must be 0/1/2/4/8/16" >&2
+        echo "MAA_VIRTUAL_COMPLETE_LINE_PAYLOAD_BANKS must be 0/1/2/4/8/16/32/64" >&2
         exit 2
         ;;
 esac
