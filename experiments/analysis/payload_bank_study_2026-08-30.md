@@ -12,6 +12,14 @@ The bank-aware source is `9393ef52e47357d9192050e539e013b6ce64df23`.
 Binary SHA-256:
 `aa5c70b140b6fb66bfb9f4a28b34f009f025cf639eb288c01dbb91b0d2f609bb`.
 
+An independent review found that the first version of this report mixed early
+bank points from binary `89fd21c5...` with the final binary above. The affected
+CG banks 1/2/4 and XRAGE banks 0/2/4/8/16 were rerun on `aa5c70b1...`; every
+reported tick count and mechanism counter reproduced exactly. The tables below
+now use only final-binary runs. The original ledger remains frozen; the
+same-binary successor is
+`payload_bank_study_same_binary_artifacts_2026-08-30.sha256`.
+
 ## CG_NA=256
 
 All arms retain one line identity, an eight-word/32-byte aggregate port, 256
@@ -71,8 +79,12 @@ muxing, area, energy, and Fmax remain unmeasured.
 
 Raw roots:
 
-- `/data1/nier/dx100-runs/2026-08-30-cg-na256-payload-banks*`;
-- `/data1/nier/dx100-runs/2026-08-30-cg-na1024-payload-banks*`;
-- `/data1/nier/dx100-runs/2026-08-30-xrage-payload-banks*`.
+- CG NA256: final-binary `r3` roots for banks 0/8/16/32/64 and
+  `samebin-r1` roots for banks 1/2/4;
+- CG NA1024: final-binary `r2` roots for banks 0/32/64;
+- XRAGE: final-binary `samebin-r1` roots for banks 0/2/4/8/16 and the
+  final-binary `banks32-r1` root.
 
-Artifact ledger: `payload_bank_study_artifacts_2026-08-30.sha256`.
+Machine-readable table: `payload_bank_study_same_binary_2026-08-30.tsv`.
+Successor artifact ledger:
+`payload_bank_study_same_binary_artifacts_2026-08-30.sha256`.

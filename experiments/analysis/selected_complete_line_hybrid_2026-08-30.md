@@ -58,7 +58,9 @@ the selected direct-gather path.
 Physical payload banking is now modeled. Thirty-two banks add 0.203% over
 conflict-free payload reads at `CG_NA=1024`, for 9.760% total overhead versus
 ideal copy. Sixty-four banks save only another 0.234% while doubling bank
-count; 32 is selected. See `payload_bank_study_2026-08-30.md`.
+count; 32 is selected. An independent provenance review triggered same-binary
+reruns of every earlier bank point; all timings and counters reproduced exactly
+on binary `aa5c70b1...`. See `payload_bank_study_2026-08-30.md`.
 
 The selected one-line control allocation is physically specialized in the
 simulator rather than backed by inactive entries. Final evidence also closes

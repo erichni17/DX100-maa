@@ -67,6 +67,11 @@ XRAGE direct-retirement/fusion optimization.
   live-runner mutation; later campaigns freeze runner/library artifacts.
 - The final XOR8 FLAG wrapper exited after all 14 rows; recovery is explicitly
   marked and every per-case artifact was checked before acceptance.
+- Independent review rejected the first payload-bank table because early
+  points used a predecessor binary. CG banks 1/2/4 and XRAGE banks 0/2/4/8/16
+  were rerun on final binary `aa5c70b1...`; all timings and counters reproduced
+  exactly, and a separate same-binary ledger now backs the selected 32-bank
+  point.
 
 ## Hardware boundary
 
