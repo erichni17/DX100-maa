@@ -186,8 +186,8 @@ def classify(root: Path) -> dict[str, Any]:
     for arm in ARMS:
         log = (root / "arms" / arm.name / "restore.log").read_text(errors="replace")
         require(
-            "UME_GZZ_PAGE_CONSUMER mode=maa_div_mul "
-            "physical_tiles_per_core=7 cpu_spd_payload_reads=0" in log,
+            "UME_GZZ_PAGE_CONSUMER mode=maa_div_mul " "physical_tiles_per_core=7" in log
+            and "cpu_spd_payload_reads=0" in log,
             f"{arm.name}: matched consumer missing",
         )
         stats = base.base.first_stats_section(

@@ -147,7 +147,8 @@ def classify(root: Path) -> dict[str, Any]:
     )
     require(
         "UME_GZZ_PAGE_CONSUMER mode=maa_div_mul "
-        "physical_tiles_per_core=7 cpu_spd_payload_reads=0" in strict_log,
+        "physical_tiles_per_core=7" in strict_log
+        and "cpu_spd_payload_reads=0" in strict_log,
         "strict GZZ MAA page consumer did not activate",
     )
     ticks = {

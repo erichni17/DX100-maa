@@ -137,6 +137,9 @@ int page_regs0[NUM_CORES], page_regs1[NUM_CORES], page_regs2[NUM_CORES];
     defined(UME_GZZ_MAA_PAGE_CONSUMER)
 int page_ratio_tiles[NUM_CORES], page_product_tiles[NUM_CORES];
 #endif
+#ifdef UME_GZZ_PAGE_CONSUMER_PINGPONG
+int page_alternate_tiles[NUM_CORES];
+#endif
 #ifdef MAA_VIRTUAL_GATHER
 int backing_start_regs[NUM_CORES], backing_end_regs[NUM_CORES];
 #endif
@@ -317,6 +320,14 @@ void gradzatz_MAA() {
                     std::min(gather_size - page_offset,
                              MAA_CONSUMER_TILE_SIZE);
                 const int page_begin = c + page_offset;
+#ifdef UME_GZZ_PAGE_CONSUMER_PINGPONG
+                const int page_value_tile =
+                    (page_offset / MAA_CONSUMER_TILE_SIZE) & 1
+                    ? page_alternate_tiles[omp_thread_id]
+                    : tile5;
+#else
+                const int page_value_tile = tile5;
+#endif
                 maa_const<int>(page_begin, reg0);
                 maa_const<int>(page_begin + page_size, reg1);
 
@@ -334,7 +345,8 @@ void gradzatz_MAA() {
                         virtual_consumer_mode,
                         virtual_gather_backing[omp_thread_id] + page_offset,
                         tile0, page_offset / MAA_CONSUMER_TILE_SIZE,
-                        page_min_reg, page_max_reg, page_stride_reg, tile5);
+                        page_min_reg, page_max_reg, page_stride_reg,
+                        page_value_tile);
                 } else {
                     // The tail backing pointer is already page-relative.
                     // Its ordinary STREAM_LD must therefore use local bounds;
@@ -344,15 +356,15 @@ void gradzatz_MAA() {
                     maa_const<int>(page_size, reg1);
                     maa_stream_load<DATATYPE>(
                         virtual_gather_backing[omp_thread_id] + page_offset,
-                        reg0, reg1, reg2, tile5);
+                        reg0, reg1, reg2, page_value_tile);
                 }
                 wait_ready(tile2);
-                wait_ready(tile5);
+                wait_ready(page_value_tile);
 
 #ifdef UME_GRADZATZ_VERIFY
 #ifdef MAA_GENERAL_VIRTUAL_CONSUMER
                 // Verify coherent backing, not the bounded physical SPD page.
-                wait_ready(tile5);
+                wait_ready(page_value_tile);
                 const DATATYPE *page_backing =
                     virtual_gather_backing[omp_thread_id] + page_offset;
 #endif
@@ -390,7 +402,7 @@ void gradzatz_MAA() {
                     page_ratio_tiles[omp_thread_id], Operation_t::DIV_OP,
                     tileCond);
                 maa_alu_vector<DATATYPE>(
-                    tile5, page_ratio_tiles[omp_thread_id],
+                    page_value_tile, page_ratio_tiles[omp_thread_id],
                     page_product_tiles[omp_thread_id], Operation_t::MUL_OP,
                     tileCond);
                 maa_indirect_rmw_vector<DATATYPE>(
@@ -566,7 +578,11 @@ void gradzatz_MAA() {
 #if defined(MAA_GENERAL_VIRTUAL_CONSUMER) || \
     defined(UME_GZZ_MAA_PAGE_CONSUMER)
     std::cout << "UME_GZZ_PAGE_CONSUMER mode=maa_div_mul"
-              << " physical_tiles_per_core=7"
+#ifdef UME_GZZ_PAGE_CONSUMER_PINGPONG
+              << " physical_tiles_per_core=8 pingpong=1"
+#else
+              << " physical_tiles_per_core=7 pingpong=0"
+#endif
               << " cpu_spd_payload_reads=0" << std::endl;
 #endif
     std::cout << "ROI Ended" << std::endl;
@@ -781,6 +797,9 @@ int main(int argc, char *argv[]) {
     defined(UME_GZZ_MAA_PAGE_CONSUMER)
             page_ratio_tiles[thread_id] = get_new_tile<DATATYPE>();
             page_product_tiles[thread_id] = get_new_tile<DATATYPE>();
+#endif
+#ifdef UME_GZZ_PAGE_CONSUMER_PINGPONG
+            page_alternate_tiles[thread_id] = get_new_tile<DATATYPE>();
 #endif
 #ifdef MAA_VIRTUAL_GATHER
             backing_start_regs[thread_id] = get_new_reg<int>();
