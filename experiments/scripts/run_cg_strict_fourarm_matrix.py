@@ -403,7 +403,11 @@ def parse_terminal(log: Path, treatment: str) -> dict[str, str]:
 
 
 def validate_arm(
-    root: Path, arm: Arm, reference: dict[str, object] | None
+    root: Path,
+    arm: Arm,
+    reference: dict[str, object] | None,
+    *,
+    write_result: bool = True,
 ) -> dict[str, object]:
     arm_root = root / "arms" / arm.name
     log = arm_root / "restore.log"
@@ -569,9 +573,10 @@ def validate_arm(
         "fingerprint": parsed["fingerprint"],
         "reductions": parsed["reductions"],
     }
-    (arm_root / "result.json").write_text(
-        json.dumps(result, indent=2, sort_keys=True) + "\n"
-    )
+    if write_result:
+        (arm_root / "result.json").write_text(
+            json.dumps(result, indent=2, sort_keys=True) + "\n"
+        )
     return result
 
 
@@ -919,9 +924,12 @@ def validate_existing(out: Path) -> dict[str, object]:
         "manifest schema",
     )
     require((out / "matrix.complete").is_file(), "matrix is not terminal")
-    reference = manifest["arms"]["native16"]
+    reference = None
     for arm in ARMS:
-        validate_arm(out, arm, reference if arm.name != "native16" else None)
+        result = validate_arm(out, arm, reference, write_result=False)
+        require(result == manifest["arms"][arm.name], f"{arm.name} changed")
+        if reference is None:
+            reference = result
     verify_ledger(out)
     return manifest
 

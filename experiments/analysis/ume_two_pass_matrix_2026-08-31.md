@@ -31,8 +31,14 @@ logical GZZ gather window, and four fresh checkpoint/restores:
 
 All arms use simulator SHA-256
 `aa5c70b140b6fb66bfb9f4a28b34f009f025cf639eb288c01dbb91b0d2f609bb`
-from source commit `19b648687c3ca16411b5942d0760c4c07a5e17de` and the
-same frozen Ramulator library. The original and strict hybrids share one guest
+from simulator source commit
+`9393ef52e47357d9192050e539e013b6ce64df23`. The experiment runner was based
+on repository commit `19b648687c3ca16411b5942d0760c4c07a5e17de`. The raw
+rejected manifest used that runner commit as its `simulator_commit` label; the
+binary hash and frozen provenance identify `9393ef52...` as the actual
+simulator source, and all simulator/runtime files are unchanged between those
+commits. The arms use the same frozen Ramulator library. The original and
+strict hybrids share one guest
 binary hash. Response plus combiner payload is exactly 4,096 FP32 words in
 both hybrid arms; this normalizes the old stream-control schedule to the
 physical result bound instead of carrying forward the historical 4,576-word

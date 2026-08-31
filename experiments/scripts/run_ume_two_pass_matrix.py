@@ -44,7 +44,8 @@ from experiments.scripts import (  # noqa: E402
 MatrixError = base.MatrixError
 require = base.require
 
-SIMULATOR_COMMIT = "19b648687c3ca16411b5942d0760c4c07a5e17de"
+RUNNER_BASE_COMMIT = "19b648687c3ca16411b5942d0760c4c07a5e17de"
+SIMULATOR_SOURCE_COMMIT = "9393ef52e47357d9192050e539e013b6ce64df23"
 EXPECTED_GEM5_SHA256 = (
     "aa5c70b140b6fb66bfb9f4a28b34f009f025cf639eb288c01dbb91b0d2f609bb"
 )
@@ -202,7 +203,13 @@ def verify_committed_production() -> dict[str, str]:
     for relative in PRODUCTION_PATHS:
         live = (ROOT / relative).read_bytes()
         committed = subprocess.check_output(
-            ["git", "-C", str(ROOT), "show", f"{SIMULATOR_COMMIT}:{relative}"]
+            [
+                "git",
+                "-C",
+                str(ROOT),
+                "show",
+                f"{SIMULATOR_SOURCE_COMMIT}:{relative}",
+            ]
         )
         require(live == committed, f"production source drift: {relative}")
         hashes[relative] = hashlib.sha256(live).hexdigest()
@@ -268,7 +275,8 @@ def source_contract() -> dict[str, Any]:
     require(producer < begin < page < gradient, "GZZ producer/consumer order")
     return {
         "status": "PASS",
-        "simulator_commit": SIMULATOR_COMMIT,
+        "simulator_source_commit": SIMULATOR_SOURCE_COMMIT,
+        "runner_base_commit": RUNNER_BASE_COMMIT,
         "applications": [
             {
                 "name": "GZP",
@@ -673,7 +681,8 @@ def prepare(
         selectors[arm.name] = path.resolve()
     manifest = {
         "schema": "dx100.ume_gzz_two_pass.campaign.v1",
-        "simulator_commit": SIMULATOR_COMMIT,
+        "simulator_source_commit": SIMULATOR_SOURCE_COMMIT,
+        "runner_base_commit": RUNNER_BASE_COMMIT,
         "same_simulator_binary": True,
         "gem5_sha256": sha256(frozen_gem5),
         "ramulator_sha256": sha256(frozen_ramulator),
@@ -1060,7 +1069,8 @@ def validate_campaign(root: Path) -> dict[str, Any]:
         "performance_metric": "simTicks",
         "same_simulator_binary": True,
         "gem5_sha256": manifest["gem5_sha256"],
-        "simulator_commit": SIMULATOR_COMMIT,
+        "simulator_source_commit": SIMULATOR_SOURCE_COMMIT,
+        "runner_base_commit": RUNNER_BASE_COMMIT,
         "arms": classified,
         "ticks": ticks,
         "comparisons": {

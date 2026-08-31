@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location(
@@ -97,6 +98,36 @@ class CgFourArmContractTest(unittest.TestCase):
             )
             with self.assertRaisesRegex(MODULE.MatrixError, "fingerprint"):
                 MODULE.parse_terminal(path, "native_16k")
+
+    def test_validate_existing_never_rewrites_arm_results(self) -> None:
+        results = [
+            {"arm": arm.name, "fingerprint": "same", "reductions": []}
+            for arm in MODULE.ARMS
+        ]
+        with mock.patch.object(MODULE, "verify_ledger"), mock.patch.object(
+            MODULE, "validate_arm", side_effect=results
+        ) as validate_arm, tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "matrix.complete").write_text("complete\n")
+            (root / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "dx100.cg.strict_fourarm_matrix.v1",
+                        "arms": {
+                            arm.name: result
+                            for arm, result in zip(MODULE.ARMS, results)
+                        },
+                    }
+                )
+            )
+            MODULE.validate_existing(root)
+        self.assertEqual(validate_arm.call_count, len(MODULE.ARMS))
+        self.assertTrue(
+            all(
+                call.kwargs == {"write_result": False}
+                for call in validate_arm.call_args_list
+            )
+        )
 
 
 if __name__ == "__main__":
