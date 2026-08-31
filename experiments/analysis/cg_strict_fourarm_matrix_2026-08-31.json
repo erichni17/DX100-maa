@@ -15,6 +15,12 @@
     "strict_two_pass": {"selector": "page_fed_product_soa_jit", "physical_tile_elements": 4096, "strict_two_phase": true, "simTicks": 266578031}
   },
   "exact_fingerprint_and_reductions": true,
+  "comparisons": {
+    "strict_two_pass_latency_change_vs_original_hybrid": 0.4543661534100514,
+    "strict_two_pass_latency_change_vs_native4x4": 1.7105661818529006,
+    "original_hybrid_latency_change_vs_native4x4": 0.8637439928710097
+  },
+  "interpretation": "End-to-end treatment comparison: original legacy_4k uses CPU-after-SPD consumption while strict uses page-fed physical-page MAA operations; not a strict-flag-only or hardware-only delta.",
   "strict_b_close_before_a": true,
   "strict": {
     "b_fetch_lines": 20480,

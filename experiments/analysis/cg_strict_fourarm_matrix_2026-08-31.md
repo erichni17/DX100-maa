@@ -10,9 +10,10 @@ restores all use that guest, input, checkpoint, gem5, Ramulator, and matched
 feeder depth.  Historical native4 evidence is not reused because its
 provenance is mismatched.
 
-The selector is supplied through per-restore FD 198; restores therefore run in
-parallel without mutating a shared selector.  The treatment delta is explicit
-in the machine-readable manifest.  The strict arm is judged on the partial-
+The selector is supplied through a per-restore read-only mount namespace at
+the fixed path captured by the checkpoint; restores therefore run in parallel
+without mutating a shared selector. The treatment delta is explicit in the
+machine-readable manifest. The strict arm is judged on the partial-
 mask P-retirement path: 32-byte/cycle payload staging, one active line,
 32 payload banks, 16 bounded combiner slots, 8 response slots, exact
 scheduled/read-word closure, and `B-close-before-A` timing.  This is not a
@@ -42,6 +43,14 @@ same 11 deterministic reduction records.  Relative to native16, native4x4 is
 5.1464% slower, original_hybrid is 95.9659% slower, and strict_two_pass is
 185.0062% slower in this deterministic first observation; these are bounded
 CG_NA=256 measurements, not full-application or variability claims.
+
+Strict two-pass is **45.4366% slower than original_hybrid**. This is an
+end-to-end treatment comparison, not a strict-flag-only or hardware-only
+delta: `legacy_4k` is the original CPU-after-SPD hybrid, whereas the strict
+arm uses page-fed physical-page MAA operations and a different instruction
+decomposition. The exact fingerprint and reductions prove equivalent CG
+results, but they do not make the internal instruction streams identical.
+This result therefore rejects promotion of the current strict CG path.
 
 The strict arm's partial-mask retirement counters are `26,672` issues and
 `26,672` completions, with `26,667` partial and `5` full lines.  Its finite
