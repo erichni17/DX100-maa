@@ -6368,7 +6368,7 @@ void IndirectAccessUnit::executeInstruction() {
         virtual_partial_word_writes = 0;
         if (virtual_shared_result_payload) {
             const size_t output_bytes =
-                static_cast<size_t>(my_max) * my_word_size;
+                static_cast<size_t>(num_tile_elements) * my_word_size;
             virtual_shared_partial_spill_lines.assign(
                 (output_bytes + block_size - 1) / block_size, false);
         } else {
