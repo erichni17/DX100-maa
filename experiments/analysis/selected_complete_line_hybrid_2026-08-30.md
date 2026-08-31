@@ -11,10 +11,11 @@
    lookup/update per bank per MAA cycle.
 4. The combiner retains fragments privately in 3,072 useful-word storage until
    a destination cache line is complete.
-5. A bounded 16-page ready queue selects complete lines. A 32-byte/cycle
-   payload port assembles each 64-byte line over two MAA cycles. At most one
-   completed line per MAA cycle is issued coherently to LLC/backing; the exact
-   final tail is the only permitted partial write.
+5. A bounded 16-page ready queue selects complete lines. A 32-byte/cycle,
+   32-bank payload RAM assembles each 64-byte line with at most one word read
+   per bank per cycle. At most one completed line per MAA cycle is issued
+   coherently to LLC/backing; the exact final tail is the only permitted
+   partial write.
 6. WriteResp closes ownership/readiness. A later CPU/direct consumer reads the
    coherent backing result.
 
@@ -26,9 +27,9 @@ yet a 4K Row/Offset design and cannot transparently provide 64K reordering.
 
 ## Current evidence
 
-- XRAGE gather0: 37,409,134 ticks with four combiner banks, finite lookup,
-  bounded ready selection, and a 32-byte/cycle payload port; 0.005% above the
-  same-hybrid ideal-copy control and 11.588% below native16; exact output.
+- XRAGE gather0: 37,401,309 ticks with four combiner banks, finite lookup,
+  bounded ready selection, and a 32-byte/cycle/32-bank payload port;
+  timing-equivalent to conflict-free payload copy and exact output.
 - 14 FLAG gathers: selected XOR8 is 7.463% below fused16 and tied with
   compact16 (-0.026%) on the same pre-lookup binary.
 - FLAG lookup latency 3: +0.155% geometric-mean overhead versus same-binary
@@ -54,6 +55,11 @@ same 32-byte port. It is exact but adds 4.658% at `CG_NA=256` and 9.538% at
 so the selected point retains one identity. This extension is evidence, not
 the selected direct-gather path.
 
+Physical payload banking is now modeled. Thirty-two banks add 0.203% over
+conflict-free payload reads at `CG_NA=1024`, for 9.760% total overhead versus
+ideal copy. Sixty-four banks save only another 0.234% while doubling bank
+count; 32 is selected. See `payload_bank_study_2026-08-30.md`.
+
 The selected one-line control allocation is physically specialized in the
 simulator rather than backed by inactive entries. Final evidence also closes
 payload work at word granularity: scheduled words equal read words and the
@@ -63,12 +69,12 @@ selected one-line shared-port cycles equal summed per-line demand.
 
 Bounded now: result payload, tags/ways, response pool, lookup starts and
 completions, lookup latency, combiner banks, aggregate payload-read bandwidth,
-write credits, drain width, ready selection, exact ACK identity, and
-complete-line/tail legality.
+payload RAM bank count and one-read-per-bank conflicts, write credits, drain
+width, ready selection, exact ACK identity, and complete-line/tail legality.
 
-Still open: physical payload/reference RAM bank mapping and conflicts,
-same-set hazards, reset/epoch implementation, CPU/virtual-alias coherence, and
-synthesized area/energy/Fmax. Overlapping live MAA producers are now rejected
+Still open: synthesized bank decoder/periphery/mux area and timing, same-set
+hazards, reset/epoch implementation, CPU/virtual-alias coherence, and
+area/energy/Fmax. Overlapping live MAA producers are now rejected
 until prior page ACK closure; software still owes exclusive destination
 ownership against CPU/alias writes.
 

@@ -155,11 +155,12 @@ retained as a liveness fix, not as the selected performance point.
 ## Remaining boundary
 
 This closes aggregate payload-read throughput without adding hidden payload
-capacity. It does not yet synthesize the RAM or prove a conflict-free physical
-bank mapping for arbitrary payload references. Area, energy, Fmax, and exact
-payload-bank conflicts remain open implementation questions. The masked-line
-extension remains a correctness and bandwidth-attribution result; its tested
-multi-line optimization did not materially reduce the larger-case cost.
+capacity. A follow-on fixed-bank study maps physical payload references to
+one-read-per-cycle banks and selects 32 banks; see
+`payload_bank_study_2026-08-30.md`. SRAM decoder/periphery area, energy, and
+Fmax remain unsynthesized. The masked-line extension remains a correctness and
+bandwidth-attribution result; its tested multi-line optimization did not
+materially reduce the larger-case cost.
 
 Artifact ledger:
 `complete_line_payload_bandwidth_artifacts_2026-08-30.sha256`.

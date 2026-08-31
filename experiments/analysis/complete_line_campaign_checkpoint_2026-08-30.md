@@ -12,6 +12,7 @@
 - combiner insertion/update ports: four banks;
 - lookup: four starts/four completions, three-cycle tested latency;
 - payload readout: four FP64 words (32 bytes) per MAA cycle;
+- payload organization: 32 banks per indirect unit, one word per bank/cycle;
 - retirement: at most one complete-line issue per MAA cycle plus exact final
   tail;
 - selection: bounded 16-page ready queues; and
@@ -33,6 +34,7 @@ See `selected_complete_line_hybrid_2026-08-30.md` for the simple mechanism.
 | live MAA producer ownership | selected XRAGE exactly reproduces 37,291,759 ticks | `xrage_backing_ownership_results_2026-08-30.md` |
 | finite combiner banks | four banks add 0.310%; one bank rejected at +20.253% | `xrage_combiner_bank_results_2026-08-30.md` |
 | finite payload readout | width 4 adds 0.005% on XRAGE and 0.003% geomean across 14 FLAG gathers | `complete_line_payload_bandwidth_2026-08-30.md` |
+| finite payload RAM banks | 32 banks are timing-equivalent on XRAGE and add 0.203% over conflict-free at CG NA=1024 | `payload_bank_study_2026-08-30.md` |
 
 ## Important attribution
 
@@ -70,12 +72,13 @@ XRAGE direct-retirement/fusion optimization.
 
 Genuinely bounded in source: useful payload, tag count/ways, response credits,
 lookup metadata/starts/completions/latency, aggregate payload-read bandwidth,
-write credits, drain width, ready selection, exact ACK identity,
+payload bank count/conflicts, write credits, drain width, ready selection,
+exact ACK identity,
 complete-line/tail legality, and live MAA producer overlap.
 
 Still not closed:
 
-1. physical payload/reference RAM bank mapping and conflicts;
+1. synthesized bank decoder/periphery/mux area and timing;
 2. CPU or virtual-alias writes to privately retained destination fragments;
 3. reset/epoch implementation and generation wrap;
 4. synthesized area, energy, and Fmax; and
