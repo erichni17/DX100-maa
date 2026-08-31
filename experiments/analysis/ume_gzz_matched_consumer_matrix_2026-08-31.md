@@ -1,5 +1,11 @@
 # UME GZZ matched-consumer matrix
 
+## Scope
+
+This is a deterministic reduced-input application gate: `n=16,384` with
+196,384 padded output elements. It executes the real GZZ kernel and exact
+reference, but it is not the separate 1M-element full-scale GZZ campaign.
+
 ## Result
 
 Fresh native16, native4, and strict logical16/physical4 runs used one frozen

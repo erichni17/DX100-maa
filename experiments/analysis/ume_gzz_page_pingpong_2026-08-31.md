@@ -1,5 +1,8 @@
 # UME GZZ page ping-pong result
 
+Scope: deterministic reduced-input GZZ (`n=16,384`, 196,384 padded outputs),
+not the separate 1M-element full-scale campaign.
+
 ## Decision
 
 Accept the default-off eighth-tile ping-pong candidate as a small GZZ
@@ -46,4 +49,3 @@ versus 13 in the control. The A/backing intervals shrink, while the dominant
 stream SPD-write counter does not. The next optimization still needs to target
 materialization/stream serialization directly rather than assuming this
 ping-pong implementation already overlaps it.
-
