@@ -24,6 +24,12 @@ strict control.
 - Simulator SHA-256:
   `cd36ea5acd0ee660ae66ba384cdef0acad265d48acc73e62bd2b13a2f161b8d0`
 
+The current-source seven-tile control replay at
+`/data1/nier/dx100-runs/2026-08-31-ume-gzz-bitmap-diag-r2` uses the same
+simulator hash and exactly reproduces 25,470,375 ticks and all r6 counters.
+Thus the ping-pong comparison is same-simulator-binary despite using a fresh
+guest/checkpoint for the default-off guest macro.
+
 The control and candidate both configure eight physical tiles per core. The
 control uses seven; the candidate uses the eighth as an alternate virtual-page
 destination. This changes utilization but not configured tile capacity.
