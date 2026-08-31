@@ -188,6 +188,37 @@ class Pki4LiveTraceHarnessTest(unittest.TestCase):
             finally:
                 os.close(descriptor)
 
+    def test_failed_action_snapshot_resume_is_exact_and_explicit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            payload = b"terminal validated bytes\n"
+            source, snapshot, report = snapshot_fixture(temporary, payload)
+            captured = live.capture_terminal_validated_snapshot(
+                temporary, report, snapshot
+            )
+            resumed = live.reuse_terminal_validated_snapshot(
+                temporary, report, snapshot, captured["sha256"]
+            )
+            self.assertEqual(
+                resumed["publication_mode"],
+                "reused_existing_terminal_validated_snapshot",
+            )
+            self.assertEqual(resumed["inode"], captured["inode"])
+            self.assertEqual(resumed["sha256"], captured["sha256"])
+            with self.assertRaisesRegex(RuntimeError, "terminal-bound"):
+                live.reuse_terminal_validated_snapshot(
+                    temporary, report, snapshot, "0" * 64
+                )
+
+            with snapshot.open("r+b") as stream:
+                stream.seek(0)
+                stream.write(b"X")
+                stream.flush()
+                os.fsync(stream.fileno())
+            with self.assertRaisesRegex(RuntimeError, "hash/size"):
+                live.reuse_terminal_validated_snapshot(
+                    temporary, report, snapshot, captured["sha256"]
+                )
+
     def test_snapshot_publication_is_bound_and_no_clobber(self):
         with tempfile.TemporaryDirectory() as temporary:
             source, snapshot, report = snapshot_fixture(

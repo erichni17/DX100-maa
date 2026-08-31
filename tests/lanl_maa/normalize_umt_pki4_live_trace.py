@@ -12,20 +12,33 @@ import tempfile
 
 import umt_ingress_micro_harness as ingress
 
-SCHEMA = "lanl-maa-umt-pki4-live-normalization-v2"
+SCHEMA = "lanl-maa-umt-pki4-live-normalization-v3"
 TRACE_PREFIX = "UMT_PKI4_CONFORMANCE "
 TRACE_SCHEMA = "lanl-maa-umt-pki4-conformance-v3"
 TOKEN_SENTINEL = (1 << 64) - 1
 SOURCE = pathlib.Path(
-    "/data1/nier/worktrees/DX100-umt-pki4-conformance-source-v3-20260831"
+    "/data1/nier/worktrees/DX100-umt-pki4-normalizer-v4-d32-20260831"
 )
-SOURCE_COMMIT = "45e8e848ff6e1cd2be7901a32d58a93d7109b668"
-SOURCE_TREE = "0d937910257d088b87303a3ade6642442f9faf22"
+SOURCE_COMMIT = "62ecda4ba587eb5d5a3f2dc367ee391de1280161"
+SOURCE_TREE = "d7b7fa053f5c0b8a45598dc48ccf19519a6e1a1f"
 NORMALIZER = SOURCE / "tests/lanl_maa/umt_pki4_conformance_normalizer.py"
 NORMALIZER_SHA256 = (
-    "de2c140c638884aa876756c81be3de832ac14ccb938ee863a69f84a006146fb7"
+    "5eb15c2b3210dc7dc6af1f9a5c91e7ad932c99dba5ba2b10ddadb86d16749524"
 )
 SOURCE_HASHES = dict(ingress.CONFORMANCE_INSTRUMENTATION_SOURCES)
+SOURCE_HASHES.update(
+    {
+        "tests/lanl_maa/run_umt_pki4_conformance_gate.py": (
+            "69e231b4837ddfc0afa92b6d99c8bbd57a3c0316af8f5de60c73e81d1331ba9c"
+        ),
+        "tests/lanl_maa/test_umt_pki4_conformance_normalizer.py": (
+            "ee27ab995a1552c073c6e0cf5c03c936595725c00ad44c0a1b5ffa558748a7e4"
+        ),
+        "tests/lanl_maa/umt_pki4_conformance_normalizer.py": (
+            "5eb15c2b3210dc7dc6af1f9a5c91e7ad932c99dba5ba2b10ddadb86d16749524"
+        ),
+    }
+)
 SOURCE_MANIFEST_BYTES = (
     json.dumps(SOURCE_HASHES, indent=2, sort_keys=True) + "\n"
 ).encode()
@@ -38,30 +51,30 @@ TEMPORAL_PLAN_SHA256 = (
     "7ff5188835462202586fa44a3b0272e9c298aca745293abfae8354cc0988a15d"
 )
 NORMALIZER_REVIEW = pathlib.Path(
-    "/data1/nier/dx100-runs/2026-08-31-umt-pki4-conformance-gate-v2/"
-    "pki4-conformance-independent-promotion-review-v2.json"
+    "/data1/nier/dx100-runs/2026-08-31-umt-pki4-normalizer-v4-d32-repair/"
+    "pki4-normalizer-v4-d32-geometry-independent-review-v2.json"
 )
 NORMALIZER_REVIEW_SHA256 = (
-    "64b0f37290092bfcaa7e5ed77b03acfdc9c70dc5543f1ca8a725eaf43bde9057"
+    "04bf302d2b481a751021bd41532c0d86e60e63c1d581d7412f1951f61e15f0dd"
 )
 REPLAY_SOURCE = pathlib.Path(
-    "/data1/nier/worktrees/DX100-umt-pki4-gate-a-replay-20260831"
+    "/data1/nier/worktrees/DX100-umt-pki4-gate-a-replay-v2-20260831"
 )
-REPLAY_COMMIT = "c08b63a4731023cef1ade71a2eebb8663cdf1130"
-REPLAY_TREE = "4ec18de22b7cf841000a3b85bf09f547ade8cdd0"
+REPLAY_COMMIT = "217a30f715af37a0813c30dc0575fa22199a25e7"
+REPLAY_TREE = "075341558e7b00db87da8c34558f52a4648b5973"
 REPLAY_GENERATOR = REPLAY_SOURCE / (
     "experiments/lanl_maa_fp64_physical/scripts/"
     "generate_umt_pki4_gate_a_replay.py"
 )
 REPLAY_GENERATOR_SHA256 = (
-    "e8d60c252e22f706459607f38aaa57f2ac23d0da929cb7a2d03b126add1268e0"
+    "92a6dfb47e87d9f0a0d20242ffc8822d914d548344fcb1e19247413642a3ec15"
 )
 REPLAY_REVIEW = pathlib.Path(
-    "/data1/nier/build/lanl-maa-umt-pki4-gate-a-replay-20260831/"
-    "pki4-gate-a-canonical-v3-c08b63a4-independent-rereview-v1.json"
+    "/data1/nier/dx100-runs/2026-08-31-umt-pki4-gate-a-replay-v2-review/"
+    "pki4-gate-a-replay-v15-217a30f7-independent-review-v3.json"
 )
 REPLAY_REVIEW_SHA256 = (
-    "8c97c755669db95feb4e6bb79e47d3bc7928699b9505ba688ab6e8800c2dc1a3"
+    "90fe9ee868b72edcc6cca2b7878a42c2ef43de774db73e97dede90ab66b7c9b5"
 )
 CLAIM_BOUNDARY = (
     "Full raw canonical-v3 normalization validates the C++ Gate-A trace. "
@@ -275,6 +288,7 @@ def capture_terminal_validated_snapshot(root, arm_report, snapshot):
     ):
         raise RuntimeError("published terminal trace snapshot is invalid")
     return {
+        "publication_mode": "captured_no_clobber",
         "path": str(snapshot),
         "sha256": snapshot_digest,
         "device": snapshot_status.st_dev,
@@ -284,6 +298,59 @@ def capture_terminal_validated_snapshot(root, arm_report, snapshot):
         "source": {
             "path": str(source),
             **before,
+            "terminal_sha256": binding["sha256"],
+            "analyzer_sha256": arm_report["raw_sha256"]["gem5.stderr"],
+            "terminal_receipt": binding["terminal_receipt"],
+        },
+    }
+
+
+def reuse_terminal_validated_snapshot(
+    root, arm_report, snapshot, expected_sha256
+):
+    """Revalidate and reuse an exact snapshot from a failed prior action."""
+    root = pathlib.Path(root).resolve()
+    source = root / "gem5.stderr"
+    snapshot = pathlib.Path(os.path.abspath(snapshot))
+    expected_snapshot = root / "analysis/pki4-canonical-v3" / SNAPSHOT_NAME
+    binding = terminal_trace_binding(root, arm_report)
+    if (
+        snapshot != expected_snapshot
+        or not isinstance(expected_sha256, str)
+        or expected_sha256 != binding["sha256"]
+    ):
+        raise RuntimeError("resumed snapshot identity is not terminal-bound")
+    try:
+        source_status = os.stat(source, follow_symlinks=False)
+    except FileNotFoundError as error:
+        raise RuntimeError("resumed snapshot source disappeared") from error
+    source_identity = stable_identity(source_status)
+    if (
+        not stat.S_ISREG(source_status.st_mode)
+        or source_identity["device"] != binding["device"]
+        or source_identity["inode"] != binding["inode"]
+    ):
+        raise RuntimeError("resumed snapshot source identity changed")
+    descriptor = open_regular_nofollow(snapshot)
+    try:
+        snapshot_status = os.fstat(descriptor)
+        snapshot_identity = stable_identity(snapshot_status)
+        snapshot_digest = sha256_fd(descriptor)
+    finally:
+        os.close(descriptor)
+    if (
+        snapshot_digest != expected_sha256
+        or snapshot_identity["bytes"] != source_identity["bytes"]
+    ):
+        raise RuntimeError("resumed snapshot hash/size is invalid")
+    return {
+        "publication_mode": "reused_existing_terminal_validated_snapshot",
+        "path": str(snapshot),
+        "sha256": snapshot_digest,
+        **snapshot_identity,
+        "source": {
+            "path": str(source),
+            **source_identity,
             "terminal_sha256": binding["sha256"],
             "analyzer_sha256": arm_report["raw_sha256"]["gem5.stderr"],
             "terminal_receipt": binding["terminal_receipt"],
@@ -697,11 +764,20 @@ def normalize_arm(args):
         allow_descriptor_callback_restart=True,
     )
     provenance = verify_provenance()
-    snapshot_evidence = capture_terminal_validated_snapshot(
-        root, arm_report, snapshot
+    snapshot_evidence = (
+        reuse_terminal_validated_snapshot(
+            root,
+            arm_report,
+            snapshot,
+            getattr(args, "resume_snapshot_sha256", None),
+        )
+        if getattr(args, "resume_validated_snapshot", False)
+        else capture_terminal_validated_snapshot(root, arm_report, snapshot)
     )
     snapshot_descriptor = open_verified_snapshot(snapshot_evidence)
-    manifest = analysis_root / "canonical-v3-source-hashes.json"
+    manifest = analysis_root / (
+        f"canonical-v3-source-hashes-{SOURCE_COMMIT[:8]}.json"
+    )
     try:
         atomic_bytes(manifest, SOURCE_MANIFEST_BYTES)
         stable_trace_path = pathlib.Path(
@@ -839,8 +915,15 @@ def main():
     ):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--hash-epoch-count", type=int, default=4)
+    parser.add_argument("--resume-validated-snapshot", action="store_true")
+    parser.add_argument("--resume-snapshot-sha256")
     parser._option_string_actions["--case"].choices = tuple(ingress.CASES)
     args = parser.parse_args()
+    if args.resume_validated_snapshot != bool(args.resume_snapshot_sha256):
+        parser.error(
+            "--resume-validated-snapshot and --resume-snapshot-sha256 "
+            "must be supplied together"
+        )
     print(json.dumps(normalize_arm(args), indent=2, sort_keys=True))
 
 
