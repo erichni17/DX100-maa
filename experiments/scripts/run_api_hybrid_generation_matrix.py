@@ -328,6 +328,34 @@ def verify_matched_predecessor() -> dict[str, object]:
     return result
 
 
+def verify_frozen_inputs() -> dict[str, object]:
+    authority = matched.verify_predecessor()
+    gem5 = matched.PREDECESSOR / "input/gem5.opt"
+    ramulator = matched.PREDECESSOR / "input/libramulator.so"
+    require(sha256_file(gem5) == base.EXPECTED_GEM5_SHA256, "frozen gem5")
+    require(
+        sha256_file(ramulator) == base.EXPECTED_RAMULATOR_SHA256,
+        "frozen Ramulator",
+    )
+    environment = os.environ.copy()
+    library = str(ramulator.parent.resolve())
+    prior = environment.get("LD_LIBRARY_PATH")
+    environment["LD_LIBRARY_PATH"] = f"{library}:{prior}" if prior else library
+    ldd = subprocess.check_output(
+        ["ldd", str(gem5)], env=environment, text=True
+    )
+    match = re.search(r"^[ \t]*libramulator\.so => (\S+)", ldd, re.M)
+    require(match is not None, "gem5 does not resolve libramulator.so")
+    require(
+        Path(match.group(1)).resolve() == ramulator.resolve(),
+        "gem5 resolved a different Ramulator library",
+    )
+    return {
+        "runtime_python_sha256": authority["runtime_python_sha256"],
+        "gem5_ldd_sha256": hashlib.sha256(ldd.encode()).hexdigest(),
+    }
+
+
 def preflight() -> dict[str, object]:
     predecessor = verify_matched_predecessor()
     require(
@@ -337,12 +365,9 @@ def preflight() -> dict[str, object]:
     committed = committed_runner()
     source = verify_source_contract()
     historical = verify_historical_original()
-    frozen = base.preflight(
-        matched.PREDECESSOR / "input/gem5.opt",
-        matched.PREDECESSOR / "input/libramulator.so",
-    )
+    frozen = verify_frozen_inputs()
     require(
-        frozen["gem5_sha256"] == predecessor["gem5_sha256"],
+        predecessor["gem5_sha256"] == base.EXPECTED_GEM5_SHA256,
         "gem5 authority mismatch",
     )
     return {
@@ -361,6 +386,7 @@ def preflight() -> dict[str, object]:
             matched.PREDECESSOR_SELECTOR
         ),
         "runtime_python_sha256": frozen["runtime_python_sha256"],
+        "gem5_ldd_sha256": frozen["gem5_ldd_sha256"],
         "bubblewrap_sha256": sha256_file(matched.BWRAP),
         "selector_isolation": (
             "read-only per-arm bind overlay at the predecessor absolute path"
