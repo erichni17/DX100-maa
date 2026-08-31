@@ -65,6 +65,11 @@ class ApiHybridGenerationMatrixTest(unittest.TestCase):
             f"{runner.ORIGINAL_ROW_SLICES}",
             command,
         )
+        self.assertIn(
+            f"--maa_num_row_table_rows_per_slice="
+            f"{runner.ORIGINAL_ROW_ROWS_PER_SLICE}",
+            command,
+        )
         self.assertEqual(command[0], prior[0])
         self.assertEqual(
             runner.normalized_treatment_command(command),
@@ -97,10 +102,11 @@ class ApiHybridGenerationMatrixTest(unittest.TestCase):
         )
 
     def test_original_geometry_is_bounded_below_logical_work(self) -> None:
-        self.assertEqual(runner.ORIGINAL_ROW_CAPACITY, 8_192)
+        self.assertEqual(runner.ORIGINAL_ROW_LINE_SLOTS, 8_192)
         self.assertLess(
-            runner.ORIGINAL_ROW_CAPACITY, runner.base.TOTAL_ELEMENTS
+            runner.ORIGINAL_ROW_LINE_SLOTS, runner.base.TOTAL_ELEMENTS
         )
+        self.assertEqual(runner.ORIGINAL_ROW_ROWS_PER_SLICE, 32)
         self.assertEqual(runner.ORIGINAL_ARM.feeder_lines, 64)
         self.assertEqual(runner.ORIGINAL_ARM.logical_elements, 16_384)
         self.assertEqual(runner.ORIGINAL_ARM.physical_elements, 4_096)
@@ -166,7 +172,7 @@ class ApiHybridGenerationMatrixTest(unittest.TestCase):
             runner.write_matrix(root, {"arms": arms})
             rows = (root / "matrix.tsv").read_text().splitlines()
         self.assertEqual(len(rows), 5)
-        self.assertIn("row_table_full_events", rows[0])
+        self.assertIn("row_pressure_events", rows[0])
 
 
 if __name__ == "__main__":

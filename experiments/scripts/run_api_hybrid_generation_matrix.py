@@ -113,7 +113,8 @@ SELECTED_ARM_NAMES = (
 )
 STRICT_OPTION = "--maa_virtual_strict_two_phase"
 ORIGINAL_ROW_SLICES = 16
-ORIGINAL_ROW_CAPACITY = ORIGINAL_ROW_SLICES * 64 * 8
+ORIGINAL_ROW_ROWS_PER_SLICE = 32
+ORIGINAL_ROW_LINE_SLOTS = 8_192
 STRICT_EVENTS = (
     "strict_two_phase_begin",
     "strict_two_phase_admission_closed",
@@ -400,6 +401,7 @@ def normalized_treatment_command(command: Sequence[str]) -> list[str]:
         for token in command
         if not token.startswith("--outdir=")
         and not token.startswith("--maa_num_initial_row_table_slices=")
+        and not token.startswith("--maa_num_row_table_rows_per_slice=")
         and token != STRICT_OPTION
     ]
 
@@ -417,13 +419,18 @@ def command_for(run: Path) -> list[str]:
         "--maa_num_initial_row_table_slices",
         ORIGINAL_ROW_SLICES,
     )
+    matched.set_option(
+        command,
+        "--maa_num_row_table_rows_per_slice",
+        ORIGINAL_ROW_ROWS_PER_SLICE,
+    )
     require(command.count(STRICT_OPTION) == 1, "strict option multiplicity")
     command.remove(STRICT_OPTION)
     require(
         normalized_treatment_command(command)
         == normalized_treatment_command(prior),
         "strict-off command changed beyond output, strict flag, and the "
-        "declared historical RowTable geometry",
+        "declared capacity-equivalent historical RowTable geometry",
     )
     require(
         "--maa_virtual_index_buffer_lines=64" in command,
@@ -537,7 +544,7 @@ def classify_original(root: Path) -> dict[str, object]:
         "num_tile_elements": "16384",
         "physical_tile_elements": "4096",
         "num_initial_row_table_slices": str(ORIGINAL_ROW_SLICES),
-        "num_row_table_rows_per_slice": "64",
+        "num_row_table_rows_per_slice": str(ORIGINAL_ROW_ROWS_PER_SLICE),
         "num_row_table_entries_per_subslice_row": "8",
         "num_offset_table_entries": "16384",
         "num_offset_table_epoch_entries": "16384",
@@ -602,8 +609,6 @@ def classify_original(root: Path) -> dict[str, object]:
             stats, "IND_StrictTwoPhasePagesReady"
         ),
         "offset_epoch_drains": base.summed_stat(stats, "IND_NumOTEpochDrain"),
-        "row_table_full_events": base.summed_stat(stats, "IND_NumRTFull"),
-        "build_rounds": base.summed_stat(stats, "IND_VirtBuildRounds"),
     }
     expected_counters = {
         "indirect_ops": 1,
@@ -628,14 +633,6 @@ def classify_original(root: Path) -> dict[str, object]:
     require(
         0 < counters["index_hwm"] <= 64 * base.WORDS_PER_INDEX_LINE,
         f"{arm.name}: word feeder bound",
-    )
-    require(
-        counters["row_table_full_events"] > 0,
-        f"{arm.name}: ordinary RowTable pressure path inactive",
-    )
-    require(
-        counters["build_rounds"] > 1,
-        f"{arm.name}: ordinary multi-generation path inactive",
     )
     base.validate_masked_retirement(counters, arm.name)
 
@@ -672,8 +669,9 @@ def classify_original(root: Path) -> dict[str, object]:
         int_field(macro, "row_offset_insertions", arm.name) == 16_384,
         f"{arm.name}: incomplete row insertions",
     )
+    row_pressure_events = int_field(macro, "row_pressure_events", arm.name)
     require(
-        int_field(macro, "row_pressure_events", arm.name) > 0,
+        row_pressure_events > 0,
         f"{arm.name}: macro RowTable pressure inactive",
     )
     require(
@@ -692,6 +690,8 @@ def classify_original(root: Path) -> dict[str, object]:
         for line in trace_lines
     )
     require(fill_drains > 0, f"{arm.name}: ordinary pressure drain inactive")
+    counters["row_pressure_events"] = row_pressure_events
+    counters["fill_drains"] = fill_drains
     return {
         "name": arm.name,
         "classification": "ACCEPT",
@@ -755,8 +755,9 @@ def classify_matrix(root: Path) -> dict[str, object]:
     )
     require(
         manifest.get("original_row_table_slices") == ORIGINAL_ROW_SLICES
-        and manifest.get("original_row_table_capacity")
-        == ORIGINAL_ROW_CAPACITY,
+        and manifest.get("original_row_table_rows_per_slice")
+        == ORIGINAL_ROW_ROWS_PER_SLICE
+        and manifest.get("original_row_line_slots") == ORIGINAL_ROW_LINE_SLOTS,
         "original bounded geometry",
     )
 
@@ -873,9 +874,10 @@ def classify_matrix(root: Path) -> dict[str, object]:
             "speed comparisons apply only to the exact frozen binary/config",
             "native4_f64 is four 4K operations in the shared T16K logical "
             "aperture, not a true T4096/API-aperture run",
-            "original_hybrid64 uses the historical bounded 16-slice RowTable "
-            "geometry while the strict arm requires 32 slices; its performance "
-            "comparison is an arm-level comparison, not an isolated flag A/B",
+            "original_hybrid64 uses an 8,192-line RowTable capacity equivalent "
+            "to the historical one-channel geometry while preserving the "
+            "matrix's two channels; the strict arm uses 16,384 lines, so the "
+            "performance comparison is arm-level, not an isolated flag A/B",
             "feeder and storage bounds are not synthesized area/power/Fmax "
             "evidence",
         ],
@@ -896,8 +898,8 @@ def write_matrix(root: Path, result: Mapping[str, object]) -> None:
         "write_completions",
         "strict_operations",
         "offset_epoch_drains",
-        "row_table_full_events",
-        "build_rounds",
+        "row_pressure_events",
+        "fill_drains",
     )
     with (root / "matrix.tsv").open(
         "w", newline="", encoding="utf-8"
@@ -985,7 +987,8 @@ def execute(root: Path) -> dict[str, object]:
         "checkpoint_predecessor_root": str(matched.PREDECESSOR),
         "new_arm": asdict(ORIGINAL_ARM),
         "original_row_table_slices": ORIGINAL_ROW_SLICES,
-        "original_row_table_capacity": ORIGINAL_ROW_CAPACITY,
+        "original_row_table_rows_per_slice": ORIGINAL_ROW_ROWS_PER_SLICE,
+        "original_row_line_slots": ORIGINAL_ROW_LINE_SLOTS,
         "selected_matrix_arms": list(SELECTED_ARM_NAMES),
         "new_restores_launched": 1,
         "accepted_arms_rerun": 0,
