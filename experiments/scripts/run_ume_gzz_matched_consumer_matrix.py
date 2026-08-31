@@ -190,7 +190,9 @@ def classify(root: Path) -> dict[str, Any]:
             "physical_tiles_per_core=7 cpu_spd_payload_reads=0" in log,
             f"{arm.name}: matched consumer missing",
         )
-        stats = base.first_stats_section(root / "arms" / arm.name / "run/stats.txt")
+        stats = base.base.first_stats_section(
+            root / "arms" / arm.name / "run/stats.txt"
+        )
         require(
             base.optional_sum(stats, "cpu_spd_out_of_range_rejections") == 0,
             f"{arm.name}: CPU SPD aperture rejection",

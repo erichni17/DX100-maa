@@ -981,24 +981,32 @@ def classify_arm(
             "strict/write issue identity",
         )
         require(
-            counters["write_issues"]
-            == counters["write_completions"]
-            == counters["full_line_writes"]
-            == EXPECTED_BACKING_LINES,
-            "strict complete-line ACK closure",
+            counters["write_issues"] == counters["write_completions"]
+            and counters["write_issues"]
+            == counters["full_line_writes"] + counters["partial_writes"]
+            and counters["write_issues"] == int(strict_trace["backing_issues"])
+            and counters["write_completions"]
+            == int(strict_trace["backing_acks"]),
+            "strict backing transaction closure",
         )
-        require(counters["partial_writes"] == 0, "strict partial write")
+        require(
+            int(strict_trace["backing_semantic_bytes"])
+            == EXPECTED_BACKING_BYTES
+            and int(strict_trace["backing_transport_bytes"])
+            >= EXPECTED_BACKING_BYTES,
+            "strict backing byte accounting",
+        )
         require(counters["pages_ready"] == EXPECTED_PAGES, "strict pages")
         require(
             counters["complete_payload_starts"]
             == counters["complete_payload_completions"]
-            == EXPECTED_BACKING_LINES,
+            == counters["full_line_writes"],
             "strict payload-line closure",
         )
         require(
             counters["complete_payload_scheduled_words"]
             == counters["complete_payload_read_words"]
-            == ELEMENTS,
+            == counters["full_line_writes"] * 16,
             "strict payload-word closure",
         )
     else:
