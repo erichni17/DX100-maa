@@ -2,6 +2,7 @@
 #define __MEM_MAA_COMPLETE_LINE_PAYLOAD_STAGING_HH__
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -22,13 +23,17 @@ class CompleteLinePayloadStaging
         uint64_t lineAddress = 0;
         uint16_t validWords = 0;
         uint8_t totalWords = 0;
+        uint8_t bankCount = 0;
+        std::array<uint8_t, 16> bankWords{};
 
         bool operator==(const Identity &other) const
         {
             return generation == other.generation && slot == other.slot &&
                    lineAddress == other.lineAddress &&
                    validWords == other.validWords &&
-                   totalWords == other.totalWords;
+                   totalWords == other.totalWords &&
+                   bankCount == other.bankCount &&
+                   bankWords == other.bankWords;
         }
     };
 
@@ -41,6 +46,7 @@ class CompleteLinePayloadStaging
         uint64_t scheduledWords = 0;
         uint64_t readWords = 0;
         uint64_t serialReadCycles = 0;
+        uint64_t bankConflictCycles = 0;
         uint32_t peakActive = 0;
     };
 
@@ -67,12 +73,20 @@ class CompleteLinePayloadStaging
                lines == MaxActiveLines;
     }
 
-    bool configure(uint32_t width, uint32_t lines = 1)
+    static constexpr bool validBanks(uint32_t banks)
     {
-        if (!validWidth(width) || !validActiveLines(lines) || isActive())
+        return banks == 0 || banks == 1 || banks == 2 || banks == 4 ||
+               banks == 8 || banks == 16;
+    }
+
+    bool configure(uint32_t width, uint32_t lines = 1, uint32_t banks = 0)
+    {
+        if (!validWidth(width) || !validActiveLines(lines) ||
+            !validBanks(banks) || isActive())
             return false;
         wordsPerCycle = width;
         activeLimit = lines;
+        payloadBanks = banks;
         reset();
         return true;
     }
@@ -93,7 +107,7 @@ class CompleteLinePayloadStaging
     {
         if (wordsPerCycle == 0)
             return Result::Disabled;
-        if (!valid(identity))
+        if (!valid(identity) || identity.bankCount != payloadBanks)
             return Result::Invalid;
         const Result serviced = service(cycle);
         if (serviced != Result::Accepted)
@@ -110,11 +124,11 @@ class CompleteLinePayloadStaging
         entries[free].active = true;
         entries[free].identity = identity;
         entries[free].wordsRead = 0;
+        entries[free].remainingBanks = identity.bankWords;
         ++activeEntries;
         ++stagingCounters.starts;
         stagingCounters.scheduledWords += identity.totalWords;
-        stagingCounters.serialReadCycles +=
-            (identity.totalWords + wordsPerCycle - 1) / wordsPerCycle;
+        stagingCounters.serialReadCycles += serialCycles(identity);
         stagingCounters.peakActive =
             std::max(stagingCounters.peakActive, activeEntries);
         return Result::Accepted;
@@ -148,6 +162,7 @@ class CompleteLinePayloadStaging
     bool isActive() const { return activeEntries != 0; }
     uint32_t width() const { return wordsPerCycle; }
     uint32_t activeCapacity() const { return activeLimit; }
+    uint32_t banks() const { return payloadBanks; }
     uint32_t allocatedEntries() const { return entries.size(); }
     uint32_t activeCount() const { return activeEntries; }
 
@@ -192,14 +207,37 @@ class CompleteLinePayloadStaging
     struct Entry
     {
         Identity identity{};
+        std::array<uint8_t, 16> remainingBanks{};
         uint32_t wordsRead = 0;
         bool active = false;
     };
 
     static bool valid(const Identity &identity)
     {
-        return identity.generation != 0 && identity.validWords != 0 &&
-               identity.totalWords != 0 && identity.totalWords <= 16;
+        if (identity.generation == 0 || identity.validWords == 0 ||
+            identity.totalWords == 0 || identity.totalWords > 16 ||
+            !validBanks(identity.bankCount))
+            return false;
+        uint32_t bank_words = 0;
+        for (uint32_t bank = 0; bank < identity.bankWords.size(); ++bank) {
+            if (bank >= identity.bankCount && identity.bankWords[bank] != 0)
+                return false;
+            bank_words += identity.bankWords[bank];
+        }
+        return identity.bankCount == 0 ? bank_words == 0
+                                       : bank_words == identity.totalWords;
+    }
+
+    uint32_t serialCycles(const Identity &identity) const
+    {
+        uint32_t cycles =
+            (identity.totalWords + wordsPerCycle - 1) / wordsPerCycle;
+        if (identity.bankCount != 0) {
+            for (uint32_t bank = 0; bank < identity.bankCount; ++bank)
+                cycles = std::max<uint32_t>(cycles,
+                                            identity.bankWords[bank]);
+        }
+        return cycles;
     }
 
     static bool ready(const Entry &entry)
@@ -246,6 +284,7 @@ class CompleteLinePayloadStaging
         uint64_t elapsed = cycle - lastCycle;
         while (elapsed != 0) {
             uint32_t budget = wordsPerCycle;
+            uint16_t used_banks = 0;
             bool read = false;
             uint32_t emptySearches = 0;
             while (budget != 0 && emptySearches < activeLimit) {
@@ -255,6 +294,22 @@ class CompleteLinePayloadStaging
                     ++emptySearches;
                     continue;
                 }
+                int selected_bank = -1;
+                if (payloadBanks != 0) {
+                    for (uint32_t bank = 0; bank < payloadBanks; ++bank) {
+                        if (entry.remainingBanks[bank] != 0 &&
+                            (used_banks & (uint16_t(1) << bank)) == 0) {
+                            selected_bank = bank;
+                            break;
+                        }
+                    }
+                    if (selected_bank == -1) {
+                        ++emptySearches;
+                        continue;
+                    }
+                    --entry.remainingBanks[selected_bank];
+                    used_banks |= uint16_t(1) << selected_bank;
+                }
                 ++entry.wordsRead;
                 ++stagingCounters.readWords;
                 --budget;
@@ -263,11 +318,21 @@ class CompleteLinePayloadStaging
             }
             if (!read)
                 break;
+            if (payloadBanks != 0 && budget != 0 && hasUnreadWords())
+                ++stagingCounters.bankConflictCycles;
             ++stagingCounters.readCycles;
             --elapsed;
         }
         lastCycle = cycle;
         return Result::Accepted;
+    }
+
+    bool hasUnreadWords() const
+    {
+        return std::any_of(entries.begin(), entries.end(),
+                           [](const Entry &entry) {
+                               return entry.active && !ready(entry);
+                           });
     }
 
     std::vector<Entry> entries{};
@@ -279,6 +344,7 @@ class CompleteLinePayloadStaging
     uint32_t activeLimit = 1;
     uint32_t activeEntries = 0;
     uint32_t serviceCursor = 0;
+    uint32_t payloadBanks = 0;
     bool cycleValid = false;
     bool blockedCycleValid = false;
 };

@@ -161,6 +161,20 @@ class VirtualCombinePayloadStore
     }
 
     Result
+    bankFor(WordRef ref, uint32_t banks, uint32_t &bank) const
+    {
+        if (banks == 0 || banks > MaxLineWords ||
+            (banks & (banks - 1)) != 0)
+            return Result::InvalidCapacity;
+        uint32_t index = 0;
+        const Result checked = validate(ref, index);
+        if (checked != Result::Ok)
+            return checked;
+        bank = index % banks;
+        return Result::Ok;
+    }
+
+    Result
     copyLine(const LineRefs &refs, uint16_t mask, size_t word_bytes,
              LineData &line) const
     {

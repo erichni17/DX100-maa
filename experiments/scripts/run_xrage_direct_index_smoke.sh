@@ -53,6 +53,7 @@ complete_line_only=${MAA_VIRTUAL_COMPLETE_LINE_ONLY:-0}
 complete_line_drain_lines_per_cycle=${MAA_VIRTUAL_COMPLETE_LINE_DRAIN_LINES_PER_CYCLE:-0}
 complete_line_payload_words_per_cycle=${MAA_VIRTUAL_COMPLETE_LINE_PAYLOAD_WORDS_PER_CYCLE:-0}
 complete_line_payload_active_lines=${MAA_VIRTUAL_COMPLETE_LINE_PAYLOAD_ACTIVE_LINES:-1}
+complete_line_payload_banks=${MAA_VIRTUAL_COMPLETE_LINE_PAYLOAD_BANKS:-0}
 expected_direct_descriptors=${XRAGE_EXPECTED_DIRECT_DESCRIPTORS:-0}
 expected_direct_context_high_water=${XRAGE_EXPECTED_DIRECT_CONTEXT_HIGH_WATER:-0}
 l3_ports=${XRAGE_L3_PORTS:-4}
@@ -191,6 +192,18 @@ esac
 [[ $complete_line_payload_words_per_cycle -ne 0 ||
    $complete_line_payload_active_lines -eq 1 ]] || {
     echo "disabled payload staging requires one inactive line" >&2
+    exit 2
+}
+case "$complete_line_payload_banks" in
+    0|1|2|4|8|16) ;;
+    *)
+        echo "MAA_VIRTUAL_COMPLETE_LINE_PAYLOAD_BANKS must be 0/1/2/4/8/16" >&2
+        exit 2
+        ;;
+esac
+[[ $complete_line_payload_words_per_cycle -ne 0 ||
+   $complete_line_payload_banks -eq 0 ]] || {
+    echo "payload banks require finite payload staging" >&2
     exit 2
 }
 if [[ $complete_line_only == 1 ]]; then
@@ -394,6 +407,8 @@ fi
         "$complete_line_payload_words_per_cycle"
     printf 'virtual_complete_line_payload_active_lines=%s\n' \
         "$complete_line_payload_active_lines"
+    printf 'virtual_complete_line_payload_banks=%s\n' \
+        "$complete_line_payload_banks"
     printf 'expected_direct_descriptors=%s\n' "$expected_direct_descriptors"
     printf 'expected_direct_context_high_water=%s\n' \
         "$expected_direct_context_high_water"
@@ -505,6 +520,7 @@ restore_cmd=(
     --maa_virtual_complete_line_drain_lines_per_cycle="$complete_line_drain_lines_per_cycle"
     --maa_virtual_complete_line_payload_words_per_cycle="$complete_line_payload_words_per_cycle"
     --maa_virtual_complete_line_payload_active_lines="$complete_line_payload_active_lines"
+    --maa_virtual_complete_line_payload_banks="$complete_line_payload_banks"
     --maa_virtual_response_slots="$response_slots"
     --maa_virtual_response_word_pool="$response_word_pool"
     --maa_virtual_combine_lookup_latency_cycles="$combine_lookup_latency"
@@ -626,6 +642,12 @@ grep -Fqx \
     echo "resolved payload active-line count differs from manifest" >&2
     exit 1
 }
+grep -Fqx \
+    "virtual_complete_line_payload_banks=$complete_line_payload_banks" \
+    "$out/run/config.ini" || {
+    echo "resolved payload bank count differs from manifest" >&2
+    exit 1
+}
 grep -Fqx "virtual_combine_set_xor_shift=$combine_set_xor_shift" \
     "$out/run/config.ini" || {
     echo "resolved combiner set XOR shift differs from manifest" >&2
@@ -738,6 +760,9 @@ complete_line_payload_read_words=$(
 )
 complete_line_payload_serial_read_cycles=$(
     sum_indirect_stat IND_VirtCompleteLinePayloadSerialReadCycles
+)
+complete_line_payload_bank_conflict_cycles=$(
+    sum_indirect_stat IND_VirtCompleteLinePayloadBankConflictCycles
 )
 pages_ready=$(sum_indirect_stat IND_VirtPagesReady)
 index_words=$(sum_indirect_stat IND_VirtIndexWords)
@@ -864,6 +889,7 @@ for value in "$write_issues" "$write_completions" "$pages_ready" \
     "$complete_line_payload_scheduled_words" \
     "$complete_line_payload_read_words" \
     "$complete_line_payload_serial_read_cycles" \
+    "$complete_line_payload_bank_conflict_cycles" \
     "$index_words" "$index_filter_words" "$index_filter_cycles" \
     "$index_filter_wait_events" "$index_filter_wait_cycles" \
     "$row_table_full_events" "$offset_table_full_events" \
@@ -897,7 +923,8 @@ if [[ $complete_line_payload_words_per_cycle -eq 0 ]]; then
        $complete_line_payload_peak_active -eq 0 &&
        $complete_line_payload_scheduled_words -eq 0 &&
        $complete_line_payload_read_words -eq 0 &&
-       $complete_line_payload_serial_read_cycles -eq 0 ]] || {
+       $complete_line_payload_serial_read_cycles -eq 0 &&
+       $complete_line_payload_bank_conflict_cycles -eq 0 ]] || {
         echo "disabled complete-line payload staging recorded work" >&2
         exit 1
     }
@@ -917,7 +944,7 @@ else
         complete_line_payload_completions != full_line_writes ||
         complete_line_payload_scheduled_words != expected_payload_words ||
         complete_line_payload_read_words != expected_payload_words ||
-        complete_line_payload_serial_read_cycles !=
+        complete_line_payload_serial_read_cycles <
             expected_payload_read_cycles ||
         complete_line_payload_read_cycles < minimum_payload_read_cycles ||
         complete_line_payload_read_cycles >
@@ -931,6 +958,17 @@ else
             echo "single-line payload staging cycle count is not exact" >&2
             exit 1
         fi
+    fi
+    if ((complete_line_payload_banks == 0 &&
+        complete_line_payload_bank_conflict_cycles != 0)); then
+        echo "unbanked payload staging recorded bank conflicts" >&2
+        exit 1
+    fi
+    if ((complete_line_payload_banks == 0 &&
+        complete_line_payload_serial_read_cycles !=
+            expected_payload_read_cycles)); then
+        echo "unbanked payload serial-cycle count is not exact" >&2
+        exit 1
     fi
     payload_peak_bound=$((
         complete_line_payload_active_lines * maa_indirect_instructions
@@ -1129,7 +1167,9 @@ fi
     printf '\tcomplete_line_payload_peak_active'
     printf '\tcomplete_line_payload_scheduled_words'
     printf '\tcomplete_line_payload_read_words'
-    printf '\tcomplete_line_payload_serial_read_cycles\n'
+    printf '\tcomplete_line_payload_serial_read_cycles'
+    printf '\tcomplete_line_payload_banks'
+    printf '\tcomplete_line_payload_bank_conflict_cycles\n'
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
         "$hash" "$roi_ticks" "$final_ticks" "$stats_blocks" \
         "$write_issues" "$write_completions" \
@@ -1166,7 +1206,7 @@ fi
         "$combine_lookup_peak" "$page_ordered_selections" \
         "$page_ordered_deferrals" "$combine_bank_accesses" \
         "$combine_bank_conflicts"
-    printf '\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$complete_line_payload_words_per_cycle" \
         "$complete_line_payload_starts" \
         "$complete_line_payload_completions" \
@@ -1177,7 +1217,9 @@ fi
         "$complete_line_payload_peak_active" \
         "$complete_line_payload_scheduled_words" \
         "$complete_line_payload_read_words" \
-        "$complete_line_payload_serial_read_cycles"
+        "$complete_line_payload_serial_read_cycles" \
+        "$complete_line_payload_banks" \
+        "$complete_line_payload_bank_conflict_cycles"
 } > "$out/result.tsv"
 read -r dram_reads dram_activates dram_precharges < <(
     awk '

@@ -117,6 +117,10 @@ class MAA(ClockedObject):
         1,
         "Maximum line identities sharing the finite payload-read port",
     )
+    virtual_complete_line_payload_banks = Param.Unsigned(
+        0,
+        "Finite payload RAM banks (0 models conflict-free aggregate width)",
+    )
     virtual_complete_line_payload_stage_partial = Param.Bool(
         False,
         "Apply the finite payload port to masked partial-line writes",

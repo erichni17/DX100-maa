@@ -133,6 +133,11 @@ def _get_maa_opts(options):
             options, "maa_virtual_complete_line_payload_active_lines"
         )
 
+    if hasattr(options, "maa_virtual_complete_line_payload_banks"):
+        opts["virtual_complete_line_payload_banks"] = getattr(
+            options, "maa_virtual_complete_line_payload_banks"
+        )
+
     if hasattr(options, "maa_virtual_complete_line_payload_stage_partial"):
         opts["virtual_complete_line_payload_stage_partial"] = getattr(
             options, "maa_virtual_complete_line_payload_stage_partial"

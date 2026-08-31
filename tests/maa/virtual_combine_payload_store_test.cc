@@ -99,7 +99,13 @@ checkFullFp32AndFp64Drains()
     for (size_t i = 0; i < 8; ++i) {
         const auto value = word(static_cast<uint8_t>(0xa0 + i * 8));
         CHECK(store.allocate(value.data(), 8, refs[i]) == Result::Ok);
+        uint32_t bank = 99;
+        CHECK(store.bankFor(refs[i], 4, bank) == Result::Ok);
+        CHECK(bank == i % 4);
     }
+    uint32_t invalid_bank = 0;
+    CHECK(store.bankFor(refs[0], 0, invalid_bank) ==
+          Result::InvalidCapacity);
     CHECK(store.copyLine(refs, 0x00ff, 8, line) == Result::Ok);
     for (size_t i = 0; i < line.size(); ++i)
         CHECK(line[i] == static_cast<uint8_t>(0xa0 + i));

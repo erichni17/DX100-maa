@@ -126,6 +126,13 @@ def main(argv: list[str] | None = None) -> int:
         help="line identities sharing the finite payload-read port",
     )
     parser.add_argument(
+        "--payload-banks",
+        type=int,
+        choices=(0, 1, 2, 4, 8, 16),
+        default=0,
+        help="payload RAM banks with one word read per bank each cycle",
+    )
+    parser.add_argument(
         "--classify-existing",
         action="store_true",
         help="classify an already completed output without rerunning gem5",
@@ -170,6 +177,10 @@ def main(argv: list[str] | None = None) -> int:
         "disabled payload staging must retain one inactive line slot",
     )
     require(
+        args.payload_words_per_cycle != 0 or args.payload_banks == 0,
+        "payload banks require finite payload staging",
+    )
+    require(
         len(gate.base.source_status().splitlines()) == 1, "source is dirty"
     )
     gem5 = args.gem5.resolve()
@@ -211,6 +222,10 @@ def main(argv: list[str] | None = None) -> int:
     command.append(
         "--maa_virtual_complete_line_payload_active_lines="
         f"{args.payload_active_lines}"
+    )
+    command.append(
+        "--maa_virtual_complete_line_payload_banks="
+        f"{args.payload_banks}"
     )
     if args.stage_partial_payload:
         command.append("--maa_virtual_complete_line_payload_stage_partial")
@@ -309,6 +324,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         in config
         and (
+            "virtual_complete_line_payload_banks="
+            f"{args.payload_banks}"
+        )
+        in config
+        and (
             "virtual_complete_line_payload_active_lines="
             f"{args.payload_active_lines}"
         )
@@ -383,6 +403,7 @@ def main(argv: list[str] | None = None) -> int:
             "IND_VirtCompleteLinePayloadScheduledWords",
             "IND_VirtCompleteLinePayloadReadWords",
             "IND_VirtCompleteLinePayloadSerialReadCycles",
+            "IND_VirtCompleteLinePayloadBankConflictCycles",
         )
     }
     if args.payload_words_per_cycle == 0:
@@ -437,6 +458,14 @@ def main(argv: list[str] | None = None) -> int:
             ),
             "CG payload word/cycle arithmetic did not close exactly",
         )
+        if args.payload_banks == 0:
+            require(
+                payload_stats[
+                    "IND_VirtCompleteLinePayloadBankConflictCycles"
+                ]
+                == 0,
+                "unbanked CG payload staging recorded bank conflicts",
+            )
     stats.update(payload_stats)
     dense_initializations = gate.base.stat_sum(
         out / "stats.txt", "IND_VirtDenseInitializationWrites"
@@ -534,6 +563,7 @@ def main(argv: list[str] | None = None) -> int:
         "virtual_complete_line_payload_active_lines": (
             args.payload_active_lines
         ),
+        "virtual_complete_line_payload_banks": args.payload_banks,
         "virtual_dense_write_allocate": args.dense_write_allocate,
         "matched_strict_simTicks": matched_ticks,
         "line_combined_simTicks": combined_ticks,

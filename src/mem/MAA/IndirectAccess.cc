@@ -120,6 +120,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
                                   int _virtual_complete_line_drain_width,
                                   int _complete_line_payload_width,
                                   int _complete_line_payload_active_lines,
+                                  int _complete_line_payload_banks,
                                   bool _complete_line_payload_stage_partial,
                                   int _soa_jit_predicate_active_credits,
                                   int _virtual_index_buffer_lines,
@@ -231,10 +232,12 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
              my_indirect_id, _virtual_complete_line_drain_width);
     panic_if(!virtual_complete_line_payload_staging.configure(
                  _complete_line_payload_width,
-                 _complete_line_payload_active_lines),
-             "I[%d] invalid payload width/active-lines %d/%d\n",
+                 _complete_line_payload_active_lines,
+                 _complete_line_payload_banks),
+             "I[%d] invalid payload width/active-lines/banks %d/%d/%d\n",
              my_indirect_id, _complete_line_payload_width,
-             _complete_line_payload_active_lines);
+             _complete_line_payload_active_lines,
+             _complete_line_payload_banks);
     virtual_complete_line_payload_stage_partial =
         _complete_line_payload_stage_partial;
     panic_if(virtual_dense_write_allocate && !virtual_masked_writes,
@@ -7967,6 +7970,8 @@ void IndirectAccessUnit::executeInstruction() {
                 my_indirect_id]) += payload_counters.readWords;
             (*maa->stats.IND_VirtCompleteLinePayloadSerialReadCycles[
                 my_indirect_id]) += payload_counters.serialReadCycles;
+            (*maa->stats.IND_VirtCompleteLinePayloadBankConflictCycles[
+                my_indirect_id]) += payload_counters.bankConflictCycles;
             if (completeLineOnlyOperation()) {
                 const uint64_t expected_tail =
                     my_max % my_words_per_cl == 0 ? 0 : 1;
@@ -11548,10 +11553,27 @@ IndirectAccessUnit::completeLinePayloadIdentity(
                  slot >= static_cast<int>(virtual_combine_slots.size()),
              "I[%d] invalid complete-line payload slot %d\n",
              my_indirect_id, slot);
-    return {maa->getVirtualPageGeneration(my_dst_tile),
-            static_cast<uint32_t>(slot), line.line_vaddr,
-            line.valid_words,
-            static_cast<uint8_t>(__builtin_popcount(line.valid_words))};
+    maa::CompleteLinePayloadStaging::Identity identity{
+        maa->getVirtualPageGeneration(my_dst_tile),
+        static_cast<uint32_t>(slot), line.line_vaddr,
+        line.valid_words,
+        static_cast<uint8_t>(__builtin_popcount(line.valid_words))};
+    identity.bankCount = maa->virtual_complete_line_payload_banks;
+    if (identity.bankCount != 0) {
+        for (int word = 0; word < my_words_per_cl; ++word) {
+            if ((line.valid_words & (uint16_t(1) << word)) == 0)
+                continue;
+            uint32_t bank = 0;
+            const auto result = virtual_combine_payload.bankFor(
+                line.word_refs[word], identity.bankCount, bank);
+            panic_if(result != VirtualCombinePayloadStore::Result::Ok,
+                     "I[%d] payload reference has no physical bank: %s\n",
+                     my_indirect_id,
+                     VirtualCombinePayloadStore::resultName(result));
+            ++identity.bankWords[bank];
+        }
+    }
+    return identity;
 }
 
 bool

@@ -164,6 +164,8 @@ MAA::MAA(const MAAParams &p)
           p.virtual_complete_line_payload_words_per_cycle),
       virtual_complete_line_payload_active_lines(
           p.virtual_complete_line_payload_active_lines),
+      virtual_complete_line_payload_banks(
+          p.virtual_complete_line_payload_banks),
       virtual_complete_line_payload_stage_partial(
           p.virtual_complete_line_payload_stage_partial),
       virtual_combine_banks(p.virtual_combine_banks),
@@ -413,6 +415,13 @@ MAA::MAA(const MAAParams &p)
              "Virtual payload active-line count must be 1/2/4/8/16, got "
              "%u\n",
              virtual_complete_line_payload_active_lines);
+    panic_if(!maa::CompleteLinePayloadStaging::validBanks(
+                 virtual_complete_line_payload_banks) ||
+                 (virtual_complete_line_payload_banks != 0 &&
+                  virtual_complete_line_payload_words_per_cycle == 0),
+             "Virtual payload banks must be 0/1/2/4/8/16 and require a "
+             "finite payload width, got %u\n",
+             virtual_complete_line_payload_banks);
     panic_if(virtual_complete_line_payload_stage_partial &&
                  (virtual_complete_line_payload_words_per_cycle == 0 ||
                   !virtual_masked_writes),
@@ -782,6 +791,8 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
         virtual_complete_line_payload_words_per_cycle;
     const unsigned int complete_line_payload_active_lines =
         virtual_complete_line_payload_active_lines;
+    const unsigned int complete_line_payload_banks =
+        virtual_complete_line_payload_banks;
     const bool stage_partial_payload =
         virtual_complete_line_payload_stage_partial;
     for (int i = 0; i < num_indirect_units_total; i++) {
@@ -811,6 +822,7 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
                                         complete_line_drain_width,
                                         complete_line_payload_width,
                                         complete_line_payload_active_lines,
+                                        complete_line_payload_banks,
                                         stage_partial_payload,
                                         soa_jit_predicate_active_credits,
                                         virtual_index_buffer_lines,
@@ -8974,6 +8986,13 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
                     "IND_VirtCompleteLinePayloadSerialReadCycles"),
                 statistics::units::Cycle::get(),
                 "sum of isolated per-line finite-port read cycles"));
+        IND_VirtCompleteLinePayloadBankConflictCycles.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_VirtCompleteLinePayloadBankConflictCycles"),
+                statistics::units::Cycle::get(),
+                "finite payload cycles limited by one-read-per-bank"));
         IND_VirtPartialWrites.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtPartialWrites"),
             statistics::units::Count::get(),

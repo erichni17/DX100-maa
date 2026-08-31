@@ -393,6 +393,13 @@ def addNoISAOptions(parser):
         help="Line identities sharing the finite payload-read port",
     )
     parser.add_argument(
+        "--maa_virtual_complete_line_payload_banks",
+        type=int,
+        default=0,
+        choices=(0, 1, 2, 4, 8, 16),
+        help="Payload RAM banks with one word read per bank each cycle",
+    )
+    parser.add_argument(
         "--maa_virtual_complete_line_payload_stage_partial",
         default=False,
         action="store_true",

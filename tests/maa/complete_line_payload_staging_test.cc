@@ -68,6 +68,39 @@ checkSharedWidthPipeline()
     CHECK(stage.counters().completions == 8);
 }
 
+void
+checkBankedPayloadReads()
+{
+    Stage balanced;
+    CHECK(balanced.configure(4, 1, 4));
+    Stage::Identity line{13, 0, 0x6000, 0xff, 8};
+    line.bankCount = 4;
+    line.bankWords[0] = 2;
+    line.bankWords[1] = 2;
+    line.bankWords[2] = 2;
+    line.bankWords[3] = 2;
+    CHECK(balanced.claim(line, 10) == Stage::Result::Accepted);
+    CHECK(balanced.advance(line, 11) == Stage::Result::NotReady);
+    CHECK(balanced.advance(line, 12) == Stage::Result::Accepted);
+    CHECK(balanced.counters().readCycles == 2);
+    CHECK(balanced.counters().serialReadCycles == 2);
+    CHECK(balanced.counters().bankConflictCycles == 0);
+    CHECK(balanced.complete(line) == Stage::Result::Accepted);
+
+    Stage conflicted;
+    CHECK(conflicted.configure(4, 1, 4));
+    line.slot = 1;
+    line.lineAddress += 64;
+    line.bankWords = {};
+    line.bankWords[0] = 8;
+    CHECK(conflicted.claim(line, 20) == Stage::Result::Accepted);
+    CHECK(conflicted.advance(line, 28) == Stage::Result::Accepted);
+    CHECK(conflicted.counters().readCycles == 8);
+    CHECK(conflicted.counters().serialReadCycles == 8);
+    CHECK(conflicted.counters().bankConflictCycles == 7);
+    CHECK(conflicted.complete(line) == Stage::Result::Accepted);
+}
+
 int main()
 {
     Stage stage;
@@ -98,5 +131,6 @@ int main()
         checkWidth(width, 16);
     }
     checkSharedWidthPipeline();
+    checkBankedPayloadReads();
     std::cout << "complete-line payload staging tests passed\n";
 }
