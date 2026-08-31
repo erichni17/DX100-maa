@@ -1,14 +1,14 @@
 # UMT ingress micro harness
 
 `tests/lanl_maa/umt_ingress_micro_harness.py` is a four-arm, evidence-only
-opcode-11 harness: D32/G16, D32/G31, D32/G32, and D64/G32. The combined v15
+opcode-11 harness: D32/G16, D32/G31, D32/G32, and D64/G32. The combined v16
 contract hard-pins the
 adaptive native test driver (`7db125ac…`), its clean native source commit/tree,
 the `LanlMaaUmtSubmit.cc` ABI source and native ABI tests, and the adaptive-v1
 mapping cookie.  It rejects v1 entirely: v1 accepted an arbitrary native input
 and a three-field build proof. It also rejects the v6 arm contract, whose
 `systemd-run` command invoked gem5 directly even though analysis required
-captured `gem5.stdout` and `gem5.stderr`. v15 consumes the independently
+captured `gem5.stdout` and `gem5.stderr`. v16 consumes the independently
 reviewed arm-v7 ownership contract with the build-v14 producer/consumer;
 neither split predecessor is itself accepted as a combined four-arm contract.
 
@@ -82,13 +82,13 @@ Freeze and dry-plan commands are deliberately separate from execution:
 
 ```sh
 python3 tests/lanl_maa/umt_ingress_micro_harness.py freeze-contract \
-  --campaign-root CAMPAIGN --output CAMPAIGN/ingress-contract-v15.json \
+  --campaign-root CAMPAIGN --output CAMPAIGN/ingress-contract-v16.json \
   --gem5 GEM5 --gem5-sha256 GEM5_SHA --instrumented-build-proof PROOF \
   --instrumented-build-proof-sha256 PROOF_SHA
 python3 tests/lanl_maa/umt_ingress_micro_harness.py dry-dispatch \
-  --campaign-root CAMPAIGN --contract CAMPAIGN/ingress-contract-v15.json \
+  --campaign-root CAMPAIGN --contract CAMPAIGN/ingress-contract-v16.json \
   --contract-sha256 CONTRACT_SHA \
-  --output CAMPAIGN/identity/ingress-dry-dispatch-v15.json
+  --output CAMPAIGN/identity/ingress-dry-dispatch-v16.json
 ```
 
 The second command only records four `systemd-run --user --collect` commands.
@@ -122,7 +122,7 @@ the property-limited `systemctl --user show` output and the matching PID's
 `/proc` start ticks in one no-clobber receipt; after exit, capture the same
 property-limited terminal show output and the unit's `journalctl --output=export`
 snapshot. Hash every raw snapshot before constructing the v14 proof, then
-freeze the combined v15 contract and only then record (not execute) its arms.
+freeze the combined v16 contract and only then record (not execute) its arms.
 The terminal journal protocol is a complete equality check, not a text search.
 
 After the terminal proof and journal are durable, execute the plan's exact
@@ -154,9 +154,16 @@ reserved identities survive. Any existing arm root, receipt, or output blocks
 gem5; a post-admission output replacement produces a failing wrapper status and
 non-admissible terminal receipt.
 
+The guest process source and frozen contract bind the full proven compatibility
+prefix before any LANL MAA variables: `LANG=C`, `LC_ALL=C`,
+`OMP_NUM_THREADS=1`, `LD_HWCAP_MASK=0`, the exact GLIBC hwcaps mask disabling
+SSE4.2/AVX families, and the four proven OpenMPI self/ob1/mmap settings. Any
+omission, mutation, duplication, or reordering is rejected; v15 raw outputs are
+not reusable.
+
 After a launcher has run one recorded command, `analyze-arm` requires all raw
 outputs, config/stats, debug log, submission report, terminal marker, and the
-test driver's exact result marker. It also takes the frozen v15 contract and
+test driver's exact result marker. It also takes the frozen v16 contract and
 hash, checks the exact wrapper and gem5 commands, wrapper/binary hashes,
 successful wrapper return receipt, and hashes every raw file. The stream
 hashes must still match the terminal receipt, so post-run clobber is rejected.

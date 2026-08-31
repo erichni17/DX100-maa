@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Adversarial dry tests for combined v15 with build-v14 evidence."""
+"""Adversarial dry tests for combined v16 with build-v14 evidence."""
 import importlib.util
 import json
 import pathlib
@@ -42,10 +42,10 @@ def line(label, kind, cycle, waiters, abi=4):
 
 
 class IngressHarnessTest(unittest.TestCase):
-    def test_v15_contract_accepts_exactly_the_v14_build_proof_generation(self):
+    def test_v16_contract_accepts_exactly_the_v14_build_proof_generation(self):
         self.assertEqual(
             ingress.SCHEMA_CONTRACT,
-            "lanl-maa-umt-ingress-contract-v15",
+            "lanl-maa-umt-ingress-contract-v16",
         )
         self.assertEqual(
             ingress.SCHEMA_BUILD_PROOF,
@@ -53,24 +53,24 @@ class IngressHarnessTest(unittest.TestCase):
         )
         self.assertEqual(
             ingress.SCHEMA_DISPATCH_PLAN,
-            "lanl-maa-umt-ingress-dispatch-plan-v15",
+            "lanl-maa-umt-ingress-dispatch-plan-v16",
         )
         self.assertEqual(
             ingress.SCHEMA_ARM_REPORT,
-            "lanl-maa-umt-ingress-arm-report-v15",
+            "lanl-maa-umt-ingress-arm-report-v16",
         )
         self.assertEqual(
-            ingress.CONTRACT_FILENAME, "ingress-contract-v15.json"
+            ingress.CONTRACT_FILENAME, "ingress-contract-v16.json"
         )
         self.assertEqual(
             ingress.DISPATCH_FILENAME,
-            "ingress-dry-dispatch-v15.json",
+            "ingress-dry-dispatch-v16.json",
         )
         self.assertTrue(
             all(
-                value.startswith("umt-ingress-micro-v15-")
+                value.startswith("umt-ingress-micro-v16-")
                 for value in (
-                    f"umt-ingress-micro-v15-{case}-20260830.service"
+                    f"umt-ingress-micro-v16-{case}-20260830.service"
                     for case in ingress.CASES
                 )
             )
@@ -224,6 +224,39 @@ class IngressHarnessTest(unittest.TestCase):
                 ),
                 "ENV.get assignment flow",
             )
+
+    def test_guest_compatibility_prefix_is_exact_ordered_and_pinned(self):
+        expected = list(ingress.GUEST_COMPATIBILITY_PREFIX)
+        self.assertEqual(ingress.verify_guest_compatibility_source(), expected)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            runner = root / "tests/lanl_maa/umt_ingress_micro_process_cpu.py"
+            runner.parent.mkdir(parents=True)
+
+            def validate(values, passes):
+                runner.write_text(
+                    "q.env = " + repr(values) + "\n", encoding="utf-8"
+                )
+                if passes:
+                    self.assertEqual(
+                        ingress.verify_guest_compatibility_source(root),
+                        expected,
+                    )
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "compatibility"):
+                        ingress.verify_guest_compatibility_source(root)
+
+            validate(expected + ["LANL_MAA_UMT_SUBMIT=1"], True)
+            validate(
+                expected[:3] + expected[4:] + ["LANL_MAA_UMT_SUBMIT=1"], False
+            )
+            altered = list(expected)
+            altered[4] += ",BAD"
+            validate(altered + ["LANL_MAA_UMT_SUBMIT=1"], False)
+            reordered = list(expected)
+            reordered[3], reordered[4] = reordered[4], reordered[3]
+            validate(reordered + ["LANL_MAA_UMT_SUBMIT=1"], False)
+            validate(expected[:-1] + ["LANL_MAA_UMT_SUBMIT=1"], False)
 
     def test_targeted_preservation_and_invalidation_is_inode_bound(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1812,7 +1845,7 @@ class IngressHarnessTest(unittest.TestCase):
                     root / "identity/ingress-dry-dispatch-v4.json",
                 )
 
-    def test_v14_combined_contract_schema_is_rejected(self):
+    def test_v15_combined_contract_schema_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
             campaign = pathlib.Path(temporary) / "campaign"
             campaign.mkdir()
@@ -1820,14 +1853,14 @@ class IngressHarnessTest(unittest.TestCase):
             contract.write_text(
                 json.dumps(
                     {
-                        "schema": "lanl-maa-umt-ingress-contract-v14",
+                        "schema": "lanl-maa-umt-ingress-contract-v15",
                         "status": "frozen_before_dispatch",
                     }
                 ),
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(
-                RuntimeError, "v15 contract semantics"
+                RuntimeError, "v16 contract semantics"
             ):
                 ingress.dispatch_plan(
                     contract,
@@ -1855,7 +1888,7 @@ class IngressHarnessTest(unittest.TestCase):
         )
         self.assertNotIn("--property=CPUQuotaPerSecUSec=4s", command)
 
-    def test_v15_dispatch_runs_the_pinned_wrapper_not_gem5_directly(self):
+    def test_v16_dispatch_runs_the_pinned_wrapper_not_gem5_directly(self):
         with tempfile.TemporaryDirectory() as temporary:
             self.assertEqual(
                 set(ingress.CASES),
@@ -1898,7 +1931,7 @@ class IngressHarnessTest(unittest.TestCase):
         wrapper_argv = ingress.arm_wrapper_argv(root, gem5_argv)
         return {
             "root": str(root),
-            "unit": f"umt-ingress-micro-v15-{case}-20260830.service",
+            "unit": f"umt-ingress-micro-v16-{case}-20260830.service",
             "gem5_argv": gem5_argv,
             "gem5_argv_sha256": ingress.json_sha256(gem5_argv),
             "wrapper": {

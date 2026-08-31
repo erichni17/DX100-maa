@@ -126,6 +126,15 @@ q.env = [
     "LANG=C",
     "LC_ALL=C",
     "OMP_NUM_THREADS=1",
+    "LD_HWCAP_MASK=0",
+    (
+        "GLIBC_TUNABLES=glibc.cpu.hwcaps="
+        "-SSE4_2,-AVX,-AVX2,-AVX512F,-AVX512VL"
+    ),
+    "OMPI_MCA_btl=self",
+    "OMPI_MCA_pml=ob1",
+    "OMPI_MCA_shmem=mmap",
+    "OMPI_MCA_shmem_mmap_backing_file_base_dir=/tmp",
     "LANL_MAA_UMT_SUBMIT=1",
     f"LANL_MAA_UMT_MODE={a.umt_mode}",
     "LANL_MAA_UMT_MAPPING_COOKIE=umt-lanl-maa-opcode11-wave-soa-arena-adaptive-v1",
