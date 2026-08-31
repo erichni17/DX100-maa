@@ -7341,6 +7341,23 @@ void IndirectAccessUnit::executeInstruction() {
         if (usesBoundedSourceResponses() && virtual_pending_source) {
             if (!virtualSourceCreditAvailable(virtual_pending_source_head,
                                               virtual_pending_source_words)) {
+                const int payload_words = virtualSourcePayloadWords(
+                    virtual_pending_source_head,
+                    virtual_pending_source_words);
+                DPRINTF(MAAVirtualTrace,
+                        "event=shared_source_credit_stall schema=1 unit=%d "
+                        "operation_tick=%lu logical_words=%d "
+                        "payload_words=%d response_slots=%d/%zu "
+                        "response_words=%d combine_words=%d capacity=%d "
+                        "writes=%d\n",
+                        my_indirect_id, my_decode_start_tick,
+                        virtual_pending_source_words, payload_words,
+                        virtual_reserved_responses,
+                        virtual_response_slots.size(),
+                        virtual_reserved_response_words,
+                        virtual_combine_words,
+                        virtual_shared_result_payload_limit,
+                        virtual_outstanding_writes);
                 virtual_response_word_pool_stalls++;
                 macro_a_retries++;
                 virtual_capacity_full = true;
@@ -7556,7 +7573,10 @@ void IndirectAccessUnit::executeInstruction() {
                                        ? "build_capacity"
                                        : "build_complete");
         accountVirtualRequestInterval();
-        scheduleNextExecution(true);
+        if (virtual_capacity_full && virtual_pending_source)
+            scheduleExecuteInstructionEvent(1);
+        else
+            scheduleNextExecution(true);
         break;
     }
     case Status::Request: {
