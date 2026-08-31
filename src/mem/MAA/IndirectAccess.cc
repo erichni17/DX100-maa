@@ -2783,20 +2783,56 @@ IndirectAccessUnit::boundedGlobalMergeKey(
     return {slice_rank, grow_addr, line_paddr, descriptor.iteration};
 }
 
-bool
-IndirectAccessUnit::virtualSourceCreditAvailable(int source_words) const
+int
+IndirectAccessUnit::virtualSourcePayloadWords(int source_head,
+                                              int source_words) const
 {
-    panic_if(source_words <= 0,
-             "I[%d] virtual source credit requested for %d words\n",
-             my_indirect_id, source_words);
+    panic_if(source_head < 0 || source_words <= 0,
+             "I[%d] virtual source payload requested for head=%d words=%d\n",
+             my_indirect_id, source_head, source_words);
+    if (!virtual_shared_result_payload)
+        return source_words;
+    std::array<bool, 16> seen{};
+    int logical_words = 0;
+    int payload_words = 0;
+    int itr = source_head;
+    while (itr != -1) {
+        const OffsetTableEntry entry = offset_table->peek_entry(itr);
+        panic_if(entry.wid < 0 || entry.wid >= my_words_per_cl,
+                 "I[%d] virtual source head=%d has invalid word id %d\n",
+                 my_indirect_id, source_head, entry.wid);
+        if (!seen[entry.wid]) {
+            seen[entry.wid] = true;
+            payload_words++;
+        }
+        logical_words++;
+        panic_if(logical_words > source_words,
+                 "I[%d] virtual source head=%d exceeds claimed words=%d\n",
+                 my_indirect_id, source_head, source_words);
+        itr = entry.next_itr;
+    }
+    panic_if(logical_words != source_words || payload_words <= 0,
+             "I[%d] virtual source head=%d payload mismatch logical=%d/%d "
+             "unique=%d\n",
+             my_indirect_id, source_head, logical_words, source_words,
+             payload_words);
+    return payload_words;
+}
+
+bool
+IndirectAccessUnit::virtualSourceCreditAvailable(int source_head,
+                                                 int source_words) const
+{
+    const int payload_words =
+        virtualSourcePayloadWords(source_head, source_words);
     if (virtual_reserved_responses >=
         static_cast<int>(virtual_response_slots.size()))
         return false;
     if (virtual_shared_result_payload)
         return virtual_combine_words + virtual_reserved_response_words +
-            source_words <= virtual_shared_result_payload_limit;
+            payload_words <= virtual_shared_result_payload_limit;
     return virtual_response_word_pool_limit == 0 ||
-        virtual_reserved_response_words + source_words <=
+        virtual_reserved_response_words + payload_words <=
             virtual_response_word_pool_limit;
 }
 
@@ -2818,12 +2854,14 @@ IndirectAccessUnit::issueVirtualSource(
                  "I[%d] source response needs %d/%d pooled words\n",
                  my_indirect_id, source_words,
                  virtual_response_word_pool_limit);
-    panic_if(!virtualSourceCreditAvailable(source_words),
+    const int payload_words =
+        virtualSourcePayloadWords(source_head, source_words);
+    panic_if(!virtualSourceCreditAvailable(source_head, source_words),
              "I[%d] cannot issue virtual source without bounded credit\n",
              my_indirect_id);
 
     if (virtual_response_word_pool_limit != 0)
-        virtual_reserved_response_words += source_words;
+        virtual_reserved_response_words += payload_words;
     if (virtual_shared_result_payload) {
         panic_if(virtual_combine_words + virtual_reserved_response_words >
                      virtual_shared_result_payload_limit,
@@ -2838,8 +2876,8 @@ IndirectAccessUnit::issueVirtualSource(
     panic_if(!virtual_source_reservations
                   .emplace(source_addr,
                            VirtualSourceReservation{
-                               source_head, source_words, source_rt_idx,
-                               source_row_id, source_entry_id,
+                               source_head, source_words, payload_words,
+                               source_rt_idx, source_row_id, source_entry_id,
                                source_grow_addr})
                   .second,
              "I[%d] duplicate source reservation for 0x%lx\n",
@@ -2866,7 +2904,8 @@ IndirectAccessUnit::issueBoundedGlobalSourceLine()
                  bounded_global_merge_source_words <= 0,
              "I[%d] bounded global source line is incomplete\n",
              my_indirect_id);
-    if (!virtualSourceCreditAvailable(bounded_global_merge_source_words)) {
+    if (!virtualSourceCreditAvailable(bounded_global_merge_source_head,
+                                      bounded_global_merge_source_words)) {
         if (virtual_reserved_responses >=
             static_cast<int>(virtual_response_slots.size()))
             macro_a_retries++;
@@ -7299,7 +7338,8 @@ void IndirectAccessUnit::executeInstruction() {
         }
         bool virtual_capacity_full = false;
         if (usesBoundedSourceResponses() && virtual_pending_source) {
-            if (!virtualSourceCreditAvailable(virtual_pending_source_words)) {
+            if (!virtualSourceCreditAvailable(virtual_pending_source_head,
+                                              virtual_pending_source_words)) {
                 virtual_response_word_pool_stalls++;
                 macro_a_retries++;
                 virtual_capacity_full = true;
@@ -7394,7 +7434,8 @@ void IndirectAccessUnit::executeInstruction() {
                                          "I[%d] source response needs %d/%d pooled words\n",
                                          my_indirect_id, virtual_words,
                                          virtual_response_word_pool_limit);
-                            if (!virtualSourceCreditAvailable(virtual_words)) {
+                            if (!virtualSourceCreditAvailable(virtual_head,
+                                                              virtual_words)) {
                                 if (!native_order_claim) {
                                     Addr committed_addr = 0;
                                     int committed_head = -1;
@@ -9747,6 +9788,7 @@ IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr,
     const bool bounded_response_load = usesBoundedSourceResponses();
     int virtual_head = -1;
     int virtual_reserved_words = 0;
+    int virtual_payload_words = 0;
     int virtual_claim_rt_idx = -1;
     int virtual_claim_row_id = -1;
     int virtual_claim_entry_id = -1;
@@ -9758,6 +9800,7 @@ IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr,
             return false;
         virtual_head = reservation->second.head;
         virtual_reserved_words = reservation->second.words;
+        virtual_payload_words = reservation->second.payload_words;
         virtual_claim_rt_idx = reservation->second.rt_idx;
         virtual_claim_row_id = reservation->second.row_id;
         virtual_claim_entry_id = reservation->second.entry_id;
@@ -9821,10 +9864,11 @@ IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr,
             panic_if(virtual_reserved_words <= 0,
                      "I[%d] response 0x%lx has no packed-word reservation\n",
                      my_indirect_id, addr);
-            slot->reserved_words = virtual_reserved_words;
+            slot->reserved_words = virtual_payload_words;
         }
-        const bool packed_response = virtual_response_words != 0 ||
-                                     virtual_response_word_pool_limit != 0;
+        const bool packed_response = !virtual_shared_result_payload &&
+            (virtual_response_words != 0 ||
+             virtual_response_word_pool_limit != 0);
         if (!packed_response) {
             std::memcpy(virtual_response_line_payloads.lineData(slot_idx),
                         dataptr, block_size);
@@ -9842,6 +9886,21 @@ IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr,
                 slot->packed_words.push_back(word);
                 itr = entry.next_itr;
             }
+        }
+        if (virtual_shared_result_payload) {
+            int itr = virtual_head;
+            while (itr != -1) {
+                const OffsetTableEntry entry = offset_table->peek_entry(itr);
+                slot->remaining_word_uses[entry.wid]++;
+                itr = entry.next_itr;
+            }
+            const int retained_words = std::count_if(
+                slot->remaining_word_uses.begin(),
+                slot->remaining_word_uses.begin() + my_words_per_cl,
+                [](uint32_t uses) { return uses != 0; });
+            panic_if(retained_words != slot->reserved_words,
+                     "I[%d] shared response retained %d/%d unique words\n",
+                     my_indirect_id, retained_words, slot->reserved_words);
         }
         if (isFusedP16Product())
             panic_if(!beginFusedP16ResponseHead(slot_idx, *slot),
@@ -10681,13 +10740,22 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                  "I[%d] virtual lookup response slot closed with pending "
                  "identity state\n",
                  my_indirect_id);
-        const bool packed_response = virtual_response_words != 0 ||
-                                     virtual_response_word_pool_limit != 0;
+        const bool packed_response = !virtual_shared_result_payload &&
+            (virtual_response_words != 0 ||
+             virtual_response_word_pool_limit != 0);
         panic_if(packed_response &&
                      slot.next_packed_word != slot.packed_words.size(),
                  "I[%d] virtual lookup packed response closed at %zu/%zu\n",
                  my_indirect_id, slot.next_packed_word,
                  slot.packed_words.size());
+        const bool retained_fanout = std::any_of(
+            slot.remaining_word_uses.begin(),
+            slot.remaining_word_uses.begin() + my_words_per_cl,
+            [](uint32_t uses) { return uses != 0; });
+        panic_if(virtual_shared_result_payload &&
+                     (slot.reserved_words != 0 || retained_fanout),
+                 "I[%d] shared lookup response closed with retained payload\n",
+                 my_indirect_id);
         panic_if(virtual_reserved_response_words < slot.reserved_words,
                  "I[%d] lookup response word accounting underflow\n",
                  my_indirect_id);
@@ -10699,8 +10767,16 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                  my_indirect_id);
         --virtual_reserved_responses;
     };
-    auto begin_shared_transfer = [this](VirtualResponseSlot &slot) {
+    auto begin_shared_transfer = [this](VirtualResponseSlot &slot,
+                                        int word_id) {
         if (!virtual_shared_result_payload)
+            return false;
+        panic_if(word_id < 0 || word_id >= my_words_per_cl ||
+                     slot.remaining_word_uses[word_id] == 0,
+                 "I[%d] shared result word %d has no retained fanout\n",
+                 my_indirect_id, word_id);
+        --slot.remaining_word_uses[word_id];
+        if (slot.remaining_word_uses[word_id] != 0)
             return false;
         panic_if(slot.reserved_words <= 0 ||
                      virtual_reserved_response_words <= 0,
@@ -10711,11 +10787,18 @@ bool IndirectAccessUnit::drainVirtualResponses() {
         return true;
     };
     auto rollback_shared_transfer = [this](VirtualResponseSlot &slot,
+                                           int word_id,
                                            bool transferred) {
-        if (!transferred)
+        if (!virtual_shared_result_payload)
             return;
-        ++slot.reserved_words;
-        ++virtual_reserved_response_words;
+        panic_if(word_id < 0 || word_id >= my_words_per_cl,
+                 "I[%d] shared result rollback has invalid word %d\n",
+                 my_indirect_id, word_id);
+        ++slot.remaining_word_uses[word_id];
+        if (transferred) {
+            ++slot.reserved_words;
+            ++virtual_reserved_response_words;
+        }
         ++virtual_shared_payload_rollbacks;
     };
     auto commit_shared_transfer = [this](bool transferred) {
@@ -10737,8 +10820,9 @@ bool IndirectAccessUnit::drainVirtualResponses() {
     bool lookup_start_blocked = false;
     if (lookup_enabled) {
         using LookupPipeline = maa::VirtualCombineLookupPipeline;
-        const bool packed_response = virtual_response_words != 0 ||
-                                     virtual_response_word_pool_limit != 0;
+        const bool packed_response = !virtual_shared_result_payload &&
+            (virtual_response_words != 0 ||
+             virtual_response_word_pool_limit != 0);
         std::vector<LookupPipeline::Token> ready;
         const auto ready_result =
             virtual_combine_lookup_pipeline.collectReady(current_cycle,
@@ -10800,9 +10884,9 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                 lookup_blocked = true;
                 continue;
             }
-            const bool transferred = begin_shared_transfer(slot);
+            const bool transferred = begin_shared_transfer(slot, token.wordId);
             if (!insertVirtualCombineWord(token.iteration, word)) {
-                rollback_shared_transfer(slot, transferred);
+                rollback_shared_transfer(slot, token.wordId, transferred);
                 lookup_blocked = true;
                 continue;
             }
@@ -11159,8 +11243,9 @@ bool IndirectAccessUnit::drainVirtualResponses() {
         }
         if (lookup_enabled)
             continue;
-        if (virtual_response_words != 0 ||
-            virtual_response_word_pool_limit != 0) {
+        if (!virtual_shared_result_payload &&
+            (virtual_response_words != 0 ||
+             virtual_response_word_pool_limit != 0)) {
             bool capacity_stalled = false;
             while (slot.valid &&
                    slot.next_packed_word < slot.packed_words.size()) {
@@ -11178,9 +11263,10 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                         bank_stalled = true;
                         break;
                     }
-                    const bool transferred = begin_shared_transfer(slot);
+                    const bool transferred =
+                        begin_shared_transfer(slot, entry.wid);
                     if (!insertVirtualCombineWord(entry.itr, word.data())) {
-                        rollback_shared_transfer(slot, transferred);
+                        rollback_shared_transfer(slot, entry.wid, transferred);
                         capacity_stalled = true;
                         break;
                     }
@@ -11219,6 +11305,15 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                 panic_if(virtual_reserved_response_words < slot.reserved_words,
                          "I[%d] packed response word accounting underflow\n",
                          my_indirect_id);
+                const bool retained_fanout = std::any_of(
+                    slot.remaining_word_uses.begin(),
+                    slot.remaining_word_uses.begin() + my_words_per_cl,
+                    [](uint32_t uses) { return uses != 0; });
+                panic_if(virtual_shared_result_payload &&
+                             (slot.reserved_words != 0 || retained_fanout),
+                         "I[%d] shared packed response closed with retained "
+                         "payload\n",
+                         my_indirect_id);
                 virtual_reserved_response_words -= slot.reserved_words;
                 release_native_claim(slot);
                 slot = VirtualResponseSlot();
@@ -11245,10 +11340,14 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                     bank_stalled = true;
                     break;
                 }
+                const bool transferred =
+                    begin_shared_transfer(slot, entry.wid);
                 if (!insertVirtualCombineWord(entry.itr, word)) {
+                    rollback_shared_transfer(slot, entry.wid, transferred);
                     capacity_stalled = true;
                     break;
                 }
+                commit_shared_transfer(transferred);
             } else {
                 panic_if(my_dst_tile == -1,
                          "I[%d] bounded native load has no destination tile\n",
@@ -11273,6 +11372,15 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                      my_indirect_id);
             recordReorderSurvivalIssuedEntries(1);
             if (slot.next_itr == -1) {
+                const bool retained_fanout = std::any_of(
+                    slot.remaining_word_uses.begin(),
+                    slot.remaining_word_uses.begin() + my_words_per_cl,
+                    [](uint32_t uses) { return uses != 0; });
+                panic_if(virtual_shared_result_payload &&
+                             (slot.reserved_words != 0 || retained_fanout),
+                         "I[%d] shared line response closed with retained "
+                         "payload\n",
+                         my_indirect_id);
                 release_native_claim(slot);
                 slot = VirtualResponseSlot();
                 virtual_reserved_responses--;

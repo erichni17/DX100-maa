@@ -107,6 +107,7 @@ protected:
         std::vector<std::array<uint8_t, 8>> packed_words;
         size_t next_packed_word = 0;
         int reserved_words = 0;
+        std::array<uint32_t, 16> remaining_word_uses{};
         int claim_rt_idx = -1;
         int claim_row_id = -1;
         int claim_entry_id = -1;
@@ -146,6 +147,7 @@ protected:
     {
         int head = -1;
         int words = 0;
+        int payload_words = 0;
         int rt_idx = -1;
         int row_id = -1;
         int entry_id = -1;
@@ -892,7 +894,8 @@ protected:
     void startBoundedGlobalRunMaterialization();
     void serviceBoundedGlobalRunMaterialization();
     void serviceBoundedGlobalMerge();
-    bool virtualSourceCreditAvailable(int source_words) const;
+    int virtualSourcePayloadWords(int source_head, int source_words) const;
+    bool virtualSourceCreditAvailable(int source_head, int source_words) const;
     void issueVirtualSource(Addr source_addr, int source_head,
                             int source_words, int source_rt_idx,
                             int source_row_id, int source_entry_id,

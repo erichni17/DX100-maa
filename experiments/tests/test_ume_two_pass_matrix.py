@@ -141,10 +141,23 @@ class UmeTwoPassMatrixTest(unittest.TestCase):
     def test_build_admission_uses_shared_source_credit(self) -> None:
         source = (ROOT / "src/mem/MAA/IndirectAccess.cc").read_text()
         self.assertIn(
-            "!virtualSourceCreditAvailable(virtual_pending_source_words)",
+            "!virtualSourceCreditAvailable(virtual_pending_source_head,",
             source,
         )
-        self.assertIn("!virtualSourceCreditAvailable(virtual_words)", source)
+        self.assertIn(
+            "!virtualSourceCreditAvailable(virtual_head,", source
+        )
+
+    def test_shared_source_payload_charges_unique_words_with_fanout(self) -> None:
+        implementation = (ROOT / "src/mem/MAA/IndirectAccess.cc").read_text()
+        header = (ROOT / "src/mem/MAA/IndirectAccess.hh").read_text()
+        for token in (
+            "virtualSourcePayloadWords",
+            "remaining_word_uses",
+            "shared response retained",
+            "shared result word",
+        ):
+            self.assertIn(token, implementation + header)
 
     def test_page_materializer_closes_strict_consumer_lifetime(self) -> None:
         source = (ROOT / "src/mem/MAA/MAA.cc").read_text()
