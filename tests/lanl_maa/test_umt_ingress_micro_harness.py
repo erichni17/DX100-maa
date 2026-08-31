@@ -1116,6 +1116,17 @@ class IngressHarnessTest(unittest.TestCase):
                 ingress.parse_debug_file_text("\n".join(rows)), "d64-g32"
             )
 
+    def test_d64_legacy_hold_and_release_corners_are_not_lifecycle_identity(
+        self,
+    ):
+        events = self.events("d64-g32")
+        for event in events:
+            if event["class"] == "line" and event["kind"] == "hold":
+                event["corner"] = 7
+        report = ingress.validate_trace(events, "d64-g32")
+        self.assertGreater(report["d64_holds"], 0)
+        self.assertGreater(report["releases"], 0)
+
     def test_digest_reappearance_and_g31_boundary_fail(self):
         events = self.events("d32-g16")
         events[1]["pre"] = "0xdead"

@@ -2588,9 +2588,13 @@ def validate_trace(events, case, descriptor_callback_restart_epochs=None):
         for item in lines:
             if item["abi_label"] != "d64":
                 raise RuntimeError("D64 line witness carries another ABI")
-            key = tuple(
-                item[name] for name in ("line", "stage", "group", "corner")
-            )
+            # A D64 hold is recorded before the stage transition publishes
+            # its new logical corner, while the corresponding release carries
+            # the transitioned corner.  Corner is therefore not a stable
+            # lifecycle identity in the legacy UMT_INGRESS format.  The
+            # canonical-v3 stream validates the explicit logical corner and
+            # request identity after this compatibility preflight.
+            key = tuple(item[name] for name in ("line", "stage", "group"))
             if item["kind"] == "hold":
                 prior = active.setdefault(key, [])
                 if prior and (
