@@ -32,6 +32,13 @@ Sealed evidence:
 - Fresh selector-specific checkpoints; all checkpoint identities remained
   immutable
 
+The native controls reproduced bit-for-bit timing in six independent campaign
+attempts: native16 was always 20,546,885 ticks and native4 was always
+29,755,345. The strict r6 arm and the fixed-bitmap successor replay both
+produced 25,470,375 ticks with identical mechanism counters and output. The
+failed strict attempts are retained as engineering diagnostics, not included
+as performance samples.
+
 ## Strict mechanism
 
 - 16,384 B indices admitted before the first A issue
