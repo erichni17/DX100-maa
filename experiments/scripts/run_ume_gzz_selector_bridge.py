@@ -9,7 +9,7 @@ import json
 import os
 import subprocess
 import sys
-import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -74,55 +74,6 @@ def verify_authority() -> dict[str, Any]:
     return {"manifest": manifest, "native": native}
 
 
-def target_from(command: list[str]) -> Path:
-    options = command[command.index("--options") + 1].split()
-    require(len(options) == 2 and options[0] == str(base.ELEMENTS), "options")
-    return Path(options[1])
-
-
-def derive_command(arm: base.Arm, out: Path) -> tuple[list[str], Path]:
-    command = json.loads(
-        (AUTHORITY / "arms" / arm.name / "restore.command.json").read_text()
-    )
-    outdirs = [
-        i for i, value in enumerate(command) if value.startswith("--outdir=")
-    ]
-    require(len(outdirs) == 1, f"{arm.name}: outdir count")
-    command[outdirs[0]] = f"--outdir={out / 'arms' / arm.name / 'run'}"
-    target = target_from(command)
-    require(
-        target == AUTHORITY / "inputs" / f"{arm.name}.selector",
-        f"{arm.name}: selector target changed",
-    )
-    return command, target
-
-
-def wrapped_command(
-    command: list[str], selector: Path, target: Path
-) -> list[str]:
-    return [
-        "/usr/bin/unshare",
-        "-Urnm",
-        "/bin/bash",
-        "-c",
-        'mount --bind "$1" "$2"; shift 2; exec "$@"',
-        "gzz-selector",
-        str(selector),
-        str(target),
-        *command,
-    ]
-
-
-def proc_start_ticks(pid: int) -> int | None:
-    try:
-        line = Path(f"/proc/{pid}/stat").read_text()
-    except FileNotFoundError:
-        return None
-    close = line.rfind(")")
-    fields = line[close + 2 :].split() if close >= 0 else []
-    return int(fields[19]) if len(fields) > 19 else None
-
-
 def artifact_paths(root: Path) -> list[Path]:
     return sorted(
         path
@@ -154,27 +105,27 @@ def verify_ledger(root: Path) -> None:
         )
 
 
-def prepare_classification_links(root: Path) -> None:
-    for arm in HYBRID_ARMS:
-        destination = root / "checkpoints" / arm.name
-        destination.mkdir(parents=True)
-        (destination / "gem5").symlink_to(
-            AUTHORITY / "checkpoints" / arm.name / "gem5",
-            target_is_directory=True,
-        )
-        (destination / "identity.json").write_text(
-            (
-                AUTHORITY / "checkpoints" / arm.name / "identity.json"
-            ).read_text()
-        )
-
-
 def classify(root: Path) -> dict[str, Any]:
     authority = verify_authority()
-    manifest = authority["manifest"]
+    manifest_path = root / "manifest.json"
+    manifest = (
+        json.loads(manifest_path.read_text())
+        if manifest_path.is_file()
+        else authority["manifest"]
+    )
     hybrids = {
         arm.name: base.classify_arm(root, arm, manifest) for arm in HYBRID_ARMS
     }
+    for arm in HYBRID_ARMS:
+        command = json.loads(
+            (root / "arms" / arm.name / "restore.command.json").read_text()
+        )
+        guest = Path(command[command.index("--cmd") + 1])
+        require(
+            guest.is_file()
+            and sha256(guest) == manifest["guest_sha256"][arm.guest],
+            f"{arm.name}: guest identity",
+        )
     require(
         len(
             {
@@ -224,6 +175,112 @@ def classify(root: Path) -> dict[str, Any]:
     }
 
 
+def build_hybrid_guest(root: Path) -> tuple[Path, list[list[str]]]:
+    build = root / "inputs" / "build"
+    build.mkdir(parents=True)
+    m5op_source = ROOT / "util/m5/src/abi/x86/m5op.S"
+    m5op = build / "m5op.o"
+    guest = build / "gradzatz_hybrid"
+    commands = [
+        [
+            "g++",
+            "-std=c++11",
+            "-O3",
+            "-Wall",
+            "-g3",
+            "-fopenmp",
+            f"-I{ROOT / 'include'}",
+            f"-I{ROOT / 'util/m5/src'}",
+            "-DGEM5",
+            "-c",
+            str(m5op_source),
+            "-o",
+            str(m5op),
+        ],
+        [
+            "g++",
+            "-std=c++11",
+            "-O3",
+            "-Wall",
+            "-g3",
+            "-fopenmp",
+            f"-I{ROOT / 'benchmarks/API'}",
+            f"-I{ROOT / 'include'}",
+            f"-I{ROOT / 'util/m5/src'}",
+            "-DGEM5",
+            "-DMAA",
+            "-DNUM_CORES=4",
+            "-DMAA_MEM_SIZE=0x80000000",
+            "-DUME_GRADZATZ_FIXED_INPUT",
+            "-DUME_GRADZATZ_OUTPUT_FINGERPRINT",
+            "-DUME_GRADZATZ_EXPECTED_N=16384",
+            f"-DUME_GRADZATZ_EXPECTED_HASH={base.EXPECTED_OUTPUT_HASH}ULL",
+            "-DTILE_SIZE=16384",
+            "-DMAA_VIRTUAL_GATHER",
+            "-DMAA_GENERAL_VIRTUAL_CONSUMER",
+            "-DMAA_CONSUMER_TILE_SIZE=4096",
+            str(m5op),
+            str(ROOT / "benchmarks/UME/gradzatz.cpp"),
+            "-o",
+            str(guest),
+        ],
+    ]
+    for index, command in enumerate(commands):
+        with (build / f"build.{index}.log").open("wb") as output:
+            completed = subprocess.run(
+                command, stdout=output, stderr=subprocess.STDOUT, check=False
+            )
+        require(completed.returncode == 0, f"hybrid guest build {index}")
+    guest.chmod(0o555)
+    return guest, commands
+
+
+def run_hybrid_arm(
+    root: Path,
+    arm: base.Arm,
+    guest: Path,
+    selector: Path,
+    environment: dict[str, str],
+) -> None:
+    checkpoint = root / "checkpoints" / arm.name
+    checkpoint.mkdir(parents=True)
+    checkpoint_command = base.checkpoint_command(
+        AUTHORITY / "inputs/gem5.opt",
+        guest,
+        checkpoint / "gem5",
+        base.arm_options(arm, selector),
+    )
+    returncode = base.run_logged(
+        checkpoint_command, checkpoint, "checkpoint", environment
+    )
+    require(returncode == 0, f"{arm.name}: checkpoint failed")
+    log = (checkpoint / "checkpoint.log").read_text(errors="replace")
+    require("because checkpoint" in log, f"{arm.name}: checkpoint marker")
+    identity = base.tree_identity(checkpoint / "gem5")
+    (checkpoint / "identity.json").write_text(
+        json.dumps(identity, indent=2, sort_keys=True) + "\n"
+    )
+
+    arm_root = root / "arms" / arm.name
+    arm_root.mkdir(parents=True)
+    command = base.common_restore_command(
+        AUTHORITY / "inputs/gem5.opt",
+        AUTHORITY / "inputs/ramulator.yaml",
+        checkpoint / "gem5",
+        guest,
+        base.arm_options(arm, selector),
+        arm_root / "run",
+        arm,
+    )
+    returncode = base.run_logged(command, arm_root, "restore", environment)
+    require(returncode == 0, f"{arm.name}: restore failed")
+    require(
+        base.tree_identity(checkpoint / "gem5")["sha256"]
+        == identity["sha256"],
+        f"{arm.name}: checkpoint mutated",
+    )
+
+
 def run(root: Path) -> dict[str, Any]:
     require(not root.exists(), f"output exists: {root}")
     require(
@@ -246,61 +303,45 @@ def run(root: Path) -> dict[str, Any]:
         )
         + "\n"
     )
-    prepare_classification_links(root)
+    (root / "inputs").mkdir()
+    guest, build_commands = build_hybrid_guest(root)
+    selectors = {}
+    for arm in HYBRID_ARMS:
+        selector = root / "inputs" / f"{arm.name}.selector"
+        selector.write_text(arm.selector + "\n")
+        selector.chmod(0o444)
+        selectors[arm.name] = selector
+    manifest = dict(authority["manifest"])
+    manifest["guest_sha256"] = dict(manifest["guest_sha256"])
+    manifest["guest_sha256"]["hybrid"] = sha256(guest)
+    manifest["build_commands"] = build_commands
+    manifest["runner_source_commit"] = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
+    ).strip()
+    manifest["selector_resolved_before_checkpoint"] = True
+    (root / "manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+    )
     environment = dict(
         os.environ,
         LD_LIBRARY_PATH=str(AUTHORITY / "inputs"),
         OMP_NUM_THREADS="4",
         OMP_PROC_BIND="false",
     )
-    processes: dict[
-        str, tuple[subprocess.Popen[bytes], Any, dict[str, Any]]
-    ] = {}
-    for arm in HYBRID_ARMS:
-        arm_root = root / "arms" / arm.name
-        arm_root.mkdir(parents=True)
-        selector = arm_root / "selector"
-        selector.write_text(arm.selector + "\n")
-        selector.chmod(0o444)
-        command, target = derive_command(arm, root)
-        (arm_root / "restore.command.json").write_text(
-            json.dumps(command, indent=2) + "\n"
-        )
-        output = (arm_root / "restore.log").open("wb")
-        process = subprocess.Popen(
-            wrapped_command(command, selector, target),
-            stdout=output,
-            stderr=subprocess.STDOUT,
-            env=environment,
-        )
-        start = proc_start_ticks(process.pid)
-        require(start is not None, f"{arm.name}: missing process identity")
-        processes[arm.name] = (
-            process,
-            output,
-            {
-                "pid": process.pid,
-                "start_ticks": start,
-                "started_ns": time.time_ns(),
-            },
-        )
-    for arm in HYBRID_ARMS:
-        process, output, record = processes[arm.name]
-        returncode = process.wait()
-        output.close()
-        record.update(
-            {
-                "returncode": returncode,
-                "ended_ns": time.time_ns(),
-                "pid_absent": proc_start_ticks(process.pid) is None,
-            }
-        )
-        arm_root = root / "arms" / arm.name
-        (arm_root / "restore.exit").write_text(f"{returncode}\n")
-        (arm_root / "restore.process.json").write_text(
-            json.dumps(record, indent=2, sort_keys=True) + "\n"
-        )
-        require(returncode == 0, f"{arm.name}: restore failed")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [
+            pool.submit(
+                run_hybrid_arm,
+                root,
+                arm,
+                guest,
+                selectors[arm.name],
+                environment,
+            )
+            for arm in HYBRID_ARMS
+        ]
+        for future in futures:
+            future.result()
     result = classify(root)
     (root / "result.json").write_text(
         json.dumps(result, indent=2, sort_keys=True) + "\n"

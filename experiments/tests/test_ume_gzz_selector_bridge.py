@@ -14,18 +14,22 @@ class UmeGzzSelectorBridgeTest(unittest.TestCase):
             ["original_hybrid", "strict_bounded_hybrid"],
         )
 
-    def test_commands_reuse_authority_and_targets(self) -> None:
+    def test_fresh_checkpoint_options_bind_each_selector(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for arm in runner.HYBRID_ARMS:
-                command, target = runner.derive_command(arm, root)
+                selector = root / f"{arm.name}.selector"
                 self.assertEqual(
-                    target,
-                    runner.AUTHORITY / "inputs" / f"{arm.name}.selector",
+                    runner.base.arm_options(arm, selector),
+                    f"16384 {selector}",
                 )
-                self.assertIn(
-                    f"--outdir={root / 'arms' / arm.name / 'run'}", command
-                )
+
+    def test_source_resolves_selector_before_checkpoint(self) -> None:
+        source = (runner.ROOT / "benchmarks/UME/gradzatz.cpp").read_text()
+        self.assertLess(
+            source.index("maa_read_virtual_consumer_mode"),
+            source.index("m5_checkpoint(0, 0)"),
+        )
 
     def test_authority_native_controls_are_exact(self) -> None:
         authority = runner.verify_authority()
