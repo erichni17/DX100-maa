@@ -1,19 +1,19 @@
 # UMT ingress micro harness
 
 `tests/lanl_maa/umt_ingress_micro_harness.py` is a four-arm, evidence-only
-opcode-11 harness: D32/G16, D32/G31, D32/G32, and D64/G32. The combined v13
+opcode-11 harness: D32/G16, D32/G31, D32/G32, and D64/G32. The combined v14
 contract hard-pins the
 adaptive native test driver (`7db125ac…`), its clean native source commit/tree,
 the `LanlMaaUmtSubmit.cc` ABI source and native ABI tests, and the adaptive-v1
 mapping cookie.  It rejects v1 entirely: v1 accepted an arbitrary native input
 and a three-field build proof. It also rejects the v6 arm contract, whose
 `systemd-run` command invoked gem5 directly even though analysis required
-captured `gem5.stdout` and `gem5.stderr`. v13 composes the independently
-reviewed arm-v7 ownership contract with the build-v13 producer/consumer;
+captured `gem5.stdout` and `gem5.stderr`. v14 composes the independently
+reviewed arm-v7 ownership contract with the build-v14 producer/consumer;
 neither split predecessor is itself accepted as a combined four-arm contract.
 
-The required v13 build proof has exact schema
-`lanl-maa-umt-ingress-instrumented-gem5-build-proof-v13`. It accepts only the
+The required v14 build proof has exact schema
+`lanl-maa-umt-ingress-instrumented-gem5-build-proof-v14`. It accepts only the
 clean, hard-pinned trace-replay source tree at `493c043e`/`9f7f0866`, its exact
 `build/X86_UMT_T32_W2/gem5.opt` target, six fixed source hashes, exact SCons
 assignment-free argv `/usr/bin/scons --ignore-style
@@ -28,7 +28,7 @@ parses them to require the exact `env.Append(CCFLAGS='$CCFLAGS_EXTRA')`, the
 declared `CCFLAGS_EXTRA` environment input, its empty default, and the exact
 `env[key] = env['ENV'].get(key, default)` assignment flow. It
 also requires the actual producing unit
-`umt-ingress-trace-build-v13-20260830.service`, a hash-bound live
+`umt-ingress-trace-build-v14-20260830.service`, a hash-bound live
 `systemctl --user show` snapshot, and a terminal snapshot. Both snapshots
 must exactly agree on unit, invocation ID, original wrapper PID, working
 directory, fixed resources, wrapper command, and empty environment. The
@@ -57,14 +57,18 @@ unit/invocation IDs are rejected. The launch policy maps the frozen
 `CPUQuotaPerSecUSec=4s` explicitly to `systemd-run`'s `CPUQuota=400%`, with
 the exact weight, high/max memory, swap, and runtime settings. The observer gate
 must bind its command, six inputs, target binary/hash, report semantics, and
-success transcript. Earlier build proofs are rejected and never reused.
+success transcript. It binds the actual generated variant headers
+`config/lanl_maa_umt_compute_tokens.hh` and
+`config/lanl_maa_umt_fp_issue_width.hh` to exact definitions of 32 tokens and
+issue width 2; obsolete generic `config.hh/config.cc` artifact shapes are
+rejected. Earlier build proofs are rejected and never reused.
 
 The build dry-plan is separate from execution:
 
 ```sh
 python3 tests/lanl_maa/umt_ingress_micro_harness.py dry-build-plan \
   --campaign-root BUILD_CAMPAIGN \
-  --output BUILD_CAMPAIGN/build-plan-v13.json
+  --output BUILD_CAMPAIGN/build-plan-v14.json
 ```
 
 It records `systemd-run --user --remain-after-exit`, deliberately without
@@ -75,13 +79,13 @@ Freeze and dry-plan commands are deliberately separate from execution:
 
 ```sh
 python3 tests/lanl_maa/umt_ingress_micro_harness.py freeze-contract \
-  --campaign-root CAMPAIGN --output CAMPAIGN/ingress-contract-v13.json \
+  --campaign-root CAMPAIGN --output CAMPAIGN/ingress-contract-v14.json \
   --gem5 GEM5 --gem5-sha256 GEM5_SHA --instrumented-build-proof PROOF \
   --instrumented-build-proof-sha256 PROOF_SHA
 python3 tests/lanl_maa/umt_ingress_micro_harness.py dry-dispatch \
-  --campaign-root CAMPAIGN --contract CAMPAIGN/ingress-contract-v13.json \
+  --campaign-root CAMPAIGN --contract CAMPAIGN/ingress-contract-v14.json \
   --contract-sha256 CONTRACT_SHA \
-  --output CAMPAIGN/identity/ingress-dry-dispatch-v13.json
+  --output CAMPAIGN/identity/ingress-dry-dispatch-v14.json
 ```
 
 The second command only records four `systemd-run --user --collect` commands.
@@ -114,8 +118,8 @@ target, argv, environment, and resource mapping; while it is live, capture
 the property-limited `systemctl --user show` output and the matching PID's
 `/proc` start ticks in one no-clobber receipt; after exit, capture the same
 property-limited terminal show output and the unit's `journalctl --output=export`
-snapshot. Hash every raw snapshot before constructing the v13 proof, then
-freeze the combined v13 contract and only then record (not execute) its arms.
+snapshot. Hash every raw snapshot before constructing the v14 proof, then
+freeze the combined v14 contract and only then record (not execute) its arms.
 The terminal journal protocol is a complete equality check, not a text search.
 
 After the terminal proof and journal are durable, execute the plan's exact
@@ -149,7 +153,7 @@ non-admissible terminal receipt.
 
 After a launcher has run one recorded command, `analyze-arm` requires all raw
 outputs, config/stats, debug log, submission report, terminal marker, and the
-test driver's exact result marker. It also takes the frozen v13 contract and
+test driver's exact result marker. It also takes the frozen v14 contract and
 hash, checks the exact wrapper and gem5 commands, wrapper/binary hashes,
 successful wrapper return receipt, and hashes every raw file. The stream
 hashes must still match the terminal receipt, so post-run clobber is rejected.

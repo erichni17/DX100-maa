@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Service-owned, fail-closed v13 ingress-observer build attestation.
+"""Service-owned, fail-closed v14 ingress-observer build attestation.
 
 The wrapper preserves the two rejected build artifacts with hard links,
 invalidates only their canonical paths, and then requires SCons to compile the
@@ -17,16 +17,22 @@ import shlex
 import subprocess
 import sys
 
-BUILD_UNIT = "umt-ingress-trace-build-v13-20260830.service"
+BUILD_UNIT = "umt-ingress-trace-build-v14-20260830.service"
 SOURCE_ROOT = "/data1/nier/worktrees/DX100-umt-trace-replay-20260830"
 SOURCE_COMMIT = "493c043ef0bc3dee0d91c5511371cedf77f15b5c"
 SOURCE_TREE = "9f7f0866005260f92bde81d516b520032535a92b"
 TARGET_RELATIVE = "build/X86_UMT_T32_W2/gem5.opt"
 OBJECT_RELATIVE = "build/X86_UMT_T32_W2/mem/LANLMAA/lanl_maa.o"
-CONFIG_RELATIVES = (
-    "build/X86_UMT_T32_W2/config.hh",
-    "build/X86_UMT_T32_W2/config.cc",
-)
+CONFIG_ARTIFACTS = {
+    "config_compute_tokens": (
+        "build/X86_UMT_T32_W2/config/lanl_maa_umt_compute_tokens.hh",
+        b"#define LANL_MAA_UMT_COMPUTE_TOKENS 32\n",
+    ),
+    "config_fp_issue_width": (
+        "build/X86_UMT_T32_W2/config/lanl_maa_umt_fp_issue_width.hh",
+        b"#define LANL_MAA_UMT_FP_ISSUE_WIDTH 2\n",
+    ),
+}
 INVALIDATED_RELATIVES = (TARGET_RELATIVE, OBJECT_RELATIVE)
 PRESERVED_NAMES = {
     TARGET_RELATIVE: "rejected-gem5.opt",
@@ -71,8 +77,8 @@ BUILD_SYSTEM_SHA256 = {
         "b10bb7b6aef8b6716a30af1560e8d8e55fae9cdb696cb4ccede7ba5d3a19ed25"
     ),
 }
-PROTOCOL = "LANL_MAA_UMT_INGRESS_BUILD_ATTESTATION_V13"
-SCHEMA = "lanl-maa-umt-ingress-build-attestation-v13"
+PROTOCOL = "LANL_MAA_UMT_INGRESS_BUILD_ATTESTATION_V14"
+SCHEMA = "lanl-maa-umt-ingress-build-attestation-v14"
 CLEAN_METHOD = "hardlink-preserve-unlink-exact-two-v1"
 COMPILED_MARKERS = (b"UMT_INGRESS kind=", b"d64_hold cycle=")
 SAFE_CHILD_ENV = {
@@ -460,7 +466,7 @@ def restore_canonical_paths(source, evidence, invalidated, phase, error):
         )
     }
     value = {
-        "schema": "lanl-maa-umt-ingress-build-failure-restore-v13",
+        "schema": "lanl-maa-umt-ingress-build-failure-restore-v14",
         "status": "failed_phase_restored_exact_identities",
         "unit": BUILD_UNIT,
         "phase": phase,
@@ -543,7 +549,7 @@ def main(argv=None):
     if (
         args.unit != BUILD_UNIT
         or source != pathlib.Path(SOURCE_ROOT)
-        or evidence.name != "ingress-build-evidence-v13"
+        or evidence.name != "ingress-build-evidence-v14"
         or not re.fullmatch(r"[0-9a-f]{32}", invocation)
     ):
         raise RuntimeError("wrapper identity/invocation binding is invalid")
@@ -637,7 +643,13 @@ def main(argv=None):
     target = source / TARGET_RELATIVE
     try:
         validate_compiled_literals(target)
-        config_hh, config_cc = (source / item for item in CONFIG_RELATIVES)
+        configs = {
+            key: source / relative
+            for key, (relative, expected) in CONFIG_ARTIFACTS.items()
+        }
+        for key, path in configs.items():
+            if path.read_bytes() != CONFIG_ARTIFACTS[key][1]:
+                raise RuntimeError("generated UMT variant header is not exact")
         inputs = {
             relative: sha256(source / relative) for relative in SOURCE_SHA256
         }
@@ -647,8 +659,7 @@ def main(argv=None):
         artifacts = {
             "gem5": target_artifact["sha256"],
             "lanl_maa_o": object_artifact["sha256"],
-            "config_hh": sha256(config_hh),
-            "config_cc": sha256(config_cc),
+            **{key: sha256(path) for key, path in configs.items()},
         }
     except Exception as error:
         restore_canonical_paths(
@@ -668,10 +679,10 @@ def main(argv=None):
             "target_sha256": artifacts["gem5"],
             "object": str(source / OBJECT_RELATIVE),
             "object_sha256": artifacts["lanl_maa_o"],
-            "config_hh": str(config_hh),
-            "config_hh_sha256": artifacts["config_hh"],
-            "config_cc": str(config_cc),
-            "config_cc_sha256": artifacts["config_cc"],
+            "config_compute_tokens": str(configs["config_compute_tokens"]),
+            "config_compute_tokens_sha256": artifacts["config_compute_tokens"],
+            "config_fp_issue_width": str(configs["config_fp_issue_width"]),
+            "config_fp_issue_width_sha256": artifacts["config_fp_issue_width"],
             "compiled_binary_markers": [x.decode() for x in COMPILED_MARKERS],
         },
     )
