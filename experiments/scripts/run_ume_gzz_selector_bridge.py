@@ -142,10 +142,6 @@ def classify(root: Path) -> dict[str, Any]:
         == 1,
         "cross-arm output mismatch",
     )
-    strict = hybrids["strict_bounded_hybrid"]["counters"]
-    native16 = authority["native"]["native16"]["counters"]
-    for field in ("numInst_INDRD", "numInst_INDRMW", "index_words"):
-        require(strict[field] == native16[field], f"work differs: {field}")
     strict_log = (root / "arms/strict_bounded_hybrid/restore.log").read_text(
         errors="replace"
     )
@@ -164,10 +160,12 @@ def classify(root: Path) -> dict[str, Any]:
     return {
         "schema": "dx100.ume_gzz_shared_payload.v2",
         "terminal": True,
-        "decision": "ACCEPT_GZZ_SHARED_PAYLOAD_STRICT",
+        "decision": "ACCEPT_GZZ_SHARED_PAYLOAD_CORRECTNESS",
         "authority": str(AUTHORITY),
         "native_controls_reused": True,
         "cross_binary_orientation_only": True,
+        "instruction_mix_matched": False,
+        "performance_promotable": False,
         "page_consumer": "maa_div_mul",
         "hybrids": hybrids,
         "ticks": ticks,
@@ -177,6 +175,14 @@ def classify(root: Path) -> dict[str, Any]:
             ),
             "native4_over_strict": (ticks["native4"] / ticks["strict_bounded_hybrid"]),
         },
+        "limitations": [
+            "Native controls use the historical CPU page consumer; the "
+            "candidate uses MAA DIV/MUL and therefore changes instruction "
+            "mix.",
+            "Ratios to reused native controls are orientation only. Fresh "
+            "matched-consumer controls are required for performance "
+            "attribution.",
+        ],
     }
 
 
@@ -362,6 +368,12 @@ def run(root: Path, gem5: Path) -> dict[str, Any]:
         ]
         for future in futures:
             future.result()
+    return seal(root)
+
+
+def seal(root: Path) -> dict[str, Any]:
+    require(not (root / "result.json").exists(), "result is already sealed")
+    require(not (root / "artifacts.sha256").exists(), "ledger already exists")
     result = classify(root)
     (root / "result.json").write_text(
         json.dumps(result, indent=2, sort_keys=True) + "\n"
@@ -385,7 +397,7 @@ def validate(root: Path) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("run", "validate", "preflight"))
+    parser.add_argument("command", choices=("run", "seal", "validate", "preflight"))
     parser.add_argument("out", nargs="?", type=Path)
     parser.add_argument("--gem5", type=Path, default=DEFAULT_GEM5)
     args = parser.parse_args()
@@ -396,11 +408,12 @@ def main() -> int:
         }
     else:
         require(args.out is not None, f"{args.command} requires OUT")
-        result = (
-            run(args.out.resolve(), args.gem5.resolve())
-            if args.command == "run"
-            else validate(args.out.resolve())
-        )
+        if args.command == "run":
+            result = run(args.out.resolve(), args.gem5.resolve())
+        elif args.command == "seal":
+            result = seal(args.out.resolve())
+        else:
+            result = validate(args.out.resolve())
     print(json.dumps(result, sort_keys=True))
     return 0
 

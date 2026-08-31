@@ -68,6 +68,14 @@ class UmeGzzSelectorBridgeTest(unittest.TestCase):
             with self.assertRaisesRegex(runner.BridgeError, "artifact changed"):
                 runner.verify_ledger(root)
 
+    def test_result_requires_matched_controls_for_performance(self) -> None:
+        source = (
+            runner.ROOT / "experiments/scripts/run_ume_gzz_selector_bridge.py"
+        ).read_text()
+        self.assertIn('"instruction_mix_matched": False', source)
+        self.assertIn('"performance_promotable": False', source)
+        self.assertIn("matched-consumer controls are required", source)
+
 
 if __name__ == "__main__":
     unittest.main()
