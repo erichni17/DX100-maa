@@ -587,7 +587,7 @@ def contract_harness_identity(contract, allow_external_producer=False):
     return identity
 
 
-def frozen_producer_expected_contract(contract, campaign):
+def load_frozen_producer_harness(contract):
     producer_root = pathlib.Path(contract["harness_source_root"]).resolve()
     relative = "tests/lanl_maa/umt_ingress_micro_harness.py"
     harness_path = producer_root / relative
@@ -600,12 +600,7 @@ def frozen_producer_expected_contract(contract, campaign):
         raise RuntimeError("frozen producer harness cannot be loaded")
     producer = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(producer)
-    return producer.expected_contract(
-        campaign,
-        pathlib.Path(contract["instrumented_build_proof"]),
-        contract["instrumented_build_proof_sha256"],
-        contract["gem5_sha256"],
-    )
+    return producer
 
 
 def verify_guest_compatibility_source(root=ROOT):
@@ -3076,9 +3071,19 @@ def analyze_arm(
         gem5,
         contract["gem5_sha256"],
     )
-    if contract_path != campaign / CONTRACT_FILENAME or contract != (
-        frozen_producer_expected_contract(contract, campaign)
+    producer = (
+        load_frozen_producer_harness(contract)
         if allow_descriptor_callback_restart
+        else None
+    )
+    if contract_path != campaign / CONTRACT_FILENAME or contract != (
+        producer.expected_contract(
+            campaign,
+            pathlib.Path(contract["instrumented_build_proof"]),
+            contract["instrumented_build_proof_sha256"],
+            contract["gem5_sha256"],
+        )
+        if producer is not None
         else expected_contract(
             campaign,
             pathlib.Path(contract.get("instrumented_build_proof", ".")),
@@ -3088,8 +3093,14 @@ def analyze_arm(
     ):
         raise RuntimeError("arm is not bound to an unaltered v16 contract")
     root, arm = pathlib.Path(root).resolve(), contract["arms"].get(case, {})
-    if str(root) != arm.get("root") or arm.get("gem5_argv") != case_command(
-        CANONICAL_GEM5, root, case
+    expected_command = (
+        producer.case_command(producer.CANONICAL_GEM5, root, case)
+        if producer is not None
+        else case_command(CANONICAL_GEM5, root, case)
+    )
+    if (
+        str(root) != arm.get("root")
+        or arm.get("gem5_argv") != expected_command
     ):
         raise RuntimeError("arm command/root binding mismatch")
     missing = [
@@ -3102,7 +3113,11 @@ def analyze_arm(
         missing.append(str(csv))
     if missing:
         raise RuntimeError("missing raw evidence: " + ", ".join(missing))
-    execution = validate_arm_execution_evidence(root, case, arm)
+    execution = (
+        producer.validate_arm_execution_evidence(root, case, arm)
+        if producer is not None
+        else validate_arm_execution_evidence(root, case, arm)
+    )
     gem5_text = (root / "gem5.stdout").read_text(
         encoding="utf-8", errors="replace"
     )
