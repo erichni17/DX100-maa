@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed v14 integration of build and arm evidence contracts.
+"""Fail-closed v15 consumer of build-v14 and arm-v7 evidence contracts.
 
 This program only freezes, validates, and records launch commands.  It never
 builds, invokes systemd, or executes gem5.  A future launcher must first
@@ -23,11 +23,11 @@ TRACE_BUILD_DEFINE = "LANL_MAA_UMT_INGRESS_TRACE_TEST"
 LABEL_PREFIX = "lanl_maa_umt_ingress_micro"
 SCHEMA_BUILD_PROOF = "lanl-maa-umt-ingress-instrumented-gem5-build-proof-v14"
 SCHEMA_SUBMISSION = "umt-lanl-maa-submission-v1"
-SCHEMA_CONTRACT = "lanl-maa-umt-ingress-contract-v14"
-SCHEMA_DISPATCH_PLAN = "lanl-maa-umt-ingress-dispatch-plan-v14"
-SCHEMA_ARM_REPORT = "lanl-maa-umt-ingress-arm-report-v14"
-CONTRACT_FILENAME = "ingress-contract-v14.json"
-DISPATCH_FILENAME = "ingress-dry-dispatch-v14.json"
+SCHEMA_CONTRACT = "lanl-maa-umt-ingress-contract-v15"
+SCHEMA_DISPATCH_PLAN = "lanl-maa-umt-ingress-dispatch-plan-v15"
+SCHEMA_ARM_REPORT = "lanl-maa-umt-ingress-arm-report-v15"
+CONTRACT_FILENAME = "ingress-contract-v15.json"
+DISPATCH_FILENAME = "ingress-dry-dispatch-v15.json"
 CANONICAL_SOURCE_ROOT = "/data1/nier/worktrees/DX100-umt-trace-replay-20260830"
 CANONICAL_SOURCE = pathlib.Path(CANONICAL_SOURCE_ROOT)
 CANONICAL_SOURCE_COMMIT = "493c043ef0bc3dee0d91c5511371cedf77f15b5c"
@@ -983,22 +983,11 @@ def parse_export_journal(
             record.get("_SYSTEMD_USER_UNIT"),
             record.get("_SYSTEMD_INVOCATION_ID"),
         )
-        manager_pair = (
-            record.get("USER_UNIT"),
-            record.get("USER_INVOCATION_ID"),
-        )
         expected = (BUILD_UNIT.encode(), invocation.encode())
-        for pair in (service_pair, manager_pair):
-            if any(value is not None for value in pair) and pair != expected:
-                raise RuntimeError(
-                    "journal export has wrong/incomplete unit or invocation IDs"
-                )
-        bound = service_pair == expected or manager_pair == expected
         message = record.get("MESSAGE", b"")
         if JOURNAL_TERMINAL_PROTOCOL.encode() in message:
             if (
-                not bound
-                or service_pair != expected
+                service_pair != expected
                 or record.get("_PID") != str(pid).encode()
             ):
                 raise RuntimeError(
@@ -1012,6 +1001,31 @@ def parse_export_journal(
                 raise RuntimeError(
                     "journal terminal protocol marker is forged, failed, or noncanonical"
                 )
+            continue
+        present = any(value is not None for value in service_pair) or any(
+            record.get(key) is not None
+            for key in ("USER_UNIT", "USER_INVOCATION_ID")
+        )
+        if not present:
+            continue
+        manager_pair = (
+            record.get("USER_UNIT"),
+            record.get("USER_INVOCATION_ID"),
+        )
+        exact_service = service_pair == expected and manager_pair in (
+            (None, None),
+            expected,
+        )
+        exact_manager_exception = (
+            manager_pair == expected
+            and service_pair == (b"init.scope", None)
+            and record.get("_SYSTEMD_CGROUP", b"").endswith(b"/init.scope")
+            and record.get("_COMM") == b"systemd"
+        )
+        if not exact_service and not exact_manager_exception:
+            raise RuntimeError(
+                "journal export has wrong/incomplete ordinary provenance"
+            )
     if (
         sum(kind == "start" for _, kind in events) != 1
         or sum(kind == "success" for _, kind in events) != 1
@@ -1710,7 +1724,7 @@ def expected_contract(campaign, proof, proof_digest, gem5_digest):
         wrapper_command = arm_wrapper_argv(root, command)
         arms[name] = {
             "root": str(root),
-            "unit": f"umt-ingress-micro-v14-{name}-20260830.service",
+            "unit": f"umt-ingress-micro-v15-{name}-20260830.service",
             "gem5_argv": command,
             "gem5_argv_sha256": json_sha256(command),
             "wrapper": {
@@ -1780,6 +1794,10 @@ def expected_contract(campaign, proof, proof_digest, gem5_digest):
                 "review_status": "rejected_obsolete_config_artifact_paths",
                 "reuse": "forbidden",
             },
+            "v14": {
+                "review_status": "rejected_overstrict_manager_journal_metadata",
+                "reuse": "forbidden_as_combined_contract",
+            },
         },
         "claim_boundary": (
             "Correctness and ingress mechanism only; simTicks are not "
@@ -1838,7 +1856,7 @@ def freeze_contract(args):
     )
     if campaign.exists() or output != campaign / CONTRACT_FILENAME:
         raise RuntimeError(
-            "v14 contract must be a fresh campaign/ingress-contract-v14.json"
+            "v15 contract must be a fresh campaign/ingress-contract-v15.json"
         )
     contract = expected_contract(
         campaign, proof, args.instrumented_build_proof_sha256, args.gem5_sha256
@@ -1863,7 +1881,7 @@ def dispatch_plan(contract_path, digest, campaign_root, output):
         or contract.get("schema") != SCHEMA_CONTRACT
     ):
         raise RuntimeError(
-            "v14 contract semantics, resources, units, roots, or self-hash "
+            "v15 contract semantics, resources, units, roots, or self-hash "
             "binding altered"
         )
     contract_harness_identity(contract)
@@ -1884,12 +1902,12 @@ def dispatch_plan(contract_path, digest, campaign_root, output):
     )
     if contract != expected:
         raise RuntimeError(
-            "v14 contract semantics, resources, units, roots, or self-hash "
+            "v15 contract semantics, resources, units, roots, or self-hash "
             "binding altered"
         )
     output = pathlib.Path(output).resolve()
     if output != campaign / "identity" / DISPATCH_FILENAME:
-        raise RuntimeError("v14 dry dispatch output identity mismatch")
+        raise RuntimeError("v15 dry dispatch output identity mismatch")
     commands = {
         name: systemd_arm_plan(arm) for name, arm in contract["arms"].items()
     }
@@ -2483,7 +2501,7 @@ def analyze_arm(root, case, contract_path, contract_digest):
         or set(contract) != CONTRACT_FIELDS
         or contract.get("schema") != SCHEMA_CONTRACT
     ):
-        raise RuntimeError("arm is not bound to an unaltered v14 contract")
+        raise RuntimeError("arm is not bound to an unaltered v15 contract")
     harness_identity = contract_harness_identity(contract)
     campaign = pathlib.Path(contract.get("campaign_root", ".")).resolve()
     gem5 = verify_hash(
@@ -2505,7 +2523,7 @@ def analyze_arm(root, case, contract_path, contract_digest):
             contract.get("gem5_sha256", ""),
         )
     ):
-        raise RuntimeError("arm is not bound to an unaltered v14 contract")
+        raise RuntimeError("arm is not bound to an unaltered v15 contract")
     root, arm = pathlib.Path(root).resolve(), contract["arms"].get(case, {})
     if str(root) != arm.get("root") or arm.get("gem5_argv") != case_command(
         CANONICAL_GEM5, root, case

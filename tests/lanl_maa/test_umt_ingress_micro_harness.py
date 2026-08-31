@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Adversarial dry tests for the combined v14 UMT ingress harness."""
+"""Adversarial dry tests for combined v15 with build-v14 evidence."""
 import importlib.util
 import json
 import pathlib
@@ -42,10 +42,10 @@ def line(label, kind, cycle, waiters, abi=4):
 
 
 class IngressHarnessTest(unittest.TestCase):
-    def test_v14_contract_accepts_exactly_the_v14_build_proof_generation(self):
+    def test_v15_contract_accepts_exactly_the_v14_build_proof_generation(self):
         self.assertEqual(
             ingress.SCHEMA_CONTRACT,
-            "lanl-maa-umt-ingress-contract-v14",
+            "lanl-maa-umt-ingress-contract-v15",
         )
         self.assertEqual(
             ingress.SCHEMA_BUILD_PROOF,
@@ -53,24 +53,24 @@ class IngressHarnessTest(unittest.TestCase):
         )
         self.assertEqual(
             ingress.SCHEMA_DISPATCH_PLAN,
-            "lanl-maa-umt-ingress-dispatch-plan-v14",
+            "lanl-maa-umt-ingress-dispatch-plan-v15",
         )
         self.assertEqual(
             ingress.SCHEMA_ARM_REPORT,
-            "lanl-maa-umt-ingress-arm-report-v14",
+            "lanl-maa-umt-ingress-arm-report-v15",
         )
         self.assertEqual(
-            ingress.CONTRACT_FILENAME, "ingress-contract-v14.json"
+            ingress.CONTRACT_FILENAME, "ingress-contract-v15.json"
         )
         self.assertEqual(
             ingress.DISPATCH_FILENAME,
-            "ingress-dry-dispatch-v14.json",
+            "ingress-dry-dispatch-v15.json",
         )
         self.assertTrue(
             all(
-                value.startswith("umt-ingress-micro-v14-")
+                value.startswith("umt-ingress-micro-v15-")
                 for value in (
-                    f"umt-ingress-micro-v14-{case}-20260830.service"
+                    f"umt-ingress-micro-v15-{case}-20260830.service"
                     for case in ingress.CASES
                 )
             )
@@ -1243,6 +1243,9 @@ class IngressHarnessTest(unittest.TestCase):
                 )
                 + export_record(
                     {
+                        "_SYSTEMD_USER_UNIT": b"init.scope",
+                        "_SYSTEMD_CGROUP": b"/user.slice/user-1000.slice/init.scope",
+                        "_COMM": b"systemd",
                         "USER_UNIT": ingress.BUILD_UNIT.encode(),
                         "USER_INVOCATION_ID": invocation_id.encode(),
                         "MESSAGE": b"systemd manager record",
@@ -1809,7 +1812,7 @@ class IngressHarnessTest(unittest.TestCase):
                     root / "identity/ingress-dry-dispatch-v4.json",
                 )
 
-    def test_v13_combined_contract_schema_is_rejected(self):
+    def test_v14_combined_contract_schema_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
             campaign = pathlib.Path(temporary) / "campaign"
             campaign.mkdir()
@@ -1817,14 +1820,14 @@ class IngressHarnessTest(unittest.TestCase):
             contract.write_text(
                 json.dumps(
                     {
-                        "schema": "lanl-maa-umt-ingress-contract-v13",
+                        "schema": "lanl-maa-umt-ingress-contract-v14",
                         "status": "frozen_before_dispatch",
                     }
                 ),
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(
-                RuntimeError, "v14 contract semantics"
+                RuntimeError, "v15 contract semantics"
             ):
                 ingress.dispatch_plan(
                     contract,
@@ -1852,7 +1855,7 @@ class IngressHarnessTest(unittest.TestCase):
         )
         self.assertNotIn("--property=CPUQuotaPerSecUSec=4s", command)
 
-    def test_v14_dispatch_runs_the_pinned_wrapper_not_gem5_directly(self):
+    def test_v15_dispatch_runs_the_pinned_wrapper_not_gem5_directly(self):
         with tempfile.TemporaryDirectory() as temporary:
             self.assertEqual(
                 set(ingress.CASES),
@@ -1895,7 +1898,7 @@ class IngressHarnessTest(unittest.TestCase):
         wrapper_argv = ingress.arm_wrapper_argv(root, gem5_argv)
         return {
             "root": str(root),
-            "unit": f"umt-ingress-micro-v14-{case}-20260830.service",
+            "unit": f"umt-ingress-micro-v15-{case}-20260830.service",
             "gem5_argv": gem5_argv,
             "gem5_argv_sha256": ingress.json_sha256(gem5_argv),
             "wrapper": {
@@ -2132,6 +2135,9 @@ class IngressHarnessTest(unittest.TestCase):
             + record({**bound, "MESSAGE": start})
             + record(
                 {
+                    "_SYSTEMD_USER_UNIT": b"init.scope",
+                    "_SYSTEMD_CGROUP": b"/user.slice/user-1000.slice/init.scope",
+                    "_COMM": b"systemd",
                     "USER_UNIT": ingress.BUILD_UNIT.encode(),
                     "USER_INVOCATION_ID": invocation.encode(),
                     "MESSAGE": b"manager",
@@ -2146,6 +2152,42 @@ class IngressHarnessTest(unittest.TestCase):
             for bad in (
                 raw + record({**bound, "MESSAGE": success}),
                 raw.replace(success, b"prefix " + success + b" suffix"),
+                raw
+                + record(
+                    {
+                        "USER_UNIT": b"unrelated.service",
+                        "USER_INVOCATION_ID": b"f" * 32,
+                        "MESSAGE": b"wrong manager",
+                    }
+                ),
+                raw
+                + record(
+                    {
+                        "_SYSTEMD_USER_UNIT": b"init.scope",
+                        "_SYSTEMD_CGROUP": b"/user.slice/init.scope",
+                        "_COMM": b"not-systemd",
+                        "USER_UNIT": ingress.BUILD_UNIT.encode(),
+                        "USER_INVOCATION_ID": invocation.encode(),
+                        "MESSAGE": b"forged manager provenance",
+                    }
+                ),
+                raw
+                + record(
+                    {
+                        "USER_UNIT": ingress.BUILD_UNIT.encode(),
+                        "MESSAGE": b"incomplete manager",
+                    }
+                ),
+                raw
+                + record(
+                    {
+                        "_SYSTEMD_USER_UNIT": b"init.scope",
+                        "USER_UNIT": ingress.BUILD_UNIT.encode(),
+                        "USER_INVOCATION_ID": invocation.encode(),
+                        "_PID": str(pid).encode(),
+                        "MESSAGE": start,
+                    }
+                ),
                 raw.replace(
                     b"_SYSTEMD_INVOCATION_ID=" + invocation.encode(),
                     b"_SYSTEMD_INVOCATION_ID=" + b"e" * 32,
