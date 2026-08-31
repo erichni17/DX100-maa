@@ -72,6 +72,33 @@ def snapshot_fixture(root, payload):
 
 
 class Pki4LiveTraceHarnessTest(unittest.TestCase):
+    def test_post_terminal_path_explicitly_scopes_legacy_callback_restarts(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary) / "arm"
+            analysis = root / "analysis/pki4-canonical-v3"
+            arguments = types.SimpleNamespace(
+                root=str(root),
+                case="d32-g16",
+                contract=str(pathlib.Path(temporary) / "contract.json"),
+                contract_sha256="0" * 64,
+                output=str(analysis / "normalization-summary-v1.json"),
+                full_canonical_output=str(analysis / "full-canonical-v3.json"),
+                shard_root=str(analysis / "sampled-complete-epochs"),
+                hash_epoch_count=4,
+            )
+            with mock.patch.object(
+                live.ingress,
+                "analyze_arm",
+                side_effect=RuntimeError("bounded stop after call capture"),
+            ) as analyzer:
+                with self.assertRaisesRegex(RuntimeError, "bounded stop"):
+                    live.normalize_arm(arguments)
+            self.assertTrue(
+                analyzer.call_args.kwargs["allow_descriptor_callback_restart"]
+            )
+
     def test_snapshot_rejects_mutation_during_streamed_copy(self):
         with tempfile.TemporaryDirectory() as temporary:
             payload = b"a" * (live.SNAPSHOT_CHUNK_BYTES * 2 + 17)
@@ -247,18 +274,30 @@ class Pki4LiveTraceHarnessTest(unittest.TestCase):
                     ingress.freeze_contract(args)
 
     def test_post_terminal_provenance_pins_repaired_replay(self):
-        value = live.verify_provenance()
-        replay = value["approved_replay"]
-        self.assertEqual(replay["source_commit"], live.REPLAY_COMMIT)
-        self.assertEqual(replay["source_tree"], live.REPLAY_TREE)
-        self.assertEqual(
-            replay["independent_rereview"]["sha256"],
-            live.REPLAY_REVIEW_SHA256,
-        )
-        self.assertFalse(replay["executed_by_this_action"])
-        with mock.patch.object(live, "REPLAY_REVIEW_SHA256", "0" * 64):
-            with self.assertRaisesRegex(RuntimeError, "approval"):
-                live.verify_provenance()
+        postprocessor = {
+            "source_root": "/reviewed/postprocessor",
+            "source_commit": "1" * 40,
+            "source_tree": "2" * 40,
+            "reviewed_file_sha256": {},
+        }
+        with mock.patch.object(
+            live.ingress,
+            "verify_harness_identity",
+            return_value=postprocessor,
+        ):
+            value = live.verify_provenance()
+            self.assertEqual(value["post_terminal_harness"], postprocessor)
+            replay = value["approved_replay"]
+            self.assertEqual(replay["source_commit"], live.REPLAY_COMMIT)
+            self.assertEqual(replay["source_tree"], live.REPLAY_TREE)
+            self.assertEqual(
+                replay["independent_rereview"]["sha256"],
+                live.REPLAY_REVIEW_SHA256,
+            )
+            self.assertFalse(replay["executed_by_this_action"])
+            with mock.patch.object(live, "REPLAY_REVIEW_SHA256", "0" * 64):
+                with self.assertRaisesRegex(RuntimeError, "approval"):
+                    live.verify_provenance()
 
     def test_committed_normalizer_rejects_truncation_abort_and_bad_d64(self):
         wrong_schema = fixtures.valid_records()

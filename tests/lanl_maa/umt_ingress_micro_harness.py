@@ -9,6 +9,7 @@ produce the separately validated, canonical-source build proof.
 import argparse
 import ast
 import hashlib
+import importlib.util
 import json
 import os
 import pathlib
@@ -561,20 +562,50 @@ def verify_harness_identity(
     return identity
 
 
-def contract_harness_identity(contract):
+def contract_harness_identity(contract, allow_external_producer=False):
     identity = {
         "source_root": contract["harness_source_root"],
         "source_commit": contract["harness_source_commit"],
         "source_tree": contract["harness_source_tree"],
         "reviewed_file_sha256": contract["harness_reviewed_file_sha256"],
     }
-    verify_harness_identity(identity)
+    producer_root = (
+        pathlib.Path(identity["source_root"]).resolve()
+        if allow_external_producer
+        else ROOT
+    )
+    verify_harness_identity(
+        identity,
+        root=producer_root,
+        reviewed_files=tuple(identity["reviewed_file_sha256"]),
+    )
     if contract["guest_compatibility_environment"] != list(
         GUEST_COMPATIBILITY_PREFIX
     ):
         raise RuntimeError("contract guest compatibility environment mismatch")
-    verify_guest_compatibility_source()
+    verify_guest_compatibility_source(root=producer_root)
     return identity
+
+
+def frozen_producer_expected_contract(contract, campaign):
+    producer_root = pathlib.Path(contract["harness_source_root"]).resolve()
+    relative = "tests/lanl_maa/umt_ingress_micro_harness.py"
+    harness_path = producer_root / relative
+    expected_hash = contract["harness_reviewed_file_sha256"].get(relative)
+    verify_hash(harness_path, expected_hash, "frozen producer harness")
+    spec = importlib.util.spec_from_file_location(
+        "umt_ingress_frozen_contract_producer", harness_path
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("frozen producer harness cannot be loaded")
+    producer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(producer)
+    return producer.expected_contract(
+        campaign,
+        pathlib.Path(contract["instrumented_build_proof"]),
+        contract["instrumented_build_proof_sha256"],
+        contract["gem5_sha256"],
+    )
 
 
 def verify_guest_compatibility_source(root=ROOT):
@@ -2428,7 +2459,7 @@ def parse_debug(path):
     )
 
 
-def validate_trace(events, case):
+def validate_trace(events, case, descriptor_callback_restart_epochs=None):
     spec, abi = CASES[case], 4 if CASES[case]["abi"] == "D32" else 5
     if any(x["abi"] != abi for x in events) or any(
         events[i]["cycle"] > events[i + 1]["cycle"]
@@ -2445,7 +2476,10 @@ def validate_trace(events, case):
         raise RuntimeError(
             "trace lacks exact source and denominator callbacks"
         )
-    groups, active, closed = {}, None, set()
+    groups, active, active_cycle, closed = {}, None, None, set()
+    callback_epoch = 1
+    restart_epochs = descriptor_callback_restart_epochs or {}
+    used_restart_cycles = set()
     for item in callbacks:
         callback = item["callback"]
         if (
@@ -2457,14 +2491,44 @@ def validate_trace(events, case):
             raise RuntimeError(
                 "callback ordering/waiter/digest witness is invalid"
             )
+        new_group = active is not None and (
+            callback != active or item["cycle"] != active_cycle
+        )
+        if item["cycle"] in restart_epochs and new_group and callback == 1:
+            # The legacy UMT_INGRESS observer is cleared at descriptor rearm,
+            # so its callback counter restarts at one.  That debug format has
+            # no descriptor-epoch field.  Only the dual-observer live
+            # normalizer opts in.  Each inferred restart cycle must already
+            # be cross-bound to the next explicit descriptor_epoch in the
+            # canonical-v3 stream, which is then fully validated by the
+            # committed canonical normalizer.
+            callback_epoch += 1
+            if restart_epochs[item["cycle"]] != callback_epoch:
+                raise RuntimeError(
+                    "legacy callback restart differs from canonical epoch"
+                )
+            used_restart_cycles.add(item["cycle"])
+            active, active_cycle, closed = None, None, set()
         if active is not None and callback != active:
             closed.add(active)
-        if callback in closed and callback != active:
+        if (callback in closed and callback != active) or (
+            callback == active and item["cycle"] != active_cycle
+        ):
             raise RuntimeError("callback sequence reappears after closure")
-        active = callback
-        groups.setdefault(callback, []).append(item)
-    if sorted(groups) != list(range(1, len(groups) + 1)):
-        raise RuntimeError("callback sequence is not contiguous")
+        active, active_cycle = callback, item["cycle"]
+        groups.setdefault((callback_epoch, callback), []).append(item)
+    for epoch in range(1, callback_epoch + 1):
+        sequences = sorted(
+            callback
+            for group_epoch, callback in groups
+            if group_epoch == epoch
+        )
+        if sequences != list(range(1, len(sequences) + 1)):
+            raise RuntimeError("callback sequence is not contiguous")
+    if used_restart_cycles != set(restart_epochs):
+        raise RuntimeError(
+            "canonical callback epoch start is absent from legacy trace"
+        )
     for items in groups.values():
         if (
             len({x["kind"] for x in items}) != 1
@@ -2559,6 +2623,7 @@ def validate_trace(events, case):
             raise RuntimeError("D64/G31 lacks 7-word tail and 8-word line")
     return {
         "callbacks": len(groups),
+        "callback_epochs": callback_epoch,
         "records": len(events),
         "max_lanes": max(map(len, groups.values())),
         "max_waiters": max(waits),
@@ -2586,6 +2651,54 @@ def parse_stats(path):
             except ValueError:
                 pass
     return values
+
+
+def canonical_descriptor_callback_restart_epochs(path):
+    prefix = "UMT_PKI4_CONFORMANCE "
+    restarts = {}
+    with pathlib.Path(path).open(
+        "r", encoding="utf-8", errors="strict"
+    ) as stream:
+        for line_number, line in enumerate(stream, 1):
+            if (
+                not line.startswith(prefix)
+                or '"phase":"callback_begin"' not in line
+                or '"callback_sequence":1' not in line
+            ):
+                continue
+            try:
+                record = json.loads(line[len(prefix) :])
+            except json.JSONDecodeError as error:
+                raise RuntimeError(
+                    "malformed canonical callback epoch boundary at "
+                    f"line {line_number}"
+                ) from error
+            if (
+                record.get("phase") != "callback_begin"
+                or record.get("callback_sequence") != 1
+            ):
+                continue
+            epoch, cycle = record.get("descriptor_epoch"), record.get("cycle")
+            if (
+                record.get("schema") != "lanl-maa-umt-pki4-conformance-v3"
+                or not isinstance(epoch, int)
+                or epoch <= 0
+                or not isinstance(cycle, int)
+                or cycle <= 0
+            ):
+                raise RuntimeError("invalid canonical callback epoch boundary")
+            if epoch == 1:
+                continue
+            if cycle in restarts or epoch != len(restarts) + 2:
+                raise RuntimeError(
+                    "canonical callback epoch boundaries are not unique/contiguous"
+                )
+            restarts[cycle] = epoch
+    if not restarts:
+        raise RuntimeError(
+            "canonical trace has no descriptor callback restart"
+        )
+    return restarts
 
 
 def validate_submission(submission, case):
@@ -2924,7 +3037,13 @@ def validate_arm_execution_evidence(root, case, arm):
     }
 
 
-def analyze_arm(root, case, contract_path, contract_digest):
+def analyze_arm(
+    root,
+    case,
+    contract_path,
+    contract_digest,
+    allow_descriptor_callback_restart=False,
+):
     contract_path = verify_hash(
         contract_path, contract_digest, "frozen contract"
     )
@@ -2935,7 +3054,10 @@ def analyze_arm(root, case, contract_path, contract_digest):
         or contract.get("schema") != SCHEMA_CONTRACT
     ):
         raise RuntimeError("arm is not bound to an unaltered v16 contract")
-    harness_identity = contract_harness_identity(contract)
+    harness_identity = contract_harness_identity(
+        contract,
+        allow_external_producer=allow_descriptor_callback_restart,
+    )
     campaign = pathlib.Path(contract.get("campaign_root", ".")).resolve()
     if (
         pathlib.Path(contract["instrumented_build_proof"]).resolve()
@@ -2954,10 +3076,10 @@ def analyze_arm(root, case, contract_path, contract_digest):
         gem5,
         contract["gem5_sha256"],
     )
-    if (
-        contract_path != campaign / CONTRACT_FILENAME
-        or contract
-        != expected_contract(
+    if contract_path != campaign / CONTRACT_FILENAME or contract != (
+        frozen_producer_expected_contract(contract, campaign)
+        if allow_descriptor_callback_restart
+        else expected_contract(
             campaign,
             pathlib.Path(contract.get("instrumented_build_proof", ".")),
             contract.get("instrumented_build_proof_sha256", ""),
@@ -3000,7 +3122,13 @@ def analyze_arm(root, case, contract_path, contract_digest):
         raise RuntimeError("terminal/correctness/fatal gate failed")
     submission = validate_submission(read_json(root / "submission.json"), case)
     mechanism, stats = validate_trace(
-        parse_debug(root / "debug.log"), case
+        parse_debug(root / "debug.log"),
+        case,
+        descriptor_callback_restart_epochs=(
+            canonical_descriptor_callback_restart_epochs(root / "gem5.stderr")
+            if allow_descriptor_callback_restart
+            else None
+        ),
     ), parse_stats(root / "m5out/stats.txt")
     if any(name not in stats for name in WORK_COUNTERS):
         raise RuntimeError("missing required MAA counters")

@@ -390,6 +390,7 @@ def verify_provenance():
             "normalizer plan/review or replay approval mismatch"
         )
     return {
+        "post_terminal_harness": ingress.verify_harness_identity(),
         "normalizer": {
             "path": str(NORMALIZER),
             "sha256": NORMALIZER_SHA256,
@@ -689,7 +690,11 @@ def normalize_arm(args):
     # This is deliberately first: it verifies terminal receipts and every raw
     # hash, then correctness, fatal markers, submission, and final counters.
     arm_report = ingress.analyze_arm(
-        root, args.case, args.contract, args.contract_sha256
+        root,
+        args.case,
+        args.contract,
+        args.contract_sha256,
+        allow_descriptor_callback_restart=True,
     )
     provenance = verify_provenance()
     snapshot_evidence = capture_terminal_validated_snapshot(

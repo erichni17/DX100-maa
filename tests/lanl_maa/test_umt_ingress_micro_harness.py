@@ -1132,6 +1132,105 @@ class IngressHarnessTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "G31|waiter"):
             ingress.validate_trace(events, "d32-g31")
 
+    def test_descriptor_scoped_callback_restart_is_explicit_and_bounded(self):
+        first_epoch = self.events("d32-g16")
+        second_epoch = [
+            {
+                **event,
+                "cycle": event["cycle"] + 1000,
+                "next_tick": (
+                    event["next_tick"] + 1000
+                    if event["class"] == "callback"
+                    else event.get("next_tick")
+                ),
+            }
+            for event in first_epoch
+        ]
+        events = first_epoch + second_epoch
+        with self.assertRaisesRegex(RuntimeError, "reappears"):
+            ingress.validate_trace(events, "d32-g16")
+        report = ingress.validate_trace(
+            events,
+            "d32-g16",
+            descriptor_callback_restart_epochs={
+                next(
+                    event["cycle"]
+                    for event in second_epoch
+                    if event["class"] == "callback" and event["callback"] == 1
+                ): 2
+            },
+        )
+        self.assertEqual(report["callback_epochs"], 2)
+        self.assertEqual(
+            report["callbacks"],
+            2 * ingress.validate_trace(first_epoch, "d32-g16")["callbacks"],
+        )
+
+        malformed = [dict(event) for event in events]
+        first_second_epoch = len(first_epoch)
+        for event in malformed[first_second_epoch:]:
+            if event["class"] == "callback" and event["callback"] == 1:
+                event["callback"] = 2
+        with self.assertRaisesRegex(RuntimeError, "reappears|contiguous"):
+            ingress.validate_trace(
+                malformed,
+                "d32-g16",
+                descriptor_callback_restart_epochs={
+                    next(
+                        event["cycle"]
+                        for event in second_epoch
+                        if event["class"] == "callback"
+                        and event["callback"] == 1
+                    ): 2
+                },
+            )
+
+    def test_canonical_callback_restart_cycles_are_exactly_cross_bound(self):
+        def record(epoch, cycle, callback):
+            return {
+                "schema": "lanl-maa-umt-pki4-conformance-v3",
+                "phase": "callback_begin",
+                "descriptor_epoch": epoch,
+                "cycle": cycle,
+                "callback_sequence": callback,
+            }
+
+        with tempfile.TemporaryDirectory() as temporary:
+            trace = pathlib.Path(temporary) / "gem5.stderr"
+            rows = [
+                record(1, 100, 1),
+                record(1, 110, 10),
+                record(2, 200, 1),
+                record(2, 210, 10),
+                record(3, 300, 1),
+            ]
+            trace.write_text(
+                "\n".join(
+                    "UMT_PKI4_CONFORMANCE "
+                    + json.dumps(value, separators=(",", ":"))
+                    for value in rows
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                ingress.canonical_descriptor_callback_restart_epochs(trace),
+                {200: 2, 300: 3},
+            )
+
+            rows[-1]["descriptor_epoch"] = 4
+            trace.write_text(
+                "\n".join(
+                    "UMT_PKI4_CONFORMANCE "
+                    + json.dumps(value, separators=(",", ":"))
+                    for value in rows
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(RuntimeError, "contiguous"):
+                ingress.canonical_descriptor_callback_restart_epochs(trace)
+
     def submission(self, case):
         spec = ingress.CASES[case]
         calls = 2 if spec["groups"] in (16, 31) else 1
