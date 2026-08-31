@@ -92,6 +92,13 @@ BUILD_ENVIRONMENT = {
     "inherited_tool_affecting_count": 0,
 }
 BUILD_WRAPPER = ROOT / "tests/lanl_maa/run_umt_ingress_build_attestation.py"
+PROOF_BUILD_WRAPPER = pathlib.Path(
+    "/data1/nier/worktrees/DX100-umt-pki4-live-build-harness-v19-20260831/"
+    "tests/lanl_maa/run_umt_ingress_build_attestation.py"
+)
+PROOF_BUILD_WRAPPER_SHA256 = (
+    "79ca2e97e2920881f1873bd1be8823ed669505489bfe0b756ab383a4efc9603e"
+)
 ARM_WRAPPER = ROOT / "tests/lanl_maa/run_umt_ingress_micro_arm.py"
 ARM_WRAPPER_SHA256 = (
     "2d5e64568062ce391677f37cbf089b755729e174d8342c7688eeb22997f01faa"
@@ -793,10 +800,10 @@ def parse_proc_start_receipt(path, pid, invocation, show_start_usec):
     return value
 
 
-def wrapper_command(evidence_dir):
+def wrapper_command(evidence_dir, wrapper=BUILD_WRAPPER):
     return (
         "/usr/bin/python3",
-        str(BUILD_WRAPPER),
+        str(pathlib.Path(wrapper).resolve()),
         "--unit",
         BUILD_UNIT,
         "--source",
@@ -831,7 +838,7 @@ def validate_systemd_resource_mapping():
         raise RuntimeError("frozen systemd resource mapping is altered")
 
 
-def build_systemd_run_command(evidence_dir):
+def build_systemd_run_command(evidence_dir, wrapper=BUILD_WRAPPER):
     """Return the exact retained v19 build-unit launch; never execute it."""
     validate_systemd_resource_mapping()
     evidence = pathlib.Path(evidence_dir).resolve()
@@ -847,7 +854,7 @@ def build_systemd_run_command(evidence_dir):
             for key, value in BUILD_DISPATCH_PROPERTIES
         ],
         f"--working-directory={CANONICAL_SOURCE}",
-        *wrapper_command(evidence),
+        *wrapper_command(evidence, wrapper),
     ]
     if "--collect" in command:
         raise RuntimeError("v19 build unit must remain for terminal capture")
@@ -1608,17 +1615,22 @@ def read_build_proof(path, digest, gem5, gem5_digest):
         "build systemd invocation",
     )
     wrapper = artifact(
-        inv["wrapper"], "service-owned build wrapper", BUILD_WRAPPER
+        inv["wrapper"], "service-owned build wrapper", PROOF_BUILD_WRAPPER
     )
+    if sha256(wrapper) != PROOF_BUILD_WRAPPER_SHA256:
+        raise RuntimeError(
+            "service-owned proof build wrapper SHA-256 mismatch"
+        )
     attestation = artifact(inv["wrapper_attestation"], "wrapper attestation")
     evidence_dir = attestation.parent
     if evidence_dir.name != BUILD_EVIDENCE_NAME:
         raise RuntimeError("wrapper attestation evidence identity mismatch")
-    command = wrapper_command(evidence_dir)
+    command = wrapper_command(evidence_dir, PROOF_BUILD_WRAPPER)
     if (
-        wrapper != BUILD_WRAPPER.resolve()
+        wrapper != PROOF_BUILD_WRAPPER.resolve()
         or tuple(inv["wrapper_command"]) != command
-        or inv["launch_command"] != build_systemd_run_command(evidence_dir)
+        or inv["launch_command"]
+        != build_systemd_run_command(evidence_dir, PROOF_BUILD_WRAPPER)
         or "--collect" in inv["launch_command"]
         or "--remain-after-exit" not in inv["launch_command"]
         or inv["cleanup_commands_after_terminal_capture"]

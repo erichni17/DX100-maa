@@ -1413,7 +1413,11 @@ class IngressHarnessTest(unittest.TestCase):
                     **ingress.RESOURCE_POLICY,
                     "ExecStart": (
                         "{ path=/usr/bin/python3 ; argv[]="
-                        + " ".join(ingress.wrapper_command(evidence))
+                        + " ".join(
+                            ingress.wrapper_command(
+                                evidence, ingress.PROOF_BUILD_WRAPPER
+                            )
+                        )
                         + " ; ignore_errors=no ; start_time=[n/a] ; }"
                     ),
                     "Environment": "",
@@ -1808,7 +1812,7 @@ class IngressHarnessTest(unittest.TestCase):
                 "build_invocation": {
                     "unit": ingress.BUILD_UNIT,
                     "launch_command": ingress.build_systemd_run_command(
-                        evidence
+                        evidence, ingress.PROOF_BUILD_WRAPPER
                     ),
                     "show_command": list(ingress.BUILD_SHOW_COMMAND),
                     "live_systemd_show": systemd_show("live.show"),
@@ -1820,10 +1824,14 @@ class IngressHarnessTest(unittest.TestCase):
                     "journal": journal,
                     "journal_terminal_protocol": ingress.JOURNAL_TERMINAL_PROTOCOL,
                     "wrapper": {
-                        "path": str(ingress.BUILD_WRAPPER),
-                        "sha256": ingress.sha256(ingress.BUILD_WRAPPER),
+                        "path": str(ingress.PROOF_BUILD_WRAPPER),
+                        "sha256": ingress.PROOF_BUILD_WRAPPER_SHA256,
                     },
-                    "wrapper_command": list(ingress.wrapper_command(evidence)),
+                    "wrapper_command": list(
+                        ingress.wrapper_command(
+                            evidence, ingress.PROOF_BUILD_WRAPPER
+                        )
+                    ),
                     "wrapper_attestation": {
                         "path": str(attestation),
                         "sha256": ingress.sha256(attestation),
@@ -1921,11 +1929,15 @@ class IngressHarnessTest(unittest.TestCase):
                 side_effect=lambda value: value,
             ):
                 proof["build_invocation"]["wrapper_command"] = list(
-                    ingress.wrapper_command(evidence)
+                    ingress.wrapper_command(
+                        evidence, ingress.PROOF_BUILD_WRAPPER
+                    )
                 )
                 proof["build_invocation"][
                     "launch_command"
-                ] = ingress.build_systemd_run_command(evidence)
+                ] = ingress.build_systemd_run_command(
+                    evidence, ingress.PROOF_BUILD_WRAPPER
+                )
                 for field in ("live_systemd_show", "terminal_systemd_show"):
                     old = pathlib.Path(
                         proof["build_invocation"][field]["path"]
@@ -1935,7 +1947,7 @@ class IngressHarnessTest(unittest.TestCase):
                         + " ".join(
                             (
                                 "/usr/bin/python3",
-                                str(ingress.BUILD_WRAPPER),
+                                str(ingress.PROOF_BUILD_WRAPPER),
                                 "--unit",
                                 ingress.BUILD_UNIT,
                                 "--source",
@@ -1945,7 +1957,11 @@ class IngressHarnessTest(unittest.TestCase):
                             )
                         ),
                         "argv[]="
-                        + " ".join(ingress.wrapper_command(evidence)),
+                        + " ".join(
+                            ingress.wrapper_command(
+                                evidence, ingress.PROOF_BUILD_WRAPPER
+                            )
+                        ),
                     )
                     old.write_text(updated, encoding="utf-8")
                     proof["build_invocation"][field][
