@@ -6366,6 +6366,7 @@ void IndirectAccessUnit::executeInstruction() {
                   virtual_combine_set_victims.end(), 0);
         virtual_full_line_writes = 0;
         virtual_partial_word_writes = 0;
+        virtual_shared_partial_spill_lines.clear();
         virtual_dense_initialization_writes = 0;
         virtual_max_combine_occupancy = 0;
         virtual_combine_words = 0;
@@ -8010,12 +8011,15 @@ void IndirectAccessUnit::executeInstruction() {
             if (virtual_shared_result_payload) {
                 panic_if(virtual_reserved_response_words != 0 ||
                              virtual_combine_words != 0 ||
+                             !virtual_shared_partial_spill_lines.empty() ||
                              virtual_shared_payload_high_water >
                                  virtual_shared_result_payload_limit,
                          "I[%d] shared result payload terminal mismatch "
-                         "response=%d combine=%d high_water=%d/%d\n",
+                         "response=%d combine=%d spill_lines=%zu "
+                         "high_water=%d/%d\n",
                          my_indirect_id, virtual_reserved_response_words,
                          virtual_combine_words,
+                         virtual_shared_partial_spill_lines.size(),
                          virtual_shared_payload_high_water,
                          virtual_shared_result_payload_limit);
                 DPRINTF(MAAVirtualTrace,
@@ -8093,7 +8097,8 @@ void IndirectAccessUnit::executeInstruction() {
             if (completeLineOnlyOperation()) {
                 const uint64_t expected_tail =
                     my_max % my_words_per_cl == 0 ? 0 : 1;
-                panic_if(virtual_partial_word_writes != expected_tail,
+                panic_if(!virtual_shared_result_payload &&
+                             virtual_partial_word_writes != expected_tail,
                          "I[%d] complete-line-only operation published %lu "
                          "partial lines, expected tail count %lu\n",
                          my_indirect_id, virtual_partial_word_writes,
@@ -11648,6 +11653,7 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
         }
         if (victim.valid_words != 0)
             return false;
+        virtual_shared_partial_spill_lines.erase(victim.line_vaddr);
         victim = VirtualCombineSlot();
         if (victim_is_target) {
             target = nullptr;
@@ -11921,6 +11927,7 @@ IndirectAccessUnit::spillVirtualCombinePartialForSourceCredit()
              VirtualCombinePayloadStore::resultName(released));
     virtual_combine_words -= victim_words;
     virtual_partial_word_writes++;
+    virtual_shared_partial_spill_lines.insert(spilled_line);
     slot = VirtualCombineSlot();
     virtual_combine_victim = (victim + 1) % virtual_combine_slots.size();
     DPRINTF(MAAVirtualTrace,
@@ -12013,6 +12020,7 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
                      "I[%d] virtual full-line accounting underflow\n",
                      my_indirect_id);
             virtual_combine_words -= my_words_per_cl;
+            virtual_shared_partial_spill_lines.erase(slot.line_vaddr);
             slot = VirtualCombineSlot();
         }
     }
@@ -12054,14 +12062,19 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
                      "I[%d] virtual full-line accounting underflow\n",
                      my_indirect_id);
             virtual_combine_words -= my_words_per_cl;
+            virtual_shared_partial_spill_lines.erase(slot.line_vaddr);
             slot = VirtualCombineSlot();
             continue;
         }
         if (!flush_partial)
             continue;
+        const bool shared_fragment_completion =
+            virtual_shared_result_payload &&
+            virtual_shared_partial_spill_lines.count(slot.line_vaddr) != 0;
         panic_if(completeLineOnlyOperation() &&
                      !legalCompleteLineTail(slot.line_vaddr,
-                                            slot.valid_words),
+                                            slot.valid_words) &&
+                     !shared_fragment_completion,
                  "I[%d] complete-line-only final drain retained partial "
                  "line 0x%lx mask=0x%x\n",
                  my_indirect_id, slot.line_vaddr, slot.valid_words);
@@ -12094,6 +12107,8 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
                     VirtualCombinePayloadStore::resultName(release_result));
                 virtual_combine_words -= words;
                 virtual_partial_word_writes++;
+                if (shared_fragment_completion)
+                    virtual_shared_partial_spill_lines.erase(slot.line_vaddr);
                 slot = VirtualCombineSlot();
             }
             continue;
@@ -12123,8 +12138,11 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
             virtual_combine_words--;
             virtual_partial_word_writes++;
         }
-        if (slot.valid_words == 0)
+        if (slot.valid_words == 0) {
+            if (shared_fragment_completion)
+                virtual_shared_partial_spill_lines.erase(slot.line_vaddr);
             slot = VirtualCombineSlot();
+        }
         if (virtual_outstanding_writes == virtual_max_outstanding_writes_limit)
             break;
     }
