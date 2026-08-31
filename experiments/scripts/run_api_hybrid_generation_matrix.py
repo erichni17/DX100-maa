@@ -654,8 +654,6 @@ def classify_original(root: Path) -> dict[str, object]:
         "b_retries": "0",
         "b_queue_high_water": "64",
         "offset_pressure_events": "0",
-        "a_lines": "9523",
-        "a_bytes": "609472",
         "pages_ready": "4",
         "backing_semantic_bytes": "131072",
     }
@@ -673,6 +671,12 @@ def classify_original(root: Path) -> dict[str, object]:
     require(
         row_pressure_events > 0,
         f"{arm.name}: macro RowTable pressure inactive",
+    )
+    a_lines = int_field(macro, "a_lines", arm.name)
+    a_bytes = int_field(macro, "a_bytes", arm.name)
+    require(
+        0 < a_lines <= base.TOTAL_ELEMENTS and a_bytes == a_lines * 64,
+        f"{arm.name}: A source line/byte accounting",
     )
     require(
         int_field(macro, "backing_line_issues", arm.name)
@@ -692,6 +696,7 @@ def classify_original(root: Path) -> dict[str, object]:
     require(fill_drains > 0, f"{arm.name}: ordinary pressure drain inactive")
     counters["row_pressure_events"] = row_pressure_events
     counters["fill_drains"] = fill_drains
+    counters["a_lines"] = a_lines
     return {
         "name": arm.name,
         "classification": "ACCEPT",
@@ -825,6 +830,11 @@ def classify_matrix(root: Path) -> dict[str, object]:
         and original["strict_trace"] is None,
         "original hybrid is not strict-off",
     )
+    require(
+        original["counters"]["a_lines"]
+        >= strict["counters"]["strict_a_issues"],
+        "ordinary generations unexpectedly reduce A source-line work",
+    )
 
     comparisons = {
         "original_hybrid64_vs_native16_f64": comparison(
@@ -858,6 +868,10 @@ def classify_matrix(root: Path) -> dict[str, object]:
         "matched_predecessor_result_sha256": MATCHED_HASHES["result.json"],
         "arms": arms,
         "comparisons": comparisons,
+        "ordinary_a_line_amplification_vs_strict": (
+            original["counters"]["a_lines"]
+            / strict["counters"]["strict_a_issues"]
+        ),
         "mechanism_decision": {
             "hybrid1_is_strict_two_pass": True,
             "hybrid64_is_strict_two_pass": True,
