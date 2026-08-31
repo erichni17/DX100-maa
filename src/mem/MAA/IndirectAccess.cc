@@ -195,8 +195,9 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
     virtual_response_slots.resize(_virtual_response_slots);
     virtual_response_line_payloads.configure(
         _virtual_response_slots,
-        virtual_response_words != 0 ||
-            virtual_response_word_pool_limit != 0);
+        !virtual_shared_result_payload &&
+            (virtual_response_words != 0 ||
+             virtual_response_word_pool_limit != 0));
     panic_if(_virtual_combine_lookup_latency_cycles < 0 ||
                  !maa::VirtualCombineLookupPipeline::validLatency(
                      _virtual_combine_lookup_latency_cycles),
