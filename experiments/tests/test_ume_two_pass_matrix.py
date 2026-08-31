@@ -148,6 +148,8 @@ class UmeTwoPassMatrixTest(unittest.TestCase):
             "!virtualSourceCreditAvailable(virtual_head,", source
         )
         self.assertIn("event=shared_source_credit_stall schema=1", source)
+        self.assertIn("event=shared_source_partial_spill schema=1", source)
+        self.assertIn("spillVirtualCombinePartialForSourceCredit", source)
         self.assertIn("scheduleExecuteInstructionEvent(1)", source)
 
     def test_shared_source_payload_charges_unique_words_with_fanout(self) -> None:

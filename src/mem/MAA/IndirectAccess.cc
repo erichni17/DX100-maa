@@ -7341,6 +7341,8 @@ void IndirectAccessUnit::executeInstruction() {
         if (usesBoundedSourceResponses() && virtual_pending_source) {
             if (!virtualSourceCreditAvailable(virtual_pending_source_head,
                                               virtual_pending_source_words)) {
+                const bool spilled =
+                    spillVirtualCombinePartialForSourceCredit();
                 const int payload_words = virtualSourcePayloadWords(
                     virtual_pending_source_head,
                     virtual_pending_source_words);
@@ -7349,7 +7351,7 @@ void IndirectAccessUnit::executeInstruction() {
                         "operation_tick=%lu logical_words=%d "
                         "payload_words=%d response_slots=%d/%zu "
                         "response_words=%d combine_words=%d capacity=%d "
-                        "writes=%d\n",
+                        "writes=%d spilled=%d\n",
                         my_indirect_id, my_decode_start_tick,
                         virtual_pending_source_words, payload_words,
                         virtual_reserved_responses,
@@ -7357,7 +7359,7 @@ void IndirectAccessUnit::executeInstruction() {
                         virtual_reserved_response_words,
                         virtual_combine_words,
                         virtual_shared_result_payload_limit,
-                        virtual_outstanding_writes);
+                        virtual_outstanding_writes, spilled);
                 virtual_response_word_pool_stalls++;
                 macro_a_retries++;
                 virtual_capacity_full = true;
@@ -11864,6 +11866,72 @@ IndirectAccessUnit::recordCompleteLinePayloadBackpressure()
             my_indirect_id])++;
     }
     scheduleExecuteInstructionEvent(1);
+}
+
+bool
+IndirectAccessUnit::spillVirtualCombinePartialForSourceCredit()
+{
+    if (!virtual_shared_result_payload || !completeLineOnlyOperation() ||
+        !virtual_masked_writes || virtual_combine_words == 0 ||
+        virtual_outstanding_writes >= virtual_max_outstanding_writes_limit)
+        return false;
+
+    // Drain legal full lines first. A remaining victim is necessarily a
+    // fragment whose backing write is required to make bounded progress.
+    drainVirtualCombiner(false);
+    int victim = -1;
+    int victim_words = 0;
+    for (size_t offset = 0; offset < virtual_combine_slots.size(); ++offset) {
+        const int candidate =
+            (virtual_combine_victim + offset) % virtual_combine_slots.size();
+        const auto &slot = virtual_combine_slots[candidate];
+        if (!slot.valid || slot.valid_words == 0)
+            continue;
+        const int words = __builtin_popcount(slot.valid_words);
+        if (words == my_words_per_cl)
+            continue;
+        if (words > victim_words) {
+            victim = candidate;
+            victim_words = words;
+        }
+    }
+    if (victim == -1 ||
+        virtual_outstanding_writes >= virtual_max_outstanding_writes_limit)
+        return false;
+
+    auto &slot = virtual_combine_slots[victim];
+    VirtualCombinePayloadStore::LineData line_data{};
+    const auto copied = virtual_combine_payload.copyLine(
+        slot.word_refs, slot.valid_words, my_word_size, line_data);
+    panic_if(copied != VirtualCombinePayloadStore::Result::Ok,
+             "I[%d] could not stage shared-credit victim 0x%lx: %s\n",
+             my_indirect_id, slot.line_vaddr,
+             VirtualCombinePayloadStore::resultName(copied));
+    if (!createRetirementWrite(slot.line_vaddr, block_size, line_data.data(),
+                               slot.valid_words))
+        return false;
+    const uint16_t spilled_mask = slot.valid_words;
+    const Addr spilled_line = slot.line_vaddr;
+    const auto released = virtual_combine_payload.releaseMasked(
+        slot.word_refs, slot.valid_words);
+    panic_if(released != VirtualCombinePayloadStore::Result::Ok ||
+                 virtual_combine_words < victim_words,
+             "I[%d] could not release shared-credit victim 0x%lx: %s\n",
+             my_indirect_id, slot.line_vaddr,
+             VirtualCombinePayloadStore::resultName(released));
+    virtual_combine_words -= victim_words;
+    virtual_partial_word_writes++;
+    slot = VirtualCombineSlot();
+    virtual_combine_victim = (victim + 1) % virtual_combine_slots.size();
+    DPRINTF(MAAVirtualTrace,
+            "event=shared_source_partial_spill schema=1 unit=%d "
+            "operation_tick=%lu line=0x%lx mask=0x%x words=%d "
+            "combine_words=%d response_words=%d capacity=%d writes=%d\n",
+            my_indirect_id, my_decode_start_tick, spilled_line,
+            spilled_mask, victim_words, virtual_combine_words,
+            virtual_reserved_response_words,
+            virtual_shared_result_payload_limit, virtual_outstanding_writes);
+    return true;
 }
 
 void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
