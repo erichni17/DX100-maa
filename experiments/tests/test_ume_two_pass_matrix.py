@@ -138,6 +138,14 @@ class UmeTwoPassMatrixTest(unittest.TestCase):
             source.index("m5_checkpoint(0, 0)"),
         )
 
+    def test_build_admission_uses_shared_source_credit(self) -> None:
+        source = (ROOT / "src/mem/MAA/IndirectAccess.cc").read_text()
+        self.assertIn(
+            "!virtualSourceCreditAvailable(virtual_pending_source_words)",
+            source,
+        )
+        self.assertIn("!virtualSourceCreditAvailable(virtual_words)", source)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -7299,21 +7299,27 @@ void IndirectAccessUnit::executeInstruction() {
         }
         bool virtual_capacity_full = false;
         if (usesBoundedSourceResponses() && virtual_pending_source) {
-            issueVirtualSource(virtual_pending_source_addr,
-                               virtual_pending_source_head,
-                               virtual_pending_source_words,
-                               virtual_pending_source_rt_idx,
-                               virtual_pending_source_row_id,
-                               virtual_pending_source_entry_id,
-                               virtual_pending_source_grow_addr, 0);
-            virtual_pending_source = false;
-            virtual_pending_source_addr = 0;
-            virtual_pending_source_head = -1;
-            virtual_pending_source_words = 0;
-            virtual_pending_source_rt_idx = -1;
-            virtual_pending_source_row_id = -1;
-            virtual_pending_source_entry_id = -1;
-            virtual_pending_source_grow_addr = 0;
+            if (!virtualSourceCreditAvailable(virtual_pending_source_words)) {
+                virtual_response_word_pool_stalls++;
+                macro_a_retries++;
+                virtual_capacity_full = true;
+            } else {
+                issueVirtualSource(virtual_pending_source_addr,
+                                   virtual_pending_source_head,
+                                   virtual_pending_source_words,
+                                   virtual_pending_source_rt_idx,
+                                   virtual_pending_source_row_id,
+                                   virtual_pending_source_entry_id,
+                                   virtual_pending_source_grow_addr, 0);
+                virtual_pending_source = false;
+                virtual_pending_source_addr = 0;
+                virtual_pending_source_head = -1;
+                virtual_pending_source_words = 0;
+                virtual_pending_source_rt_idx = -1;
+                virtual_pending_source_row_id = -1;
+                virtual_pending_source_entry_id = -1;
+                virtual_pending_source_grow_addr = 0;
+            }
         }
         while (!virtual_capacity_full) {
             if (checkAndResetAllRowTablesSent())
@@ -7388,10 +7394,7 @@ void IndirectAccessUnit::executeInstruction() {
                                          "I[%d] source response needs %d/%d pooled words\n",
                                          my_indirect_id, virtual_words,
                                          virtual_response_word_pool_limit);
-                            if (virtual_response_word_pool_limit != 0 &&
-                                virtual_reserved_response_words +
-                                        virtual_words >
-                                    virtual_response_word_pool_limit) {
+                            if (!virtualSourceCreditAvailable(virtual_words)) {
                                 if (!native_order_claim) {
                                     Addr committed_addr = 0;
                                     int committed_head = -1;
