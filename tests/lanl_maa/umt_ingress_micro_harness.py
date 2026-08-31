@@ -414,6 +414,30 @@ def verify_hash(path, expected, label):
     return path
 
 
+def expected_clean_stdout():
+    """Return the exact build-v18 producer record for the fresh build root."""
+    relatives = tuple(
+        str(path.relative_to(CANONICAL_SOURCE))
+        for path in (BUILD_ROOT, CANONICAL_GEM5, BUILD_OBJECT)
+    )
+    return (
+        "clean_method="
+        + BUILD_CLEAN_METHOD
+        + "\ninitial_absent="
+        + ",".join(relatives)
+        + "\nstatus=0/SUCCESS\n"
+    )
+
+
+def validate_clean_stdout(path):
+    """Require the ordered root, target, and object tuple emitted by v18."""
+    if (
+        pathlib.Path(path).read_text(encoding="ascii")
+        != expected_clean_stdout()
+    ):
+        raise RuntimeError("clean stdout initial-absence tuple mismatch")
+
+
 def git_output(cwd, *argv):
     return subprocess.check_output(["git", *argv], cwd=cwd, text=True).strip()
 
@@ -1614,23 +1638,9 @@ def read_build_proof(path, digest, gem5, gem5_digest):
         or proof["build_stdout"] != attest["evidence"]["build_stdout"]
         or proof["build_stderr"] != attest["evidence"]["build_stderr"]
         or pathlib.Path(proof["clean_stderr"]["path"]).read_bytes() != b""
-        or pathlib.Path(proof["clean_stdout"]["path"]).read_text(
-            encoding="ascii"
-        )
-        != (
-            "clean_method="
-            + BUILD_CLEAN_METHOD
-            + "\ninitial_absent="
-            + ",".join(
-                (
-                    str(CANONICAL_GEM5.relative_to(CANONICAL_SOURCE)),
-                    str(BUILD_OBJECT.relative_to(CANONICAL_SOURCE)),
-                )
-            )
-            + "\nstatus=0/SUCCESS\n"
-        )
     ):
         raise RuntimeError("clean/build transcript cross-binding mismatch")
+    validate_clean_stdout(proof["clean_stdout"]["path"])
     validate_object_compile_transcript(
         artifact(
             proof["object_prebuild_stdout"], "object prebuild stdout"

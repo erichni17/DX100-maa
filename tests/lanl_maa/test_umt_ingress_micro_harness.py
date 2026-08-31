@@ -122,6 +122,42 @@ class IngressHarnessTest(unittest.TestCase):
             "lanl-maa-umt-ingress-instrumented-gem5-build-proof-v18",
         )
 
+    def test_v18_clean_stdout_requires_exact_ordered_three_path_tuple(self):
+        expected = (
+            "clean_method=require-fresh-absent-exact-two-v1\n"
+            "initial_absent=build/X86_UMT_T32_W2,"
+            "build/X86_UMT_T32_W2/gem5.opt,"
+            "build/X86_UMT_T32_W2/mem/LANLMAA/lanl_maa.o\n"
+            "status=0/SUCCESS\n"
+        )
+        self.assertEqual(ingress.expected_clean_stdout(), expected)
+        records = {
+            "live_shape": expected,
+            "missing_root": expected.replace("build/X86_UMT_T32_W2,", "", 1),
+            "reordered_paths": expected.replace(
+                "build/X86_UMT_T32_W2," "build/X86_UMT_T32_W2/gem5.opt,",
+                "build/X86_UMT_T32_W2/gem5.opt," "build/X86_UMT_T32_W2,",
+                1,
+            ),
+            "extra_path": expected.replace(
+                "\nstatus=0/SUCCESS\n",
+                ",build/X86_UMT_T32_W2/extra\nstatus=0/SUCCESS\n",
+                1,
+            ),
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            for label, record in records.items():
+                path = root / (label + ".stdout")
+                path.write_text(record, encoding="ascii")
+                if label == "live_shape":
+                    ingress.validate_clean_stdout(path)
+                else:
+                    with self.assertRaisesRegex(
+                        RuntimeError, "initial-absence tuple"
+                    ):
+                        ingress.validate_clean_stdout(path)
+
     def test_build_argv_is_assignment_free_and_fixed_env_has_exact_dash_d(
         self,
     ):
@@ -1470,7 +1506,8 @@ class IngressHarnessTest(unittest.TestCase):
                     "clean.stdout",
                     "clean_method="
                     + ingress.BUILD_CLEAN_METHOD
-                    + "\ninitial_absent=build/X86_UMT_T32_W2/gem5.opt,"
+                    + "\ninitial_absent=build/X86_UMT_T32_W2,"
+                    "build/X86_UMT_T32_W2/gem5.opt,"
                     "build/X86_UMT_T32_W2/mem/LANLMAA/lanl_maa.o\n"
                     "status=0/SUCCESS\n",
                 ),
