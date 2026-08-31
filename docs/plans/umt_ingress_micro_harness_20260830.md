@@ -1,7 +1,7 @@
 # UMT ingress micro harness
 
 `tests/lanl_maa/umt_ingress_micro_harness.py` is a four-arm, evidence-only
-opcode-11 harness: D32/G16, D32/G31, D32/G32, and D64/G32. The combined v8
+opcode-11 harness: D32/G16, D32/G31, D32/G32, and D64/G32. The combined v9
 contract hard-pins the
 adaptive native test driver (`7db125ac…`), its clean native source commit/tree,
 the `LanlMaaUmtSubmit.cc` ABI source and native ABI tests, and the adaptive-v1
@@ -57,13 +57,13 @@ Freeze and dry-plan commands are deliberately separate from execution:
 
 ```sh
 python3 tests/lanl_maa/umt_ingress_micro_harness.py freeze-contract \
-  --campaign-root CAMPAIGN --output CAMPAIGN/ingress-contract-v8.json \
+  --campaign-root CAMPAIGN --output CAMPAIGN/ingress-contract-v9.json \
   --gem5 GEM5 --gem5-sha256 GEM5_SHA --instrumented-build-proof PROOF \
   --instrumented-build-proof-sha256 PROOF_SHA
 python3 tests/lanl_maa/umt_ingress_micro_harness.py dry-dispatch \
-  --campaign-root CAMPAIGN --contract CAMPAIGN/ingress-contract-v8.json \
+  --campaign-root CAMPAIGN --contract CAMPAIGN/ingress-contract-v9.json \
   --contract-sha256 CONTRACT_SHA \
-  --output CAMPAIGN/identity/ingress-dry-dispatch-v8.json
+  --output CAMPAIGN/identity/ingress-dry-dispatch-v9.json
 ```
 
 The second command only records four `systemd-run --user --collect` commands.
@@ -73,6 +73,14 @@ gem5, a build, or a remote operation. Each service command now invokes the
 hash-pinned `run_umt_ingress_micro_arm.py`, not gem5 directly. The contract
 separately freezes the exact gem5 argv and service-wrapper argv plus both
 canonical JSON hashes.
+
+The launch property is exactly `RuntimeMaxSec=4h`, the unit-file directive
+accepted by `systemd-run --property`. It is intentionally distinct from the
+post-launch `systemctl show` property `RuntimeMaxUSec=4h`; build and arm plans
+reject the latter spelling in launch argv while terminal proof validation
+continues to require it in the 17-property snapshot. Every other resource cap
+is identical to v8. The v8 command is rejected because its
+`RuntimeMaxUSec=4h` assignment fails before systemd creates a unit.
 
 Contract and dry-dispatch JSON publication uses an exclusive temporary inode
 followed by an atomic hard link to the final name. A concurrent publisher that
@@ -89,7 +97,7 @@ the property-limited `systemctl --user show` output and the matching PID's
 `/proc` start ticks in one no-clobber receipt; after exit, capture the same
 property-limited terminal show output and the unit's `journalctl --output=export`
 snapshot. Hash every raw snapshot before constructing the v7 proof, then
-freeze the combined v8 contract and only then record (not execute) its arms.
+freeze the combined v9 contract and only then record (not execute) its arms.
 The terminal journal protocol is a complete equality check, not a text search.
 
 For each arm, the service wrapper creates the exact arm root with
@@ -115,7 +123,7 @@ non-admissible terminal receipt.
 
 After a launcher has run one recorded command, `analyze-arm` requires all raw
 outputs, config/stats, debug log, submission report, terminal marker, and the
-test driver's exact result marker. It also takes the frozen v8 contract and
+test driver's exact result marker. It also takes the frozen v9 contract and
 hash, checks the exact wrapper and gem5 commands, wrapper/binary hashes,
 successful wrapper return receipt, and hashes every raw file. The stream
 hashes must still match the terminal receipt, so post-run clobber is rejected.

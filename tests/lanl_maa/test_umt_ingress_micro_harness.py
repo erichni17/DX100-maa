@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Adversarial dry tests for the combined v8 UMT ingress harness."""
+"""Adversarial dry tests for the combined v9 UMT ingress harness."""
 import importlib.util
 import json
 import pathlib
@@ -42,10 +42,10 @@ def line(label, kind, cycle, waiters, abi=4):
 
 
 class IngressHarnessTest(unittest.TestCase):
-    def test_v8_contract_accepts_exactly_the_v7_build_proof_generation(self):
+    def test_v9_contract_accepts_exactly_the_v7_build_proof_generation(self):
         self.assertEqual(
             ingress.SCHEMA_CONTRACT,
-            "lanl-maa-umt-ingress-contract-v8",
+            "lanl-maa-umt-ingress-contract-v9",
         )
         self.assertEqual(
             ingress.SCHEMA_BUILD_PROOF,
@@ -53,22 +53,22 @@ class IngressHarnessTest(unittest.TestCase):
         )
         self.assertEqual(
             ingress.SCHEMA_DISPATCH_PLAN,
-            "lanl-maa-umt-ingress-dispatch-plan-v8",
+            "lanl-maa-umt-ingress-dispatch-plan-v9",
         )
         self.assertEqual(
             ingress.SCHEMA_ARM_REPORT,
-            "lanl-maa-umt-ingress-arm-report-v8",
+            "lanl-maa-umt-ingress-arm-report-v9",
         )
-        self.assertEqual(ingress.CONTRACT_FILENAME, "ingress-contract-v8.json")
+        self.assertEqual(ingress.CONTRACT_FILENAME, "ingress-contract-v9.json")
         self.assertEqual(
             ingress.DISPATCH_FILENAME,
-            "ingress-dry-dispatch-v8.json",
+            "ingress-dry-dispatch-v9.json",
         )
         self.assertTrue(
             all(
-                value.startswith("umt-ingress-micro-v8-")
+                value.startswith("umt-ingress-micro-v9-")
                 for value in (
-                    f"umt-ingress-micro-v8-{case}-20260830.service"
+                    f"umt-ingress-micro-v9-{case}-20260830.service"
                     for case in ingress.CASES
                 )
             )
@@ -217,7 +217,8 @@ class IngressHarnessTest(unittest.TestCase):
         self.assertIn("--property=MemoryHigh=" + str(14 * 1024**3), command)
         self.assertIn("--property=MemoryMax=" + str(16 * 1024**3), command)
         self.assertIn("--property=MemorySwapMax=0", command)
-        self.assertIn("--property=RuntimeMaxUSec=4h", command)
+        self.assertIn("--property=RuntimeMaxSec=4h", command)
+        self.assertNotIn("--property=RuntimeMaxUSec=4h", command)
 
         pid, invocation, ticks = 77, "a" * 32, "1234"
         fields = {
@@ -256,6 +257,57 @@ class IngressHarnessTest(unittest.TestCase):
                 invocation=invocation,
                 command=ingress.wrapper_command(evidence),
             )
+
+    def test_launch_and_show_runtime_property_names_are_distinct(self):
+        launch = (
+            ("CPUQuota", "400%"),
+            ("CPUWeight", "1000"),
+            ("MemoryHigh", str(14 * 1024**3)),
+            ("MemoryMax", str(16 * 1024**3)),
+            ("MemorySwapMax", "0"),
+            ("RuntimeMaxSec", "4h"),
+        )
+        show = {
+            "CPUQuotaPerSecUSec": "4s",
+            "CPUWeight": "1000",
+            "MemoryHigh": str(14 * 1024**3),
+            "MemoryMax": str(16 * 1024**3),
+            "MemorySwapMax": "0",
+            "RuntimeMaxUSec": "4h",
+        }
+        self.assertEqual(ingress.DISPATCH_PROPERTIES, launch)
+        self.assertEqual(ingress.BUILD_DISPATCH_PROPERTIES, launch)
+        self.assertEqual(ingress.RESOURCE_POLICY, show)
+        self.assertIn("RuntimeMaxUSec", ingress.SYSTEMD_SHOW_PROPERTIES)
+        self.assertNotIn("RuntimeMaxSec", ingress.SYSTEMD_SHOW_PROPERTIES)
+
+        build = ingress.build_systemd_run_command(
+            "/campaign/identity/ingress-build-evidence-v7"
+        )
+        arm = ingress.systemd_run_command("arm.service", ["/bin/true"])
+        for command in (build, arm):
+            properties = [
+                value.removeprefix("--property=")
+                for value in command
+                if value.startswith("--property=")
+            ]
+            self.assertEqual(
+                properties,
+                [f"{key}={value}" for key, value in launch],
+            )
+            self.assertNotIn("RuntimeMaxUSec=4h", properties)
+
+        rejected = launch[:-1] + (("RuntimeMaxUSec", "4h"),)
+        with mock.patch.object(
+            ingress, "BUILD_DISPATCH_PROPERTIES", rejected
+        ), self.assertRaisesRegex(RuntimeError, "resource mapping"):
+            ingress.build_systemd_run_command(
+                "/campaign/identity/ingress-build-evidence-v7"
+            )
+        with mock.patch.object(
+            ingress, "DISPATCH_PROPERTIES", rejected
+        ), self.assertRaisesRegex(RuntimeError, "resource mapping"):
+            ingress.systemd_run_command("arm.service", ["/bin/true"])
 
     def test_dry_build_plan_is_fresh_exact_and_no_clobber(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1349,12 +1401,12 @@ class IngressHarnessTest(unittest.TestCase):
                 "--property=MemoryHigh=" + str(14 * 1024**3),
                 "--property=MemoryMax=" + str(16 * 1024**3),
                 "--property=MemorySwapMax=0",
-                "--property=RuntimeMaxUSec=4h",
+                "--property=RuntimeMaxSec=4h",
             ],
         )
         self.assertNotIn("--property=CPUQuotaPerSecUSec=4s", command)
 
-    def test_v8_dispatch_runs_the_pinned_wrapper_not_gem5_directly(self):
+    def test_v9_dispatch_runs_the_pinned_wrapper_not_gem5_directly(self):
         with tempfile.TemporaryDirectory() as temporary:
             self.assertEqual(
                 set(ingress.CASES),
@@ -1397,7 +1449,7 @@ class IngressHarnessTest(unittest.TestCase):
         wrapper_argv = ingress.arm_wrapper_argv(root, gem5_argv)
         return {
             "root": str(root),
-            "unit": f"umt-ingress-micro-v8-{case}-20260830.service",
+            "unit": f"umt-ingress-micro-v9-{case}-20260830.service",
             "gem5_argv": gem5_argv,
             "gem5_argv_sha256": ingress.json_sha256(gem5_argv),
             "wrapper": {

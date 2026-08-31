@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed v8 integration of v7 build and arm evidence contracts.
+"""Fail-closed v9 integration of v7 build and arm evidence contracts.
 
 This program only freezes, validates, and records launch commands.  It never
 builds, invokes systemd, or executes gem5.  A future launcher must first
@@ -21,11 +21,11 @@ TRACE_BUILD_DEFINE = "LANL_MAA_UMT_INGRESS_TRACE_TEST"
 LABEL_PREFIX = "lanl_maa_umt_ingress_micro"
 SCHEMA_BUILD_PROOF = "lanl-maa-umt-ingress-instrumented-gem5-build-proof-v7"
 SCHEMA_SUBMISSION = "umt-lanl-maa-submission-v1"
-SCHEMA_CONTRACT = "lanl-maa-umt-ingress-contract-v8"
-SCHEMA_DISPATCH_PLAN = "lanl-maa-umt-ingress-dispatch-plan-v8"
-SCHEMA_ARM_REPORT = "lanl-maa-umt-ingress-arm-report-v8"
-CONTRACT_FILENAME = "ingress-contract-v8.json"
-DISPATCH_FILENAME = "ingress-dry-dispatch-v8.json"
+SCHEMA_CONTRACT = "lanl-maa-umt-ingress-contract-v9"
+SCHEMA_DISPATCH_PLAN = "lanl-maa-umt-ingress-dispatch-plan-v9"
+SCHEMA_ARM_REPORT = "lanl-maa-umt-ingress-arm-report-v9"
+CONTRACT_FILENAME = "ingress-contract-v9.json"
+DISPATCH_FILENAME = "ingress-dry-dispatch-v9.json"
 CANONICAL_SOURCE_ROOT = "/data1/nier/worktrees/DX100-umt-trace-replay-20260830"
 CANONICAL_SOURCE = pathlib.Path(CANONICAL_SOURCE_ROOT)
 CANONICAL_SOURCE_COMMIT = "493c043ef0bc3dee0d91c5511371cedf77f15b5c"
@@ -117,7 +117,7 @@ DISPATCH_PROPERTIES = (
     ("MemoryHigh", str(14 * 1024**3)),
     ("MemoryMax", str(16 * 1024**3)),
     ("MemorySwapMax", "0"),
-    ("RuntimeMaxUSec", "4h"),
+    ("RuntimeMaxSec", "4h"),
 )
 BUILD_DISPATCH_PROPERTIES = DISPATCH_PROPERTIES
 BUILD_CLEANUP_COMMANDS = (
@@ -493,8 +493,34 @@ def wrapper_command(evidence_dir):
     )
 
 
+def validate_systemd_resource_mapping():
+    expected_show = {
+        "CPUQuotaPerSecUSec": "4s",
+        "CPUWeight": "1000",
+        "MemoryHigh": str(14 * 1024**3),
+        "MemoryMax": str(16 * 1024**3),
+        "MemorySwapMax": "0",
+        "RuntimeMaxUSec": "4h",
+    }
+    expected_launch = (
+        ("CPUQuota", "400%"),
+        ("CPUWeight", "1000"),
+        ("MemoryHigh", str(14 * 1024**3)),
+        ("MemoryMax", str(16 * 1024**3)),
+        ("MemorySwapMax", "0"),
+        ("RuntimeMaxSec", "4h"),
+    )
+    if (
+        RESOURCE_POLICY != expected_show
+        or DISPATCH_PROPERTIES != expected_launch
+        or BUILD_DISPATCH_PROPERTIES != expected_launch
+    ):
+        raise RuntimeError("frozen systemd resource mapping is altered")
+
+
 def build_systemd_run_command(evidence_dir):
     """Return the exact retained v7 build-unit launch; never execute it."""
+    validate_systemd_resource_mapping()
     evidence = pathlib.Path(evidence_dir).resolve()
     if evidence.name != BUILD_EVIDENCE_NAME:
         raise RuntimeError("v7 build evidence identity is not canonical")
@@ -1364,7 +1390,7 @@ def expected_contract(campaign, proof, proof_digest, gem5_digest):
         wrapper_command = arm_wrapper_argv(root, command)
         arms[name] = {
             "root": str(root),
-            "unit": f"umt-ingress-micro-v8-{name}-20260830.service",
+            "unit": f"umt-ingress-micro-v9-{name}-20260830.service",
             "gem5_argv": command,
             "gem5_argv_sha256": json_sha256(command),
             "wrapper": {
@@ -1404,9 +1430,15 @@ def expected_contract(campaign, proof, proof_digest, gem5_digest):
             "v7": {
                 "review_status": (
                     "split_predecessors_only; build-v7 and arm-v7 are "
-                    "accepted solely through this combined v8 contract"
+                    "accepted solely through a combined contract"
                 ),
                 "reuse": "forbidden_as_combined_contract",
+            },
+            "v8": {
+                "review_status": (
+                    "rejected_invalid_systemd_runtime_launch_property"
+                ),
+                "reuse": "forbidden",
             },
         },
         "claim_boundary": (
@@ -1420,26 +1452,12 @@ def systemd_run_command(unit, command):
     """Construct an arm launch from the one frozen policy mapping.
 
     CPUQuotaPerSecUSec is a systemd *show* property (microseconds per
-    second); `systemd-run` instead consumes CPUQuota.  Keep that conversion
-    explicit and audited here rather than deriving option names by rewriting
-    arbitrary property strings.
+    second); `systemd-run` instead consumes CPUQuota. RuntimeMaxUSec is also
+    a *show* property, while the accepted unit-file launch directive is
+    RuntimeMaxSec. Keep both conversions explicit rather than deriving option
+    names by rewriting arbitrary property strings.
     """
-    if RESOURCE_POLICY != {
-        "CPUQuotaPerSecUSec": "4s",
-        "CPUWeight": "1000",
-        "MemoryHigh": str(14 * 1024**3),
-        "MemoryMax": str(16 * 1024**3),
-        "MemorySwapMax": "0",
-        "RuntimeMaxUSec": "4h",
-    } or DISPATCH_PROPERTIES != (
-        ("CPUQuota", "400%"),
-        ("CPUWeight", "1000"),
-        ("MemoryHigh", str(14 * 1024**3)),
-        ("MemoryMax", str(16 * 1024**3)),
-        ("MemorySwapMax", "0"),
-        ("RuntimeMaxUSec", "4h"),
-    ):
-        raise RuntimeError("frozen systemd resource mapping is altered")
+    validate_systemd_resource_mapping()
     return [
         "systemd-run",
         "--user",
@@ -1480,7 +1498,7 @@ def freeze_contract(args):
     )
     if campaign.exists() or output != campaign / CONTRACT_FILENAME:
         raise RuntimeError(
-            "v8 contract must be a fresh campaign/ingress-contract-v8.json"
+            "v9 contract must be a fresh campaign/ingress-contract-v9.json"
         )
     contract = expected_contract(
         campaign, proof, args.instrumented_build_proof_sha256, args.gem5_sha256
@@ -1505,7 +1523,7 @@ def dispatch_plan(contract_path, digest, campaign_root, output):
         or contract.get("schema") != SCHEMA_CONTRACT
     ):
         raise RuntimeError(
-            "v8 contract semantics, resources, units, roots, or self-hash "
+            "v9 contract semantics, resources, units, roots, or self-hash "
             "binding altered"
         )
     contract_harness_identity(contract)
@@ -1526,12 +1544,12 @@ def dispatch_plan(contract_path, digest, campaign_root, output):
     )
     if contract != expected:
         raise RuntimeError(
-            "v8 contract semantics, resources, units, roots, or self-hash "
+            "v9 contract semantics, resources, units, roots, or self-hash "
             "binding altered"
         )
     output = pathlib.Path(output).resolve()
     if output != campaign / "identity" / DISPATCH_FILENAME:
-        raise RuntimeError("v8 dry dispatch output identity mismatch")
+        raise RuntimeError("v9 dry dispatch output identity mismatch")
     commands = {
         name: systemd_arm_plan(arm) for name, arm in contract["arms"].items()
     }
@@ -2125,7 +2143,7 @@ def analyze_arm(root, case, contract_path, contract_digest):
         or set(contract) != CONTRACT_FIELDS
         or contract.get("schema") != SCHEMA_CONTRACT
     ):
-        raise RuntimeError("arm is not bound to an unaltered v8 contract")
+        raise RuntimeError("arm is not bound to an unaltered v9 contract")
     harness_identity = contract_harness_identity(contract)
     campaign = pathlib.Path(contract.get("campaign_root", ".")).resolve()
     gem5 = verify_hash(
@@ -2147,7 +2165,7 @@ def analyze_arm(root, case, contract_path, contract_digest):
             contract.get("gem5_sha256", ""),
         )
     ):
-        raise RuntimeError("arm is not bound to an unaltered v8 contract")
+        raise RuntimeError("arm is not bound to an unaltered v9 contract")
     root, arm = pathlib.Path(root).resolve(), contract["arms"].get(case, {})
     if str(root) != arm.get("root") or arm.get("gem5_argv") != case_command(
         CANONICAL_GEM5, root, case
