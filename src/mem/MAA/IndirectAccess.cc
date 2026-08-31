@@ -6366,7 +6366,14 @@ void IndirectAccessUnit::executeInstruction() {
                   virtual_combine_set_victims.end(), 0);
         virtual_full_line_writes = 0;
         virtual_partial_word_writes = 0;
-        virtual_shared_partial_spill_lines.clear();
+        if (virtual_shared_result_payload) {
+            const size_t output_bytes =
+                static_cast<size_t>(my_max) * my_word_size;
+            virtual_shared_partial_spill_lines.assign(
+                (output_bytes + block_size - 1) / block_size, false);
+        } else {
+            virtual_shared_partial_spill_lines.clear();
+        }
         virtual_dense_initialization_writes = 0;
         virtual_max_combine_occupancy = 0;
         virtual_combine_words = 0;
@@ -8011,7 +8018,10 @@ void IndirectAccessUnit::executeInstruction() {
             if (virtual_shared_result_payload) {
                 panic_if(virtual_reserved_response_words != 0 ||
                              virtual_combine_words != 0 ||
-                             !virtual_shared_partial_spill_lines.empty() ||
+                             std::any_of(
+                                 virtual_shared_partial_spill_lines.begin(),
+                                 virtual_shared_partial_spill_lines.end(),
+                                 [](bool spilled) { return spilled; }) ||
                              virtual_shared_payload_high_water >
                                  virtual_shared_result_payload_limit,
                          "I[%d] shared result payload terminal mismatch "
@@ -8019,7 +8029,9 @@ void IndirectAccessUnit::executeInstruction() {
                          "high_water=%d/%d\n",
                          my_indirect_id, virtual_reserved_response_words,
                          virtual_combine_words,
-                         virtual_shared_partial_spill_lines.size(),
+                         static_cast<size_t>(std::count(
+                             virtual_shared_partial_spill_lines.begin(),
+                             virtual_shared_partial_spill_lines.end(), true)),
                          virtual_shared_payload_high_water,
                          virtual_shared_result_payload_limit);
                 DPRINTF(MAAVirtualTrace,
@@ -11653,7 +11665,7 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
         }
         if (victim.valid_words != 0)
             return false;
-        virtual_shared_partial_spill_lines.erase(victim.line_vaddr);
+        setVirtualSharedPartialSpilled(victim.line_vaddr, false);
         victim = VirtualCombineSlot();
         if (victim_is_target) {
             target = nullptr;
@@ -11874,6 +11886,39 @@ IndirectAccessUnit::recordCompleteLinePayloadBackpressure()
     scheduleExecuteInstructionEvent(1);
 }
 
+size_t
+IndirectAccessUnit::virtualBackingLineIndex(Addr line_vaddr) const
+{
+    panic_if(line_vaddr % block_size != 0 || line_vaddr < my_backing_addr,
+             "I[%d] invalid shared-spill line 0x%lx for backing 0x%lx\n",
+             my_indirect_id, line_vaddr, my_backing_addr);
+    const size_t line = (line_vaddr - my_backing_addr) / block_size;
+    panic_if(line >= virtual_shared_partial_spill_lines.size(),
+             "I[%d] shared-spill line %zu exceeds bitmap size %zu\n",
+             my_indirect_id, line,
+             virtual_shared_partial_spill_lines.size());
+    return line;
+}
+
+bool
+IndirectAccessUnit::virtualSharedPartialSpilled(Addr line_vaddr) const
+{
+    if (!virtual_shared_result_payload)
+        return false;
+    return virtual_shared_partial_spill_lines[
+        virtualBackingLineIndex(line_vaddr)];
+}
+
+void
+IndirectAccessUnit::setVirtualSharedPartialSpilled(Addr line_vaddr,
+                                                   bool spilled)
+{
+    if (!virtual_shared_result_payload)
+        return;
+    virtual_shared_partial_spill_lines[
+        virtualBackingLineIndex(line_vaddr)] = spilled;
+}
+
 bool
 IndirectAccessUnit::spillVirtualCombinePartialForSourceCredit()
 {
@@ -11927,7 +11972,7 @@ IndirectAccessUnit::spillVirtualCombinePartialForSourceCredit()
              VirtualCombinePayloadStore::resultName(released));
     virtual_combine_words -= victim_words;
     virtual_partial_word_writes++;
-    virtual_shared_partial_spill_lines.insert(spilled_line);
+    setVirtualSharedPartialSpilled(spilled_line, true);
     slot = VirtualCombineSlot();
     virtual_combine_victim = (victim + 1) % virtual_combine_slots.size();
     DPRINTF(MAAVirtualTrace,
@@ -12020,7 +12065,7 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
                      "I[%d] virtual full-line accounting underflow\n",
                      my_indirect_id);
             virtual_combine_words -= my_words_per_cl;
-            virtual_shared_partial_spill_lines.erase(slot.line_vaddr);
+            setVirtualSharedPartialSpilled(slot.line_vaddr, false);
             slot = VirtualCombineSlot();
         }
     }
@@ -12062,15 +12107,14 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
                      "I[%d] virtual full-line accounting underflow\n",
                      my_indirect_id);
             virtual_combine_words -= my_words_per_cl;
-            virtual_shared_partial_spill_lines.erase(slot.line_vaddr);
+            setVirtualSharedPartialSpilled(slot.line_vaddr, false);
             slot = VirtualCombineSlot();
             continue;
         }
         if (!flush_partial)
             continue;
         const bool shared_fragment_completion =
-            virtual_shared_result_payload &&
-            virtual_shared_partial_spill_lines.count(slot.line_vaddr) != 0;
+            virtualSharedPartialSpilled(slot.line_vaddr);
         panic_if(completeLineOnlyOperation() &&
                      !legalCompleteLineTail(slot.line_vaddr,
                                             slot.valid_words) &&
@@ -12108,7 +12152,7 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
                 virtual_combine_words -= words;
                 virtual_partial_word_writes++;
                 if (shared_fragment_completion)
-                    virtual_shared_partial_spill_lines.erase(slot.line_vaddr);
+                    setVirtualSharedPartialSpilled(slot.line_vaddr, false);
                 slot = VirtualCombineSlot();
             }
             continue;
@@ -12140,7 +12184,7 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
         }
         if (slot.valid_words == 0) {
             if (shared_fragment_completion)
-                virtual_shared_partial_spill_lines.erase(slot.line_vaddr);
+                setVirtualSharedPartialSpilled(slot.line_vaddr, false);
             slot = VirtualCombineSlot();
         }
         if (virtual_outstanding_writes == virtual_max_outstanding_writes_limit)

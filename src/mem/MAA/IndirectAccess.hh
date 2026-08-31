@@ -216,7 +216,7 @@ protected:
     int virtual_combine_victim = 0;
     int virtual_full_line_writes = 0;
     int virtual_partial_word_writes = 0;
-    std::set<Addr> virtual_shared_partial_spill_lines;
+    std::vector<bool> virtual_shared_partial_spill_lines;
     int virtual_max_combine_occupancy = 0;
     bool virtual_final_flush = false;
     int virtual_max_reserved_responses = 0;
@@ -952,6 +952,9 @@ protected:
     bool completeLinePayloadReady(int slot, const VirtualCombineSlot &line);
     void completeLinePayloadIssued(int slot, const VirtualCombineSlot &line);
     void recordCompleteLinePayloadBackpressure();
+    size_t virtualBackingLineIndex(Addr line_vaddr) const;
+    bool virtualSharedPartialSpilled(Addr line_vaddr) const;
+    void setVirtualSharedPartialSpilled(Addr line_vaddr, bool spilled);
     bool spillVirtualCombinePartialForSourceCredit();
     void drainVirtualCombiner(bool flush_partial);
     bool virtualCombinerEmpty() const;

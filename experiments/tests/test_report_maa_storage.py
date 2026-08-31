@@ -127,6 +127,18 @@ class StorageReportTest(unittest.TestCase):
                 4096,
             )
             self.assertEqual(
+                buffers[
+                    "shared_pressure_spill_bitmap_bits_per_indirect_unit"
+                ],
+                1024,
+            )
+            self.assertEqual(
+                buffers[
+                    "shared_pressure_spill_bitmap_bytes_per_indirect_unit"
+                ],
+                128,
+            )
+            self.assertEqual(
                 buffers["source_response_storage_mode"],
                 "shared-packed-word-pool",
             )

@@ -568,6 +568,14 @@ def main() -> int:
         active_page_counter_bits = page_counter_bits_per_unit
         active_claim_bits = native_claim_bits_per_unit
         active_completion_increment_bits = completion_increment_bits
+    shared_spill_bitmap_bits_per_unit = (
+        math.ceil(logical * args.word_bytes / 64)
+        if shared_result_payload and args.mechanism != "native"
+        else 0
+    )
+    shared_spill_bitmap_bytes_per_unit = math.ceil(
+        shared_spill_bitmap_bits_per_unit / 8
+    )
     virtual_control_bits_per_unit = (
         active_index_metadata_bits
         + active_response_metadata_bits
@@ -577,6 +585,7 @@ def main() -> int:
         + active_claim_bits
         + dense_backing_line_bits_per_unit
         + (1 if complete_line_only and args.mechanism != "native" else 0)
+        + shared_spill_bitmap_bits_per_unit
     )
     virtual_control_bytes_per_unit = math.ceil(
         virtual_control_bits_per_unit / 8
@@ -830,6 +839,12 @@ def main() -> int:
         },
         "virtual_data_buffers": {
             "shared_result_payload": shared_result_payload,
+            "shared_pressure_spill_bitmap_bits_per_indirect_unit": (
+                shared_spill_bitmap_bits_per_unit
+            ),
+            "shared_pressure_spill_bitmap_bytes_per_indirect_unit": (
+                shared_spill_bitmap_bytes_per_unit
+            ),
             "shared_result_payload_words_per_indirect_unit": (
                 effective_combine_words + response_pool
                 if shared_result_payload
