@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Service-owned, fail-closed v7 ingress-observer build attestation.
+"""Service-owned, fail-closed v10 ingress-observer build attestation.
 
 The wrapper preserves the two rejected build artifacts with hard links,
 invalidates only their canonical paths, and then requires SCons to compile the
@@ -7,6 +7,7 @@ MAA object and relink gem5.  It never overwrites an evidence directory.
 """
 
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -15,7 +16,7 @@ import re
 import subprocess
 import sys
 
-BUILD_UNIT = "umt-ingress-trace-build-v7-20260830.service"
+BUILD_UNIT = "umt-ingress-trace-build-v10-20260830.service"
 SOURCE_ROOT = "/data1/nier/worktrees/DX100-umt-trace-replay-20260830"
 SOURCE_COMMIT = "493c043ef0bc3dee0d91c5511371cedf77f15b5c"
 SOURCE_TREE = "9f7f0866005260f92bde81d516b520032535a92b"
@@ -40,13 +41,14 @@ REJECTED_SHA256 = {
     TARGET_RELATIVE: REJECTED_TARGET_SHA256,
     OBJECT_RELATIVE: REJECTED_OBJECT_SHA256,
 }
-BUILD_ARGV = (
+EXPECTED_BUILD_ARGV = (
     "/usr/bin/scons",
     "--ignore-style",
     TARGET_RELATIVE,
     "-j4",
-    "CPPDEFINES=LANL_MAA_UMT_INGRESS_TRACE_TEST",
+    "CCFLAGS_EXTRA=-DLANL_MAA_UMT_INGRESS_TRACE_TEST",
 )
+BUILD_ARGV = EXPECTED_BUILD_ARGV
 SOURCE_SHA256 = {
     "src/mem/LANLMAA/UmtOrderedWaveIngressTrace.hh": "31b46207da10d149c59fa5841085458810f037b6a59105ff5fee41b376c48189",
     "src/mem/LANLMAA/UmtOrderedWaveStreamState.hh": "d783907dd26ec671d6ba4a779719e19eadc75098ab25ba0fd3457cf68438b5c8",
@@ -55,8 +57,14 @@ SOURCE_SHA256 = {
     "tests/lanl_maa/umt_production_ingress_trace_test.cc": "1364d75af5b1305775b5d0dceeda5a1e1d4dd188d241b1b3db9667684cf3b436",
     "tests/lanl_maa/run_umt_production_ingress_trace_gate.py": "25ba79b5acc85b5a8cfb412ff71654b11b0bfa54c50d92a25794d7bf157ede89",
 }
-PROTOCOL = "LANL_MAA_UMT_INGRESS_BUILD_ATTESTATION_V7"
-SCHEMA = "lanl-maa-umt-ingress-build-attestation-v7"
+BUILD_SYSTEM_SHA256 = {
+    "SConstruct": "566ccd8621b168e9ef29c04f5bf5ba5414190afbb32bfcac4986843e3f476f19",
+    "site_scons/gem5_scons/defaults.py": (
+        "b10bb7b6aef8b6716a30af1560e8d8e55fae9cdb696cb4ccede7ba5d3a19ed25"
+    ),
+}
+PROTOCOL = "LANL_MAA_UMT_INGRESS_BUILD_ATTESTATION_V10"
+SCHEMA = "lanl-maa-umt-ingress-build-attestation-v10"
 CLEAN_METHOD = "hardlink-preserve-unlink-exact-two-v1"
 COMPILED_MARKERS = (b"UMT_INGRESS kind=", b"d64_hold cycle=")
 SAFE_CHILD_ENV = {
@@ -150,6 +158,76 @@ def git_output(source, *argv):
     ).strip()
 
 
+def validate_build_argv(argv):
+    argv = tuple(argv)
+    if (
+        argv != EXPECTED_BUILD_ARGV
+        or any("CPPDEFINES" in item for item in argv)
+        or argv[-1] != "CCFLAGS_EXTRA=-DLANL_MAA_UMT_INGRESS_TRACE_TEST"
+    ):
+        raise RuntimeError(
+            "instrumented SCons argv is not the exact -D contract"
+        )
+
+
+def validate_build_system_contract(source):
+    source = pathlib.Path(source).resolve()
+    for relative, digest in BUILD_SYSTEM_SHA256.items():
+        if sha256(source / relative) != digest:
+            raise RuntimeError("build-system source hash mismatch")
+
+    sconstruct = (source / "SConstruct").read_text(encoding="utf-8")
+    required_append = "env.Append(CCFLAGS='$CCFLAGS_EXTRA')"
+    if sconstruct.count(required_append) != 1:
+        raise RuntimeError("SConstruct lacks the exact CCFLAGS_EXTRA append")
+
+    defaults = ast.parse(
+        (source / "site_scons/gem5_scons/defaults.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    functions = [
+        node
+        for node in defaults.body
+        if isinstance(node, ast.FunctionDef) and node.name == "EnvDefaults"
+    ]
+    if len(functions) != 1:
+        raise RuntimeError("defaults.py lacks exact EnvDefaults declaration")
+    use_vars, overrides = None, None
+    for node in ast.walk(functions[0]):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if isinstance(target, ast.Name) and target.id == "use_vars":
+            use_vars = node.value
+        elif isinstance(target, ast.Name) and target.id == "var_overrides":
+            overrides = node.value
+    if not isinstance(use_vars, ast.Set) or not isinstance(
+        overrides, ast.Dict
+    ):
+        raise RuntimeError(
+            "defaults.py CCFLAGS_EXTRA declarations are malformed"
+        )
+    declared = [
+        item.value
+        for item in use_vars.elts
+        if isinstance(item, ast.Constant) and isinstance(item.value, str)
+    ]
+    values = {
+        key.value: value.value
+        for key, value in zip(overrides.keys, overrides.values)
+        if isinstance(key, ast.Constant)
+        and isinstance(key.value, str)
+        and isinstance(value, ast.Constant)
+    }
+    if (
+        declared.count("CCFLAGS_EXTRA") != 1
+        or values.get("CCFLAGS_EXTRA") != ""
+    ):
+        raise RuntimeError("defaults.py lacks declared/default CCFLAGS_EXTRA")
+    return dict(BUILD_SYSTEM_SHA256)
+
+
 def validate_source(source):
     if (
         source != pathlib.Path(SOURCE_ROOT)
@@ -163,6 +241,8 @@ def validate_source(source):
             raise RuntimeError(
                 "canonical instrumentation source hash mismatch"
             )
+    validate_build_argv(BUILD_ARGV)
+    validate_build_system_contract(source)
 
 
 def preserve_and_invalidate(source, evidence):
@@ -334,7 +414,7 @@ def main(argv=None):
     if (
         args.unit != BUILD_UNIT
         or source != pathlib.Path(SOURCE_ROOT)
-        or evidence.name != "ingress-build-evidence-v7"
+        or evidence.name != "ingress-build-evidence-v10"
         or not re.fullmatch(r"[0-9a-f]{32}", invocation)
     ):
         raise RuntimeError("wrapper identity/invocation binding is invalid")
@@ -405,6 +485,8 @@ def main(argv=None):
 
     manifest = evidence / "observer-input-source-sha256.json"
     no_clobber_json(manifest, inputs)
+    build_system_manifest = evidence / "build-system-source-sha256.json"
+    no_clobber_json(build_system_manifest, BUILD_SYSTEM_SHA256)
     literal_scan = evidence / "target-config-literal-scan.json"
     no_clobber_json(
         literal_scan,
@@ -473,6 +555,7 @@ def main(argv=None):
         "observer_report": "observer-report.json",
         "observer_transcript": "observer-transcript.txt",
         "source_manifest": "observer-input-source-sha256.json",
+        "build_system_manifest": "build-system-source-sha256.json",
         "target_config_literal_scan": "target-config-literal-scan.json",
         "rejected_gem5": PRESERVED_NAMES[TARGET_RELATIVE],
         "rejected_lanl_maa_o": PRESERVED_NAMES[OBJECT_RELATIVE],
@@ -501,6 +584,7 @@ def main(argv=None):
         "build_returncode": 0,
         "required_compile_and_relink_observed": True,
         "instrumentation_source_sha256": inputs,
+        "build_system_source_sha256": dict(BUILD_SYSTEM_SHA256),
         "build_artifacts": artifacts,
         "compiled_binary_markers": [x.decode() for x in COMPILED_MARKERS],
         "observer_gate": {

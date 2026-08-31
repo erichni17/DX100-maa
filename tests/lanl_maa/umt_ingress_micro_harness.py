@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed v9 integration of v7 build and arm evidence contracts.
+"""Fail-closed v10 integration of build and arm evidence contracts.
 
 This program only freezes, validates, and records launch commands.  It never
 builds, invokes systemd, or executes gem5.  A future launcher must first
@@ -7,6 +7,7 @@ produce the separately validated, canonical-source build proof.
 """
 
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -19,21 +20,21 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 TRACE_BUILD_DEFINE = "LANL_MAA_UMT_INGRESS_TRACE_TEST"
 LABEL_PREFIX = "lanl_maa_umt_ingress_micro"
-SCHEMA_BUILD_PROOF = "lanl-maa-umt-ingress-instrumented-gem5-build-proof-v7"
+SCHEMA_BUILD_PROOF = "lanl-maa-umt-ingress-instrumented-gem5-build-proof-v10"
 SCHEMA_SUBMISSION = "umt-lanl-maa-submission-v1"
-SCHEMA_CONTRACT = "lanl-maa-umt-ingress-contract-v9"
-SCHEMA_DISPATCH_PLAN = "lanl-maa-umt-ingress-dispatch-plan-v9"
-SCHEMA_ARM_REPORT = "lanl-maa-umt-ingress-arm-report-v9"
-CONTRACT_FILENAME = "ingress-contract-v9.json"
-DISPATCH_FILENAME = "ingress-dry-dispatch-v9.json"
+SCHEMA_CONTRACT = "lanl-maa-umt-ingress-contract-v10"
+SCHEMA_DISPATCH_PLAN = "lanl-maa-umt-ingress-dispatch-plan-v10"
+SCHEMA_ARM_REPORT = "lanl-maa-umt-ingress-arm-report-v10"
+CONTRACT_FILENAME = "ingress-contract-v10.json"
+DISPATCH_FILENAME = "ingress-dry-dispatch-v10.json"
 CANONICAL_SOURCE_ROOT = "/data1/nier/worktrees/DX100-umt-trace-replay-20260830"
 CANONICAL_SOURCE = pathlib.Path(CANONICAL_SOURCE_ROOT)
 CANONICAL_SOURCE_COMMIT = "493c043ef0bc3dee0d91c5511371cedf77f15b5c"
 CANONICAL_SOURCE_TREE = "9f7f0866005260f92bde81d516b520032535a92b"
 CANONICAL_GEM5 = CANONICAL_SOURCE / "build/X86_UMT_T32_W2/gem5.opt"
-BUILD_UNIT = "umt-ingress-trace-build-v7-20260830.service"
-BUILD_EVIDENCE_NAME = "ingress-build-evidence-v7"
-BUILD_PLAN_SCHEMA = "lanl-maa-umt-ingress-trace-build-plan-v7"
+BUILD_UNIT = "umt-ingress-trace-build-v10-20260830.service"
+BUILD_EVIDENCE_NAME = "ingress-build-evidence-v10"
+BUILD_PLAN_SCHEMA = "lanl-maa-umt-ingress-trace-build-plan-v10"
 BUILD_CLEAN_METHOD = "hardlink-preserve-unlink-exact-two-v1"
 BUILD_OBJECT = CANONICAL_SOURCE / "build/X86_UMT_T32_W2/mem/LANLMAA/lanl_maa.o"
 REJECTED_TARGET_SHA256 = (
@@ -42,13 +43,14 @@ REJECTED_TARGET_SHA256 = (
 REJECTED_OBJECT_SHA256 = (
     "bf06d900ea4385f69ae4045a4fbbc5ebdce34a5cb0d6b1ee937f5af59b164ed9"
 )
-BUILD_ARGV = (
+EXPECTED_BUILD_ARGV = (
     "/usr/bin/scons",
     "--ignore-style",
     "build/X86_UMT_T32_W2/gem5.opt",
     "-j4",
-    "CPPDEFINES=LANL_MAA_UMT_INGRESS_TRACE_TEST",
+    "CCFLAGS_EXTRA=-DLANL_MAA_UMT_INGRESS_TRACE_TEST",
 )
+BUILD_ARGV = EXPECTED_BUILD_ARGV
 SANITIZED_CHILD_ENV_NAMES = ["LANG", "LC_ALL", "PATH", "TZ"]
 # Fixture template only.  Live proofs may record nonempty inherited names, but
 # never their values; `validate_build_environment` checks that shape.
@@ -110,7 +112,7 @@ BUILD_JOURNAL_COMMAND = (
     "--no-pager",
     "--output=export",
 )
-JOURNAL_TERMINAL_PROTOCOL = "LANL_MAA_UMT_INGRESS_BUILD_ATTESTATION_V7"
+JOURNAL_TERMINAL_PROTOCOL = "LANL_MAA_UMT_INGRESS_BUILD_ATTESTATION_V10"
 DISPATCH_PROPERTIES = (
     ("CPUQuota", "400%"),
     ("CPUWeight", "1000"),
@@ -123,6 +125,15 @@ BUILD_DISPATCH_PROPERTIES = DISPATCH_PROPERTIES
 BUILD_CLEANUP_COMMANDS = (
     ("systemctl", "--user", "stop", BUILD_UNIT),
     ("systemctl", "--user", "reset-failed", BUILD_UNIT),
+)
+BUILD_CLEANUP_RECEIPT_SCHEMA = "lanl-maa-umt-ingress-build-cleanup-v10"
+BUILD_CLEANUP_SHOW_COMMAND = (
+    "systemctl",
+    "--user",
+    "show",
+    "--all",
+    "--property=LoadState,ActiveState,SubState",
+    BUILD_UNIT,
 )
 ADAPTIVE_NATIVE = pathlib.Path(
     "/data1/nier/dx100-runs/2026-08-09-umt-adaptive-streamed-successor-v2/"
@@ -149,6 +160,12 @@ INSTRUMENTATION_SOURCES = {
     "src/mem/LANLMAA/lanl_maa.cc": "dfeb641477a9bf8820b32e8b2231efdc7a968504f34da9b6146e7ed5834e714b",
     "tests/lanl_maa/umt_production_ingress_trace_test.cc": "1364d75af5b1305775b5d0dceeda5a1e1d4dd188d241b1b3db9667684cf3b436",
     "tests/lanl_maa/run_umt_production_ingress_trace_gate.py": "25ba79b5acc85b5a8cfb412ff71654b11b0bfa54c50d92a25794d7bf157ede89",
+}
+BUILD_SYSTEM_SOURCES = {
+    "SConstruct": "566ccd8621b168e9ef29c04f5bf5ba5414190afbb32bfcac4986843e3f476f19",
+    "site_scons/gem5_scons/defaults.py": (
+        "b10bb7b6aef8b6716a30af1560e8d8e55fae9cdb696cb4ccede7ba5d3a19ed25"
+    ),
 }
 ABI_CONTRACTS = {
     "D32": {"version": 4, "max_groups": 32},
@@ -424,6 +441,79 @@ def contract_harness_identity(contract):
     return identity
 
 
+def validate_build_argv(argv):
+    argv = tuple(argv)
+    if (
+        argv != EXPECTED_BUILD_ARGV
+        or any("CPPDEFINES" in item for item in argv)
+        or argv[-1] != "CCFLAGS_EXTRA=-DLANL_MAA_UMT_INGRESS_TRACE_TEST"
+    ):
+        raise RuntimeError(
+            "instrumented SCons argv is not the exact -D contract"
+        )
+
+
+def validate_build_system_contract(source, expected=None):
+    source = pathlib.Path(source).resolve()
+    hashes = {
+        relative: sha256(source / relative)
+        for relative in BUILD_SYSTEM_SOURCES
+    }
+    if hashes != BUILD_SYSTEM_SOURCES or (
+        expected is not None and expected != BUILD_SYSTEM_SOURCES
+    ):
+        raise RuntimeError("build-system source hash mismatch")
+
+    sconstruct = (source / "SConstruct").read_text(encoding="utf-8")
+    if sconstruct.count("env.Append(CCFLAGS='$CCFLAGS_EXTRA')") != 1:
+        raise RuntimeError("SConstruct lacks the exact CCFLAGS_EXTRA append")
+    defaults = ast.parse(
+        (source / "site_scons/gem5_scons/defaults.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    functions = [
+        node
+        for node in defaults.body
+        if isinstance(node, ast.FunctionDef) and node.name == "EnvDefaults"
+    ]
+    if len(functions) != 1:
+        raise RuntimeError("defaults.py lacks exact EnvDefaults declaration")
+    use_vars, overrides = None, None
+    for node in ast.walk(functions[0]):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if isinstance(target, ast.Name) and target.id == "use_vars":
+            use_vars = node.value
+        elif isinstance(target, ast.Name) and target.id == "var_overrides":
+            overrides = node.value
+    if not isinstance(use_vars, ast.Set) or not isinstance(
+        overrides, ast.Dict
+    ):
+        raise RuntimeError(
+            "defaults.py CCFLAGS_EXTRA declarations are malformed"
+        )
+    declared = [
+        item.value
+        for item in use_vars.elts
+        if isinstance(item, ast.Constant) and isinstance(item.value, str)
+    ]
+    values = {
+        key.value: value.value
+        for key, value in zip(overrides.keys, overrides.values)
+        if isinstance(key, ast.Constant)
+        and isinstance(key.value, str)
+        and isinstance(value, ast.Constant)
+    }
+    if (
+        declared.count("CCFLAGS_EXTRA") != 1
+        or values.get("CCFLAGS_EXTRA") != ""
+    ):
+        raise RuntimeError("defaults.py lacks declared/default CCFLAGS_EXTRA")
+    return hashes
+
+
 def artifact(value, label, required_path=None):
     exact_keys(value, ("path", "sha256"), label)
     path = verify_hash(value["path"], value["sha256"], label)
@@ -519,11 +609,11 @@ def validate_systemd_resource_mapping():
 
 
 def build_systemd_run_command(evidence_dir):
-    """Return the exact retained v7 build-unit launch; never execute it."""
+    """Return the exact retained v10 build-unit launch; never execute it."""
     validate_systemd_resource_mapping()
     evidence = pathlib.Path(evidence_dir).resolve()
     if evidence.name != BUILD_EVIDENCE_NAME:
-        raise RuntimeError("v7 build evidence identity is not canonical")
+        raise RuntimeError("v10 build evidence identity is not canonical")
     command = [
         "systemd-run",
         "--user",
@@ -537,16 +627,20 @@ def build_systemd_run_command(evidence_dir):
         *wrapper_command(evidence),
     ]
     if "--collect" in command:
-        raise RuntimeError("v7 build unit must remain for terminal capture")
+        raise RuntimeError("v10 build unit must remain for terminal capture")
     return command
 
 
 def dry_build_plan(campaign_root, output):
     """Freeze one no-clobber build command without invoking systemd/SCons."""
+    validate_build_argv(BUILD_ARGV)
+    validate_build_system_contract(CANONICAL_SOURCE)
     campaign = pathlib.Path(campaign_root).resolve()
     output = pathlib.Path(output).resolve()
-    if campaign.exists() or output != campaign / "build-plan-v7.json":
-        raise RuntimeError("v7 build plan requires a fresh canonical campaign")
+    if campaign.exists() or output != campaign / "build-plan-v10.json":
+        raise RuntimeError(
+            "v10 build plan requires a fresh canonical campaign"
+        )
     evidence = campaign / "identity" / BUILD_EVIDENCE_NAME
     value = {
         "schema": BUILD_PLAN_SCHEMA,
@@ -556,6 +650,7 @@ def dry_build_plan(campaign_root, output):
         "source_commit": CANONICAL_SOURCE_COMMIT,
         "source_tree": CANONICAL_SOURCE_TREE,
         "instrumentation_source_sha256": INSTRUMENTATION_SOURCES,
+        "build_system_source_sha256": BUILD_SYSTEM_SOURCES,
         "unit": BUILD_UNIT,
         "evidence_dir": str(evidence),
         "clean_method": BUILD_CLEAN_METHOD,
@@ -572,10 +667,82 @@ def dry_build_plan(campaign_root, output):
         "cleanup_commands_after_terminal_capture": [
             list(command) for command in BUILD_CLEANUP_COMMANDS
         ],
+        "cleanup_receipt": {
+            "schema": BUILD_CLEANUP_RECEIPT_SCHEMA,
+            "path": str(campaign / "identity/build-cleanup-v10.json"),
+            "show_command": list(BUILD_CLEANUP_SHOW_COMMAND),
+            "required_state": {
+                "LoadState": "not-found",
+                "ActiveState": "inactive",
+                "SubState": "dead",
+            },
+            "must_follow_terminal_proof": True,
+        },
         "claim_boundary": (
             "Dry plan only. Capture the terminal 17-property snapshot and "
             "journal before the explicit cleanup commands."
         ),
+    }
+    atomic_no_clobber(output, value)
+    return value
+
+
+def record_build_cleanup_receipt(
+    output,
+    terminal_proof,
+    terminal_proof_sha256,
+    cleanup_show,
+    cleanup_show_sha256,
+):
+    """Record post-proof unit cleanup; deliberately not part of proof input."""
+    terminal_proof = verify_hash(
+        terminal_proof, terminal_proof_sha256, "terminal build proof"
+    )
+    cleanup_show = verify_hash(
+        cleanup_show, cleanup_show_sha256, "post-cleanup systemd show"
+    )
+    fields = {}
+    for line in cleanup_show.read_text(
+        encoding="utf-8", errors="strict"
+    ).splitlines():
+        if not line or "=" not in line:
+            raise RuntimeError("post-cleanup systemd show is malformed")
+        key, value = line.split("=", 1)
+        if (
+            key not in ("LoadState", "ActiveState", "SubState")
+            or key in fields
+        ):
+            raise RuntimeError(
+                "post-cleanup systemd show has unexpected fields"
+            )
+        fields[key] = value
+    required = {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+    }
+    if fields != required:
+        raise RuntimeError(
+            "post-cleanup unit state is not not-found/inactive/dead"
+        )
+    value = {
+        "schema": BUILD_CLEANUP_RECEIPT_SCHEMA,
+        "status": "cleanup_observed_after_terminal_proof",
+        "unit": BUILD_UNIT,
+        "terminal_proof": {
+            "path": str(terminal_proof),
+            "sha256": terminal_proof_sha256,
+        },
+        "cleanup_commands": [
+            list(command) for command in BUILD_CLEANUP_COMMANDS
+        ],
+        "show_command": list(BUILD_CLEANUP_SHOW_COMMAND),
+        "cleanup_show": {
+            "path": str(cleanup_show),
+            "sha256": cleanup_show_sha256,
+        },
+        "observed_state": fields,
+        "claim_boundary": "Post-proof lifecycle evidence only; never a proof input.",
     }
     atomic_no_clobber(output, value)
     return value
@@ -694,7 +861,7 @@ def journal_marker(
     kind, *, invocation, pid, proc_start_ticks, target_sha256=None
 ):
     value = {
-        "schema": "lanl-maa-umt-ingress-build-attestation-v7",
+        "schema": "lanl-maa-umt-ingress-build-attestation-v10",
         "unit": BUILD_UNIT,
         "invocation_id": invocation,
         "wrapper_pid": pid,
@@ -801,6 +968,8 @@ def verify_canonical_source():
             digest,
             f"instrumentation source {relative}",
         )
+    validate_build_argv(BUILD_ARGV)
+    validate_build_system_contract(CANONICAL_SOURCE)
 
 
 def verify_native_identity():
@@ -884,6 +1053,7 @@ def read_build_proof(path, digest, gem5, gem5_digest):
             "build_environment",
             "trace_define",
             "instrumentation_source_sha256",
+            "build_system_source_sha256",
             "clean_method",
             "invalidated_artifacts",
             "target_paths_absent_after_clean",
@@ -902,7 +1072,7 @@ def read_build_proof(path, digest, gem5, gem5_digest):
     if (
         proof["schema"] != SCHEMA_BUILD_PROOF
         or proof["status"] != "passed"
-        or proof["producer"] != "systemd-build-proof-v7-service-wrapper"
+        or proof["producer"] != "systemd-build-proof-v10-service-wrapper"
     ):
         raise RuntimeError("instrumented-build proof schema/status mismatch")
     if (
@@ -925,12 +1095,17 @@ def read_build_proof(path, digest, gem5, gem5_digest):
         or tuple(proof["build_argv"]) != BUILD_ARGV
         or proof["trace_define"] != TRACE_BUILD_DEFINE
         or proof["instrumentation_source_sha256"] != INSTRUMENTATION_SOURCES
+        or proof["build_system_source_sha256"] != BUILD_SYSTEM_SOURCES
         or proof["clean_method"] != BUILD_CLEAN_METHOD
         or proof["target_paths_absent_after_clean"] is not True
         or proof["build_returncode"] != 0
         or proof["required_compile_and_relink_observed"] is not True
     ):
         raise RuntimeError("build proof command/clean/source binding mismatch")
+    validate_build_argv(proof["build_argv"])
+    validate_build_system_contract(
+        CANONICAL_SOURCE, proof["build_system_source_sha256"]
+    )
     validate_build_environment(proof["build_environment"], "build environment")
 
     artifacts = proof["build_artifacts"]
@@ -1052,6 +1227,7 @@ def read_build_proof(path, digest, gem5, gem5_digest):
             "build_returncode",
             "required_compile_and_relink_observed",
             "instrumentation_source_sha256",
+            "build_system_source_sha256",
             "build_artifacts",
             "compiled_binary_markers",
             "observer_gate",
@@ -1060,7 +1236,7 @@ def read_build_proof(path, digest, gem5, gem5_digest):
         "wrapper attestation",
     )
     if (
-        attest["schema"] != "lanl-maa-umt-ingress-build-attestation-v7"
+        attest["schema"] != "lanl-maa-umt-ingress-build-attestation-v10"
         or attest["unit"] != BUILD_UNIT
         or attest["invocation_id"] != invocation
         or attest["wrapper_pid"] != pid
@@ -1077,6 +1253,7 @@ def read_build_proof(path, digest, gem5, gem5_digest):
         or attest["build_returncode"] != 0
         or attest["required_compile_and_relink_observed"] is not True
         or attest["instrumentation_source_sha256"] != INSTRUMENTATION_SOURCES
+        or attest["build_system_source_sha256"] != BUILD_SYSTEM_SOURCES
         or attest["compiled_binary_markers"]
         != ["UMT_INGRESS kind=", "d64_hold cycle="]
     ):
@@ -1086,6 +1263,7 @@ def read_build_proof(path, digest, gem5, gem5_digest):
     validate_build_environment(
         attest["build_environment"], "wrapper environment"
     )
+    validate_build_argv(attest["build_argv"])
     if (
         attest["build_environment"] != proof["build_environment"]
         or attest["invalidated_artifacts"] != proof["invalidated_artifacts"]
@@ -1155,6 +1333,7 @@ def read_build_proof(path, digest, gem5, gem5_digest):
         "observer_report": "observer-report.json",
         "observer_transcript": "observer-transcript.txt",
         "source_manifest": "observer-input-source-sha256.json",
+        "build_system_manifest": "build-system-source-sha256.json",
         "target_config_literal_scan": "target-config-literal-scan.json",
         "rejected_gem5": "rejected-gem5.opt",
         "rejected_lanl_maa_o": "rejected-lanl_maa.o",
@@ -1162,6 +1341,15 @@ def read_build_proof(path, digest, gem5, gem5_digest):
     exact_keys(attest["evidence"], evidence_names, "wrapper evidence")
     for key, name in evidence_names.items():
         evidence_artifact(attest["evidence"][key], evidence_dir, name)
+    build_system_manifest = read_json(
+        evidence_artifact(
+            attest["evidence"]["build_system_manifest"],
+            evidence_dir,
+            "build-system-source-sha256.json",
+        )
+    )
+    if build_system_manifest != BUILD_SYSTEM_SOURCES:
+        raise RuntimeError("wrapper build-system manifest mismatch")
     if (
         proof["clean_stdout"] != attest["evidence"]["clean_stdout"]
         or proof["clean_stderr"] != attest["evidence"]["clean_stderr"]
@@ -1390,7 +1578,7 @@ def expected_contract(campaign, proof, proof_digest, gem5_digest):
         wrapper_command = arm_wrapper_argv(root, command)
         arms[name] = {
             "root": str(root),
-            "unit": f"umt-ingress-micro-v9-{name}-20260830.service",
+            "unit": f"umt-ingress-micro-v10-{name}-20260830.service",
             "gem5_argv": command,
             "gem5_argv_sha256": json_sha256(command),
             "wrapper": {
@@ -1438,6 +1626,10 @@ def expected_contract(campaign, proof, proof_digest, gem5_digest):
                 "review_status": (
                     "rejected_invalid_systemd_runtime_launch_property"
                 ),
+                "reuse": "forbidden",
+            },
+            "v9": {
+                "review_status": "rejected_inert_CPPDEFINES_build_argument",
                 "reuse": "forbidden",
             },
         },
@@ -1498,7 +1690,7 @@ def freeze_contract(args):
     )
     if campaign.exists() or output != campaign / CONTRACT_FILENAME:
         raise RuntimeError(
-            "v9 contract must be a fresh campaign/ingress-contract-v9.json"
+            "v10 contract must be a fresh campaign/ingress-contract-v10.json"
         )
     contract = expected_contract(
         campaign, proof, args.instrumented_build_proof_sha256, args.gem5_sha256
@@ -1523,7 +1715,7 @@ def dispatch_plan(contract_path, digest, campaign_root, output):
         or contract.get("schema") != SCHEMA_CONTRACT
     ):
         raise RuntimeError(
-            "v9 contract semantics, resources, units, roots, or self-hash "
+            "v10 contract semantics, resources, units, roots, or self-hash "
             "binding altered"
         )
     contract_harness_identity(contract)
@@ -1544,12 +1736,12 @@ def dispatch_plan(contract_path, digest, campaign_root, output):
     )
     if contract != expected:
         raise RuntimeError(
-            "v9 contract semantics, resources, units, roots, or self-hash "
+            "v10 contract semantics, resources, units, roots, or self-hash "
             "binding altered"
         )
     output = pathlib.Path(output).resolve()
     if output != campaign / "identity" / DISPATCH_FILENAME:
-        raise RuntimeError("v9 dry dispatch output identity mismatch")
+        raise RuntimeError("v10 dry dispatch output identity mismatch")
     commands = {
         name: systemd_arm_plan(arm) for name, arm in contract["arms"].items()
     }
@@ -2143,7 +2335,7 @@ def analyze_arm(root, case, contract_path, contract_digest):
         or set(contract) != CONTRACT_FIELDS
         or contract.get("schema") != SCHEMA_CONTRACT
     ):
-        raise RuntimeError("arm is not bound to an unaltered v9 contract")
+        raise RuntimeError("arm is not bound to an unaltered v10 contract")
     harness_identity = contract_harness_identity(contract)
     campaign = pathlib.Path(contract.get("campaign_root", ".")).resolve()
     gem5 = verify_hash(
@@ -2165,7 +2357,7 @@ def analyze_arm(root, case, contract_path, contract_digest):
             contract.get("gem5_sha256", ""),
         )
     ):
-        raise RuntimeError("arm is not bound to an unaltered v9 contract")
+        raise RuntimeError("arm is not bound to an unaltered v10 contract")
     root, arm = pathlib.Path(root).resolve(), contract["arms"].get(case, {})
     if str(root) != arm.get("root") or arm.get("gem5_argv") != case_command(
         CANONICAL_GEM5, root, case
