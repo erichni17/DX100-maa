@@ -200,21 +200,25 @@ def run_logged(
 def launch_with_selector(
     command: list[str], selector: Path, log: Path, environment: dict[str, str]
 ) -> tuple[subprocess.Popen[bytes], object, dict[str, object]]:
-    handle = selector.open("rb")
+    wrapped = [
+        "/bin/bash",
+        "-c",
+        'exec 198<"$1"; shift; exec "$@"',
+        "cg-selector",
+        str(selector),
+        *command,
+    ]
+    output = log.open("wb")
     process = subprocess.Popen(
-        command,
-        stdout=log.open("wb"),
+        wrapped,
+        stdout=output,
         stderr=subprocess.STDOUT,
         env=environment,
-        pass_fds=(handle.fileno(),),
-        preexec_fn=lambda: os.dup2(
-            handle.fileno(), SELECTOR_FD, inheritable=True
-        ),
     )
+    output.close()
     ticks = proc_start_ticks(process.pid)
     require(ticks is not None, f"process {process.pid} has no start identity")
     record = {"pid": process.pid, "start_ticks": ticks, "boot_id": boot_id()}
-    handle.close()
     return process, None, record
 
 
