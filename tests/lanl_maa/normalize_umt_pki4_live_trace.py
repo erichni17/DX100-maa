@@ -6,12 +6,13 @@ import hashlib
 import json
 import os
 import pathlib
+import stat
 import subprocess
 import tempfile
 
 import umt_ingress_micro_harness as ingress
 
-SCHEMA = "lanl-maa-umt-pki4-live-normalization-v1"
+SCHEMA = "lanl-maa-umt-pki4-live-normalization-v2"
 TRACE_PREFIX = "UMT_PKI4_CONFORMANCE "
 TRACE_SCHEMA = "lanl-maa-umt-pki4-conformance-v3"
 TOKEN_SENTINEL = (1 << 64) - 1
@@ -69,6 +70,8 @@ CLAIM_BOUNDARY = (
     "allowed until every complete epoch is streamed through and checked by "
     "the approved replay flow."
 )
+SNAPSHOT_NAME = "terminal-validated-gem5.stderr.snapshot"
+SNAPSHOT_CHUNK_BYTES = 1024 * 1024
 
 
 def sha256(path):
@@ -77,6 +80,258 @@ def sha256(path):
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def sha256_fd(descriptor):
+    """Hash a regular file without changing its shared file offset."""
+    digest = hashlib.sha256()
+    offset = 0
+    while True:
+        block = os.pread(descriptor, SNAPSHOT_CHUNK_BYTES, offset)
+        if not block:
+            break
+        digest.update(block)
+        offset += len(block)
+    return digest.hexdigest()
+
+
+def stable_identity(status):
+    return {
+        "device": status.st_dev,
+        "inode": status.st_ino,
+        "bytes": status.st_size,
+        "mtime_ns": status.st_mtime_ns,
+    }
+
+
+def open_regular_nofollow(path):
+    try:
+        descriptor = os.open(
+            pathlib.Path(path),
+            os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+        )
+    except OSError as error:
+        raise RuntimeError(
+            f"cannot open evidence input without following links: {path}"
+        ) from error
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        raise RuntimeError(f"evidence input is not a regular file: {path}")
+    return descriptor
+
+
+def terminal_trace_binding(root, arm_report):
+    """Read the analyzer-bound terminal receipt without following a link."""
+    terminal_path = (
+        pathlib.Path(root)
+        / ingress.ARM_EVIDENCE_DIRECTORY
+        / "arm-terminal.json"
+    )
+    expected_receipt_digest = arm_report["execution"]["terminal_sha256"]
+    descriptor = open_regular_nofollow(terminal_path)
+    try:
+        before = stable_identity(os.fstat(descriptor))
+        chunks = []
+        offset = 0
+        while True:
+            block = os.pread(descriptor, SNAPSHOT_CHUNK_BYTES, offset)
+            if not block:
+                break
+            chunks.append(block)
+            offset += len(block)
+        after = stable_identity(os.fstat(descriptor))
+    finally:
+        os.close(descriptor)
+    if before != after:
+        raise RuntimeError("arm terminal receipt changed while being read")
+    receipt_bytes = b"".join(chunks)
+    if hashlib.sha256(receipt_bytes).hexdigest() != expected_receipt_digest:
+        raise RuntimeError("arm terminal receipt no longer matches analyzer")
+    try:
+        terminal = json.loads(receipt_bytes)
+        output = terminal["outputs"]["gem5.stderr"]
+        report_digest = arm_report["raw_sha256"]["gem5.stderr"]
+    except (KeyError, TypeError, json.JSONDecodeError) as error:
+        raise RuntimeError(
+            "arm terminal trace binding is malformed"
+        ) from error
+    source = pathlib.Path(root) / "gem5.stderr"
+    if (
+        output.get("path") != str(source)
+        or output.get("sha256") != report_digest
+        or output.get("reservation_identity_match") is not True
+        or not isinstance(output.get("device"), int)
+        or not isinstance(output.get("inode"), int)
+    ):
+        raise RuntimeError("terminal and analyzer trace bindings disagree")
+    return {
+        "terminal_receipt": {
+            "path": str(terminal_path),
+            "sha256": expected_receipt_digest,
+        },
+        "source_path": str(source),
+        "device": output["device"],
+        "inode": output["inode"],
+        "sha256": report_digest,
+    }
+
+
+def _write_all(descriptor, data):
+    view = memoryview(data)
+    while view:
+        written = os.write(descriptor, view)
+        if written <= 0:
+            raise RuntimeError("snapshot write made no progress")
+        view = view[written:]
+
+
+def capture_terminal_validated_snapshot(root, arm_report, snapshot):
+    """Publish one immutable-by-contract copy of validated gem5.stderr."""
+    root = pathlib.Path(root).resolve()
+    source = root / "gem5.stderr"
+    snapshot = pathlib.Path(os.path.abspath(snapshot))
+    expected_snapshot = root / "analysis/pki4-canonical-v3" / SNAPSHOT_NAME
+    if snapshot != expected_snapshot:
+        raise RuntimeError("terminal trace snapshot path is not canonical")
+    binding = terminal_trace_binding(root, arm_report)
+    if str(source) != binding["source_path"]:
+        raise RuntimeError("snapshot source path is not analyzer-bound")
+    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    if snapshot.exists() or snapshot.is_symlink():
+        raise RuntimeError(
+            f"terminal trace snapshot already exists: {snapshot}"
+        )
+
+    source_descriptor = open_regular_nofollow(source)
+    temporary_descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{snapshot.name}.", suffix=".tmp", dir=snapshot.parent
+    )
+    temporary = pathlib.Path(temporary_name)
+    digest = hashlib.sha256()
+    published = False
+    try:
+        before_status = os.fstat(source_descriptor)
+        before = stable_identity(before_status)
+        if (
+            before["device"] != binding["device"]
+            or before["inode"] != binding["inode"]
+        ):
+            raise RuntimeError("snapshot source identity mismatches terminal")
+        while True:
+            block = os.read(source_descriptor, SNAPSHOT_CHUNK_BYTES)
+            if not block:
+                break
+            digest.update(block)
+            _write_all(temporary_descriptor, block)
+        os.fsync(temporary_descriptor)
+        after = stable_identity(os.fstat(source_descriptor))
+        try:
+            path_status = os.stat(source, follow_symlinks=False)
+        except FileNotFoundError as error:
+            raise RuntimeError("snapshot source path disappeared") from error
+        if (
+            before != after
+            or not stat.S_ISREG(path_status.st_mode)
+            or stable_identity(path_status) != after
+        ):
+            raise RuntimeError("snapshot source changed during capture")
+        observed_digest = digest.hexdigest()
+        if observed_digest != binding["sha256"]:
+            raise RuntimeError(
+                "snapshot source hash mismatches terminal/report"
+            )
+        temporary_status = os.fstat(temporary_descriptor)
+        if temporary_status.st_size != before["bytes"]:
+            raise RuntimeError("snapshot byte count mismatches source")
+        os.link(temporary, snapshot, follow_symlinks=False)
+        published = True
+        directory = os.open(snapshot.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    except FileExistsError as error:
+        raise RuntimeError(
+            f"terminal trace snapshot already exists: {snapshot}"
+        ) from error
+    finally:
+        os.close(source_descriptor)
+        os.close(temporary_descriptor)
+        temporary.unlink(missing_ok=True)
+
+    if not published:
+        raise RuntimeError("terminal trace snapshot was not published")
+    snapshot_descriptor = open_regular_nofollow(snapshot)
+    try:
+        snapshot_status = os.fstat(snapshot_descriptor)
+        snapshot_digest = sha256_fd(snapshot_descriptor)
+    finally:
+        os.close(snapshot_descriptor)
+    if (
+        snapshot_status.st_dev != temporary_status.st_dev
+        or snapshot_status.st_ino != temporary_status.st_ino
+        or snapshot_status.st_size != before["bytes"]
+        or snapshot_digest != binding["sha256"]
+    ):
+        raise RuntimeError("published terminal trace snapshot is invalid")
+    return {
+        "path": str(snapshot),
+        "sha256": snapshot_digest,
+        "device": snapshot_status.st_dev,
+        "inode": snapshot_status.st_ino,
+        "bytes": snapshot_status.st_size,
+        "mtime_ns": snapshot_status.st_mtime_ns,
+        "source": {
+            "path": str(source),
+            **before,
+            "terminal_sha256": binding["sha256"],
+            "analyzer_sha256": arm_report["raw_sha256"]["gem5.stderr"],
+            "terminal_receipt": binding["terminal_receipt"],
+        },
+    }
+
+
+def open_verified_snapshot(snapshot_evidence):
+    path = pathlib.Path(snapshot_evidence["path"])
+    descriptor = open_regular_nofollow(path)
+    observed = stable_identity(os.fstat(descriptor))
+    expected = {
+        key: snapshot_evidence[key]
+        for key in ("device", "inode", "bytes", "mtime_ns")
+    }
+    if (
+        observed != expected
+        or sha256_fd(descriptor) != snapshot_evidence["sha256"]
+    ):
+        os.close(descriptor)
+        raise RuntimeError("terminal trace snapshot changed after publication")
+    return descriptor
+
+
+def verify_snapshot_unchanged(snapshot_evidence, descriptor):
+    path = pathlib.Path(snapshot_evidence["path"])
+    expected = {
+        key: snapshot_evidence[key]
+        for key in ("device", "inode", "bytes", "mtime_ns")
+    }
+    observed = stable_identity(os.fstat(descriptor))
+    try:
+        path_status = os.stat(path, follow_symlinks=False)
+    except FileNotFoundError as error:
+        raise RuntimeError(
+            "terminal trace snapshot path disappeared"
+        ) from error
+    digest = sha256_fd(descriptor)
+    if (
+        observed != expected
+        or not stat.S_ISREG(path_status.st_mode)
+        or stable_identity(path_status) != expected
+        or digest != snapshot_evidence["sha256"]
+    ):
+        raise RuntimeError(
+            "terminal trace snapshot changed during normalization"
+        )
+    return digest
 
 
 def git_output(root, *argv):
@@ -166,7 +421,7 @@ def verify_provenance():
     }
 
 
-def run_normalizer(trace, manifest, output):
+def run_normalizer(trace, manifest, output, trace_descriptor=None):
     output = pathlib.Path(output)
     if output.exists() or output.is_symlink():
         raise RuntimeError(f"normalizer output already exists: {output}")
@@ -177,12 +432,19 @@ def run_normalizer(trace, manifest, output):
     os.close(descriptor)
     temporary = pathlib.Path(temporary_name)
     try:
+        trace_argument = (
+            f"/proc/self/fd/{trace_descriptor}"
+            if trace_descriptor is not None
+            else str(pathlib.Path(trace).resolve())
+        )
+        if trace_descriptor is not None:
+            os.lseek(trace_descriptor, 0, os.SEEK_SET)
         completed = subprocess.run(
             [
                 "/usr/bin/python3",
                 str(NORMALIZER),
                 "--trace",
-                str(pathlib.Path(trace).resolve()),
+                trace_argument,
                 "--source-hashes",
                 str(pathlib.Path(manifest).resolve()),
                 "--output",
@@ -194,6 +456,9 @@ def run_normalizer(trace, manifest, output):
             stderr=subprocess.PIPE,
             text=True,
             check=False,
+            pass_fds=(trace_descriptor,)
+            if trace_descriptor is not None
+            else (),
         )
         if completed.returncode:
             raise RuntimeError(
@@ -411,6 +676,7 @@ def normalize_arm(args):
     full = pathlib.Path(args.full_canonical_output).resolve()
     shards = pathlib.Path(args.shard_root).resolve()
     analysis_root = root / "analysis/pki4-canonical-v3"
+    snapshot = analysis_root / SNAPSHOT_NAME
     if (
         output != analysis_root / "normalization-summary-v1.json"
         or full != analysis_root / "full-canonical-v3.json"
@@ -426,46 +692,78 @@ def normalize_arm(args):
         root, args.case, args.contract, args.contract_sha256
     )
     provenance = verify_provenance()
+    snapshot_evidence = capture_terminal_validated_snapshot(
+        root, arm_report, snapshot
+    )
+    snapshot_descriptor = open_verified_snapshot(snapshot_evidence)
     manifest = analysis_root / "canonical-v3-source-hashes.json"
-    atomic_bytes(manifest, SOURCE_MANIFEST_BYTES)
-    full_result = run_normalizer(root / "gem5.stderr", manifest, full)
-    raw_digest = sha256(root / "gem5.stderr")
-    discovery = discover_epochs(root / "gem5.stderr")
-    selected = select_epochs(
-        discovery["complete_epochs"], raw_digest, args.hash_epoch_count
-    )
-    traces = extract_epoch_traces(
-        root / "gem5.stderr", discovery, selected, shards
-    )
-    shard_reports = []
-    for epoch in selected:
-        trace = traces[epoch]
-        canonical = trace.with_name("epoch-%06d.canonical-v3.json" % epoch)
-        normalized = run_normalizer(trace, manifest, canonical)
-        shard_reports.append(
-            {
-                "original_epoch": epoch,
-                "selection": (
-                    "first"
-                    if epoch == discovery["complete_epochs"][0]
-                    else "last"
-                    if epoch == discovery["complete_epochs"][-1]
-                    else "sha256_ranked"
-                ),
-                "identity_transform": {
-                    "descriptor_epoch": 1,
-                    "reset_sequence": "0_then_1_for_reset_pair",
-                    "request_id": "subtract_epoch_first_request_id_minus_one",
-                    "cycles_payloads_addresses_and_order": "unchanged",
-                },
-                "trace": {
-                    "path": str(trace),
-                    "sha256": sha256(trace),
-                    "bytes": trace.stat().st_size,
-                },
-                "canonical": normalized,
-            }
+    try:
+        atomic_bytes(manifest, SOURCE_MANIFEST_BYTES)
+        stable_trace_path = pathlib.Path(
+            f"/proc/self/fd/{snapshot_descriptor}"
         )
+        full_result = run_normalizer(
+            snapshot, manifest, full, snapshot_descriptor
+        )
+        full_result["input_terminal_snapshot"] = snapshot_evidence
+        raw_digest = snapshot_evidence["sha256"]
+        os.lseek(snapshot_descriptor, 0, os.SEEK_SET)
+        discovery = discover_epochs(stable_trace_path)
+        selected = select_epochs(
+            discovery["complete_epochs"], raw_digest, args.hash_epoch_count
+        )
+        os.lseek(snapshot_descriptor, 0, os.SEEK_SET)
+        traces = extract_epoch_traces(
+            stable_trace_path, discovery, selected, shards
+        )
+        shard_reports = []
+        for epoch in selected:
+            trace = traces[epoch]
+            canonical = trace.with_name("epoch-%06d.canonical-v3.json" % epoch)
+            normalized = run_normalizer(trace, manifest, canonical)
+            normalized["source_terminal_snapshot"] = snapshot_evidence
+            shard_reports.append(
+                {
+                    "original_epoch": epoch,
+                    "selection": (
+                        "first"
+                        if epoch == discovery["complete_epochs"][0]
+                        else "last"
+                        if epoch == discovery["complete_epochs"][-1]
+                        else "sha256_ranked"
+                    ),
+                    "identity_transform": {
+                        "descriptor_epoch": 1,
+                        "reset_sequence": "0_then_1_for_reset_pair",
+                        "request_id": (
+                            "subtract_epoch_first_request_id_minus_one"
+                        ),
+                        "cycles_payloads_addresses_and_order": "unchanged",
+                    },
+                    "source_terminal_snapshot": snapshot_evidence,
+                    "trace": {
+                        "path": str(trace),
+                        "sha256": sha256(trace),
+                        "bytes": trace.stat().st_size,
+                        "derived_from_terminal_snapshot_sha256": raw_digest,
+                    },
+                    "canonical": normalized,
+                }
+            )
+        post_normalization_digest = verify_snapshot_unchanged(
+            snapshot_evidence, snapshot_descriptor
+        )
+    finally:
+        os.close(snapshot_descriptor)
+    snapshot_evidence = {
+        **snapshot_evidence,
+        "post_normalization_sha256": post_normalization_digest,
+        "post_normalization_identity_match": True,
+    }
+    full_result["input_terminal_snapshot"] = snapshot_evidence
+    for shard in shard_reports:
+        shard["source_terminal_snapshot"] = snapshot_evidence
+        shard["canonical"]["source_terminal_snapshot"] = snapshot_evidence
     value = {
         "schema": SCHEMA,
         "status": "passed_full_raw_and_sampled_complete_epochs",
@@ -479,10 +777,13 @@ def normalize_arm(args):
             "raw_sha256": arm_report["raw_sha256"],
             "submission": arm_report["submission"],
         },
+        "terminal_validated_snapshot": snapshot_evidence,
         "raw_conformance_trace": {
             "path": str(root / "gem5.stderr"),
             "sha256": raw_digest,
-            "bytes": (root / "gem5.stderr").stat().st_size,
+            "bytes": snapshot_evidence["source"]["bytes"],
+            "normalization_input": str(snapshot),
+            "normalization_input_sha256": raw_digest,
         },
         "source_manifest": {
             "path": str(manifest),
@@ -508,10 +809,11 @@ def normalize_arm(args):
         },
         "canonical_shards": shard_reports,
         "bounded_memory_policy": (
-            "Raw hashing, epoch discovery, extraction, and summaries are "
-            "streaming. Only per-epoch metadata is retained. The pinned "
-            "committed canonical-v3 normalizer necessarily materializes its "
-            "validated model for the full Gate-A claim."
+            "Terminal-bound source capture, snapshot hashing, epoch "
+            "discovery, extraction, and summaries are streaming. Only "
+            "per-epoch metadata is retained. The pinned committed "
+            "canonical-v3 normalizer necessarily materializes its validated "
+            "model for the full Gate-A claim."
         ),
         "claim_boundary": CLAIM_BOUNDARY,
     }

@@ -1,5 +1,7 @@
+import hashlib
 import importlib.util
 import json
+import os
 import pathlib
 import sys
 import tempfile
@@ -38,7 +40,149 @@ def trace_text(records):
     return "\n".join(rows) + "\n"
 
 
+def snapshot_fixture(root, payload):
+    root = pathlib.Path(root).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    source = root / "gem5.stderr"
+    source.write_bytes(payload)
+    source_status = source.stat()
+    source_digest = hashlib.sha256(payload).hexdigest()
+    terminal_path = root / ingress.ARM_EVIDENCE_DIRECTORY / "arm-terminal.json"
+    terminal_path.parent.mkdir()
+    terminal = {
+        "outputs": {
+            "gem5.stderr": {
+                "path": str(source),
+                "device": source_status.st_dev,
+                "inode": source_status.st_ino,
+                "sha256": source_digest,
+                "reservation_identity_match": True,
+            }
+        }
+    }
+    terminal_path.write_text(
+        json.dumps(terminal, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    arm_report = {
+        "execution": {"terminal_sha256": live.sha256(terminal_path)},
+        "raw_sha256": {"gem5.stderr": source_digest},
+    }
+    snapshot = root / "analysis/pki4-canonical-v3" / live.SNAPSHOT_NAME
+    return source, snapshot, arm_report
+
+
 class Pki4LiveTraceHarnessTest(unittest.TestCase):
+    def test_snapshot_rejects_mutation_during_streamed_copy(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            payload = b"a" * (live.SNAPSHOT_CHUNK_BYTES * 2 + 17)
+            source, snapshot, report = snapshot_fixture(temporary, payload)
+            source_inode = source.stat().st_ino
+            original_read = live.os.read
+            changed = False
+
+            def mutate_after_first_source_read(descriptor, count):
+                nonlocal changed
+                block = original_read(descriptor, count)
+                if (
+                    block
+                    and not changed
+                    and os.fstat(descriptor).st_ino == source_inode
+                ):
+                    changed = True
+                    with source.open("r+b") as stream:
+                        stream.seek(0)
+                        stream.write(b"z")
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                return block
+
+            with mock.patch.object(
+                live.os, "read", side_effect=mutate_after_first_source_read
+            ):
+                with self.assertRaisesRegex(RuntimeError, "changed|hash"):
+                    live.capture_terminal_validated_snapshot(
+                        temporary, report, snapshot
+                    )
+            self.assertFalse(snapshot.exists())
+
+    def test_snapshot_rejects_replaced_path_and_symlink(self):
+        for kind in ("replacement", "symlink"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as tmp:
+                payload = b"terminal validated bytes\n"
+                source, snapshot, report = snapshot_fixture(tmp, payload)
+                replacement = pathlib.Path(tmp) / "replacement"
+                replacement.write_bytes(payload)
+                source.unlink()
+                if kind == "replacement":
+                    os.replace(replacement, source)
+                else:
+                    source.symlink_to(replacement)
+                with self.assertRaisesRegex(
+                    RuntimeError, "identity|without following"
+                ):
+                    live.capture_terminal_validated_snapshot(
+                        tmp, report, snapshot
+                    )
+                self.assertFalse(snapshot.exists())
+
+    def test_snapshot_rejects_terminal_source_hash_mismatch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source, snapshot, report = snapshot_fixture(
+                temporary, b"terminal validated bytes\n"
+            )
+            with source.open("r+b") as stream:
+                stream.seek(0)
+                stream.write(b"X")
+                stream.flush()
+                os.fsync(stream.fileno())
+            with self.assertRaisesRegex(RuntimeError, "hash"):
+                live.capture_terminal_validated_snapshot(
+                    temporary, report, snapshot
+                )
+            self.assertFalse(snapshot.exists())
+
+    def test_snapshot_post_normalization_mutation_fails(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source, snapshot, report = snapshot_fixture(
+                temporary, b"terminal validated bytes\n"
+            )
+            evidence = live.capture_terminal_validated_snapshot(
+                temporary, report, snapshot
+            )
+            descriptor = live.open_verified_snapshot(evidence)
+            try:
+                with snapshot.open("r+b") as stream:
+                    stream.seek(0)
+                    stream.write(b"X")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                with self.assertRaisesRegex(RuntimeError, "changed"):
+                    live.verify_snapshot_unchanged(evidence, descriptor)
+            finally:
+                os.close(descriptor)
+
+    def test_snapshot_publication_is_bound_and_no_clobber(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source, snapshot, report = snapshot_fixture(
+                temporary, b"terminal validated bytes\n"
+            )
+            evidence = live.capture_terminal_validated_snapshot(
+                temporary, report, snapshot
+            )
+            self.assertEqual(
+                evidence["sha256"], report["raw_sha256"]["gem5.stderr"]
+            )
+            self.assertEqual(
+                evidence["source"]["device"], source.stat().st_dev
+            )
+            self.assertEqual(evidence["source"]["inode"], source.stat().st_ino)
+            frozen = snapshot.read_bytes()
+            with self.assertRaisesRegex(RuntimeError, "already exists"):
+                live.capture_terminal_validated_snapshot(
+                    temporary, report, snapshot
+                )
+            self.assertEqual(snapshot.read_bytes(), frozen)
+
     def test_existing_contract_adds_d64_g31_with_exact_guest_mode(self):
         self.assertEqual(
             ingress.BUILD_PROOF_PATH,

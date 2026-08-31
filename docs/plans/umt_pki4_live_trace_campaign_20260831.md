@@ -30,6 +30,20 @@ and final work counters pass before normalization begins. It then runs the
 committed source-45e8e canonical-v3 normalizer against its exact generated
 source manifest, temporal plan, and review.
 
+The action never normalizes the mutable raw pathname directly. It obtains the
+expected `gem5.stderr` digest and device/inode from the analyzer-bound terminal
+receipt, opens that source read-only with `O_NOFOLLOW`, and streams it into an
+exclusive temporary file while hashing. Source device, inode, byte size, and
+nanosecond mtime must be identical before and after the copy and must still
+identify the raw pathname; the streamed digest must equal both analyzer and
+terminal hashes. After fsync, a hard-link publication creates the deterministic
+snapshot name with no-clobber semantics and fsyncs its directory. The action
+holds an independently verified read-only snapshot descriptor while the full
+normalizer, discovery, and extraction consume that inode, then rechecks its
+path identity and digest after every canonical and shard normalization is
+complete. The summary, full-canonical evidence block, and every shard bind the
+snapshot path/hash and its terminal-validated source identity.
+
 ```sh
 python3 tests/lanl_maa/normalize_umt_pki4_live_trace.py \
   --root ARM_ROOT --case d64-g31 \
@@ -40,7 +54,7 @@ python3 tests/lanl_maa/normalize_umt_pki4_live_trace.py \
   --shard-root ARM_ROOT/analysis/pki4-canonical-v3/sampled-complete-epochs
 ```
 
-The action streams raw hashing, record/epoch/issue/callback/event counts,
+The action streams snapshot hashing, record/epoch/issue/callback/event counts,
 token-mask ranges, and D64 expected-count distributions. D64 summaries
 separately identify misaligned and short-tail release distributions. The
 committed normalizer itself materializes its validated model; the machine must
