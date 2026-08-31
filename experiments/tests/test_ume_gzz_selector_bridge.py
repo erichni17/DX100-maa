@@ -31,6 +31,13 @@ class UmeGzzSelectorBridgeTest(unittest.TestCase):
             source.index("m5_checkpoint(0, 0)"),
         )
 
+    def test_recovery_freezes_candidate_simulator(self) -> None:
+        source = (
+            runner.ROOT / "experiments/scripts/run_ume_gzz_selector_bridge.py"
+        ).read_text()
+        self.assertIn("base.copy_stable(gem5, frozen_gem5)", source)
+        self.assertIn("frozen_gem5,", source)
+
     def test_authority_native_controls_are_exact(self) -> None:
         authority = runner.verify_authority()
         self.assertEqual(

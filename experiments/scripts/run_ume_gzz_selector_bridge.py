@@ -289,6 +289,14 @@ def run(root: Path, gem5: Path) -> dict[str, Any]:
     require(gem5.is_file(), f"missing simulator: {gem5}")
     simulator_sha256 = sha256(gem5)
     root.mkdir(parents=True)
+    inputs = root / "inputs"
+    inputs.mkdir()
+    frozen_gem5 = inputs / "gem5.opt"
+    require(
+        base.copy_stable(gem5, frozen_gem5) == simulator_sha256,
+        "candidate simulator changed while freezing",
+    )
+    frozen_gem5.chmod(0o555)
     (root / "authority.json").write_text(
         json.dumps(
             {
@@ -296,13 +304,13 @@ def run(root: Path, gem5: Path) -> dict[str, Any]:
                 "manifest_sha256": sha256(AUTHORITY / "manifest.json"),
                 "native_control_gem5_sha256": authority["manifest"]["gem5_sha256"],
                 "candidate_gem5_sha256": simulator_sha256,
+                "candidate_gem5": str(frozen_gem5),
             },
             indent=2,
             sort_keys=True,
         )
         + "\n"
     )
-    (root / "inputs").mkdir()
     guest, build_commands = build_hybrid_guest(root)
     selectors = {}
     for arm in RECOVERY_ARMS:
@@ -338,7 +346,7 @@ def run(root: Path, gem5: Path) -> dict[str, Any]:
                 arm,
                 guest,
                 selectors[arm.name],
-                gem5,
+                frozen_gem5,
                 environment,
             )
             for arm in RECOVERY_ARMS
