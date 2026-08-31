@@ -372,7 +372,9 @@ def copy_stable(source_path: Path, destination: Path) -> str:
     return frozen
 
 
-def build_guests(root: Path) -> tuple[dict[str, Path], list[list[str]]]:
+def build_guests(
+    root: Path, common_defines: tuple[str, ...] = ()
+) -> tuple[dict[str, Path], list[list[str]]]:
     build = root / "build"
     build.mkdir()
     m5op_source = ROOT / "util/m5/build/x86/abi/x86/m5op.S"
@@ -397,6 +399,7 @@ def build_guests(root: Path) -> tuple[dict[str, Path], list[list[str]]]:
         "-DUME_GRADZATZ_OUTPUT_FINGERPRINT",
         f"-DUME_GRADZATZ_EXPECTED_N={ELEMENTS}",
         f"-DUME_GRADZATZ_EXPECTED_HASH={EXPECTED_OUTPUT_HASH}ULL",
+        *common_defines,
     ]
     m5op = build / "m5op.o"
     commands = [

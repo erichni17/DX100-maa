@@ -132,6 +132,9 @@ int tiles3[NUM_CORES], tiles4[NUM_CORES];
 int regs0[NUM_CORES], regs1[NUM_CORES], regs2[NUM_CORES];
 #ifdef MAA_GENERAL_VIRTUAL_CONSUMER
 int page_regs0[NUM_CORES], page_regs1[NUM_CORES], page_regs2[NUM_CORES];
+#endif
+#if defined(MAA_GENERAL_VIRTUAL_CONSUMER) || \
+    defined(UME_GZZ_MAA_PAGE_CONSUMER)
 int page_ratio_tiles[NUM_CORES], page_product_tiles[NUM_CORES];
 #endif
 #ifdef MAA_VIRTUAL_GATHER
@@ -278,7 +281,7 @@ void gradzatz_MAA() {
         // }
 
         // Accumulate the zone-centered gradient
-#ifndef MAA_GENERAL_VIRTUAL_CONSUMER
+#if !defined(MAA_GENERAL_VIRTUAL_CONSUMER)
         int *tileCondPtr = get_cacheable_tile_pointer<int>(tileCond);
         DATATYPE *tile5Ptr = get_cacheable_tile_pointer<DATATYPE>(tile5);
         DATATYPE *tile2Ptr = get_cacheable_tile_pointer<DATATYPE>(tile2);
@@ -456,6 +459,25 @@ void gradzatz_MAA() {
             }
 #endif
 
+#ifdef UME_GZZ_MAA_PAGE_CONSUMER
+            maa_const<int>(c, reg0);
+            maa_const<int>(c + gather_size, reg1);
+            maa_stream_load<DATATYPE>(
+                corner_volume.data(), reg0, reg1, reg2,
+                page_product_tiles[omp_thread_id]);
+            maa_alu_vector<DATATYPE>(
+                page_product_tiles[omp_thread_id], tile2,
+                page_ratio_tiles[omp_thread_id], Operation_t::DIV_OP,
+                tileCond);
+            maa_alu_vector<DATATYPE>(
+                tile0, page_ratio_tiles[omp_thread_id],
+                page_product_tiles[omp_thread_id], Operation_t::MUL_OP,
+                tileCond);
+            maa_indirect_rmw_vector<DATATYPE>(
+                zone_gradient.data(), tile3,
+                page_product_tiles[omp_thread_id], Operation_t::ADD_OP,
+                tileCond);
+#else
 #pragma omp simd simdlen(4)
             for (int i = 0; i < gather_size; i++) {
                 if (tileCondPtr[i] == 1) {
@@ -467,8 +489,10 @@ void gradzatz_MAA() {
             // Step8: Accumulate zone_gradient
             maa_indirect_rmw_vector<DATATYPE>(zone_gradient.data(), tile3, tile5, Operation_t::ADD_OP, tileCond);
 #endif
+#endif
         }
-#ifdef MAA_GENERAL_VIRTUAL_CONSUMER
+#if defined(MAA_GENERAL_VIRTUAL_CONSUMER) || \
+    defined(UME_GZZ_MAA_PAGE_CONSUMER)
         wait_ready(page_product_tiles[omp_thread_id]);
 #else
         wait_ready(tile5);
@@ -539,7 +563,8 @@ void gradzatz_MAA() {
               << " elements=" << zone_volume.size() << std::endl;
 #endif
 #endif
-#ifdef MAA_GENERAL_VIRTUAL_CONSUMER
+#if defined(MAA_GENERAL_VIRTUAL_CONSUMER) || \
+    defined(UME_GZZ_MAA_PAGE_CONSUMER)
     std::cout << "UME_GZZ_PAGE_CONSUMER mode=maa_div_mul"
               << " physical_tiles_per_core=7"
               << " cpu_spd_payload_reads=0" << std::endl;
@@ -751,6 +776,9 @@ int main(int argc, char *argv[]) {
             page_regs0[thread_id] = get_new_reg<int>(0);
             page_regs1[thread_id] = get_new_reg<int>(MAA_CONSUMER_TILE_SIZE);
             page_regs2[thread_id] = get_new_reg<int>(1);
+#endif
+#if defined(MAA_GENERAL_VIRTUAL_CONSUMER) || \
+    defined(UME_GZZ_MAA_PAGE_CONSUMER)
             page_ratio_tiles[thread_id] = get_new_tile<DATATYPE>();
             page_product_tiles[thread_id] = get_new_tile<DATATYPE>();
 #endif
