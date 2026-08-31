@@ -343,6 +343,12 @@ def addNoISAOptions(parser):
         help="Resident virtual gather data words (0 reserves every line slot fully)",
     )
     parser.add_argument(
+        "--maa_virtual_shared_result_payload",
+        default=False,
+        action="store_true",
+        help="Share bounded response and combiner word capacity",
+    )
+    parser.add_argument(
         "--maa_virtual_combine_ways",
         type=int,
         default=0,

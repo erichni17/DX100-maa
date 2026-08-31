@@ -437,6 +437,7 @@ public:
     unsigned int num_initial_row_table_slices;
     unsigned int virtual_combine_slots;
     unsigned int virtual_combine_words;
+    bool virtual_shared_result_payload;
     unsigned int virtual_combine_ways;
     unsigned int virtual_combine_set_xor_shift;
     unsigned int virtual_combine_victim_policy;

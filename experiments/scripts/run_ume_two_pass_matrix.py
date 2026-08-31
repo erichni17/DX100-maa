@@ -573,6 +573,7 @@ def common_restore_command(
     insertion = command.index("--cmd")
     strict = [
         "--maa_virtual_strict_two_phase",
+        "--maa_virtual_shared_result_payload",
         "--maa_virtual_complete_line_only",
         "--maa_virtual_page_ordered_combiner_drain",
         "--maa_virtual_combine_lookup_latency_cycles=3",

@@ -161,6 +161,11 @@ protected:
     };
     std::vector<VirtualCombineSlot> virtual_combine_slots;
     VirtualCombinePayloadStore virtual_combine_payload;
+    bool virtual_shared_result_payload = false;
+    int virtual_shared_result_payload_limit = 0;
+    uint64_t virtual_shared_payload_transfers = 0;
+    uint64_t virtual_shared_payload_rollbacks = 0;
+    int virtual_shared_payload_high_water = 0;
     VirtualCombinerPageOrder virtual_combine_page_ready;
     int virtual_combine_words_configured = 0;
     int virtual_combine_ways = 0;
@@ -309,6 +314,7 @@ public:
                   int _num_initial_row_table_slice,
                   int _virtual_combine_slots,
                   int _virtual_combine_words,
+                  bool _virtual_shared_result_payload,
                   int _virtual_combine_ways,
                   int _virtual_combine_set_xor_shift,
                   int _virtual_combine_victim_policy,

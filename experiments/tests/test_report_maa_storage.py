@@ -28,6 +28,7 @@ class StorageReportTest(unittest.TestCase):
         combine_words: int = 4096,
         dense_write_allocate: bool = False,
         complete_line_only: bool = False,
+        shared_result_payload: bool = False,
     ) -> Path:
         values = {
             "num_cores": "4",
@@ -42,6 +43,9 @@ class StorageReportTest(unittest.TestCase):
             "num_row_table_entries_per_subslice_row": "8",
             "virtual_combine_slots": "384",
             "virtual_combine_words": str(combine_words),
+            "virtual_shared_result_payload": str(
+                shared_result_payload
+            ).lower(),
             "virtual_combine_ways": "4",
             "virtual_response_slots": "128",
             "virtual_response_words": str(response_words),
@@ -50,12 +54,8 @@ class StorageReportTest(unittest.TestCase):
             "virtual_index_issue_lines_per_cycle": str(index_issue_width),
             "virtual_max_outstanding_writes": str(outstanding_writes),
             "virtual_native_issue_order": str(native_order).lower(),
-            "virtual_dense_write_allocate": str(
-                dense_write_allocate
-            ).lower(),
-            "virtual_complete_line_only": str(
-                complete_line_only
-            ).lower(),
+            "virtual_dense_write_allocate": str(dense_write_allocate).lower(),
+            "virtual_complete_line_only": str(complete_line_only).lower(),
             "direct_retirement_line_handoff": (
                 str(direct_retirement_line_handoff).lower()
             ),
@@ -101,6 +101,42 @@ class StorageReportTest(unittest.TestCase):
             check=False,
         )
         return result, output
+
+    def test_shared_result_payload_is_charged_once(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.write_config(
+                root,
+                4096,
+                False,
+                combine_words=3072,
+                response_pool=1024,
+                complete_line_only=True,
+                shared_result_payload=True,
+            )
+            result, output = self.run_report(
+                root, config, "generic-virtual", word_bytes=4
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            buffers = json.loads((output / "maa_storage.json").read_text())[
+                "virtual_data_buffers"
+            ]
+            self.assertTrue(buffers["shared_result_payload"])
+            self.assertEqual(
+                buffers["shared_result_payload_words_per_indirect_unit"],
+                4096,
+            )
+            self.assertEqual(
+                buffers["source_response_storage_mode"],
+                "shared-packed-word-pool",
+            )
+            self.assertEqual(
+                buffers["active_source_response_bytes_per_indirect_unit"]
+                + buffers[
+                    "active_destination_combiner_bytes_per_indirect_unit"
+                ],
+                4096 * 4,
+            )
 
     def test_direct4_bounded_control_ledger(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -391,9 +427,7 @@ class StorageReportTest(unittest.TestCase):
     def test_derived_combiner_pool_counts_global_victim_pointer(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            config = self.write_config(
-                root, 4096, True, combine_words=0
-            )
+            config = self.write_config(root, 4096, True, combine_words=0)
             result, output = self.run_report(root, config, "direct-index")
             self.assertEqual(result.returncode, 0, result.stderr)
             report = json.loads((output / "maa_storage.json").read_text())
@@ -430,9 +464,7 @@ class StorageReportTest(unittest.TestCase):
             dense = root / "dense"
             baseline.mkdir()
             dense.mkdir()
-            baseline_config = self.write_config(
-                baseline, 4096, True
-            )
+            baseline_config = self.write_config(baseline, 4096, True)
             dense_config = self.write_config(
                 dense, 4096, True, dense_write_allocate=True
             )

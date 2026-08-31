@@ -98,6 +98,11 @@ def _get_maa_opts(options):
             options, "maa_virtual_combine_words"
         )
 
+    if hasattr(options, "maa_virtual_shared_result_payload"):
+        opts["virtual_shared_result_payload"] = getattr(
+            options, "maa_virtual_shared_result_payload"
+        )
+
     if hasattr(options, "maa_virtual_combine_ways"):
         opts["virtual_combine_ways"] = getattr(
             options, "maa_virtual_combine_ways"

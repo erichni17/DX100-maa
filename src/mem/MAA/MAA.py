@@ -88,6 +88,10 @@ class MAA(ClockedObject):
         0,
         "Resident virtual gather data words (0 reserves every line slot fully)",
     )
+    virtual_shared_result_payload = Param.Bool(
+        False,
+        "Share one bounded word pool between source responses and destination combining",
+    )
     virtual_combine_ways = Param.Unsigned(
         0,
         "Virtual destination-combiner associativity (0 is fully associative)",

@@ -253,6 +253,9 @@ def main() -> int:
     response_slots = integer(maa, "virtual_response_slots")
     response_words = integer(maa, "virtual_response_words")
     response_pool = integer(maa, "virtual_response_word_pool")
+    shared_result_payload = maa.getboolean(
+        "virtual_shared_result_payload", fallback=False
+    )
     index_lines = integer(maa, "virtual_index_buffer_lines")
     try:
         index_issue_lines_per_cycle = int(
@@ -584,7 +587,11 @@ def main() -> int:
 
     combine_payload_per_unit = effective_combine_words * args.word_bytes
     if response_pool:
-        response_storage_mode = "packed-word-pool"
+        response_storage_mode = (
+            "shared-packed-word-pool"
+            if shared_result_payload
+            else "packed-word-pool"
+        )
         response_payload_per_unit = response_pool * args.word_bytes
     elif response_words:
         response_storage_mode = "packed-words-per-slot"
@@ -822,6 +829,12 @@ def main() -> int:
             ),
         },
         "virtual_data_buffers": {
+            "shared_result_payload": shared_result_payload,
+            "shared_result_payload_words_per_indirect_unit": (
+                effective_combine_words + response_pool
+                if shared_result_payload
+                else 0
+            ),
             "source_response_storage_mode": response_storage_mode,
             "source_response_slots_per_indirect_unit": response_slots,
             "unpacked_line_bytes_per_slot": (

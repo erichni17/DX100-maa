@@ -153,6 +153,7 @@ MAA::MAA(const MAAParams &p)
       num_initial_row_table_slices(p.num_initial_row_table_slices),
       virtual_combine_slots(p.virtual_combine_slots),
       virtual_combine_words(p.virtual_combine_words),
+      virtual_shared_result_payload(p.virtual_shared_result_payload),
       virtual_combine_ways(p.virtual_combine_ways),
       virtual_combine_set_xor_shift(p.virtual_combine_set_xor_shift),
       virtual_combine_victim_policy(p.virtual_combine_victim_policy),
@@ -446,6 +447,13 @@ MAA::MAA(const MAAParams &p)
                  virtual_combine_words, virtual_response_word_pool,
                  physical_tile_elements);
     }
+    panic_if(virtual_shared_result_payload &&
+                 (virtual_combine_words == 0 ||
+                  virtual_response_word_pool == 0 ||
+                  virtual_combine_words + virtual_response_word_pool >
+                      physical_tile_elements),
+             "Shared virtual-result payload requires explicit nonzero "
+             "combiner/response capacities within physical storage\n");
     if (virtual_strict_two_phase) {
         panic_if(num_tile_elements !=
                          maa::StrictTwoPhaseReference::LogicalElements ||
@@ -806,6 +814,7 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
                                         num_initial_row_table_slices,
                                         virtual_combine_slots,
                                         virtual_combine_words,
+                                        virtual_shared_result_payload,
                                         virtual_combine_ways,
                                         virtual_combine_set_xor_shift,
                                         virtual_combine_victim_policy,
