@@ -20,6 +20,15 @@ class InlineOperandRetirementContract(unittest.TestCase):
         self.assertIn("SSSP_INLINE_OPERAND_RETIREMENT", self.source)
         self.assertIn("SSSP_OLD_RESULT_HYBRID_TERMINAL", self.source)
         self.assertIn("SSSP_INLINE_OPERAND_RETIREMENT_TERMINAL", self.source)
+        self.assertIn("AcquireSsspInlineWindow(tid)", self.source)
+        self.assertIn("ReleaseSsspInlineWindow(tid)", self.source)
+        self.assertLess(
+            self.source.index("AcquireSsspInlineWindow(tid)"),
+            self.source.index(
+                "#pragma omp critical",
+                self.source.index("AcquireSsspInlineWindow(tid)"),
+            ),
+        )
 
     def test_paired_pages_and_no_completion_tile(self):
         self.assertIn("encodeAdmitPair", self.api)

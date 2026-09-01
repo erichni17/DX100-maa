@@ -137,6 +137,31 @@ static uint64_t sssp_inline_logical_operations[NUM_CORES] = {};
 static uint64_t sssp_inline_paired_admissions[NUM_CORES] = {};
 static uint64_t sssp_inline_retirement_records[NUM_CORES] = {};
 static uint64_t sssp_inline_retirement_acked_lines[NUM_CORES] = {};
+static atomic<int> sssp_inline_window_owner{-1};
+
+static void
+AcquireSsspInlineWindow(int tid)
+{
+    for (;;) {
+        int owner = sssp_inline_window_owner.load(memory_order_acquire);
+        if (owner == tid)
+            return;
+        if (owner == -1 && sssp_inline_window_owner.compare_exchange_weak(
+                               owner, tid, memory_order_acq_rel,
+                               memory_order_acquire))
+            return;
+        __asm__ __volatile__("pause" ::: "memory");
+    }
+}
+
+static void
+ReleaseSsspInlineWindow(int tid)
+{
+    int owner = tid;
+    if (!sssp_inline_window_owner.compare_exchange_strong(
+            owner, -1, memory_order_release, memory_order_relaxed))
+        abort();
+}
 #endif
 
 static uint64_t sssp_hybrid_eligible_windows[NUM_CORES] = {};
@@ -1001,7 +1026,15 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                         // load w
                         maa_indirect_load<WeightT>(((WeightT *)g.out_neighbors_ + 1), tile2, tileu);
                         // load u to tile0
-                        maa_indirect_load<int>(frontier.data() + idx, tilei, tile2);
+                        maa_indirect_load<int>(frontier.data() + idx, tilei,
+                                               tile2);
+#ifdef SSSP_INLINE_OPERAND_RETIREMENT
+                        const bool inline_route_claim =
+                            hybrid_chunk_safe &&
+                            hybrid_observed_words < hybrid_route_words;
+                        if (inline_route_claim)
+                            AcquireSsspInlineWindow(tid);
+#endif
 #pragma omp critical
                         {
                             // Load the source operand associated with each
@@ -1045,6 +1078,9 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                                         tid, dist.data(), num_nodes, delta,
                                         local_bins, hybrid_page_finals, reg0,
                                         reg1, regOne, tilei);
+#ifdef SSSP_INLINE_OPERAND_RETIREMENT
+                                    ReleaseSsspInlineWindow(tid);
+#endif
                                 }
                             }
 #endif
