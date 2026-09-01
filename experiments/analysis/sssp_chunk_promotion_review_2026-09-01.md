@@ -8,6 +8,27 @@ sound at the reviewed granularity, and the mixed graphs encode the intended
 hazards, but neither mixed integration case can reach gem5.  The full runner is
 a candidate correctness/mechanism collector, not a performance-promotion gate.
 
+## Successor disposition
+
+This report is a historical review of the named commits, not the current
+promotion decision. Commit `5fbaa33e` moved host fingerprinting to the executed
+base `DeltaStep`; successor roots for `active_source` and `cross_owner` then
+passed exact gem5 fingerprints and mechanism closure alongside the all-safe
+gate. Those accepted results are sealed in
+`sssp_chunk_admission_2026-09-01.md`.
+
+The host executable used for each new directed graph is a functional
+fingerprint oracle, not a simulated native performance arm. Thus
+`native_arms=0` remains true for the gem5 campaign, although future manifests
+should continue naming the host oracle explicitly to avoid ambiguity.
+
+The current no-launch blocker is stronger: the validated S22 predictor in
+`sssp_chunk_admission_predictor_s22_2026-09-01.md` reproduces all three
+directed outcomes but predicts 0/7,232 routed S22 windows. Exact reason coverage
+and fail-closed aperture accounting remain active hardening work. A full S22
+run is not justified until a conflict-tolerant design provides material safe
+coverage.
+
 ## Blockers
 
 1. **The mixed integration gates always stop before checkpoint creation.**
