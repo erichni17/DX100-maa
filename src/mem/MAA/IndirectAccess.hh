@@ -28,6 +28,7 @@
 #include "mem/MAA/DirectIndexFeeder.hh"
 #include "mem/MAA/FusedP16ProductState.hh"
 #include "mem/MAA/ReorderSurvivalTracker.hh"
+#include "mem/MAA/SharedSourceOverlapScheduler.hh"
 #include "mem/MAA/SoaJitOldResultBuffer.hh"
 #include "mem/MAA/SoaJitOverlapState.hh"
 #include "mem/MAA/SoaJitResultPipeline.hh"
@@ -150,6 +151,15 @@ protected:
     maa::VirtualSourceFanout virtual_pending_source_fanout{};
     Tick virtual_pending_source_fanout_ready_tick = 0;
     Tick virtual_fanout_scan_finish_tick = 0;
+    int virtual_pending_source_high_water = 0;
+    uint64_t virtual_fanout_overlap_resumes = 0;
+    uint64_t virtual_fanout_overlap_slot_stalls = 0;
+    uint64_t virtual_fanout_overlap_credit_stalls = 0;
+    uint64_t virtual_fanout_overlap_credit_stall_cycles = 0;
+    Tick virtual_fanout_overlap_credit_stall_start_tick = MaxTick;
+    maa::SharedSourceOverlapScheduler::Decision
+        virtual_fanout_overlap_last_block =
+            maa::SharedSourceOverlapScheduler::Decision::NoPending;
     struct VirtualSourceReservation
     {
         int head = -1;
@@ -913,6 +923,11 @@ protected:
         const maa::VirtualSourceFanout &fanout) const;
     bool virtualSourceCreditAvailable(
         const maa::VirtualSourceFanout &fanout) const;
+    void issuePendingVirtualSource();
+    void clearPendingVirtualSource();
+    bool resumePendingVirtualSourceFromRequest(bool response_throttled);
+    bool virtualOverlapProgressPossible(bool response_throttled,
+                                        bool spill_succeeded) const;
     void issueVirtualSource(Addr source_addr, int source_head,
                             int source_words,
                             const maa::VirtualSourceFanout &fanout,

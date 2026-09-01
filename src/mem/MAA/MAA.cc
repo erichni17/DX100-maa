@@ -7844,12 +7844,62 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
         IND_VirtFanoutScanCycles.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_VirtFanoutScanCycles"), statistics::units::Count::get(), "modeled four-descriptor-wide shared-payload fanout scan cycles"));
         IND_VirtFanoutScanWaitEvents.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_VirtFanoutScanWaitEvents"), statistics::units::Count::get(), "source admissions deferred until their fanout scan completed"));
         IND_VirtFanoutScanWaitCycles.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_VirtFanoutScanWaitCycles"), statistics::units::Count::get(), "exposed source-admission cycles waiting for fanout scan completion"));
-        IND_VirtSharedPayloadTransfers.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_VirtSharedPayloadTransfers"), statistics::units::Count::get(), "source words transferred into the shared combiner pool on final use"));
-        IND_VirtSharedPayloadRollbacks.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_VirtSharedPayloadRollbacks"), statistics::units::Count::get(), "shared source-word transfers rolled back after combiner pressure"));
-        IND_VirtSharedPayloadHighWater.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_VirtSharedPayloadHighWater"), statistics::units::Count::get(), "sum of per-instruction peak shared source-plus-combiner payload words"));
-        IND_VirtWriteIssues.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_VirtWriteIssues"), statistics::units::Count::get(), "number of virtual retirement writes issued"));
-        IND_VirtWriteCompletions.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_VirtWriteCompletions"), statistics::units::Count::get(), "number of virtual retirement writes completed"));
-        IND_VirtWriteAddressConflicts.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_VirtWriteAddressConflicts"), statistics::units::Count::get(), "virtual retirement write attempts deferred by an exact-address MAA transaction conflict"));
+        IND_VirtFanoutOverlapResumes.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtFanoutOverlapResumes"),
+            statistics::units::Count::get(),
+            "scan-ready pending sources resumed from Request before older "
+            "source retirement"));
+        IND_VirtFanoutOverlapSlotStalls.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtFanoutOverlapSlotStalls"),
+            statistics::units::Count::get(),
+            "scan-ready overlap resumes blocked by exact response-slot "
+            "capacity"));
+        IND_VirtFanoutOverlapCreditStalls.push_back(new statistics::Scalar(
+            this,
+            MAKE_INDIRECT_STAT_NAME("IND_VirtFanoutOverlapCreditStalls"),
+            statistics::units::Count::get(),
+            "scan-ready overlap resumes blocked by unified shared-payload "
+            "credit"));
+        IND_VirtFanoutOverlapCreditStallCycles.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_VirtFanoutOverlapCreditStallCycles"),
+                statistics::units::Count::get(),
+                "cycles with a scan-ready unified-credit-blocked pending "
+                "source"));
+        IND_VirtPendingSourceHighWater.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtPendingSourceHighWater"),
+            statistics::units::Count::get(),
+            "sum of per-instruction pending source latch high-water marks"));
+        IND_VirtSharedPayloadTransfers.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtSharedPayloadTransfers"),
+            statistics::units::Count::get(),
+            "source words transferred into the shared combiner pool on final "
+            "use"));
+        IND_VirtSharedPayloadRollbacks.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtSharedPayloadRollbacks"),
+            statistics::units::Count::get(),
+            "shared source-word transfers rolled back after combiner "
+            "pressure"));
+        IND_VirtSharedPayloadHighWater.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtSharedPayloadHighWater"),
+            statistics::units::Count::get(),
+            "sum of per-instruction peak shared source-plus-combiner payload "
+            "words"));
+        IND_VirtWriteIssues.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtWriteIssues"),
+            statistics::units::Count::get(),
+            "number of virtual retirement writes issued"));
+        IND_VirtWriteCompletions.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtWriteCompletions"),
+            statistics::units::Count::get(),
+            "number of virtual retirement writes completed"));
+        IND_VirtWriteAddressConflicts.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtWriteAddressConflicts"),
+            statistics::units::Count::get(),
+            "virtual retirement write attempts deferred by an exact-address "
+            "MAA transaction conflict"));
         IND_VirtIdealizedAckPages.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtIdealizedAckPages"),
             statistics::units::Count::get(),
