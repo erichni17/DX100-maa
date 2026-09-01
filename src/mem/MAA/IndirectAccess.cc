@@ -11646,7 +11646,10 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
                  static_cast<size_t>(virtual_combine_words),
              "I[%d] virtual payload occupancy diverged after drain\n",
              my_indirect_id);
-    const bool word_capacity_full = virtual_combine_payload.full();
+    const bool word_capacity_full = virtual_shared_result_payload
+        ? virtual_combine_words + virtual_reserved_response_words >=
+              virtual_shared_result_payload_limit
+        : virtual_combine_payload.full();
     const bool line_capacity_full = target == nullptr && free_slot == nullptr;
     if (word_capacity_full || line_capacity_full) {
         const int target_idx = target == nullptr
@@ -11797,6 +11800,10 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
     panic_if(target->valid_words & word_bit,
              "I[%d] duplicate virtual output word %d at 0x%lx\n",
              my_indirect_id, word, line_vaddr);
+    if (virtual_shared_result_payload &&
+        virtual_combine_words + virtual_reserved_response_words >=
+            virtual_shared_result_payload_limit)
+        return false;
     const auto allocate_result = virtual_combine_payload.allocate(
         data, my_word_size, target->word_refs[word]);
     if (allocate_result == VirtualCombinePayloadStore::Result::Exhausted)

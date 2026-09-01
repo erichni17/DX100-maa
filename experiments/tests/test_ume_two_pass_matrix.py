@@ -181,6 +181,11 @@ class UmeTwoPassMatrixTest(unittest.TestCase):
             "                                panic_if(virtual_words >",
             implementation,
         )
+        self.assertIn(
+            "virtual_combine_words + virtual_reserved_response_words >=\n"
+            "              virtual_shared_result_payload_limit",
+            implementation,
+        )
 
     def test_page_materializer_closes_strict_consumer_lifetime(self) -> None:
         source = (ROOT / "src/mem/MAA/MAA.cc").read_text()
