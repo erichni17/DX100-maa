@@ -5962,6 +5962,55 @@ MAA::signalPageFedSoaJitOpen(int coreID, uint64_t generation)
             "generation=%lu ready_id=%d responses=1\n",
             coreID, generation, ready_id);
 }
+
+void
+MAA::deferInlineRetirementAck(PacketPtr pkt, uint16_t sequence)
+{
+    const int ready_id = std::numeric_limits<int>::max() - sequence;
+    panic_if(std::find(my_ready_tile_ids.begin(), my_ready_tile_ids.end(),
+                       ready_id) != my_ready_tile_ids.end(),
+             "Duplicate deferred inline retirement ACK sequence=%u\n",
+             sequence);
+    my_ready_pkts.push_back(pkt);
+    my_ready_tile_ids.push_back(ready_id);
+    DPRINTF(MAAVirtualTrace,
+            "event=inline_retirement_ack_deferred schema=1 sequence=%u "
+            "ready_id=%d\n",
+            sequence, ready_id);
+}
+
+void
+MAA::signalInlineRetirementVisible(
+    IndirectAccessUnit *owner, uint64_t generation, uint16_t sequence)
+{
+    panic_if(owner == nullptr,
+             "Inline retirement visibility lacks an owner\n");
+    const int ready_id = std::numeric_limits<int>::max() - sequence;
+    auto packet = my_ready_pkts.begin();
+    auto ready = my_ready_tile_ids.begin();
+    while (packet != my_ready_pkts.end() &&
+           ready != my_ready_tile_ids.end()) {
+        if (*ready != ready_id) {
+            ++packet;
+            ++ready;
+            continue;
+        }
+        PacketPtr pkt = *packet;
+        const Cycles latency = owner->ackInlineRetirementLine(
+            generation, sequence);
+        pkt->makeTimingResponse();
+        pkt->headerDelay = pkt->payloadDelay = 0;
+        cpuSidePorts[0]->schedTimingResp(
+            pkt, getClockEdge(latency));
+        packet = my_ready_pkts.erase(packet);
+        ready = my_ready_tile_ids.erase(ready);
+        DPRINTF(MAAVirtualTrace,
+                "event=inline_retirement_ack_release schema=1 "
+                "generation=%lu sequence=%u ready_id=%d\n",
+                generation, sequence, ready_id);
+        return;
+    }
+}
 void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
                                 int backingRangeID, int wordSize) {
     panic_if(tokenTileID < 0 || tokenTileID >= num_tiles,

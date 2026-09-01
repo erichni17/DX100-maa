@@ -761,6 +761,10 @@ protected:
     uint64_t soa_jit_context_high_water = 0;
     gem5::maa::PageFedSoaJitState soa_jit_page_fed_state;
     gem5::maa::InlineOperandRetirementState inline_retirement_state;
+    std::array<gem5::maa::InlineRetirementRecord, 8>
+        inline_retirement_packer{};
+    uint8_t inline_retirement_packer_records = 0;
+    uint8_t inline_retirement_packer_credit = UINT8_MAX;
     uint64_t soa_jit_page_fed_open_commands = 0;
     uint64_t soa_jit_page_fed_admit_commands = 0;
     uint64_t soa_jit_page_fed_close_commands = 0;
@@ -922,6 +926,9 @@ protected:
         const SoaJitOldResultBuffer::Identity &identity);
     bool issueSoaJitWrite(SoaJitContext &context);
     void issueInlineRetirementWrites(SoaJitContext &context);
+    void issueInlineRetirementCredit(
+        uint8_t credit, const maa::InlineRetirementRecord *records,
+        uint8_t record_count);
     bool completeInlineRetirementWrite(uint8_t credit, uint64_t generation,
                                        uint32_t sequence);
     bool completeSoaJitWrite(
@@ -1067,6 +1074,7 @@ public:
     void createReadPacket(Addr addr, int latency);
     bool pageFedActiveForCore(int core_id) const;
     bool inlineOperandActiveForCore(int core_id) const;
+    bool inlineOperandActiveGeneration(uint64_t generation) const;
     bool inlineOperandAdmissionAllowsRead(int core_id, uint64_t generation,
                                           int8_t region_id) const;
     bool inlineOperandAdmissionAllowsRead(int core_id,
@@ -1080,6 +1088,8 @@ public:
         uint8_t value_tile);
     Cycles ackInlineRetirementLine(uint64_t generation,
                                    uint16_t sequence);
+    bool inlineRetirementLineVisible(uint64_t generation,
+                                     uint16_t sequence) const;
     Cycles closePageFedSoaJit(uint64_t generation);
     void completeFusedP16Multiply(uint64_t generation,
                                   uint8_t response_slot,

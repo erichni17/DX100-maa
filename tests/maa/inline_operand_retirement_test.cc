@@ -50,9 +50,16 @@ main()
            InlineOperandRetirementState::Result::EarlyVisibility);
     assert(state.markWriteResponse(first) ==
            InlineOperandRetirementState::Result::Accepted);
+    assert(state.visible(1, 0));
     assert(state.acknowledge(2, 0) ==
            InlineOperandRetirementState::Result::StaleGeneration);
     assert(state.acknowledge(1, 0) ==
+           InlineOperandRetirementState::Result::Accepted);
+
+    uint8_t cancelled = 0;
+    assert(state.reserve(1, cancelled) ==
+           InlineOperandRetirementState::Result::Accepted);
+    assert(state.cancelReservation(cancelled) ==
            InlineOperandRetirementState::Result::Accepted);
 
     uint8_t credits[InlineOperandRetirementState::Credits]{};

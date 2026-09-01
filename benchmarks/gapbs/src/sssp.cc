@@ -403,17 +403,14 @@ RunSsspHybridWindow(int tid, WeightT *dist, int num_nodes, WeightT delta,
     for (uint32_t sequence = 0; sequence < expected_lines; ++sequence) {
         const uint32_t slot = sequence %
             gem5::maa::InlineOperandPageFedABI::RetirementRingLines;
+        maa_inline_operand_retirement_ack(
+            generation, static_cast<uint16_t>(sequence));
+        atomic_thread_fence(memory_order_seq_cst);
         volatile maa_inline_retirement_record *line =
             &sssp_inline_retirement_ring[tid][slot * records_per_line];
-        for (;;) {
-            bool visible = true;
-            for (uint32_t word = 0; word < records_per_line; ++word)
-                visible = visible && line[word].destination != UINT32_MAX;
-            if (visible)
-                break;
-            __asm__ __volatile__("pause" ::: "memory");
-        }
         for (uint32_t word = 0; word < records_per_line; ++word) {
+            if (line[word].destination == UINT32_MAX)
+                abort();
             const NodeID destination =
                 static_cast<NodeID>(line[word].destination);
             const WeightT final_distance =
@@ -430,8 +427,6 @@ RunSsspHybridWindow(int tid, WeightT *dist, int num_nodes, WeightT delta,
             sssp_inline_retirement_records[tid]++;
         }
         atomic_thread_fence(memory_order_seq_cst);
-        maa_inline_operand_retirement_ack(
-            generation, static_cast<uint16_t>(sequence));
         sssp_inline_retirement_acked_lines[tid]++;
     }
     atomic_thread_fence(memory_order_seq_cst);

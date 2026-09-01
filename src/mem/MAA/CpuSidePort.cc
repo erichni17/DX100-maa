@@ -244,7 +244,8 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                     for (unsigned int unit = 0;
                          unit < num_indirect_units_total; ++unit) {
                         if (!indirectAccessUnits[unit].
-                                inlineOperandActiveForCore(core->second))
+                                inlineOperandActiveGeneration(
+                                    inline_command.generation))
                             continue;
                         panic_if(owner != nullptr,
                                  "Core %d owns duplicate inline page-fed "
@@ -266,6 +267,14 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                         latency = owner->closePageFedSoaJit(
                             inline_command.generation);
                     } else {
+                        if (!owner->inlineRetirementLineVisible(
+                                inline_command.generation,
+                                inline_command.retirementLine)) {
+                            deferInlineRetirementAck(
+                                pkt, inline_command.retirementLine);
+                            respond_immediately = false;
+                            break;
+                        }
                         latency = owner->ackInlineRetirementLine(
                             inline_command.generation,
                             inline_command.retirementLine);

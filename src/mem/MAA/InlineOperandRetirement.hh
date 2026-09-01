@@ -60,7 +60,7 @@ class InlineOperandRetirementState
     {
         std::array<uint8_t, LineBytes> payload{};
         uint64_t generation = 0;
-        uint32_t sequence = 0;
+        uint32_t sequence = UINT32_MAX;
         uint8_t records = 0;
         CreditState state = CreditState::Free;
     };
@@ -103,7 +103,6 @@ class InlineOperandRetirementState
                 continue;
             credit = Credit();
             credit.generation = generation;
-            credit.sequence = nextSequence++;
             credit.records = recordCount;
             credit.state = CreditState::Reserved;
             creditIndex = index;
@@ -126,8 +125,12 @@ class InlineOperandRetirementState
         if (!active || credit.generation != generation)
             return Result::StaleGeneration;
         if (credit.state != CreditState::Reserved || source == nullptr ||
-            recordCount != credit.records)
+            recordCount == 0 || recordCount > RecordsPerLine)
             return Result::InvalidCredit;
+        credit.records = recordCount;
+        if (credit.sequence != UINT32_MAX)
+            return Result::InvalidCredit;
+        credit.sequence = nextSequence++;
         std::memcpy(credit.payload.data(), source,
                     recordCount * sizeof(InlineRetirementRecord));
         records += recordCount;
@@ -145,6 +148,19 @@ class InlineOperandRetirementState
             return Result::EarlyVisibility;
         credit.state = CreditState::WriteIssued;
         ++writeIssues;
+        return Result::Accepted;
+    }
+
+    Result cancelReservation(uint8_t creditIndex)
+    {
+        if (!valid(creditIndex))
+            return Result::InvalidCredit;
+        Credit &credit = credits[creditIndex];
+        if (!active || credit.generation != generation)
+            return Result::StaleGeneration;
+        if (credit.state != CreditState::Reserved)
+            return Result::InvalidCredit;
+        credit = Credit();
         return Result::Accepted;
     }
 
@@ -218,6 +234,17 @@ class InlineOperandRetirementState
     uint32_t ackedLines() const { return acks; }
     uint32_t nextAckSequence() const { return nextAck; }
     size_t creditHighWater() const { return highWater; }
+    bool visible(uint64_t candidateGeneration, uint32_t sequence) const
+    {
+        if (!active || candidateGeneration != generation)
+            return false;
+        for (const auto &credit : credits) {
+            if (credit.generation == generation &&
+                credit.sequence == sequence)
+                return credit.state == CreditState::Visible;
+        }
+        return false;
+    }
     size_t freeCredits() const
     {
         size_t free = 0;

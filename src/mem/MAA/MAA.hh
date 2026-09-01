@@ -529,6 +529,10 @@ public:
     const AddrRangeList &getAddrRanges(int core_id) const { return cpuPortAddrRanges[core_id]; }
     void setTileReady(int tileID, int wordSize);
     void signalPageFedSoaJitOpen(int coreID, uint64_t generation);
+    void deferInlineRetirementAck(PacketPtr pkt, uint16_t sequence);
+    void signalInlineRetirementVisible(IndirectAccessUnit *owner,
+                                       uint64_t generation,
+                                       uint16_t sequence);
     void resetVirtualPageReady(int tokenTileID, Addr backingAddr,
                                int backingRangeID, int wordSize);
     void setVirtualPageReady(int tokenTileID, int pageID,

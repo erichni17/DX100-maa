@@ -53,6 +53,17 @@ class InlineOperandRetirementContract(unittest.TestCase):
         self.assertLess(response, issue)
         self.assertIn("markWriteResponse", self.indirect)
         self.assertIn("ackInlineRetirementLine", self.indirect)
+        self.assertIn("issueInlineRetirementCredit", self.indirect)
+        self.assertIn("inline_retirement_packer", self.indirect)
+        self.assertIn(
+            "deferInlineRetirementAck",
+            (ROOT / "src/mem/MAA/CpuSidePort.cc").read_text(),
+        )
+        ack = self.source.index("maa_inline_operand_retirement_ack(")
+        read = self.source.index(
+            "volatile maa_inline_retirement_record *line", ack
+        )
+        self.assertLess(ack, read)
 
     def test_preclose_a_read_exception_is_phase_and_generation_bound(self):
         interface = (ROOT / "src/mem/MAA/IF.cc").read_text()

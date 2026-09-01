@@ -3923,6 +3923,14 @@ IndirectAccessUnit::inlineOperandActiveForCore(int core_id) const
 }
 
 bool
+IndirectAccessUnit::inlineOperandActiveGeneration(uint64_t generation) const
+{
+    return my_instruction != nullptr && isSoaJitInlineOperandRmw() &&
+        soa_jit_page_fed_state.active() &&
+        soa_jit_page_fed_state.currentGeneration() == generation;
+}
+
+bool
 IndirectAccessUnit::inlineOperandAdmissionAllowsRead(
     int core_id, uint64_t generation, int8_t region_id) const
 {
@@ -6267,55 +6275,79 @@ IndirectAccessUnit::issueInlineRetirementWrites(SoaJitContext &context)
                     sizeof(uint32_t));
         ++count;
     }
-    size_t consumed = 0;
-    for (uint8_t line = 0;
-         line < context.inlineRetirementCreditCount; ++line) {
-        const uint8_t credit_index =
-            context.inlineRetirementCredits[line];
-        auto &credit = inline_retirement_state.credit(credit_index);
-        const uint8_t line_records = credit.records;
-        panic_if(consumed + line_records > count ||
-                     inline_retirement_state.fill(
-                         credit_index, records.data() + consumed,
-                         line_records) !=
-                         maa::InlineOperandRetirementState::Result::Accepted,
-                 "I[%d] inline retirement dense pack failed\n",
-                 my_indirect_id);
-        const Addr vaddr = my_backing_addr +
-            (credit.sequence %
-             maa::InlineOperandPageFedABI::RetirementRingLines) *
-                block_size;
-        const Addr paddr = translatePacket(vaddr, BaseMMU::Write, block_size);
-        RequestPtr req = std::make_shared<Request>(
-            paddr, block_size, flags, maa->requestorId);
-        req->setRegion(my_backing_addr_range_id);
-        PacketPtr pkt = new Packet(req, MemCmd::WriteReq);
-        pkt->headerDelay = pkt->payloadDelay = 0;
-        pkt->dataStatic(credit.payload.data());
-        auto *sender = new InlineRetirementSenderState;
-        sender->generation = credit.generation;
-        sender->sequence = credit.sequence;
-        sender->credit = credit_index;
-        sender->physicalAddress = paddr;
-        pkt->pushSenderState(sender);
-        panic_if(inline_retirement_state.markWriteIssued(credit_index) !=
-                     maa::InlineOperandRetirementState::Result::Accepted,
-                 "I[%d] inline retirement issue state rejected\n",
-                 my_indirect_id);
-        inline_retirement_write_issues++;
-        maa->sendPacket(FuncUnitType::INDIRECT, my_indirect_id, pkt,
-                        maa->getClockEdge(Cycles(0)), true, true);
-        DPRINTF(MAAVirtualTrace,
-                "event=inline_retirement_issue schema=1 unit=%d "
-                "generation=%lu sequence=%u credit=%u records=%u "
-                "vaddr=0x%lx paddr=0x%lx\n",
-                my_indirect_id, credit.generation, credit.sequence,
-                credit_index, line_records, vaddr, paddr);
-        consumed += line_records;
+    size_t next_credit = 0;
+    for (size_t record = 0; record < count; ++record) {
+        if (inline_retirement_packer_records == 0 &&
+            inline_retirement_packer_credit == UINT8_MAX) {
+            panic_if(next_credit >= context.inlineRetirementCreditCount,
+                     "I[%d] inline packer lacks a reserved credit\n",
+                     my_indirect_id);
+            inline_retirement_packer_credit =
+                context.inlineRetirementCredits[next_credit++];
+        }
+        inline_retirement_packer[inline_retirement_packer_records++] =
+            records[record];
+        if (inline_retirement_packer_records !=
+            maa::InlineOperandPageFedABI::RetirementRecordsPerLine)
+            continue;
+        issueInlineRetirementCredit(
+            inline_retirement_packer_credit,
+            inline_retirement_packer.data(),
+            inline_retirement_packer_records);
+        inline_retirement_packer = {};
+        inline_retirement_packer_records = 0;
+        inline_retirement_packer_credit = UINT8_MAX;
     }
-    panic_if(consumed != count,
-             "I[%d] inline retirement lost success records %lu/%lu\n",
-             my_indirect_id, consumed, count);
+    while (next_credit < context.inlineRetirementCreditCount) {
+        panic_if(inline_retirement_state.cancelReservation(
+                     context.inlineRetirementCredits[next_credit++]) !=
+                     maa::InlineOperandRetirementState::Result::Accepted,
+                 "I[%d] inline packer could not release spare credit\n",
+                 my_indirect_id);
+    }
+}
+
+void
+IndirectAccessUnit::issueInlineRetirementCredit(
+    uint8_t credit_index, const maa::InlineRetirementRecord *records,
+    uint8_t record_count)
+{
+    panic_if(inline_retirement_state.fill(
+                 credit_index, records, record_count) !=
+                 maa::InlineOperandRetirementState::Result::Accepted,
+             "I[%d] inline retirement dense pack failed\n",
+             my_indirect_id);
+    auto &credit = inline_retirement_state.credit(credit_index);
+    const Addr vaddr = my_backing_addr +
+        (credit.sequence %
+         maa::InlineOperandPageFedABI::RetirementRingLines) *
+            block_size;
+    const Addr paddr = translatePacket(vaddr, BaseMMU::Write, block_size);
+    RequestPtr req = std::make_shared<Request>(
+        paddr, block_size, flags, maa->requestorId);
+    req->setRegion(my_backing_addr_range_id);
+    PacketPtr pkt = new Packet(req, MemCmd::WriteReq);
+    pkt->headerDelay = pkt->payloadDelay = 0;
+    pkt->dataStatic(credit.payload.data());
+    auto *sender = new InlineRetirementSenderState;
+    sender->generation = credit.generation;
+    sender->sequence = credit.sequence;
+    sender->credit = credit_index;
+    sender->physicalAddress = paddr;
+    pkt->pushSenderState(sender);
+    panic_if(inline_retirement_state.markWriteIssued(credit_index) !=
+                 maa::InlineOperandRetirementState::Result::Accepted,
+             "I[%d] inline retirement issue state rejected\n",
+             my_indirect_id);
+    inline_retirement_write_issues++;
+    maa->sendPacket(FuncUnitType::INDIRECT, my_indirect_id, pkt,
+                    maa->getClockEdge(Cycles(0)), true, true);
+    DPRINTF(MAAVirtualTrace,
+            "event=inline_retirement_issue schema=1 unit=%d "
+            "generation=%lu sequence=%u credit=%u records=%u "
+            "vaddr=0x%lx paddr=0x%lx\n",
+            my_indirect_id, credit.generation, credit.sequence,
+            credit_index, record_count, vaddr, paddr);
 }
 
 bool
@@ -6337,6 +6369,7 @@ IndirectAccessUnit::completeInlineRetirementWrite(
             "event=inline_retirement_response schema=1 unit=%d "
             "generation=%lu sequence=%u credit=%u\n",
             my_indirect_id, generation, sequence, credit);
+    maa->signalInlineRetirementVisible(this, generation, sequence);
     return true;
 }
 
@@ -6357,6 +6390,14 @@ IndirectAccessUnit::ackInlineRetirementLine(
             my_indirect_id, generation, sequence);
     scheduleNextExecution(true);
     return Cycles(1);
+}
+
+bool
+IndirectAccessUnit::inlineRetirementLineVisible(
+    uint64_t generation, uint16_t sequence) const
+{
+    return isSoaJitInlineOperandRmw() &&
+        inline_retirement_state.visible(generation, sequence);
 }
 void IndirectAccessUnit::checkSoaJitTerminal()
 {
@@ -6400,6 +6441,8 @@ void IndirectAccessUnit::checkSoaJitTerminal()
              gem5::maa::InlineOperandPageFedABI::LogicalElements &&
          inline_retirement_state.recordCount() <=
              inline_retirement_successes &&
+         inline_retirement_packer_records == 0 &&
+         inline_retirement_packer_credit == UINT8_MAX &&
          inline_retirement_write_issues ==
              inline_retirement_write_responses &&
          inline_retirement_write_responses == inline_retirement_acks &&
@@ -7313,6 +7356,9 @@ void IndirectAccessUnit::executeInstruction() {
         inline_retirement_write_responses = 0;
         inline_retirement_acks = 0;
         inline_retirement_credit_stalls = 0;
+        inline_retirement_packer = {};
+        inline_retirement_packer_records = 0;
+        inline_retirement_packer_credit = UINT8_MAX;
         panic_if(inline_retirement_state.isActive(),
                  "I[%d] retained inline retirement generation at decode\n",
                  my_indirect_id);
@@ -8440,6 +8486,19 @@ void IndirectAccessUnit::executeInstruction() {
                     }
                 }
                 if (isSoaJitInlineOperandRmw()) {
+                    if (inline_retirement_packer_records != 0) {
+                        panic_if(inline_retirement_packer_credit ==
+                                     UINT8_MAX,
+                                 "I[%d] inline tail lacks packer credit\n",
+                                 my_indirect_id);
+                        issueInlineRetirementCredit(
+                            inline_retirement_packer_credit,
+                            inline_retirement_packer.data(),
+                            inline_retirement_packer_records);
+                        inline_retirement_packer = {};
+                        inline_retirement_packer_records = 0;
+                        inline_retirement_packer_credit = UINT8_MAX;
+                    }
                     if (!inline_retirement_state.isClosed()) {
                         panic_if(inline_retirement_state.close() !=
                                      maa::InlineOperandRetirementState::
