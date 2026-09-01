@@ -38,6 +38,8 @@ class InlineOperandRetirementContract(unittest.TestCase):
             "insertPageFedSoaJitIndex(index, ordinal, operand, true)",
             self.indirect,
         )
+        self.assertIn("!isSoaJitInlineOperandRmw()", self.indirect)
+        self.assertIn("inline retirement ring exceeds", self.indirect)
 
     def test_aux_lifetime_and_mutual_exclusion(self):
         self.assertIn("beginInlineOperandMode", self.tables)

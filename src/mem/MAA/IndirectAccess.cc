@@ -7755,6 +7755,7 @@ void IndirectAccessUnit::executeInstruction() {
                 const uint64_t last_index_offset =
                     static_cast<uint64_t>(last_source) * sizeof(uint32_t);
                 panic_if((!isSoaJitScalarRmw() &&
+                          !isSoaJitInlineOperandRmw() &&
                           (my_backing_max_addr - my_backing_addr <
                                static_cast<Addr>(my_word_size) ||
                            static_cast<uint64_t>(last_source) *
@@ -7766,6 +7767,13 @@ void IndirectAccessUnit::executeInstruction() {
                                last_index_offset >
                                    index_span - sizeof(uint32_t))),
                          "I[%d] SoA/JIT values or indices span exceeds its "
+                         "registered range\n",
+                         my_indirect_id);
+                panic_if(isSoaJitInlineOperandRmw() &&
+                             my_backing_max_addr - my_backing_addr <
+                                 maa::InlineOperandPageFedABI::
+                                     RetirementRingBytes,
+                         "I[%d] inline retirement ring exceeds its "
                          "registered range\n",
                          my_indirect_id);
                 if (my_predicate_addr != 0) {
