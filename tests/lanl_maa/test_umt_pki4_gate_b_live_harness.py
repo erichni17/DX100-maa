@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline adversarial tests for the Gate-B v23 live implementation."""
+"""Offline adversarial tests for the Gate-B v25 live implementation."""
 
 import copy
 import hashlib
@@ -471,12 +471,52 @@ class GateBLiveHarnessTest(unittest.TestCase):
         self.assertEqual(set(plan["dispatch"]["arms"]), set(live.CASES))
         self.assertEqual(plan["dispatch"]["maximum_concurrent_arms"], 2)
         self.assertEqual(source["commit"], live.SOURCE_COMMIT)
-        self.assertFalse(review["authorization"]["live_launch"])
+        self.assertEqual(
+            review["decision"],
+            "PASS_REPAIR_AND_FRESH_SUCCESSOR_PLAN_NO_LAUNCH",
+        )
+        self.assertEqual(
+            review["authorization"]["after_condition"],
+            "preparation_and_review_of_fresh_v25_campaign_only",
+        )
         for arm in plan["dispatch"]["arms"].values():
             self.assertEqual(
                 live.json_sha256(arm["systemd_run_argv"]),
                 arm["systemd_run_argv_sha256"],
             )
+
+    def test_old_units_must_be_exactly_not_found_inactive_dead(self):
+        def result_for(unit, active=False):
+            state = {
+                "Id": unit,
+                "LoadState": "loaded" if active else "not-found",
+                "ActiveState": "active" if active else "inactive",
+                "SubState": "running" if active else "dead",
+                "MainPID": "1234" if active else "0",
+                "InvocationID": "a" * 32 if active else "",
+            }
+            raw = "".join(f"{key}={value}\n" for key, value in state.items())
+            return mock.Mock(returncode=0, stderr=b"", stdout=raw.encode())
+
+        with mock.patch.object(
+            live.subprocess,
+            "run",
+            side_effect=[result_for(unit) for unit in live.OLD_UNITS.values()],
+        ):
+            observed = live.verify_old_units_terminal()
+            self.assertEqual(set(observed), set(live.CASES))
+
+        units = list(live.OLD_UNITS.values())
+        with mock.patch.object(
+            live.subprocess,
+            "run",
+            side_effect=[
+                result_for(units[0], active=True),
+                result_for(units[1]),
+            ],
+        ):
+            with self.assertRaisesRegex(RuntimeError, "not terminal"):
+                live.verify_old_units_terminal()
 
     def test_changed_build_finalizer_anchor_fails_closed(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -637,7 +677,15 @@ class GateBLiveHarnessTest(unittest.TestCase):
                 "exact_commands": {
                     name: {"systemd_run_argv_sha256": name * 8}
                     for name in live.CASES
-                }
+                },
+                "repair_lineage": {"repair": True},
+                "failed_predecessor": {"preserved": True},
+                "host_working_directory_identity": {
+                    "accepted_exact_value": "!/home/nier",
+                    "comparison": "byte_exact_string_equality",
+                    "normalization": False,
+                    "validated_before_manager_live_publication": True,
+                },
             }
             command_hashes = {
                 name: plan["exact_commands"][name]["systemd_run_argv_sha256"]
@@ -661,9 +709,18 @@ class GateBLiveHarnessTest(unittest.TestCase):
                     "authorized_arms": list(live.CASES),
                     "maximum_concurrent": 2,
                     "rtl_launch": False,
+                    "old_campaign_mutation": False,
                 },
                 "command_hashes": command_hashes,
                 "audited_build_anchors": live.audited_build_anchors(),
+                "repair_lineage": plan["repair_lineage"],
+                "failed_predecessor": plan["failed_predecessor"],
+                "working_directory_contract": plan[
+                    "host_working_directory_identity"
+                ],
+                "resource_properties": live.read_json_nofollow(live.DRY_PLAN)[
+                    "dispatch"
+                ]["resource_properties"],
             }
             write_json(review_path, review)
             with (

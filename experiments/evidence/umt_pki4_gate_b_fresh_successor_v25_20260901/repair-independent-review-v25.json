@@ -1,0 +1,136 @@
+{
+  "schema": "lanl-maa-umt-pki4-gate-b-dispatch-repair-independent-review-v25",
+  "status": "passed_repair_fresh_successor_preparation_deferred_until_old_d32_terminal_no_launch",
+  "decision": "PASS_REPAIR_AND_FRESH_SUCCESSOR_PLAN_NO_LAUNCH",
+  "reviewed_at": "2026-09-01T02:35:48-04:00",
+  "findings": [],
+  "review_target": {
+    "commit": "f7ace47631793ead7ab3af0de192184defa03b7f",
+    "tree": "bf08f415487c69010ad445e044ea68c18aa703f5",
+    "parent_commit": "bfb6749b16477463979d06c4aa190977983a4075",
+    "parent_tree": "51936ee08a42510d92c129ab0f38c8175cd8168f",
+    "relationship": "parent_is_direct_ancestor",
+    "changed_file_sha256": {
+      "docs/plans/umt_pki4_gate_b_live_dispatch_repair_v25_20260901.md": "b459c6546caf388bf7ca36a7c9a6e18d9def6752873e6478fad231ade17b6dcd",
+      "tests/lanl_maa/test_umt_pki4_gate_b_live_harness.py": "8968c4c14ecc89e0ef7ddbc6e5d271ff09a5981725fce4bb428599caaf783e06",
+      "tests/lanl_maa/umt_pki4_gate_b_live_harness.py": "5399b5e2a5e0951d5a7902e96b7fd3da4cdb8b37380bf5b0df94f3ed93820227"
+    }
+  },
+  "working_directory_contract": {
+    "accepted_exact_value": "!/home/nier",
+    "comparison": "byte_exact_string_equality",
+    "normalization_performed": false,
+    "positive_fixture_exact": true,
+    "explicitly_tested_rejections": [
+      "",
+      "/home/nier",
+      "!!/home/nier",
+      "!/home/nier/",
+      "!/home/nier ",
+      "!/home/other"
+    ],
+    "all_other_representations_rejected_by_equality": true,
+    "publication_order": "validate_show_precedes_manager_live_publication"
+  },
+  "adversarial_validation": {
+    "command": [
+      "env",
+      "PYTHONDONTWRITEBYTECODE=1",
+      "PYTHONWARNINGS=error::ResourceWarning",
+      "/usr/bin/python3",
+      "tests/lanl_maa/test_umt_pki4_gate_b_live_harness.py",
+      "-v"
+    ],
+    "total": 18,
+    "passed": 18,
+    "failed": 0,
+    "resource_warning_policy": "error",
+    "result": "PASS"
+  },
+  "frozen_failure_anchor_audit": {
+    "campaign_root": "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v22-live",
+    "no_files_written_by_review": true,
+    "anchor_rehashes": {
+      "capture_script": {
+        "path": "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v22-live/capture_failed_dispatch_live_v23.py",
+        "sha256": "924d4edf8574ff87c482e57f25aa97141f1dc89887a1d44d76f26d0d4bafe150"
+      },
+      "contract": {
+        "path": "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v22-live/gate-b-lifecycle-live-contract-v23.json",
+        "sha256": "21a3dc8a50b6a6ebac3771e6e2b4e3b526638ecfcd257b65b77078d62924ad0b"
+      },
+      "dispatch_reservation": {
+        "path": "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v22-live/identity/dispatch-reservation-v23.json",
+        "sha256": "88f5e4002ed7aad43285616a0450e927de073bb89a30f2b3a101cbe5892cc5aa"
+      },
+      "forensic_receipt": {
+        "path": "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v22-live/identity/failed-dispatch-v23-live/forensic-receipt.json",
+        "sha256": "6259f981a508716811a1f20872985e39f67d5293f1f0467cf0f4d1b3f786706e"
+      }
+    },
+    "forensic_receipt_artifact_rehashes": {
+      "proc-cgroup.bin": "962f8f4e6b77070ee6b07bb776ac2844f6fb1342ebc29cc66cf14a66fdede6f3",
+      "proc-cmdline.bin": "936348b12e6a66d75b8f580c57fe72e9b6daa0231e3a03fb953692482c7cf3c4",
+      "proc-stat.bin": "4c684d3198b26f3b1b29971f2d3e8350bae45c3559e0e42152318d0220531f7c",
+      "proc-status.bin": "b7ef6b9d11278c42e7333478005cedd0ef9385d82549a5c28e0e8a04a98f7ce5",
+      "systemd-live.show": "15cfe9960eb224f300a7bc31a15d692ed2e80e770d60e9ec3c2ffaa251c7edb0"
+    },
+    "receipt_artifact_hashes_match_receipt": true,
+    "anchor_types": "all_regular_non_symlink_files",
+    "failure_only_claim_boundary_preserved": true,
+    "live_d32_outputs_excluded_from_frozen_anchor_claim": true
+  },
+  "old_contract_incompatibility": {
+    "contract_commit": "bfb6749b16477463979d06c4aa190977983a4075",
+    "contract_bound_harness_sha256": "f6f6969477c81ba34f6114c45389c09fec3be4cbcccd78db1c8a890d92a9e056",
+    "contract_bound_test_sha256": "b8ec9d4d4037e7065fbea1545b654e365cf1a5c7529318de8c91c887069f78f5",
+    "changed_harness_sha256": "5399b5e2a5e0951d5a7902e96b7fd3da4cdb8b37380bf5b0df94f3ed93820227",
+    "changed_test_sha256": "8968c4c14ecc89e0ef7ddbc6e5d271ff09a5981725fce4bb428599caaf783e06",
+    "read_only_validation_result": "EXPECTED_FAIL",
+    "failure": "implementation plan or test transcript changed",
+    "fails_before_dispatch_or_manager_evidence_publication": true
+  },
+  "old_campaign_recovery_audit": {
+    "resumable": false,
+    "backfillable": false,
+    "reasons": [
+      "the frozen contract binds the parent implementation and test hashes",
+      "the changed implementation rejects that frozen contract",
+      "the manager-live binding and exact two-arm dispatch receipt are absent",
+      "the existing reservation makes the old dispatch namespace non-fresh",
+      "forensic failure evidence is not a successful manager-live or dispatch receipt"
+    ],
+    "dispatch_live_receipt_absent": true,
+    "d64_old_arm_root_absent": true,
+    "d64_dispatch_manager_directory_empty": true,
+    "d64_old_arm_status": "unlaunched",
+    "d32_observation": {
+      "status": "live_not_terminal",
+      "unit": "umt-pki4-gate-b-live-v22-d32-g32-20260901.service",
+      "invocation_id": "786ac53e3d9f4f1ba76c4feec12b561e",
+      "wrapper_pid": 1637210,
+      "gem5_pid": 1641896,
+      "identity_source": "frozen forensic receipt plus read_only_process_observation"
+    }
+  },
+  "authorization": {
+    "current_successor_preparation_or_review": false,
+    "condition": "old D32 unit must first be terminal and fresh identities must be independently revalidated",
+    "after_condition": "preparation_and_review_of_fresh_v25_campaign_only",
+    "fresh_campaign_root": "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live",
+    "fresh_campaign_root_currently_absent": true,
+    "required_fresh_units": [
+      "umt-pki4-gate-b-live-v25-d32-g32-20260901.service",
+      "umt-pki4-gate-b-live-v25-d64-g31-20260901.service"
+    ],
+    "old_units_or_roots_reusable": false,
+    "build": false,
+    "systemd_action": false,
+    "gem5_launch": false,
+    "opcode_launch": false,
+    "rtl_launch": false,
+    "old_campaign_mutation": false,
+    "remote_git": false,
+    "promotion": false
+  }
+}

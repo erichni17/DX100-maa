@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Fail-closed freezer and manager for the reviewed Gate-B live campaign.
+"""Fail-closed freezer and manager for the fresh Gate-B v25 campaign.
 
-This successor harness consumes, but never rewrites, the independently
-reviewed v22 dry plan.  Its live action is unavailable until a separate
-implementation review explicitly authorizes the two exact commands.
+This successor harness preserves the failed v22 campaign as read-only evidence.
+Its live action is unavailable until a new independent review explicitly
+authorizes the two exact v25 commands.
 """
 
 import argparse
@@ -21,16 +21,49 @@ import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 CAMPAIGN = pathlib.Path(
+    "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live"
+)
+EVIDENCE = (
+    ROOT / "experiments/evidence/umt_pki4_gate_b_fresh_successor_v25_20260901"
+)
+DRY_PLAN = EVIDENCE / "dry-plan-v25.json"
+REPAIR_REVIEW = EVIDENCE / "repair-independent-review-v25.json"
+REPAIR_REVIEW_SHA256 = (
+    "7e44107c67b3d3d9a12244d704f620ca2c545c733f47091b39692513b3e95873"
+)
+REPAIR_COMMIT = "f7ace47631793ead7ab3af0de192184defa03b7f"
+REPAIR_TREE = "bf08f415487c69010ad445e044ea68c18aa703f5"
+REPAIR_REVIEW_COMMIT = "d0199bdc4a4d0b0fbf41427a960776a71478344e"
+REPAIR_REVIEW_TREE = "75027c12a9f55a004a0aec8d477bb8406f977859"
+
+OLD_CAMPAIGN = pathlib.Path(
     "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v22-live"
 )
-DRY_PLAN = CAMPAIGN / "gate-b-lifecycle-live-plan-v22.json"
-DRY_PLAN_SHA256 = (
-    "55e5f97de6d9459d3839b0fb85f5fa0b67e48618da50d741349ab37d226721aa"
-)
-DRY_REVIEW = CAMPAIGN / "gate-b-lifecycle-live-independent-review-v22.json"
-DRY_REVIEW_SHA256 = (
-    "4517b6df1d3510000a7ede34d20b48fc556f87d4c941dbda6ab34409618c043b"
-)
+OLD_UNITS = {
+    "d32-g32": "umt-pki4-gate-b-live-v22-d32-g32-20260901.service",
+    "d64-g31": "umt-pki4-gate-b-live-v22-d64-g31-20260901.service",
+}
+OLD_FAILURE_ANCHORS = {
+    "capture_script": {
+        "path": OLD_CAMPAIGN / "capture_failed_dispatch_live_v23.py",
+        "sha256": "924d4edf8574ff87c482e57f25aa97141f1dc89887a1d44d76f26d0d4bafe150",
+    },
+    "contract": {
+        "path": OLD_CAMPAIGN / "gate-b-lifecycle-live-contract-v23.json",
+        "sha256": "21a3dc8a50b6a6ebac3771e6e2b4e3b526638ecfcd257b65b77078d62924ad0b",
+    },
+    "dispatch_reservation": {
+        "path": OLD_CAMPAIGN / "identity/dispatch-reservation-v23.json",
+        "sha256": "88f5e4002ed7aad43285616a0450e927de073bb89a30f2b3a101cbe5892cc5aa",
+    },
+    "forensic_receipt": {
+        "path": (
+            OLD_CAMPAIGN
+            / "identity/failed-dispatch-v23-live/forensic-receipt.json"
+        ),
+        "sha256": "6259f981a508716811a1f20872985e39f67d5293f1f0467cf0f4d1b3f786706e",
+    },
+}
 
 BUILD_PROOF = pathlib.Path(
     "/data1/nier/dx100-runs/2026-08-31-umt-pki4-gate-b-lifecycle-build-v21-live/"
@@ -83,44 +116,35 @@ MARKERS = [
     "lanl-maa-umt-pki4-lifecycle-v1",
 ]
 
-CONTRACT = CAMPAIGN / "gate-b-lifecycle-live-contract-v23.json"
+CONTRACT = CAMPAIGN / "gate-b-lifecycle-live-contract-v25.json"
 VALIDATION_TRANSCRIPT = (
     CAMPAIGN / "identity/gate-b-build-proof-validation-v21.stdout"
 )
-IMPLEMENTATION_PLAN = (
-    CAMPAIGN / "gate-b-lifecycle-live-implementation-plan-v24.json"
-)
-IMPLEMENTATION_REQUEST = (
-    CAMPAIGN / "gate-b-lifecycle-live-implementation-review-request-v24.json"
-)
-IMPLEMENTATION_TESTS = (
-    CAMPAIGN / "gate-b-lifecycle-live-implementation-tests-v24.txt"
-)
-IMPLEMENTATION_REVIEW = (
-    CAMPAIGN
-    / "gate-b-lifecycle-live-implementation-independent-review-v24.json"
-)
-DISPATCH_RESERVATION = CAMPAIGN / "identity/dispatch-reservation-v23.json"
-DISPATCH_RECEIPT = CAMPAIGN / "identity/dispatch-live-receipt-v23.json"
+IMPLEMENTATION_PLAN = EVIDENCE / "implementation-plan-v25.json"
+IMPLEMENTATION_REQUEST = EVIDENCE / "implementation-review-request-v25.json"
+IMPLEMENTATION_TESTS = EVIDENCE / "adversarial-tests-v25.txt"
+IMPLEMENTATION_REVIEW = EVIDENCE / "implementation-independent-review-v25.json"
+DISPATCH_RESERVATION = CAMPAIGN / "identity/dispatch-reservation-v25.json"
+DISPATCH_RECEIPT = CAMPAIGN / "identity/dispatch-live-receipt-v25.json"
 
 CASES = ("d32-g32", "d64-g31")
-SCHEMA_CONTRACT = "lanl-maa-umt-pki4-gate-b-live-contract-v23"
+SCHEMA_CONTRACT = "lanl-maa-umt-pki4-gate-b-live-contract-v25"
 SCHEMA_IMPLEMENTATION_PLAN = (
-    "lanl-maa-umt-pki4-gate-b-live-implementation-plan-v24"
+    "lanl-maa-umt-pki4-gate-b-live-implementation-plan-v25"
 )
 SCHEMA_IMPLEMENTATION_REQUEST = (
-    "lanl-maa-umt-pki4-gate-b-live-implementation-review-request-v24"
+    "lanl-maa-umt-pki4-gate-b-live-implementation-review-request-v25"
 )
 SCHEMA_IMPLEMENTATION_REVIEW = (
-    "lanl-maa-umt-pki4-gate-b-live-implementation-independent-review-v24"
+    "lanl-maa-umt-pki4-gate-b-live-implementation-independent-review-v25"
 )
-SCHEMA_MANAGER_LIVE = "lanl-maa-umt-pki4-gate-b-manager-live-v23"
-SCHEMA_MANAGER_TERMINAL = "lanl-maa-umt-pki4-gate-b-manager-terminal-v23"
+SCHEMA_MANAGER_LIVE = "lanl-maa-umt-pki4-gate-b-manager-live-v25"
+SCHEMA_MANAGER_TERMINAL = "lanl-maa-umt-pki4-gate-b-manager-terminal-v25"
 SCHEMA_PROC = "lanl-maa-proc-start-receipt-v1"
 SCHEMA_DISPATCH_RESERVATION = (
-    "lanl-maa-umt-pki4-gate-b-dispatch-reservation-v23"
+    "lanl-maa-umt-pki4-gate-b-dispatch-reservation-v25"
 )
-SCHEMA_DISPATCH_RECEIPT = "lanl-maa-umt-pki4-gate-b-dispatch-live-receipt-v23"
+SCHEMA_DISPATCH_RECEIPT = "lanl-maa-umt-pki4-gate-b-dispatch-live-receipt-v25"
 
 SHOW_PROPERTIES = (
     "Id",
@@ -310,32 +334,150 @@ def git_identity(root, commit=None, tree=None, require_clean=True):
     }
 
 
-def verify_fixed_inputs():
-    fixed = {
-        DRY_PLAN: DRY_PLAN_SHA256,
-        DRY_REVIEW: DRY_REVIEW_SHA256,
-    }
-    for path, digest in fixed.items():
+def verify_old_failure_anchors():
+    result = {}
+    for name, anchor in OLD_FAILURE_ANCHORS.items():
+        path = pathlib.Path(anchor["path"])
         regular_nofollow(path)
-        if sha256(path) != digest:
-            raise RuntimeError(f"fixed input changed: {path}")
+        observed = sha256(path)
+        if observed != anchor["sha256"]:
+            raise RuntimeError(f"old campaign anchor changed: {path}")
+        result[name] = {"path": str(path), "sha256": observed}
+    return result
+
+
+def verify_old_units_terminal():
+    expected = {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "InvocationID": "",
+    }
+    result = {}
+    properties = ",".join(("Id", *expected))
+    for case, unit in OLD_UNITS.items():
+        command = [
+            "systemctl",
+            "--user",
+            "show",
+            "--all",
+            "--property=" + properties,
+            unit,
+        ]
+        completed = subprocess.run(command, capture_output=True, check=False)
+        if completed.returncode != 0 or completed.stderr:
+            raise RuntimeError(f"old unit state query failed: {unit}")
+        fields = {}
+        for line in completed.stdout.decode(
+            "utf-8", errors="strict"
+        ).splitlines():
+            if not line or "=" not in line:
+                raise RuntimeError(f"old unit state is malformed: {unit}")
+            key, value = line.split("=", 1)
+            if key in fields:
+                raise RuntimeError(
+                    f"old unit state duplicated a field: {unit}"
+                )
+            fields[key] = value
+        if fields.get("Id") != unit or any(
+            fields.get(key) != value for key, value in expected.items()
+        ):
+            raise RuntimeError(f"old unit is not terminal and unowned: {unit}")
+        result[case] = {"unit": unit, **expected, "query_argv": command}
+    return result
+
+
+def validate_recorded_old_units(value):
+    expected_state = {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "InvocationID": "",
+    }
+    properties = ",".join(("Id", *expected_state))
+    if set(value) != set(OLD_UNITS):
+        raise RuntimeError("recorded old unit set changed")
+    for case, unit in OLD_UNITS.items():
+        expected = {
+            "unit": unit,
+            **expected_state,
+            "query_argv": [
+                "systemctl",
+                "--user",
+                "show",
+                "--all",
+                "--property=" + properties,
+                unit,
+            ],
+        }
+        if value.get(case) != expected:
+            raise RuntimeError(f"recorded old unit state changed: {unit}")
+    return value
+
+
+def verify_fixed_inputs(check_old_units=False):
+    regular_nofollow(DRY_PLAN)
+    regular_nofollow(REPAIR_REVIEW)
+    if sha256(REPAIR_REVIEW) != REPAIR_REVIEW_SHA256:
+        raise RuntimeError("repair review changed")
     source = git_identity(SOURCE, SOURCE_COMMIT, SOURCE_TREE)
     plan = read_json_nofollow(DRY_PLAN)
-    review = read_json_nofollow(DRY_REVIEW)
+    review = read_json_nofollow(REPAIR_REVIEW)
     arms = plan.get("dispatch", {}).get("arms", {})
+    authorization = review.get("authorization", {})
+    target = review.get("review_target", {})
+    working_directory = review.get("working_directory_contract", {})
     if (
         plan.get("schema")
-        != "lanl-maa-umt-pki4-gate-b-lifecycle-live-plan-v22"
+        != "lanl-maa-umt-pki4-gate-b-lifecycle-live-plan-v25"
+        or plan.get("campaign_root") != str(CAMPAIGN)
         or set(arms) != set(CASES)
         or plan["dispatch"].get("maximum_concurrent_arms") != 2
-        or review.get("status")
-        != "passed_dry_plan_implementation_only_authorized"
-        or review.get("authorization", {}).get("live_launch") is not False
+        or review.get("decision")
+        != "PASS_REPAIR_AND_FRESH_SUCCESSOR_PLAN_NO_LAUNCH"
+        or target.get("commit") != REPAIR_COMMIT
+        or target.get("tree") != REPAIR_TREE
+        or authorization.get("after_condition")
+        != "preparation_and_review_of_fresh_v25_campaign_only"
+        or any(
+            authorization.get(key) is not False
+            for key in (
+                "build",
+                "systemd_action",
+                "gem5_launch",
+                "opcode_launch",
+                "rtl_launch",
+                "old_campaign_mutation",
+                "remote_git",
+                "promotion",
+            )
+        )
+        or working_directory.get("accepted_exact_value") != "!/home/nier"
+        or working_directory.get("comparison") != "byte_exact_string_equality"
+        or working_directory.get("normalization_performed") is not False
     ):
-        raise RuntimeError("reviewed dry plan/review semantics changed")
+        raise RuntimeError("successor plan or repair review semantics changed")
+    for name, digest in (
+        plan.get("lineage", {}).get("candidate_files", {}).items()
+    ):
+        path = ROOT / name
+        regular_nofollow(path)
+        if sha256(path) != digest:
+            raise RuntimeError(f"successor candidate file changed: {path}")
     roots = [arms[name]["root"] for name in CASES]
     units = [arms[name]["unit"] for name in CASES]
-    if len(set(roots)) != 2 or len(set(units)) != 2:
+    if (
+        len(set(roots)) != 2
+        or len(set(units)) != 2
+        or any(not root.startswith(str(CAMPAIGN) + "/arms/") for root in roots)
+        or set(units)
+        != {
+            "umt-pki4-gate-b-live-v25-d32-g32-20260901.service",
+            "umt-pki4-gate-b-live-v25-d64-g31-20260901.service",
+        }
+    ):
         raise RuntimeError("reviewed arm roots/units are not distinct")
     for name in CASES:
         arm = arms[name]
@@ -346,6 +488,9 @@ def verify_fixed_inputs():
             != arm["systemd_run_argv_sha256"]
         ):
             raise RuntimeError(f"reviewed {name} command hash changed")
+    verify_old_failure_anchors()
+    if check_old_units:
+        verify_old_units_terminal()
     return plan, review, source
 
 
@@ -447,11 +592,13 @@ def verify_proof_audit(path, digest, proof_digest):
 
 def harness_files():
     names = (
+        "tests/lanl_maa/umt_pki4_gate_b_live_plan.py",
+        "tests/lanl_maa/test_umt_pki4_gate_b_live_plan.py",
         "tests/lanl_maa/umt_pki4_gate_b_live_harness.py",
         "tests/lanl_maa/postprocess_umt_pki4_gate_b_live.py",
         "tests/lanl_maa/test_umt_pki4_gate_b_live_harness.py",
         "tests/lanl_maa/umt_ingress_micro_harness.py",
-        "docs/plans/umt_pki4_gate_b_live_implementation_v23_20260901.md",
+        "docs/plans/umt_pki4_gate_b_fresh_successor_v25_20260901.md",
     )
     return {name: sha256(ROOT / name) for name in names}
 
@@ -474,10 +621,33 @@ def audited_build_anchors():
 
 
 def expected_implementation_plan(
-    test_artifact, require_clean=True, recorded_finalizer=None
+    test_artifact,
+    require_clean=True,
+    recorded_finalizer=None,
+    recorded_identity=None,
+    recorded_old_units=None,
 ):
     dry, _, source = verify_fixed_inputs()
-    identity = git_identity(ROOT, require_clean=require_clean)
+    identity = (
+        git_identity(ROOT, require_clean=require_clean)
+        if recorded_identity is None
+        else recorded_identity
+    )
+    files = harness_files()
+    if recorded_identity is not None:
+        if (
+            identity.get("worktree") != str(ROOT.resolve())
+            or identity.get("clean") is not True
+            or not re.fullmatch(r"[0-9a-f]{40}", identity.get("commit", ""))
+            or subprocess.check_output(
+                ["git", "rev-parse", identity["commit"] + "^{tree}"],
+                cwd=ROOT,
+                text=True,
+            ).strip()
+            != identity.get("tree")
+            or identity.get("reviewed_file_sha256") != files
+        ):
+            raise RuntimeError("recorded implementation identity is malformed")
     commands = {
         name: {
             "unit": dry["dispatch"]["arms"][name]["unit"],
@@ -529,17 +699,38 @@ def expected_implementation_plan(
         "campaign_root": str(CAMPAIGN),
         "reviewed_dry_plan": {
             "path": str(DRY_PLAN),
-            "sha256": DRY_PLAN_SHA256,
+            "sha256": sha256(DRY_PLAN),
         },
-        "reviewed_dry_plan_review": {
-            "path": str(DRY_REVIEW),
-            "sha256": DRY_REVIEW_SHA256,
+        "repair_review": {
+            "path": str(REPAIR_REVIEW),
+            "sha256": REPAIR_REVIEW_SHA256,
+            "commit": REPAIR_REVIEW_COMMIT,
+            "tree": REPAIR_REVIEW_TREE,
         },
-        "implementation": {
-            **identity,
-            "reviewed_file_sha256": harness_files(),
-        },
+        "implementation": {**identity, "reviewed_file_sha256": files},
         "source": source,
+        "repair_lineage": {
+            "commit": REPAIR_COMMIT,
+            "tree": REPAIR_TREE,
+            "independent_review": {
+                "path": str(REPAIR_REVIEW),
+                "sha256": REPAIR_REVIEW_SHA256,
+                "commit": REPAIR_REVIEW_COMMIT,
+                "tree": REPAIR_REVIEW_TREE,
+                "decision": "PASS_REPAIR_AND_FRESH_SUCCESSOR_PLAN_NO_LAUNCH",
+            },
+        },
+        "failed_predecessor": {
+            "campaign_root": str(OLD_CAMPAIGN),
+            "preservation": "read_only_byte_exact_no_reuse_no_backfill",
+            "anchors": verify_old_failure_anchors(),
+            "terminal_precondition": (
+                verify_old_units_terminal()
+                if recorded_old_units is None
+                else validate_recorded_old_units(recorded_old_units)
+            ),
+            "old_pid_identity_adoption": "forbidden",
+        },
         "future_build_dependency": {
             "proof_path": str(BUILD_PROOF),
             "proof_sha256": BUILD_PROOF_SHA256,
@@ -574,10 +765,17 @@ def expected_implementation_plan(
             "maximum_concurrent": 2,
             "distinct_units_and_roots": True,
         },
+        "host_working_directory_identity": {
+            "accepted_exact_value": HOST_WORKING_DIRECTORY,
+            "comparison": "byte_exact_string_equality",
+            "normalization": False,
+            "validated_before_manager_live_publication": True,
+        },
         "implemented_gates": [
             "audited exact v21 proof, binary, validator, and validation transcript identity",
             "separate implementation review binding",
             "fresh roots and no-clobber dispatch reservation",
+            "old units terminal plus no old PID/invocation adoption",
             "service-owned reservation/launch/terminal receipts",
             "manager-owned live systemd/proc and terminal systemd/journal receipts",
             "one O_NOFOLLOW terminal-bound snapshot feeding both prefixes",
@@ -613,7 +811,11 @@ def implementation_review_request(plan_digest, test_artifact):
         "audited_build_anchors": audited_build_anchors(),
         "tests": test_artifact,
         "requested_checks": [
-            "recompute every exact command argv hash from the reviewed v22 dry plan",
+            "recompute every exact command argv hash from the fresh v25 dry plan",
+            "confirm repair commit f7ace476 and repair-review SHA-256 are exact",
+            "rehash the preserved v22 failure anchors and reject old roots, units, PIDs, or receipts",
+            "confirm both old units are not-found/inactive/dead before freeze and dispatch",
+            "reject every WorkingDirectory value except the byte-exact !/home/nier",
             "audit v21 proof validation and transcript freeze for stale/symlink/forgery failure",
             "require the separate exact-terminal-proof audit before consuming the proof",
             "audit two-arm uniqueness, max-two concurrency, and no-clobber manager capture",
@@ -629,6 +831,14 @@ def implementation_review_request(plan_digest, test_artifact):
             "must_bind_plan_sha256": plan_digest,
             "must_bind_review_request_sha256": "sha256 of this request",
             "must_bind_audited_build_anchors": audited_build_anchors(),
+            "must_bind_repair_lineage": plan["repair_lineage"],
+            "must_bind_failed_predecessor": plan["failed_predecessor"],
+            "must_bind_working_directory_contract": plan[
+                "host_working_directory_identity"
+            ],
+            "must_bind_resource_properties": read_json_nofollow(DRY_PLAN)[
+                "dispatch"
+            ]["resource_properties"],
             "authorized_arms": list(CASES),
             "maximum_concurrent": 2,
             "rtl_launch_authorized": False,
@@ -639,6 +849,7 @@ def implementation_review_request(plan_digest, test_artifact):
             "gem5": False,
             "opcode": False,
             "rtl": False,
+            "old_campaign_mutation": False,
             "remote_git": False,
             "maximum_next_step": "independent review of this exact implementation and commands",
         },
@@ -656,28 +867,50 @@ def publish_review_bundle():
     ):
         raise RuntimeError("implementation review bundle already exists")
     git_identity(ROOT, require_clean=True)
-    command = [
+    prefix = [
+        "/usr/bin/env",
+        "PYTHONDONTWRITEBYTECODE=1",
+        "PYTHONWARNINGS=error::ResourceWarning",
         "/usr/bin/python3",
-        str(ROOT / "tests/lanl_maa/test_umt_pki4_gate_b_live_harness.py"),
-        "-v",
     ]
-    completed = subprocess.run(
-        command,
-        cwd=ROOT,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        check=False,
-    )
-    if completed.returncode != 0:
-        raise RuntimeError("implementation adversarial tests failed")
-    atomic_bytes(IMPLEMENTATION_TESTS, completed.stdout)
+    commands = [
+        [
+            *prefix,
+            str(ROOT / "tests/lanl_maa/test_umt_pki4_gate_b_live_plan.py"),
+            "-v",
+        ],
+        [
+            *prefix,
+            str(ROOT / "tests/lanl_maa/test_umt_pki4_gate_b_live_harness.py"),
+            "-v",
+        ],
+    ]
+    transcripts = []
+    for command in commands:
+        completed = subprocess.run(
+            command,
+            cwd=ROOT,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        transcripts.append(
+            (
+                "argv=" + json.dumps(command, separators=(",", ":")) + "\n"
+            ).encode()
+            + completed.stdout
+        )
+        if completed.returncode != 0:
+            raise RuntimeError("implementation adversarial tests failed")
+    atomic_bytes(IMPLEMENTATION_TESTS, b"\n".join(transcripts))
     test_artifact = {
         "path": str(IMPLEMENTATION_TESTS),
         "sha256": sha256(IMPLEMENTATION_TESTS),
         "bytes": IMPLEMENTATION_TESTS.stat().st_size,
-        "argv": command,
-        "returncode": 0,
+        "commands": commands,
+        "returncodes": [0, 0],
+        "total_tests": 32,
     }
     plan = expected_implementation_plan(test_artifact)
     atomic_json(IMPLEMENTATION_PLAN, plan)
@@ -711,6 +944,10 @@ def verify_implementation_plan():
             tests,
             recorded_finalizer=plan.get("future_build_dependency", {}).get(
                 "validator_identity", {}
+            ),
+            recorded_identity=plan.get("implementation", {}),
+            recorded_old_units=plan.get("failed_predecessor", {}).get(
+                "terminal_precondition", {}
             ),
         )
     ):
@@ -747,11 +984,19 @@ def verify_launch_review(path, digest):
             "sha256": sha256(IMPLEMENTATION_REQUEST),
         }
         or value.get("authorization", {}).get("live_launch") is not True
+        or value.get("authorization", {}).get("old_campaign_mutation")
+        is not False
         or value.get("authorization", {}).get("authorized_arms") != list(CASES)
         or value.get("authorization", {}).get("maximum_concurrent") != 2
         or value.get("authorization", {}).get("rtl_launch") is not False
         or value.get("command_hashes") != command_hashes
         or value.get("audited_build_anchors") != audited_build_anchors()
+        or value.get("repair_lineage") != plan["repair_lineage"]
+        or value.get("failed_predecessor") != plan["failed_predecessor"]
+        or value.get("working_directory_contract")
+        != plan["host_working_directory_identity"]
+        or value.get("resource_properties")
+        != read_json_nofollow(DRY_PLAN)["dispatch"]["resource_properties"]
     ):
         raise RuntimeError(
             "implementation review does not authorize exact commands"
@@ -858,13 +1103,15 @@ def expected_contract(
     binary = proof["compile_and_link_contract"]["binary"]
     return {
         "schema": SCHEMA_CONTRACT,
-        "status": "frozen_reviewed_exact_two_arm_live_launch_authorized",
+        "status": "frozen_reviewed_exact_two_arm_v25_live_launch_authorized",
         "campaign_root": str(CAMPAIGN),
         "frozen_inputs": {
-            "dry_plan": {"path": str(DRY_PLAN), "sha256": DRY_PLAN_SHA256},
-            "dry_review": {
-                "path": str(DRY_REVIEW),
-                "sha256": DRY_REVIEW_SHA256,
+            "dry_plan": {"path": str(DRY_PLAN), "sha256": sha256(DRY_PLAN)},
+            "repair_review": {
+                "path": str(REPAIR_REVIEW),
+                "sha256": REPAIR_REVIEW_SHA256,
+                "commit": REPAIR_REVIEW_COMMIT,
+                "tree": REPAIR_REVIEW_TREE,
             },
             "implementation_plan": {
                 "path": str(IMPLEMENTATION_PLAN),
@@ -891,6 +1138,14 @@ def expected_contract(
         },
         "source": source,
         "implementation": implementation["implementation"],
+        "repair_lineage": implementation["repair_lineage"],
+        "failed_predecessor": {
+            **implementation["failed_predecessor"],
+            "terminal_precondition_revalidated_at_freeze": True,
+        },
+        "host_working_directory_identity": implementation[
+            "host_working_directory_identity"
+        ],
         "concurrency": {
             "only_arms": list(CASES),
             "maximum_concurrent": 2,
@@ -933,9 +1188,11 @@ def arm_paths_absent(plan):
 
 
 def freeze_contract(proof_digest, proof_audit_digest, review_digest):
-    if CONTRACT.exists() or CONTRACT.is_symlink():
-        raise RuntimeError("Gate-B v23 contract already exists")
-    plan, _, _ = verify_fixed_inputs()
+    if CAMPAIGN.exists() or CAMPAIGN.is_symlink():
+        raise RuntimeError(
+            "fresh Gate-B v25 campaign namespace already exists"
+        )
+    plan, _, _ = verify_fixed_inputs(check_old_units=True)
     # Check the exact independent PASS before consuming the proof, binary, or
     # validator in any way.
     verify_proof_audit(BUILD_PROOF_AUDIT, proof_audit_digest, proof_digest)
@@ -943,6 +1200,7 @@ def freeze_contract(proof_digest, proof_audit_digest, review_digest):
     validation_raw = run_build_validator()
     validate_build_proof(BUILD_PROOF, proof_digest, validation_raw)
     verify_launch_review(IMPLEMENTATION_REVIEW, review_digest)
+    verify_old_units_terminal()
     arm_paths_absent(plan)
     publish_or_verify(VALIDATION_TRANSCRIPT, validation_raw)
     contract = expected_contract(
@@ -969,7 +1227,7 @@ def validate_contract(path, digest, require_fresh=False):
     if value != expected:
         raise RuntimeError("frozen Gate-B contract semantics changed")
     if require_fresh:
-        plan, _, _ = verify_fixed_inputs()
+        plan, _, _ = verify_fixed_inputs(check_old_units=True)
         arm_paths_absent(plan)
     return value
 

@@ -1,0 +1,546 @@
+{
+  "analysis": {
+    "correctness": {
+      "all_completions_valid": true,
+      "counter_equations": [
+        "selected ABI descriptors == wave_calls",
+        "other ABI descriptors == 0",
+        "groups_loaded == submitted_groups",
+        "input_reads == submitted_groups * 16",
+        "state denominators/results conserve submitted work"
+      ],
+      "exact_result_check_passed_count": 1,
+      "exact_terminal_marker_count": 1,
+      "gem5_and_wrapper_returncode": 0,
+      "no_scalar_fallback_or_copy_readback": true,
+      "reject_fatal_or_panic": true,
+      "required_work_counters": [
+        "descriptorDoorbells",
+        "descriptorFetches",
+        "descriptorCompletionWrites",
+        "descriptorUmtD32Descriptors",
+        "descriptorUmtD64Descriptors",
+        "descriptorUmtGroupsLoaded",
+        "descriptorUmtInputReads",
+        "descriptorUmtStateInputWrites",
+        "descriptorUmtStateDenominatorsConsumed",
+        "descriptorUmtStateResultWrites",
+        "descriptorUmtResultsComputed"
+      ],
+      "selected_abi_only": true,
+      "submission_mode": "ordered_wave",
+      "submission_opcode": 11
+    },
+    "full_successor_required_observations_per_arm": {
+      "at_least_one_generation_greater_than_one": true,
+      "at_least_one_token_reuse_marker": true,
+      "completion_release_same_cycle_and_immediate_reuse_checked": true,
+      "lowest_free_admission_and_issue_slot_width_checked": true,
+      "phase_counts_strictly_positive": [
+        "token_admission",
+        "token_issue",
+        "token_completion",
+        "token_release",
+        "token_reuse"
+      ],
+      "replay_authorized": true,
+      "request_callback_operation_group_corner_identity_checked": true,
+      "terminal_live_token_count": 0,
+      "terminal_token_free_mask": "all 32 T32 bits set"
+    },
+    "full_successor_router": {
+      "entrypoint": "select_profile(document, require_full_successor=True)",
+      "host_review": {
+        "path": "/data1/nier/dx100-runs/2026-08-31-umt-pki4-gate-b-lifecycle-host-v4/gate-b-lifecycle-host-independent-review-v4.json",
+        "sha256": "4a20183db04f520246785ca1e776e5c802fb117fcd9e37932a136cac87fee2c4"
+      },
+      "path": "/data1/nier/worktrees/DX100-umt-pki4-gate-b-router-repair-20260831/experiments/lanl_maa_fp64_physical/scripts/umt_pki4_gate_b_schema.py",
+      "required_profile": "canonical-v4-gate-b",
+      "sha256": "a3912db4dfeab162dcc44533d6c84e8abc0489d6212762a1fa5dd059a473cdb2"
+    },
+    "lifecycle_normalizer": {
+      "allow_open_tail": false,
+      "output_schema": "lanl-maa-umt-pki4-canonical-stimulus-v4",
+      "path": "/data1/nier/worktrees/DX100-umt-pki4-gate-b-router-repair-20260831/tests/lanl_maa/umt_pki4_lifecycle_normalizer.py",
+      "raw_schema": "lanl-maa-umt-pki4-lifecycle-v1",
+      "sha256": "6adc78f3a41a6a0f088622aeb3a7abbcd7456c531f329dce1086405fcbefebdc"
+    },
+    "publication": "exclusive-create/no-overwrite/fsync receipts; preserve raw, snapshot, canonical-v3, canonical-v4, router result, and arm report",
+    "queue_timing": {
+      "claim_scope": "live C++ conformance observer plus queue-timed reference; not observed RTL queue timing",
+      "conformance_normalizer": {
+        "path": "/data1/nier/worktrees/DX100-umt-pki4-gate-b-router-repair-20260831/tests/lanl_maa/umt_pki4_conformance_normalizer.py",
+        "sha256": "de2c140c638884aa876756c81be3de832ac14ccb938ee863a69f84a006146fb7"
+      },
+      "required_live_evidence": [
+        "canonical-v3 request/callback/lane/end ordering",
+        "every next_engine_tick equals callback cycle C+1",
+        "four-bank group modulo mapping",
+        "per-bank depth never exceeds two",
+        "at least one same-bank second source with nominal visibility C+2",
+        "source and denominator conservation/work accounting"
+      ],
+      "reviewed_snapshot_design_predecessor": {
+        "direct_reuse": "forbidden_v16_v19_contract_does_not_accept_v21_gate_b_proof",
+        "path": "/data1/nier/worktrees/codex-sessions/umt_gate_b_v25_fresh_successor-20260901-034116-bd923728/DX100/tests/lanl_maa/normalize_umt_pki4_live_trace.py",
+        "review": {
+          "path": "/data1/nier/dx100-runs/2026-08-31-umt-pki4-normalizer-v4-d32-repair/pki4-normalizer-v4-live-semantics-262ab23e-independent-review-v3.json",
+          "sha256": "a03f7ce82864e1ac81f695b9a478c1408e8a7fc5e4ee221c76adb87209fb4360"
+        },
+        "sha256": "8edaa3d0630c56461d7f21b1c300831256e394067ccc30a2a791258141e31aea"
+      }
+    }
+  },
+  "authorization": {
+    "build": false,
+    "gem5": false,
+    "maximum_next_step": "independent review of this exact no-launch v25 implementation",
+    "opcode": false,
+    "remote_git": false,
+    "rtl": false,
+    "systemd": false
+  },
+  "build_dependency": {
+    "contract_freeze_adds": [
+      "proof_sha256",
+      "gem5_sha256",
+      "proof_validation_stdout_sha256",
+      "fresh absent arm roots and manager-owned receipt paths",
+      "a PASS independent review of this exact plan"
+    ],
+    "launch_before_all_fields_are_frozen": "forbidden",
+    "proof_must_bind_binary_path": "/data1/nier/worktrees/DX100-umt-pki4-gate-b-router-repair-20260831/build/X86_UMT_T32_W2/gem5.opt",
+    "proof_must_bind_compiled_defines": [
+      "-DLANL_MAA_UMT_PKI4_CONFORMANCE_TEST",
+      "-DLANL_MAA_UMT_PKI4_LIFECYCLE_TEST"
+    ],
+    "proof_must_bind_markers": [
+      "UMT_PKI4_CONFORMANCE ",
+      "lanl-maa-umt-pki4-conformance-v3",
+      "UMT_PKI4_LIFECYCLE ",
+      "lanl-maa-umt-pki4-lifecycle-v1"
+    ],
+    "proof_must_bind_source_commit": "40c8861ba4242101c6f9235a893ccfe2f1a13ab0",
+    "proof_must_bind_source_tree": "07bfe75479fd2d901a5cd138a318e10701c0d5b5",
+    "proof_must_bind_t32_w2": {
+      "compute_tokens": 32,
+      "fp_issue_width": 2
+    },
+    "proof_must_exist_before_contract_freeze": true,
+    "proof_path": "/data1/nier/dx100-runs/2026-08-31-umt-pki4-gate-b-lifecycle-build-v21-live/identity/pki4-gate-b-lifecycle-build-proof-v21.json",
+    "proof_schema": "lanl-maa-umt-pki4-gate-b-lifecycle-build-proof-v21",
+    "proof_status": "passed_retained_terminal_build_only",
+    "validator": {
+      "argv": [
+        "/usr/bin/python3",
+        "/data1/nier/dx100-runs/2026-08-31-umt-pki4-gate-b-lifecycle-build-v21-live/finalize_gate_b_build_v21.py",
+        "validate"
+      ],
+      "audited_successor_sha256": "77d4ddeaa6fffc4af3ec7acb685006ce37592929b11e4f09c1faff8a65756eb3",
+      "expected_schema": "lanl-maa-umt-pki4-gate-b-lifecycle-build-proof-validation-v21",
+      "expected_status": "passed",
+      "path": "/data1/nier/dx100-runs/2026-08-31-umt-pki4-gate-b-lifecycle-build-v21-live/finalize_gate_b_build_v21.py",
+      "reviewed_dry_plan_sha256": "5736178e3bb83fbfbfba610047e81e746e5dbc3b850744628612c2e5a873c6d7"
+    }
+  },
+  "campaign_root": "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live",
+  "claim_boundary": "Fresh Gate-B v25 implementation plan only. It launches nothing and proves no live lifecycle behavior. A later reviewed contract may run exactly one D32/G32 and one D64/G31 arm concurrently after the exact v21 terminal build proof. Canonical-v4 lifecycle and C++ queue-timing evidence do not establish RTL ready/accept/queue-commit behavior, C++/RTL equivalence, performance, mapped cost, generality, a universal default, or Gate-B promotion.",
+  "dispatch": {
+    "arms": {
+      "d32-g32": {
+        "abi": "D32",
+        "abi_version": 4,
+        "arm_report": "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d32-g32/analysis/gate-b/arm-report-v25.json",
+        "canonical_v4": "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d32-g32/analysis/gate-b/full-canonical-v4.json",
+        "conformance_v3": "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d32-g32/analysis/gate-b/full-canonical-v3.json",
+        "gem5_argv": [
+          "/data1/nier/worktrees/DX100-umt-pki4-gate-b-router-repair-20260831/build/X86_UMT_T32_W2/gem5.opt",
+          "--listener-mode=off",
+          "--dot-config=",
+          "--outdir=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d32-g32/m5out",
+          "--debug-flags=LANLMAA",
+          "--debug-file=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d32-g32/debug.log",
+          "/data1/nier/worktrees/codex-sessions/umt_gate_b_v25_fresh_successor-20260901-034116-bd923728/DX100/tests/lanl_maa/umt_ingress_micro_process_cpu.py",
+          "--binary=/data1/nier/dx100-runs/2026-08-09-umt-adaptive-streamed-successor-v2/identity/test_driver",
+          "--cwd=/data1/nier/worktrees/umt-lanl-maa-adaptive-d32-d64-20260808",
+          "--output-dir=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d32-g32",
+          "--app-stdout=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d32-g32/app.stdout",
+          "--app-stderr=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d32-g32/app.stderr",
+          "--submission-report=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d32-g32/submission.json",
+          "--groups=32",
+          "--umt-mode=wave_d32",
+          "--label=lanl_maa_umt_ingress_micro_d32-g32"
+        ],
+        "gem5_argv_sha256": "79144239a06b094369f5ce81649a509357db0ff482d588b1b4b5051d450688cf",
+        "groups": 32,
+        "manager_evidence": {
+          "journal_export": "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d32-g32/.manager-owned/systemd-journal.export",
+          "live_show": "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d32-g32/.manager-owned/systemd-live.show",
+          "proc_start": "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d32-g32/.manager-owned/proc-start.json",
+          "terminal_show": "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d32-g32/.manager-owned/systemd-terminal.show"
+        },
+        "mode": "wave_d32",
+        "required_absent_before_dispatch": [
+          "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d32-g32",
+          "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/identity/dispatch-manager/d32-g32"
+        ],
+        "root": "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d32-g32",
+        "router_receipt": "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d32-g32/analysis/gate-b/full-successor-router.json",
+        "service_owned_receipts": [
+          "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d32-g32/.service-owned/arm-launch.json",
+          "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d32-g32/.service-owned/arm-output-ownership.json",
+          "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d32-g32/.service-owned/arm-terminal.json"
+        ],
+        "systemd_run_argv": [
+          "systemd-run",
+          "--user",
+          "--collect",
+          "--unit=umt-pki4-gate-b-live-v25-d32-g32-20260901.service",
+          "--property=CPUQuota=400%",
+          "--property=CPUWeight=1000",
+          "--property=MemoryHigh=15032385536",
+          "--property=MemoryMax=17179869184",
+          "--property=MemorySwapMax=0",
+          "--property=RuntimeMaxSec=4h",
+          "/usr/bin/python3",
+          "/data1/nier/worktrees/codex-sessions/umt_gate_b_v25_fresh_successor-20260901-034116-bd923728/DX100/tests/lanl_maa/run_umt_ingress_micro_arm.py",
+          "--arm-root",
+          "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d32-g32",
+          "--gem5-argv-sha256",
+          "79144239a06b094369f5ce81649a509357db0ff482d588b1b4b5051d450688cf",
+          "--",
+          "/data1/nier/worktrees/DX100-umt-pki4-gate-b-router-repair-20260831/build/X86_UMT_T32_W2/gem5.opt",
+          "--listener-mode=off",
+          "--dot-config=",
+          "--outdir=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d32-g32/m5out",
+          "--debug-flags=LANLMAA",
+          "--debug-file=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d32-g32/debug.log",
+          "/data1/nier/worktrees/codex-sessions/umt_gate_b_v25_fresh_successor-20260901-034116-bd923728/DX100/tests/lanl_maa/umt_ingress_micro_process_cpu.py",
+          "--binary=/data1/nier/dx100-runs/2026-08-09-umt-adaptive-streamed-successor-v2/identity/test_driver",
+          "--cwd=/data1/nier/worktrees/umt-lanl-maa-adaptive-d32-d64-20260808",
+          "--output-dir=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d32-g32",
+          "--app-stdout=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d32-g32/app.stdout",
+          "--app-stderr=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d32-g32/app.stderr",
+          "--submission-report=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d32-g32/submission.json",
+          "--groups=32",
+          "--umt-mode=wave_d32",
+          "--label=lanl_maa_umt_ingress_micro_d32-g32"
+        ],
+        "systemd_run_argv_sha256": "832a21f44261ade163bad8a2c952e68bef8f3b9736b2080f7724a37f4d298a31",
+        "terminal_snapshot": "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d32-g32/analysis/gate-b/terminal-validated-gem5.stderr.snapshot",
+        "unit": "umt-pki4-gate-b-live-v25-d32-g32-20260901.service",
+        "wrapper_argv": [
+          "/usr/bin/python3",
+          "/data1/nier/worktrees/codex-sessions/umt_gate_b_v25_fresh_successor-20260901-034116-bd923728/DX100/tests/lanl_maa/run_umt_ingress_micro_arm.py",
+          "--arm-root",
+          "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d32-g32",
+          "--gem5-argv-sha256",
+          "79144239a06b094369f5ce81649a509357db0ff482d588b1b4b5051d450688cf",
+          "--",
+          "/data1/nier/worktrees/DX100-umt-pki4-gate-b-router-repair-20260831/build/X86_UMT_T32_W2/gem5.opt",
+          "--listener-mode=off",
+          "--dot-config=",
+          "--outdir=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d32-g32/m5out",
+          "--debug-flags=LANLMAA",
+          "--debug-file=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d32-g32/debug.log",
+          "/data1/nier/worktrees/codex-sessions/umt_gate_b_v25_fresh_successor-20260901-034116-bd923728/DX100/tests/lanl_maa/umt_ingress_micro_process_cpu.py",
+          "--binary=/data1/nier/dx100-runs/2026-08-09-umt-adaptive-streamed-successor-v2/identity/test_driver",
+          "--cwd=/data1/nier/worktrees/umt-lanl-maa-adaptive-d32-d64-20260808",
+          "--output-dir=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d32-g32",
+          "--app-stdout=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d32-g32/app.stdout",
+          "--app-stderr=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d32-g32/app.stderr",
+          "--submission-report=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d32-g32/submission.json",
+          "--groups=32",
+          "--umt-mode=wave_d32",
+          "--label=lanl_maa_umt_ingress_micro_d32-g32"
+        ],
+        "wrapper_argv_sha256": "3e2865533e15e71b6e47742bdd1793f0a980fac4c101b763e0b4ea57ab4dbd3c"
+      },
+      "d64-g31": {
+        "abi": "D64",
+        "abi_version": 5,
+        "arm_report": "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d64-g31/analysis/gate-b/arm-report-v25.json",
+        "canonical_v4": "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d64-g31/analysis/gate-b/full-canonical-v4.json",
+        "conformance_v3": "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d64-g31/analysis/gate-b/full-canonical-v3.json",
+        "gem5_argv": [
+          "/data1/nier/worktrees/DX100-umt-pki4-gate-b-router-repair-20260831/build/X86_UMT_T32_W2/gem5.opt",
+          "--listener-mode=off",
+          "--dot-config=",
+          "--outdir=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d64-g31/m5out",
+          "--debug-flags=LANLMAA",
+          "--debug-file=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d64-g31/debug.log",
+          "/data1/nier/worktrees/codex-sessions/umt_gate_b_v25_fresh_successor-20260901-034116-bd923728/DX100/tests/lanl_maa/umt_ingress_micro_process_cpu.py",
+          "--binary=/data1/nier/dx100-runs/2026-08-09-umt-adaptive-streamed-successor-v2/identity/test_driver",
+          "--cwd=/data1/nier/worktrees/umt-lanl-maa-adaptive-d32-d64-20260808",
+          "--output-dir=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d64-g31",
+          "--app-stdout=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d64-g31/app.stdout",
+          "--app-stderr=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d64-g31/app.stderr",
+          "--submission-report=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d64-g31/submission.json",
+          "--groups=31",
+          "--umt-mode=wave_d64",
+          "--label=lanl_maa_umt_ingress_micro_d64-g31"
+        ],
+        "gem5_argv_sha256": "96826d1284bfd9a49eec887e2069b8bb96beed5fcec8f013f09a2a3afb5e96c6",
+        "groups": 31,
+        "manager_evidence": {
+          "journal_export": "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d64-g31/.manager-owned/systemd-journal.export",
+          "live_show": "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d64-g31/.manager-owned/systemd-live.show",
+          "proc_start": "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d64-g31/.manager-owned/proc-start.json",
+          "terminal_show": "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d64-g31/.manager-owned/systemd-terminal.show"
+        },
+        "mode": "wave_d64",
+        "required_absent_before_dispatch": [
+          "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d64-g31",
+          "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/identity/dispatch-manager/d64-g31"
+        ],
+        "root": "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d64-g31",
+        "router_receipt": "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d64-g31/analysis/gate-b/full-successor-router.json",
+        "service_owned_receipts": [
+          "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d64-g31/.service-owned/arm-launch.json",
+          "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d64-g31/.service-owned/arm-output-ownership.json",
+          "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d64-g31/.service-owned/arm-terminal.json"
+        ],
+        "systemd_run_argv": [
+          "systemd-run",
+          "--user",
+          "--collect",
+          "--unit=umt-pki4-gate-b-live-v25-d64-g31-20260901.service",
+          "--property=CPUQuota=400%",
+          "--property=CPUWeight=1000",
+          "--property=MemoryHigh=15032385536",
+          "--property=MemoryMax=17179869184",
+          "--property=MemorySwapMax=0",
+          "--property=RuntimeMaxSec=4h",
+          "/usr/bin/python3",
+          "/data1/nier/worktrees/codex-sessions/umt_gate_b_v25_fresh_successor-20260901-034116-bd923728/DX100/tests/lanl_maa/run_umt_ingress_micro_arm.py",
+          "--arm-root",
+          "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d64-g31",
+          "--gem5-argv-sha256",
+          "96826d1284bfd9a49eec887e2069b8bb96beed5fcec8f013f09a2a3afb5e96c6",
+          "--",
+          "/data1/nier/worktrees/DX100-umt-pki4-gate-b-router-repair-20260831/build/X86_UMT_T32_W2/gem5.opt",
+          "--listener-mode=off",
+          "--dot-config=",
+          "--outdir=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d64-g31/m5out",
+          "--debug-flags=LANLMAA",
+          "--debug-file=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d64-g31/debug.log",
+          "/data1/nier/worktrees/codex-sessions/umt_gate_b_v25_fresh_successor-20260901-034116-bd923728/DX100/tests/lanl_maa/umt_ingress_micro_process_cpu.py",
+          "--binary=/data1/nier/dx100-runs/2026-08-09-umt-adaptive-streamed-successor-v2/identity/test_driver",
+          "--cwd=/data1/nier/worktrees/umt-lanl-maa-adaptive-d32-d64-20260808",
+          "--output-dir=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d64-g31",
+          "--app-stdout=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d64-g31/app.stdout",
+          "--app-stderr=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d64-g31/app.stderr",
+          "--submission-report=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d64-g31/submission.json",
+          "--groups=31",
+          "--umt-mode=wave_d64",
+          "--label=lanl_maa_umt_ingress_micro_d64-g31"
+        ],
+        "systemd_run_argv_sha256": "5018850d52a2ea332f398985d016e92450a92f4585f686976e1b5a85cdd0233d",
+        "terminal_snapshot": "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d64-g31/analysis/gate-b/terminal-validated-gem5.stderr.snapshot",
+        "unit": "umt-pki4-gate-b-live-v25-d64-g31-20260901.service",
+        "wrapper_argv": [
+          "/usr/bin/python3",
+          "/data1/nier/worktrees/codex-sessions/umt_gate_b_v25_fresh_successor-20260901-034116-bd923728/DX100/tests/lanl_maa/run_umt_ingress_micro_arm.py",
+          "--arm-root",
+          "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d64-g31",
+          "--gem5-argv-sha256",
+          "96826d1284bfd9a49eec887e2069b8bb96beed5fcec8f013f09a2a3afb5e96c6",
+          "--",
+          "/data1/nier/worktrees/DX100-umt-pki4-gate-b-router-repair-20260831/build/X86_UMT_T32_W2/gem5.opt",
+          "--listener-mode=off",
+          "--dot-config=",
+          "--outdir=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d64-g31/m5out",
+          "--debug-flags=LANLMAA",
+          "--debug-file=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d64-g31/debug.log",
+          "/data1/nier/worktrees/codex-sessions/umt_gate_b_v25_fresh_successor-20260901-034116-bd923728/DX100/tests/lanl_maa/umt_ingress_micro_process_cpu.py",
+          "--binary=/data1/nier/dx100-runs/2026-08-09-umt-adaptive-streamed-successor-v2/identity/test_driver",
+          "--cwd=/data1/nier/worktrees/umt-lanl-maa-adaptive-d32-d64-20260808",
+          "--output-dir=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d64-g31",
+          "--app-stdout=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d64-g31/app.stdout",
+          "--app-stderr=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d64-g31/app.stderr",
+          "--submission-report=/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v25-live/arms/d64-g31/submission.json",
+          "--groups=31",
+          "--umt-mode=wave_d64",
+          "--label=lanl_maa_umt_ingress_micro_d64-g31"
+        ],
+        "wrapper_argv_sha256": "2a2ccae75a83164183a6f4ea8c4d6ee96492d3a0b50cbc63bcf4d53ce15f76c6"
+      }
+    },
+    "fail_closed": true,
+    "fresh_namespace": {
+      "all_arm_and_dispatch_manager_paths_absent_before_dispatch": true,
+      "campaign_root_absent_before_freeze": true,
+      "contract_and_validation_paths_reserved_no_clobber": true,
+      "dispatch_reservation_before_any_systemd_run": true
+    },
+    "maximum_concurrent_arms": 2,
+    "mode": "concurrent_exactly_two_arms_one_per_abi",
+    "no_build_or_scons": true,
+    "no_clobber": true,
+    "no_shell_wrapped_child": true,
+    "resource_properties": {
+      "CPUQuota": "400%",
+      "CPUWeight": "1000",
+      "MemoryHigh": "15032385536",
+      "MemoryMax": "17179869184",
+      "MemorySwapMax": "0",
+      "RuntimeMaxSec": "4h"
+    }
+  },
+  "failed_predecessor": {
+    "campaign_root": "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v22-live",
+    "failure_anchors": {
+      "capture_script": {
+        "path": "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v22-live/capture_failed_dispatch_live_v23.py",
+        "sha256": "924d4edf8574ff87c482e57f25aa97141f1dc89887a1d44d76f26d0d4bafe150"
+      },
+      "contract": {
+        "path": "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v22-live/gate-b-lifecycle-live-contract-v23.json",
+        "sha256": "21a3dc8a50b6a6ebac3771e6e2b4e3b526638ecfcd257b65b77078d62924ad0b"
+      },
+      "dispatch_reservation": {
+        "path": "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v22-live/identity/dispatch-reservation-v23.json",
+        "sha256": "88f5e4002ed7aad43285616a0450e927de073bb89a30f2b3a101cbe5892cc5aa"
+      },
+      "forensic_receipt": {
+        "path": "/data1/nier/dx100-runs/2026-09-01-umt-pki4-gate-b-lifecycle-v22-live/identity/failed-dispatch-v23-live/forensic-receipt.json",
+        "sha256": "6259f981a508716811a1f20872985e39f67d5293f1f0467cf0f4d1b3f786706e"
+      }
+    },
+    "old_pid_identity_adoption": "forbidden",
+    "old_units": {
+      "d32-g32": "umt-pki4-gate-b-live-v22-d32-g32-20260901.service",
+      "d64-g31": "umt-pki4-gate-b-live-v22-d64-g31-20260901.service"
+    },
+    "preservation": "read_only_byte_exact_no_reuse_no_backfill",
+    "required_state_before_freeze_and_dispatch": {
+      "ActiveState": "inactive",
+      "InvocationID": "",
+      "LoadState": "not-found",
+      "MainPID": "0",
+      "SubState": "dead"
+    }
+  },
+  "host_working_directory_identity": {
+    "comparison": "byte_exact_string_equality",
+    "normalization": false,
+    "systemd_show_exact_value": "!/home/nier",
+    "validation_precedes_manager_live_publication": true
+  },
+  "lineage": {
+    "build_plan": {
+      "path": "/data1/nier/dx100-runs/2026-08-31-umt-pki4-gate-b-lifecycle-build-v21-live/build-plan-v21.json",
+      "sha256": "bb8bed1aa86e4ba68a05d4fde8d5454eab4fa8ebb099b967ee31925582b392c1"
+    },
+    "build_review": {
+      "path": "/data1/nier/dx100-runs/2026-08-31-umt-pki4-gate-b-lifecycle-build-v21-live/gate-b-lifecycle-build-independent-review-v21.json",
+      "sha256": "c5be9c70f04f1e754bc2b568941de32aba84442f261adadc0497462d0e441426"
+    },
+    "candidate_files": {
+      "docs/plans/umt_pki4_gate_b_fresh_successor_v25_20260901.md": "920913d6d294ce350e5aec610c0a64a92d93b7cbf886badb853a5596c560284e",
+      "tests/lanl_maa/normalize_umt_pki4_live_trace.py": "8edaa3d0630c56461d7f21b1c300831256e394067ccc30a2a791258141e31aea",
+      "tests/lanl_maa/postprocess_umt_pki4_gate_b_live.py": "a07388749eba6bfdd3f35b02acc8d7907e93f1c099d8e8370d1cc704268bea18",
+      "tests/lanl_maa/run_umt_ingress_micro_arm.py": "2d5e64568062ce391677f37cbf089b755729e174d8342c7688eeb22997f01faa",
+      "tests/lanl_maa/test_umt_pki4_gate_b_live_harness.py": "15cd3c3ce9036fb2b7b6594fd4503aa6bfd5b6245774b11f8c1fd6695444edf6",
+      "tests/lanl_maa/test_umt_pki4_gate_b_live_plan.py": "f0b7d1681da091fd5400f1b5d2e0ff2b6f273f5247bbc1b87ce8a3ce6fd67c6a",
+      "tests/lanl_maa/umt_ingress_micro_process_cpu.py": "f08d5355260b10bcabb19ab79bb18bc7987c034e2580cb0f23e6e98015aeb4ba",
+      "tests/lanl_maa/umt_pki4_gate_b_live_harness.py": "516bd2327ae9770c651b9cb41f4b9243544b816258694a275e3a45e0536bd1ed",
+      "tests/lanl_maa/umt_pki4_gate_b_live_plan.py": "75a91fc0295007f62fa8b6923bf383dcebd298169a5103f662e46cc26251dbaa"
+    },
+    "host_review": {
+      "path": "/data1/nier/dx100-runs/2026-08-31-umt-pki4-gate-b-lifecycle-host-v4/gate-b-lifecycle-host-independent-review-v4.json",
+      "sha256": "4a20183db04f520246785ca1e776e5c802fb117fcd9e37932a136cac87fee2c4"
+    },
+    "repair": {
+      "commit": "f7ace47631793ead7ab3af0de192184defa03b7f",
+      "relationship": "direct_required_base",
+      "tree": "bf08f415487c69010ad445e044ea68c18aa703f5"
+    },
+    "repair_independent_review": {
+      "commit": "d0199bdc4a4d0b0fbf41427a960776a71478344e",
+      "decision": "PASS_REPAIR_AND_FRESH_SUCCESSOR_PLAN_NO_LAUNCH",
+      "path": "/data1/nier/worktrees/codex-sessions/umt_gate_b_v25_fresh_successor-20260901-034116-bd923728/DX100/experiments/evidence/umt_pki4_gate_b_fresh_successor_v25_20260901/repair-independent-review-v25.json",
+      "sha256": "7e44107c67b3d3d9a12244d704f620ca2c545c733f47091b39692513b3e95873",
+      "tree": "75027c12a9f55a004a0aec8d477bb8406f977859"
+    },
+    "source": {
+      "clean": true,
+      "commit": "40c8861ba4242101c6f9235a893ccfe2f1a13ab0",
+      "tree": "07bfe75479fd2d901a5cd138a318e10701c0d5b5",
+      "worktree": "/data1/nier/worktrees/DX100-umt-pki4-gate-b-router-repair-20260831"
+    }
+  },
+  "output_ownership_and_snapshots": {
+    "post_terminal_snapshot_contract": {
+      "copy": "fd-stable chunked copy with source pre/post device/inode/size/mtime and SHA-256",
+      "input": "terminal-receipt-bound gem5.stderr",
+      "open": "O_NOFOLLOW regular-file fd",
+      "postcondition": "rehash the published snapshot and revalidate unchanged through both normalizers",
+      "publication": "temporary fsync plus no-clobber hardlink plus directory fsync",
+      "single_snapshot_feeds_both_prefixes": [
+        "UMT_PKI4_CONFORMANCE ",
+        "UMT_PKI4_LIFECYCLE "
+      ]
+    },
+    "service_wrapper": {
+      "path": "/data1/nier/worktrees/codex-sessions/umt_gate_b_v25_fresh_successor-20260901-034116-bd923728/DX100/tests/lanl_maa/run_umt_ingress_micro_arm.py",
+      "sha256": "2d5e64568062ce391677f37cbf089b755729e174d8342c7688eeb22997f01faa"
+    },
+    "service_wrapper_contract": {
+      "hold_reservation_fds_until_terminal_publication": true,
+      "record_device_inode_initial_hash_and_terminal_hash": true,
+      "require_wrapper_and_gem5_returncode_zero": true,
+      "required_outputs": [
+        "gem5.stdout",
+        "gem5.stderr",
+        "app.stdout",
+        "app.stderr",
+        "debug.log",
+        "submission.json",
+        "m5out/stats.txt",
+        "m5out/config.ini",
+        "m5out/config.json"
+      ],
+      "reserve_all_output_and_receipt_names_before_child": true
+    }
+  },
+  "pre_dispatch_implementation_gate": {
+    "launch_authorized_without_gate": false,
+    "reason": "The reviewed snapshot predecessor is bound to the v16 live contract and v19 build proof. This dry plan deliberately does not weaken that validator or impersonate a reviewed Gate-B postprocessor.",
+    "required_before_launch": [
+      "a no-launch contract freezer that validates the exact v21 proof and binds its proof and gem5 SHA-256",
+      "a dispatcher/capture wrapper that checks fresh arm roots and publishes manager receipts without clobber",
+      "a Gate-B postprocessor implementing the declared one-snapshot/two-prefix contract",
+      "full raw canonical-v3 plus canonical-v4 normalizer and router receipts bound to the snapshot SHA-256",
+      "adversarial replacement/symlink/truncation/stale-proof/partial-epoch and concurrent-publication tests",
+      "an independent PASS review explicitly authorizing the exact two systemd commands"
+    ],
+    "status": "required_not_implemented_by_dry_plan"
+  },
+  "rtl_full_successor_replay": {
+    "concrete_blocker": "The only hash-bound RTL generator/review accepts canonical-v3 callback-ingress shards. It has no canonical-v4 lifecycle-event consumer and cannot drive or observe admission, issue, completion, release, reuse, ready/accept, or queue-commit identities.",
+    "known_callback_only_predecessor": {
+      "generator": {
+        "path": "/data1/nier/worktrees/DX100-umt-pki4-gate-a-replay-v2-20260831/experiments/lanl_maa_fp64_physical/scripts/generate_umt_pki4_gate_a_replay.py",
+        "sha256": "daaccaff536697b4625d42f9318d2dc2b0159ec60f13136f2587d514684b2c04"
+      },
+      "reuse_for_canonical_v4": "forbidden",
+      "review": {
+        "path": "/data1/nier/dx100-runs/2026-08-31-umt-pki4-gate-a-replay-v2-review/pki4-gate-a-replay-v28-d1e60928-g31-independent-review-v7.json",
+        "sha256": "05c9ff5dfc1e2bb1e3e9845ce8500ca0102b979c142b89e878dae485d1cb2824"
+      }
+    },
+    "required_successor_before_rtl_launch": [
+      "a new canonical-v4 parser that calls the reviewed full-successor router before stimulus generation",
+      "an RTL transactor mapping all five lifecycle phases and their token generation/ordinal identities",
+      "observed ready/accept/queue-commit and C+1/C+2 checks at the RTL public interface",
+      "D32/G32 and D64/G31 positive fixtures plus malformed/missing/reordered/digest/mask/timing negatives",
+      "Icarus and Yosys receipts with exact RTL/source/tool hashes",
+      "an independent PASS review explicitly authorizing replay"
+    ],
+    "rtl_launch_authorized": false,
+    "status": "blocked_no_reviewed_canonical_v4_rtl_transactor"
+  },
+  "schema": "lanl-maa-umt-pki4-gate-b-lifecycle-live-plan-v25",
+  "status": "fresh_successor_implemented_no_launch_review_required"
+}

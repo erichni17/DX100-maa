@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline and adversarial tests for the dry Gate-B v22 live plan."""
+"""Offline and adversarial tests for the fresh Gate-B v25 plan."""
 
 import ast
 import copy
@@ -56,6 +56,16 @@ class GateBLivePlanTest(unittest.TestCase):
         self.assertEqual(
             {value["abi"] for value in arms.values()}, {"D32", "D64"}
         )
+        self.assertEqual(
+            {value["unit"] for value in arms.values()},
+            {
+                "umt-pki4-gate-b-live-v25-d32-g32-20260901.service",
+                "umt-pki4-gate-b-live-v25-d64-g31-20260901.service",
+            },
+        )
+        self.assertTrue(
+            all(str(PLAN.CAMPAIGN) in value["root"] for value in arms.values())
+        )
         self.assertEqual(self.plan["dispatch"]["maximum_concurrent_arms"], 2)
         self.assertEqual(
             self.plan["dispatch"]["resource_properties"],
@@ -78,6 +88,39 @@ class GateBLivePlanTest(unittest.TestCase):
         )
         self.assertFalse(self.plan["authorization"]["systemd"])
         self.assertFalse(self.plan["authorization"]["gem5"])
+
+    def test_repair_review_and_failed_predecessor_are_bound(self):
+        lineage = self.plan["lineage"]
+        self.assertEqual(lineage["repair"]["commit"], PLAN.REPAIR_COMMIT)
+        self.assertEqual(
+            lineage["repair_independent_review"]["sha256"],
+            PLAN.REPAIR_REVIEW_SHA256,
+        )
+        predecessor = self.plan["failed_predecessor"]
+        self.assertEqual(predecessor["campaign_root"], str(PLAN.OLD_CAMPAIGN))
+        self.assertEqual(
+            predecessor["preservation"],
+            "read_only_byte_exact_no_reuse_no_backfill",
+        )
+        self.assertEqual(
+            predecessor["required_state_before_freeze_and_dispatch"],
+            {
+                "LoadState": "not-found",
+                "ActiveState": "inactive",
+                "SubState": "dead",
+                "MainPID": "0",
+                "InvocationID": "",
+            },
+        )
+
+    def test_exact_host_working_directory_contract_is_not_normalized(self):
+        identity = self.plan["host_working_directory_identity"]
+        self.assertEqual(identity["systemd_show_exact_value"], "!/home/nier")
+        self.assertEqual(identity["comparison"], "byte_exact_string_equality")
+        self.assertFalse(identity["normalization"])
+        self.assertTrue(
+            identity["validation_precedes_manager_live_publication"]
+        )
 
     def test_lifecycle_and_queue_gates_are_explicit(self):
         successor = self.plan["analysis"][

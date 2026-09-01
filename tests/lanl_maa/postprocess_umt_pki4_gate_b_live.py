@@ -60,8 +60,8 @@ V3_CANONICAL_SCHEMA = "lanl-maa-umt-pki4-canonical-stimulus-v3"
 V4_CANONICAL_SCHEMA = "lanl-maa-umt-pki4-canonical-stimulus-v4"
 SNAPSHOT_NAME = "terminal-validated-gem5.stderr.snapshot"
 CHUNK = 1024 * 1024
-SCHEMA_REPORT = "lanl-maa-umt-pki4-gate-b-live-arm-report-v23"
-SCHEMA_ROUTER_RECEIPT = "lanl-maa-umt-pki4-gate-b-router-receipt-v23"
+SCHEMA_REPORT = "lanl-maa-umt-pki4-gate-b-live-arm-report-v25"
+SCHEMA_ROUTER_RECEIPT = "lanl-maa-umt-pki4-gate-b-router-receipt-v25"
 REQUIRED_PHASES = {
     "token_admission",
     "token_issue",

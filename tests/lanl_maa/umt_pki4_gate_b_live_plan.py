@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Build and validate the dry Gate-B lifecycle live-campaign plan.
+"""Build and validate the fresh Gate-B v25 lifecycle campaign plan.
 
 This module is intentionally incapable of launching systemd, gem5, an opcode,
 or an RTL replay.  It publishes only an exact, hash-bound plan.  A later
 dispatcher must first consume the separately validated v21 terminal build
-proof and a PASS review of this plan.
+proof and a new PASS review of this exact successor implementation.
 """
 
 import argparse
@@ -19,10 +19,51 @@ import subprocess
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 CAMPAIGN = pathlib.Path(
+    "/data1/nier/dx100-runs/" "2026-09-01-umt-pki4-gate-b-lifecycle-v25-live"
+)
+EVIDENCE = (
+    ROOT / "experiments/evidence/umt_pki4_gate_b_fresh_successor_v25_20260901"
+)
+PLAN = EVIDENCE / "dry-plan-v25.json"
+REVIEW_REQUEST = EVIDENCE / "implementation-review-request-v25.json"
+
+OLD_CAMPAIGN = pathlib.Path(
     "/data1/nier/dx100-runs/" "2026-09-01-umt-pki4-gate-b-lifecycle-v22-live"
 )
-PLAN = CAMPAIGN / "gate-b-lifecycle-live-plan-v22.json"
-REVIEW_REQUEST = CAMPAIGN / "gate-b-lifecycle-live-review-request-v22.json"
+REPAIR_COMMIT = "f7ace47631793ead7ab3af0de192184defa03b7f"
+REPAIR_TREE = "bf08f415487c69010ad445e044ea68c18aa703f5"
+REPAIR_REVIEW_COMMIT = "d0199bdc4a4d0b0fbf41427a960776a71478344e"
+REPAIR_REVIEW_TREE = "75027c12a9f55a004a0aec8d477bb8406f977859"
+REPAIR_REVIEW = EVIDENCE / "repair-independent-review-v25.json"
+REPAIR_REVIEW_SHA256 = (
+    "7e44107c67b3d3d9a12244d704f620ca2c545c733f47091b39692513b3e95873"
+)
+
+OLD_UNITS = {
+    "d32-g32": "umt-pki4-gate-b-live-v22-d32-g32-20260901.service",
+    "d64-g31": "umt-pki4-gate-b-live-v22-d64-g31-20260901.service",
+}
+OLD_FAILURE_ANCHORS = {
+    "capture_script": {
+        "path": str(OLD_CAMPAIGN / "capture_failed_dispatch_live_v23.py"),
+        "sha256": "924d4edf8574ff87c482e57f25aa97141f1dc89887a1d44d76f26d0d4bafe150",
+    },
+    "contract": {
+        "path": str(OLD_CAMPAIGN / "gate-b-lifecycle-live-contract-v23.json"),
+        "sha256": "21a3dc8a50b6a6ebac3771e6e2b4e3b526638ecfcd257b65b77078d62924ad0b",
+    },
+    "dispatch_reservation": {
+        "path": str(OLD_CAMPAIGN / "identity/dispatch-reservation-v23.json"),
+        "sha256": "88f5e4002ed7aad43285616a0450e927de073bb89a30f2b3a101cbe5892cc5aa",
+    },
+    "forensic_receipt": {
+        "path": str(
+            OLD_CAMPAIGN
+            / "identity/failed-dispatch-v23-live/forensic-receipt.json"
+        ),
+        "sha256": "6259f981a508716811a1f20872985e39f67d5293f1f0467cf0f4d1b3f786706e",
+    },
+}
 
 SOURCE = pathlib.Path(
     "/data1/nier/worktrees/DX100-umt-pki4-gate-b-router-repair-20260831"
@@ -43,6 +84,12 @@ BUILD_REVIEW = (
     BUILD_CAMPAIGN / "gate-b-lifecycle-build-independent-review-v21.json"
 )
 BUILD_FINALIZER = BUILD_CAMPAIGN / "finalize_gate_b_build_v21.py"
+BUILD_FINALIZER_DRY_PLAN_SHA256 = (
+    "5736178e3bb83fbfbfba610047e81e746e5dbc3b850744628612c2e5a873c6d7"
+)
+BUILD_FINALIZER_AUDITED_SUCCESSOR_SHA256 = (
+    "77d4ddeaa6fffc4af3ec7acb685006ce37592929b11e4f09c1faff8a65756eb3"
+)
 HOST_REVIEW = pathlib.Path(
     "/data1/nier/dx100-runs/"
     "2026-08-31-umt-pki4-gate-b-lifecycle-host-v4/"
@@ -88,6 +135,7 @@ LIVE_NORMALIZER_REVIEW = pathlib.Path(
 )
 
 PINNED = {
+    str(REPAIR_REVIEW): REPAIR_REVIEW_SHA256,
     str(
         HOST_REVIEW
     ): "4a20183db04f520246785ca1e776e5c802fb117fcd9e37932a136cac87fee2c4",
@@ -97,9 +145,7 @@ PINNED = {
     str(
         BUILD_REVIEW
     ): "c5be9c70f04f1e754bc2b568941de32aba84442f261adadc0497462d0e441426",
-    str(
-        BUILD_FINALIZER
-    ): "5736178e3bb83fbfbfba610047e81e746e5dbc3b850744628612c2e5a873c6d7",
+    str(BUILD_FINALIZER): BUILD_FINALIZER_AUDITED_SUCCESSOR_SHA256,
     str(
         LIFECYCLE_NORMALIZER
     ): "6adc78f3a41a6a0f088622aeb3a7abbcd7456c531f329dce1086405fcbefebdc",
@@ -256,7 +302,7 @@ def gem5_argv(name, root):
 
 def arm(name):
     root = CAMPAIGN / "arms" / name
-    unit = f"umt-pki4-gate-b-live-v22-{name}-20260901.service"
+    unit = f"umt-pki4-gate-b-live-v25-{name}-20260901.service"
     command = gem5_argv(name, root)
     command_digest = json_sha256(command)
     wrapper = [
@@ -287,7 +333,10 @@ def arm(name):
         "wrapper_argv_sha256": json_sha256(wrapper),
         "systemd_run_argv": systemd,
         "systemd_run_argv_sha256": json_sha256(systemd),
-        "required_absent_before_dispatch": [str(root)],
+        "required_absent_before_dispatch": [
+            str(root),
+            str(CAMPAIGN / "identity/dispatch-manager" / name),
+        ],
         "manager_evidence": {
             "live_show": str(root / ".manager-owned/systemd-live.show"),
             "terminal_show": str(
@@ -311,14 +360,14 @@ def arm(name):
             root / "analysis/gate-b/full-successor-router.json"
         ),
         "conformance_v3": str(root / "analysis/gate-b/full-canonical-v3.json"),
-        "arm_report": str(root / "analysis/gate-b/arm-report-v22.json"),
+        "arm_report": str(root / "analysis/gate-b/arm-report-v25.json"),
     }
 
 
 def expected_plan(require_clean=True):
     verify_pins()
     source = git_identity(SOURCE, SOURCE_COMMIT, SOURCE_TREE, clean=True)
-    harness = git_identity(ROOT, clean=require_clean)
+    git_identity(ROOT, clean=require_clean)
     reviewed_files = {
         str(path.relative_to(ROOT)): sha256(path)
         for path in (
@@ -327,17 +376,33 @@ def expected_plan(require_clean=True):
             GEM5_CONFIG,
             LIVE_CONFORMANCE_POSTPROCESSOR,
             ROOT / "tests/lanl_maa/test_umt_pki4_gate_b_live_plan.py",
-            ROOT / "docs/plans/umt_pki4_gate_b_live_campaign_v22_20260901.md",
+            ROOT / "tests/lanl_maa/umt_pki4_gate_b_live_harness.py",
+            ROOT / "tests/lanl_maa/postprocess_umt_pki4_gate_b_live.py",
+            ROOT / "tests/lanl_maa/test_umt_pki4_gate_b_live_harness.py",
+            ROOT
+            / "docs/plans/umt_pki4_gate_b_fresh_successor_v25_20260901.md",
         )
     }
     arms = {name: arm(name) for name in CASES}
     return {
-        "schema": "lanl-maa-umt-pki4-gate-b-lifecycle-live-plan-v22",
-        "status": "dry_only_waiting_for_exact_terminal_build_proof_and_review",
+        "schema": "lanl-maa-umt-pki4-gate-b-lifecycle-live-plan-v25",
+        "status": "fresh_successor_implemented_no_launch_review_required",
         "campaign_root": str(CAMPAIGN),
         "lineage": {
             "source": source,
-            "harness": {**harness, "reviewed_file_sha256": reviewed_files},
+            "repair": {
+                "commit": REPAIR_COMMIT,
+                "tree": REPAIR_TREE,
+                "relationship": "direct_required_base",
+            },
+            "repair_independent_review": {
+                "path": str(REPAIR_REVIEW),
+                "sha256": REPAIR_REVIEW_SHA256,
+                "commit": REPAIR_REVIEW_COMMIT,
+                "tree": REPAIR_REVIEW_TREE,
+                "decision": "PASS_REPAIR_AND_FRESH_SUCCESSOR_PLAN_NO_LAUNCH",
+            },
+            "candidate_files": reviewed_files,
             "host_review": {
                 "path": str(HOST_REVIEW),
                 "sha256": PINNED[str(HOST_REVIEW)],
@@ -350,6 +415,20 @@ def expected_plan(require_clean=True):
                 "path": str(BUILD_REVIEW),
                 "sha256": PINNED[str(BUILD_REVIEW)],
             },
+        },
+        "failed_predecessor": {
+            "campaign_root": str(OLD_CAMPAIGN),
+            "preservation": "read_only_byte_exact_no_reuse_no_backfill",
+            "failure_anchors": copy.deepcopy(OLD_FAILURE_ANCHORS),
+            "old_units": OLD_UNITS,
+            "required_state_before_freeze_and_dispatch": {
+                "LoadState": "not-found",
+                "ActiveState": "inactive",
+                "SubState": "dead",
+                "MainPID": "0",
+                "InvocationID": "",
+            },
+            "old_pid_identity_adoption": "forbidden",
         },
         "build_dependency": {
             "proof_path": str(BUILD_PROOF),
@@ -375,7 +454,8 @@ def expected_plan(require_clean=True):
             ],
             "validator": {
                 "path": str(BUILD_FINALIZER),
-                "sha256": PINNED[str(BUILD_FINALIZER)],
+                "reviewed_dry_plan_sha256": BUILD_FINALIZER_DRY_PLAN_SHA256,
+                "audited_successor_sha256": PINNED[str(BUILD_FINALIZER)],
                 "argv": ["/usr/bin/python3", str(BUILD_FINALIZER), "validate"],
                 "expected_schema": "lanl-maa-umt-pki4-gate-b-lifecycle-build-proof-validation-v21",
                 "expected_status": "passed",
@@ -398,6 +478,18 @@ def expected_plan(require_clean=True):
             "no_shell_wrapped_child": True,
             "no_clobber": True,
             "fail_closed": True,
+            "fresh_namespace": {
+                "campaign_root_absent_before_freeze": True,
+                "contract_and_validation_paths_reserved_no_clobber": True,
+                "dispatch_reservation_before_any_systemd_run": True,
+                "all_arm_and_dispatch_manager_paths_absent_before_dispatch": True,
+            },
+        },
+        "host_working_directory_identity": {
+            "systemd_show_exact_value": "!/home/nier",
+            "comparison": "byte_exact_string_equality",
+            "normalization": False,
+            "validation_precedes_manager_live_publication": True,
         },
         "output_ownership_and_snapshots": {
             "service_wrapper": {
@@ -557,10 +649,10 @@ def expected_plan(require_clean=True):
             "opcode": False,
             "rtl": False,
             "remote_git": False,
-            "maximum_next_step": "independent review of this exact dry plan",
+            "maximum_next_step": "independent review of this exact no-launch v25 implementation",
         },
         "claim_boundary": (
-            "Dry Gate-B live-campaign plan only. It launches nothing and proves no "
+            "Fresh Gate-B v25 implementation plan only. It launches nothing and proves no "
             "live lifecycle behavior. A later reviewed contract may run exactly one "
             "D32/G32 and one D64/G31 arm concurrently after the exact v21 terminal "
             "build proof. Canonical-v4 lifecycle and C++ queue-timing evidence do not "
@@ -617,11 +709,16 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=("render", "write", "validate"))
     parser.add_argument("--path", default=str(PLAN))
+    parser.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help="permit candidate publication while file hashes bind the exact tree",
+    )
     args = parser.parse_args()
     if args.action == "validate":
-        value = validate(args.path)
+        value = validate(args.path, require_clean=not args.allow_dirty)
     else:
-        value = expected_plan()
+        value = expected_plan(require_clean=not args.allow_dirty)
         if args.action == "write":
             if pathlib.Path(args.path).resolve() != PLAN:
                 raise RuntimeError("plan publication path is not canonical")
