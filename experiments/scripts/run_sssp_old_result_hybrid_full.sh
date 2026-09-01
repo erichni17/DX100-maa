@@ -2,7 +2,21 @@
 # Candidate-only, trace-free full GAPBS SSSP S22 correctness/performance gate.
 set -euo pipefail
 
-root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+if [[ ${SSSP_FULL_FROZEN_RUNNER:-0} != 1 ]]; then
+    runner_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+    frozen_runner=$(mktemp /tmp/dx100-sssp-full.XXXXXX.sh)
+    cp -- "${BASH_SOURCE[0]}" "$frozen_runner"
+    chmod 0555 "$frozen_runner"
+    exec env SSSP_FULL_FROZEN_RUNNER=1 SSSP_RUNNER_ROOT="$runner_root" \
+        SSSP_FROZEN_RUNNER_PATH="$frozen_runner" \
+        "$frozen_runner" "$@"
+fi
+if [[ -n ${SSSP_FROZEN_RUNNER_PATH:-} ]]; then
+    trap 'rm -f -- "$SSSP_FROZEN_RUNNER_PATH"' EXIT
+fi
+
+root=$(realpath "${SSSP_RUNNER_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}")
+runner_snapshot=${SSSP_FROZEN_RUNNER_PATH:-${BASH_SOURCE[0]}}
 # These are deliberately named overrides: a physical-SPD aperture candidate
 # must be identified by both its executable and immutable digest.
 default_gem5=/data1/nier/dx100-binaries/gem5-1e079112469892681d661925db09ccfbc845d1a2ce45c79e1d9a4902c19a9863.opt
@@ -15,6 +29,8 @@ frozen_ramulator=/data1/nier/dx100-runs/2026-08-12-hybrid-line-handoff-8a5c7712/
 frozen_ramulator_sha256=76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753
 config="$root/configs/deprecated/example/se.py"
 ramulator_config="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
+config_snapshot=$config
+ramulator_config_snapshot=$ramulator_config
 source_file="$root/benchmarks/gapbs/src/sssp.cc"
 helper_file="$root/benchmarks/gapbs/src/sssp_coherent_fallback.hh"
 admission_file="$root/benchmarks/gapbs/src/sssp_chunk_admission.hh"
@@ -135,10 +151,18 @@ validate_evidence() (
         $external_graph_bytes ]]
     require_hash "$out/bin/sssp_maa_2G_old_result_hybrid_fp" \
         "$(manifest_value "$manifest" candidate_guest_sha256)"
+    require_hash "$source_file" \
+        "$(manifest_value "$manifest" source_sha256)"
     require_hash "$helper_file" \
         "$(manifest_value "$manifest" coherent_fallback_helper_sha256)"
     require_hash "$admission_file" \
         "$(manifest_value "$manifest" chunk_admission_sha256)"
+    require_hash "$config_snapshot" \
+        "$(manifest_value "$manifest" config_sha256)"
+    require_hash "$ramulator_config_snapshot" \
+        "$(manifest_value "$manifest" ramulator_config_sha256)"
+    require_hash "$runner_snapshot" \
+        "$(manifest_value "$manifest" runner_snapshot_sha256)"
     require_hash "$frozen_sweep" "$frozen_sweep_sha256"
 
     hash_tree "$out/checkpoint" \
@@ -469,6 +493,13 @@ adopt_validation_manifest() {
         aperture_candidate_gate=$(manifest_value \
             "$manifest" aperture_candidate_gate)
     fi
+    source_file=$(manifest_value "$manifest" source_path)
+    helper_file=$(manifest_value "$manifest" coherent_fallback_helper_path)
+    admission_file=$(manifest_value "$manifest" chunk_admission_path)
+    config_snapshot=$(manifest_value "$manifest" config_path)
+    ramulator_config_snapshot=$(manifest_value \
+        "$manifest" ramulator_config_path)
+    runner_snapshot=$(manifest_value "$manifest" runner_snapshot_path)
     gem5=$(realpath -m "$gem5")
 }
 
@@ -512,6 +543,24 @@ require_hash "$external_graph" "$external_graph_sha256"
 
 mkdir -p "$out/bin" "$out/input" "$out/checkpoint" "$out/run" \
     "$out/provenance"
+snapshot="$out/input/source_snapshot"
+mkdir -p "$snapshot"
+cp -- "$source_file" "$snapshot/sssp.cc"
+cp -- "$helper_file" "$snapshot/sssp_coherent_fallback.hh"
+cp -- "$admission_file" "$snapshot/sssp_chunk_admission.hh"
+cp -- "$config" "$snapshot/se.py"
+cp -- "$ramulator_config" "$snapshot/ramulator.yaml"
+cp -- "$runner_snapshot" "$snapshot/run_sssp_old_result_hybrid_full.sh"
+chmod 0444 "$snapshot/sssp.cc" "$snapshot/sssp_coherent_fallback.hh" \
+    "$snapshot/sssp_chunk_admission.hh" "$snapshot/se.py" \
+    "$snapshot/ramulator.yaml"
+chmod 0555 "$snapshot/run_sssp_old_result_hybrid_full.sh"
+source_file="$snapshot/sssp.cc"
+helper_file="$snapshot/sssp_coherent_fallback.hh"
+admission_file="$snapshot/sssp_chunk_admission.hh"
+config_snapshot="$snapshot/se.py"
+ramulator_config_snapshot="$snapshot/ramulator.yaml"
+runner_snapshot="$snapshot/run_sssp_old_result_hybrid_full.sh"
 
 write_wrapper_status() {
     local rc=$?
@@ -522,6 +571,7 @@ write_wrapper_status() {
         printf 'finished_at=%s\n' "$(date -Ins)"
     } >"$out/wrapper.status.tmp"
     mv "$out/wrapper.status.tmp" "$out/wrapper.status"
+    rm -f -- "${SSSP_FROZEN_RUNNER_PATH:-}"
     exit "$rc"
 }
 trap write_wrapper_status EXIT
@@ -579,6 +629,13 @@ native_stats_sha256=$(hash_value "$native_out/stats.txt")
     printf 'chunk_admission_path=%s\n' "$admission_file"
     printf 'chunk_admission_sha256=%s\n' \
         "$(hash_value "$admission_file")"
+    printf 'config_path=%s\nconfig_sha256=%s\n' \
+        "$config_snapshot" "$(hash_value "$config_snapshot")"
+    printf 'ramulator_config_path=%s\nramulator_config_sha256=%s\n' \
+        "$ramulator_config_snapshot" \
+        "$(hash_value "$ramulator_config_snapshot")"
+    printf 'runner_snapshot_path=%s\nrunner_snapshot_sha256=%s\n' \
+        "$runner_snapshot" "$(hash_value "$runner_snapshot")"
     printf 'candidate_gem5_path=%s\ncandidate_gem5_sha256=%s\n' \
         "$gem5" "$gem5_sha256"
     printf 'default_gem5_path=%s\ndefault_gem5_sha256=%s\n' \
@@ -602,7 +659,8 @@ native_stats_sha256=$(hash_value "$native_out/stats.txt")
 } >"$out/candidate.manifest"
 
 sha256sum "$gem5" "$frozen_ramulator" "$guest" "$graph" "$source_file" \
-    "$helper_file" "$admission_file" "$config" "$ramulator_config" "$0" \
+    "$helper_file" "$admission_file" "$config_snapshot" \
+    "$ramulator_config_snapshot" "$runner_snapshot" \
     >"$out/provenance/artifacts.before.sha256"
 
 checkpoint_command=(
@@ -684,7 +742,8 @@ hash_tree "$out/checkpoint" \
 hash_value "$out/provenance/checkpoint.after.files.sha256" \
     >"$out/provenance/checkpoint.after.identity.sha256"
 sha256sum "$gem5" "$frozen_ramulator" "$guest" "$graph" "$source_file" \
-    "$helper_file" "$admission_file" "$config" "$ramulator_config" "$0" \
+    "$helper_file" "$admission_file" "$config_snapshot" \
+    "$ramulator_config_snapshot" "$runner_snapshot" \
     >"$out/provenance/artifacts.after.sha256"
 cmp -s "$out/provenance/artifacts.before.sha256" \
     "$out/provenance/artifacts.after.sha256"

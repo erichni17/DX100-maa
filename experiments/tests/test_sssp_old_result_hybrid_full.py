@@ -166,6 +166,32 @@ class SsspOldResultHybridFullContract(unittest.TestCase):
             'find "$out/checkpoint" -type f -exec chmod 0444', self.runner
         )
 
+    def test_long_run_uses_private_runner_and_source_snapshot(self):
+        for token in (
+            "SSSP_FULL_FROZEN_RUNNER",
+            "SSSP_FROZEN_RUNNER_PATH",
+            "source_snapshot",
+            'cp -- "$source_file" "$snapshot/sssp.cc"',
+            'cp -- "$helper_file" "$snapshot/sssp_coherent_fallback.hh"',
+            'cp -- "$admission_file" "$snapshot/sssp_chunk_admission.hh"',
+            'cp -- "$config" "$snapshot/se.py"',
+            'cp -- "$ramulator_config" "$snapshot/ramulator.yaml"',
+            'cp -- "$runner_snapshot" "$snapshot/run_sssp_old_result_hybrid_full.sh"',
+            "config_path=",
+            "ramulator_config_path=",
+            "runner_snapshot_path=",
+            'config_snapshot=$(manifest_value "$manifest" config_path)',
+            "ramulator_config_snapshot=$(manifest_value",
+            'runner_snapshot=$(manifest_value "$manifest" runner_snapshot_path)',
+        ):
+            self.assertIn(token, self.runner)
+        self.assertNotIn('config="$snapshot/se.py"', self.runner)
+        self.assertNotIn(
+            'ramulator_config="$snapshot/ramulator.yaml"', self.runner
+        )
+        self.assertNotIn('"$ramulator_config" "$0"', self.runner)
+        self.assertGreaterEqual(self.runner.count('"$runner_snapshot"'), 5)
+
     def test_requires_one_certificate_exit_roi_and_final_stats(self):
         self.assertIn('grep -Fxc "$oracle"', self.runner)
         self.assertIn("m5_exit instruction encountered", self.runner)
