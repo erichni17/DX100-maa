@@ -141,7 +141,6 @@ class UmeTwoPassMatrixTest(unittest.TestCase):
     def test_build_admission_uses_shared_source_credit(self) -> None:
         source = (ROOT / "src/mem/MAA/IndirectAccess.cc").read_text()
         self.assertIn("virtual_pending_source_fanout))", source)
-        self.assertIn("virtual_fanout))", source)
         self.assertIn("event=shared_source_credit_stall schema=1", source)
         self.assertIn("event=shared_source_partial_spill schema=1", source)
         self.assertIn("spillVirtualCombinePartialForSourceCredit", source)
@@ -152,6 +151,10 @@ class UmeTwoPassMatrixTest(unittest.TestCase):
         ]
         self.assertIn("spillVirtualCombinePartialForSourceCredit", bounded_global)
         self.assertIn("scheduleExecuteInstructionEvent(1)", bounded_global)
+        self.assertLess(
+            bounded_global.index("deferVirtualSourceFanout"),
+            bounded_global.index("virtualSourceCreditAvailable"),
+        )
         self.assertNotIn("response_slots=%d/%zu", source)
         spill = source[
             source.index(
@@ -171,6 +174,16 @@ class UmeTwoPassMatrixTest(unittest.TestCase):
         )
         self.assertIn("const Addr line_offset", source)
         self.assertNotIn("backing_offset % block_size + size", source)
+        self.assertIn("event=source_fanout_wait schema=1", source)
+        row_source = source[
+            source.index("virtual_fanout = buildVirtualSourceFanout") :
+            source.index("issueVirtualSource(\n                                addr")
+        ]
+        self.assertLess(
+            row_source.index("deferVirtualSourceFanout"),
+            row_source.index("virtualSourceCreditAvailable"),
+        )
+        self.assertIn("!fanout_wait &&", row_source)
 
     def test_shared_source_payload_charges_unique_words_with_fanout(self) -> None:
         implementation = (ROOT / "src/mem/MAA/IndirectAccess.cc").read_text()

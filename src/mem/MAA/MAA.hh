@@ -1225,6 +1225,8 @@ public:
         std::vector<statistics::Scalar *> IND_VirtFanoutScanEvents;
         std::vector<statistics::Scalar *> IND_VirtFanoutScanWords;
         std::vector<statistics::Scalar *> IND_VirtFanoutScanCycles;
+        std::vector<statistics::Scalar *> IND_VirtFanoutScanWaitEvents;
+        std::vector<statistics::Scalar *> IND_VirtFanoutScanWaitCycles;
         std::vector<statistics::Scalar *> IND_VirtSharedPayloadTransfers;
         std::vector<statistics::Scalar *> IND_VirtSharedPayloadRollbacks;
         std::vector<statistics::Scalar *> IND_VirtSharedPayloadHighWater;

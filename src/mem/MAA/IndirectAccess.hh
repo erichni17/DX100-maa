@@ -904,6 +904,8 @@ protected:
     void serviceBoundedGlobalMerge();
     maa::VirtualSourceFanout buildVirtualSourceFanout(
         int source_head, int source_words, Tick &ready_tick);
+    bool deferVirtualSourceFanout(Tick ready_tick, const char *path,
+                                  bool account);
     int virtualSourcePayloadWords(
         const maa::VirtualSourceFanout &fanout) const;
     bool virtualSourceCreditAvailable(

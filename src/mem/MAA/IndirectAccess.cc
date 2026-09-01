@@ -2852,6 +2852,30 @@ IndirectAccessUnit::buildVirtualSourceFanout(int source_head,
     return fanout;
 }
 
+bool
+IndirectAccessUnit::deferVirtualSourceFanout(Tick ready_tick,
+                                             const char *path,
+                                             bool account)
+{
+    if (!virtual_shared_result_payload || ready_tick <= curTick())
+        return false;
+    const Cycles wait = maa->getTicksToCycles(ready_tick - curTick());
+    panic_if(wait == Cycles(0),
+             "I[%d] fanout wait has a sub-cycle ready tick\n",
+             my_indirect_id);
+    if (account) {
+        (*maa->stats.IND_VirtFanoutScanWaitEvents[my_indirect_id])++;
+        (*maa->stats.IND_VirtFanoutScanWaitCycles[my_indirect_id]) += wait;
+    }
+    DPRINTF(MAAVirtualTrace,
+            "event=source_fanout_wait schema=1 unit=%d operation_tick=%lu "
+            "path=%s current=%lu ready=%lu cycles=%lu accounted=%d\n",
+            my_indirect_id, my_decode_start_tick, path, curTick(),
+            ready_tick, static_cast<uint64_t>(wait), account);
+    scheduleExecuteInstructionEvent(wait);
+    return true;
+}
+
 int
 IndirectAccessUnit::virtualSourcePayloadWords(
     const maa::VirtualSourceFanout &fanout) const
@@ -2957,13 +2981,19 @@ IndirectAccessUnit::issueBoundedGlobalSourceLine()
                  bounded_global_merge_source_words <= 0,
              "I[%d] bounded global source line is incomplete\n",
              my_indirect_id);
+    bool fanout_started = false;
     if (!bounded_global_merge_source_fanout_valid) {
         bounded_global_merge_source_fanout = buildVirtualSourceFanout(
             bounded_global_merge_source_head,
             bounded_global_merge_source_words,
             bounded_global_merge_source_fanout_ready_tick);
         bounded_global_merge_source_fanout_valid = true;
+        fanout_started = true;
     }
+    if (deferVirtualSourceFanout(
+            bounded_global_merge_source_fanout_ready_tick,
+            "bounded_global", fanout_started))
+        return false;
     if (!virtualSourceCreditAvailable(
             bounded_global_merge_source_fanout)) {
         const bool spilled =
@@ -7424,7 +7454,11 @@ void IndirectAccessUnit::executeInstruction() {
         }
         bool virtual_capacity_full = false;
         if (usesBoundedSourceResponses() && virtual_pending_source) {
-            if (!virtualSourceCreditAvailable(
+            if (deferVirtualSourceFanout(
+                    virtual_pending_source_fanout_ready_tick,
+                    "row_table_pending", false)) {
+                virtual_capacity_full = true;
+            } else if (!virtualSourceCreditAvailable(
                     virtual_pending_source_fanout)) {
                 const bool spilled =
                     spillVirtualCombinePartialForSourceCredit();
@@ -7550,8 +7584,16 @@ void IndirectAccessUnit::executeInstruction() {
                             virtual_fanout = buildVirtualSourceFanout(
                                 virtual_head, virtual_words,
                                 virtual_fanout_ready_tick);
-                            if (!virtualSourceCreditAvailable(
-                                    virtual_fanout)) {
+                            const bool fanout_wait =
+                                deferVirtualSourceFanout(
+                                    virtual_fanout_ready_tick,
+                                    "row_table", true);
+                            const bool source_credit_available =
+                                !fanout_wait &&
+                                virtualSourceCreditAvailable(
+                                    virtual_fanout);
+                            if (fanout_wait ||
+                                !source_credit_available) {
                                 if (!native_order_claim) {
                                     Addr committed_addr = 0;
                                     int committed_head = -1;
@@ -7594,8 +7636,10 @@ void IndirectAccessUnit::executeInstruction() {
                                         num_RT_slices[my_RT_config])
                                         last_RT_sent = 0;
                                 }
-                                virtual_response_word_pool_stalls++;
-                                macro_a_retries++;
+                                if (!fanout_wait) {
+                                    virtual_response_word_pool_stalls++;
+                                    macro_a_retries++;
+                                }
                                 num_rowtable_accesses++;
                                 virtual_capacity_full = true;
                                 break;
