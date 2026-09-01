@@ -74,6 +74,23 @@ The candidate records 1,025 overlap resumes, zero slot-stall episodes, 143
 unified-credit stall episodes covering 861 modeled cycles, and pending HWM one.
 The one scan engine remains exactly 4,096 cycles.
 
+## Hybrid design-point orientation
+
+No native simulation was rerun. Against the sealed r6 controls only as a
+cross-binary orientation, the 25,381,170-tick repaired hybrid is 1.172339376x
+the throughput of native4 (29,755,345 ticks, or 14.700468% lower latency) and
+has 23.528068% higher latency than native16 (20,546,885 ticks). It therefore
+sits between the cheap and costly physical designs, which is the expected
+virtualization result rather than an impossible speedup over native16.
+
+The corrected packed storage ledger remains 2,014,760 bytes because this
+repair reuses the already-modeled one-entry pending latch and adds no queue or
+payload RAM. That is 36.760496183% below the 3,185,920-byte native16 total and
+43.799675681% above the 1,401,088-byte native4 total. These values are
+configuration-specific packed lower bounds, not synthesized area/power, and
+the timing comparisons remain historical orientation rather than fresh paired
+attribution.
+
 ## Storage, ownership, and closure
 
 - shared pool capacity/HWM: 4,096/4,096 words
