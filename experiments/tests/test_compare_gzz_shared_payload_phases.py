@@ -66,6 +66,27 @@ class GzzSharedPayloadPhaseComparisonTest(unittest.TestCase):
         path.write_text(text)
         return path
 
+    def test_recovery_allows_a_faster_consumer(self):
+        candidate = self.recovered_stats()
+        candidate.write_text(
+            candidate.read_text().replace(
+                "system.maa.I0_IND_StrictTwoPhaseConsumerCycles 20",
+                "system.maa.I0_IND_StrictTwoPhaseConsumerCycles 16",
+            )
+        )
+        result = compare.compare(
+            self.stats("consumer-reference", 2, 1),
+            self.trace("consumer-reference", 3484),
+            candidate,
+            self.trace("consumer-recovered", 4096),
+        )
+        self.assertEqual(
+            result["diagnosis"]["classification"],
+            "SOURCE_MLP_RECOVERED",
+        )
+        self.assertFalse(result["diagnosis"]["stable_front_end_and_consumer"])
+        self.assertTrue(result["diagnosis"]["consumer_nonregression"])
+
     def trace(self, name: str, high_water: int) -> pathlib.Path:
         path = self.root / f"{name}.trace"
         path.write_text(

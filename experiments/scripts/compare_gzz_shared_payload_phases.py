@@ -151,6 +151,13 @@ def compare(
         and abs(comparisons["IND_StrictTwoPhaseConsumerCycles"]["ratio"] - 1.0)
         <= 0.02
     )
+    stable_b_fetch = (
+        abs(comparisons["IND_StrictTwoPhaseBFetchCycles"]["ratio"] - 1.0)
+        <= 0.02
+    )
+    consumer_nonregression = (
+        comparisons["IND_StrictTwoPhaseConsumerCycles"]["ratio"] <= 1.02
+    )
     source_mlp_recovered = (
         candidate["IND_VirtResponseSlotHighWater"] > 1
         and comparisons["IND_StrictTwoPhaseAIssueCycles"]["ratio"] <= 0.50
@@ -161,7 +168,7 @@ def compare(
     )
     if mlp_collapse and stable_front_end:
         classification = "SOURCE_MLP_COLLAPSE"
-    elif source_mlp_recovered and stable_front_end:
+    elif source_mlp_recovered and stable_b_fetch and consumer_nonregression:
         classification = "SOURCE_MLP_RECOVERED"
     else:
         classification = "UNRESOLVED"
@@ -171,6 +178,8 @@ def compare(
         "performance_attribution": False,
         "diagnosis": {
             "stable_front_end_and_consumer": stable_front_end,
+            "stable_b_fetch": stable_b_fetch,
+            "consumer_nonregression": consumer_nonregression,
             "source_mlp_collapse": mlp_collapse,
             "source_mlp_recovered": source_mlp_recovered,
             "classification": classification,

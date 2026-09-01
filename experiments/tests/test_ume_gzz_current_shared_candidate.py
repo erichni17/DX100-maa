@@ -57,6 +57,7 @@ class UmeGzzCurrentSharedCandidateTest(unittest.TestCase):
             'phase["IND_StrictTwoPhaseAIssueCycles"]["ratio"] <= 0.50',
             'phase["IND_StrictTwoPhaseBackingCycles"]["ratio"] <= 0.50',
             'phase["simTicks"]["ratio"] <= 0.95',
+            'phase["IND_StrictTwoPhaseConsumerCycles"]["ratio"] <= 1.01',
             'trace_lines, "fanout_overlap_complete"',
         ):
             self.assertIn(token, source)

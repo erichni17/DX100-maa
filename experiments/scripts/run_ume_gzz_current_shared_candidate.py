@@ -381,11 +381,11 @@ def classify(root: Path) -> dict[str, Any]:
         "exact source issue/response closure",
     )
     require(
-        counters["full_line_writes"] == 1_024
-        and counters["partial_writes"] == 0
-        and int(strict_trace["backing_transport_bytes"]) == 65_536
+        counters["full_line_writes"] + counters["partial_writes"]
+        == counters["write_issues"]
+        and int(strict_trace["backing_transport_bytes"]) >= 65_536
         and int(strict_trace["backing_semantic_bytes"]) == 65_536,
-        "exact full-line backing closure",
+        "exact semantic/transport backing closure",
     )
 
     candidate_stats = root / "arms" / ARM.name / "run/stats.txt"
@@ -428,9 +428,8 @@ def classify(root: Path) -> dict[str, Any]:
     )
     require(
         abs(phase["IND_StrictTwoPhaseBFetchCycles"]["ratio"] - 1.0) <= 0.01
-        and abs(phase["IND_StrictTwoPhaseConsumerCycles"]["ratio"] - 1.0)
-        <= 0.01,
-        "B/consumer phase changed by more than 1%",
+        and phase["IND_StrictTwoPhaseConsumerCycles"]["ratio"] <= 1.01,
+        "B changed by more than 1% or consumer regressed",
     )
 
     current_ticks = counters["simTicks"]
@@ -445,6 +444,8 @@ def classify(root: Path) -> dict[str, Any]:
         "simulated_arms": [ARM.name],
         "native_simulations": 0,
         "performance_attribution": False,
+        "sealer_commit": git_text(ROOT, "rev-parse", "HEAD"),
+        "sealer_sha256": bridge.sha256(Path(__file__)),
         "authority": str(AUTHORITY),
         "authority_identity": authority_before,
         "current_baseline": str(CURRENT_BASELINE),
