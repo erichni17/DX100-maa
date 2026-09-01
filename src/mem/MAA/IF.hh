@@ -236,6 +236,7 @@ public:
     // exposed to execution.
     bool memoryPermitReserved;
     bool memoryPermitGranted;
+    bool inlineOperandBorrowedReadPermit;
     bool controllerManaged;
     // A production LogicalTilePageScheduler micro-op.  It uses the existing
     // controller subspan fields but has a distinct completion authority from

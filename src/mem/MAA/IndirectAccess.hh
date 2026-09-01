@@ -1069,6 +1069,8 @@ public:
     bool inlineOperandActiveForCore(int core_id) const;
     bool inlineOperandAdmissionAllowsRead(int core_id, uint64_t generation,
                                           int8_t region_id) const;
+    bool inlineOperandAdmissionAllowsRead(int core_id,
+                                          int8_t region_id) const;
     Cycles admitPageFedSoaJitIndexPage(uint64_t generation, uint8_t page,
                                       uint8_t index_tile);
     Cycles admitPageFedSoaJitIndexValuePage(

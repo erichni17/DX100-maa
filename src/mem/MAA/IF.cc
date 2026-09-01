@@ -92,6 +92,7 @@ Instruction::Instruction() : baseAddr(0xFFFFFFFFFFFFFFFF),
                              func_unit_id(-1),
                              memoryPermitReserved(false),
                              memoryPermitGranted(false),
+                             inlineOperandBorrowedReadPermit(false),
                              controllerManaged(false),
                              logicalPageManaged(false),
                              controllerAction(

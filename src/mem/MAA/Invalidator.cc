@@ -7,6 +7,7 @@
 #include "base/logging.hh"
 #include "base/trace.hh"
 #include "debug/MAAInvalidator.hh"
+#include "mem/MAA/IndirectAccess.hh"
 #include "mem/MAA/MAA.hh"
 #include "mem/MAA/SPD.hh"
 
@@ -63,6 +64,24 @@ bool Invalidator::getAddrRegionPermit(Instruction *instruction) {
         return getSoaJitAddrRegionPermit(instruction);
     int8_t region_id = instruction->addrRangeID;
     int maa_id = instruction->maa_id;
+    if (instruction->accessType == Instruction::AccessType::READ &&
+        !instruction->inlineOperandBorrowedReadPermit) {
+        for (unsigned unit = 0; unit < maa->num_indirect_units_total;
+             ++unit) {
+            if (!maa->indirectAccessUnits[unit].
+                    inlineOperandAdmissionAllowsRead(
+                        instruction->core_id, region_id))
+                continue;
+            panic_if(rg_status[maa_id][region_id] !=
+                         RGStatus::UsingModified,
+                     "Inline admission borrowed A read without the exact "
+                     "modified owner\n");
+            instruction->inlineOperandBorrowedReadPermit = true;
+            return true;
+        }
+    }
+    if (instruction->inlineOperandBorrowedReadPermit)
+        return true;
     if (instruction->accessType == Instruction::AccessType::COMPUTE) {
         return true;
     } else if (instruction->accessType == Instruction::AccessType::READ) {
@@ -457,6 +476,16 @@ void Invalidator::transientInstruction() {
 void Invalidator::finishInstruction(Instruction *instruction) {
     if (instruction->isSoaJitRmw() || instruction->isFusedP16Product()) {
         finishSoaJitAddrRegionPermit(instruction);
+        return;
+    }
+    if (instruction->inlineOperandBorrowedReadPermit) {
+        panic_if(instruction->accessType !=
+                         Instruction::AccessType::READ ||
+                     rg_status[instruction->maa_id]
+                              [instruction->addrRangeID] !=
+                         RGStatus::UsingModified,
+                 "Borrowed inline admission read lost modified ownership\n");
+        instruction->inlineOperandBorrowedReadPermit = false;
         return;
     }
     if (instruction->accessType == Instruction::AccessType::READ) {

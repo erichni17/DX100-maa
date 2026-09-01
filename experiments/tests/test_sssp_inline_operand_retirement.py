@@ -47,6 +47,7 @@ class InlineOperandRetirementContract(unittest.TestCase):
 
     def test_preclose_a_read_exception_is_phase_and_generation_bound(self):
         interface = (ROOT / "src/mem/MAA/IF.cc").read_text()
+        invalidator = (ROOT / "src/mem/MAA/Invalidator.cc").read_text()
         for token in (
             "inlineOperandAdmissionAllowsRead",
             "_instruction.core_id == open.core_id",
@@ -61,6 +62,12 @@ class InlineOperandRetirementContract(unittest.TestCase):
             "currentGeneration() == generation",
         ):
             self.assertIn(token, self.indirect)
+        for token in (
+            "inlineOperandBorrowedReadPermit",
+            "RGStatus::UsingModified",
+            "Borrowed inline admission read lost modified ownership",
+        ):
+            self.assertIn(token, invalidator)
 
     def test_candidate_only_frozen_acceptance(self):
         self.assertNotIn("native4 checkpoint", self.runner)
