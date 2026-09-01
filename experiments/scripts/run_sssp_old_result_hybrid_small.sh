@@ -62,22 +62,6 @@ stat_sum() {
     ' "$stats"
 }
 
-stat_sum_optional_zero() {
-    local suffix=$1
-    awk -v suffix="$suffix" '
-        /^---------- Begin Simulation Statistics/ { section++ }
-        section == 1 &&
-            ($1 == "system.maa." suffix || $1 ~ ("_" suffix "$")) {
-            sum += $2
-            found++
-        }
-        /^---------- End Simulation Statistics/ && section == 1 {
-            printf "%.0f\n", found ? sum : 0
-            exit
-        }
-    ' "$stats"
-}
-
 terminal_value() {
     local line=$1 key=$2
     tr ' ' '\n' <<<"$line" | awk -F= -v key="$key" \
@@ -255,6 +239,7 @@ restore_cmd=(
     printf 'expected_eligible_windows=%s\n' "$expected_eligible"
     printf 'expected_routed_windows=%s\n' "$expected_routed"
     printf 'expected_unsafe_windows=%s\n' "$expected_unsafe"
+    printf 'expected_reason_covered_unsafe_windows=%s\n' "$expected_unsafe"
     printf 'expected_bounds_rejected_windows=%s\n' "$expected_bounds"
     printf 'expected_active_source_rejected_windows=%s\n' "$expected_active"
     printf 'expected_cross_owner_rejected_windows=%s\n' "$expected_cross"
@@ -292,6 +277,7 @@ for expected in \
     treatment=old_result_hybrid \
     eligible_windows="$expected_eligible" routed_windows="$expected_routed" \
     unsafe_eligible_windows="$expected_unsafe" \
+    reason_covered_unsafe_windows="$expected_unsafe" \
     bounds_rejected_windows="$expected_bounds" \
     active_source_rejected_windows="$expected_active" \
     cross_owner_rejected_windows="$expected_cross" \
@@ -335,8 +321,8 @@ a_read_responses=$(stat_sum IND_SoaJitAReadResponses)
 a_writes=$(stat_sum IND_SoaJitAWriteIssues)
 a_write_responses=$(stat_sum IND_SoaJitAWriteResponses)
 terminals=$(stat_sum IND_SoaJitTerminalCompletions)
-boundary_drops=$(stat_sum_optional_zero cpu_spd_boundary_prefetch_drops)
-aperture_rejections=$(stat_sum_optional_zero cpu_spd_out_of_range_rejections)
+boundary_drops=$(stat_sum cpu_spd_boundary_prefetch_drops)
+aperture_rejections=$(stat_sum cpu_spd_out_of_range_rejections)
 
 [[ $instructions -eq $expected_routed && \
    $terminals -eq $expected_routed ]]
@@ -365,6 +351,7 @@ sim_ticks=$(awk '$1 == "simTicks" { print $2; exit }' "$stats")
         "$sim_ticks" "$variant"
     printf 'eligible_windows=%s\nrouted_windows=%s\nunsafe_windows=%s\n' \
         "$expected_eligible" "$expected_routed" "$expected_unsafe"
+    printf 'reason_covered_unsafe_windows=%s\n' "$expected_unsafe"
     printf 'old_result_captures=%s\nold_result_write_issues=%s\n' \
         "$captures" "$issues"
     printf 'old_result_write_responses=%s\n' "$responses"

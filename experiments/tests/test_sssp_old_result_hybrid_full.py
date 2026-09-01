@@ -126,8 +126,12 @@ class SsspOldResultHybridFullContract(unittest.TestCase):
         self.assertIn("aperture_candidate_gate", self.runner)
         self.assertIn("cpu_spd_boundary_prefetch_drops", self.runner)
         self.assertIn("cpu_spd_out_of_range_rejections", self.runner)
-        self.assertIn("stat_sum_optional_zero", self.runner)
-        self.assertIn("found ? sum : 0", self.runner)
+        self.assertNotIn("stat_sum_optional_zero", self.runner)
+        self.assertNotIn("found ? sum : 0", self.runner)
+        self.assertIn(
+            'stat_sum "$stats" cpu_spd_out_of_range_rejections',
+            self.runner.replace("\\\n            ", ""),
+        )
         self.assertIn("aperture_rejections == 0", self.runner)
         self.assertNotIn("boundary_drops > 0", self.runner)
         self.assertIn("record_aperture_stats", self.runner)
@@ -256,6 +260,10 @@ class SsspOldResultHybridFullContract(unittest.TestCase):
             "routed_windows + unsafe_eligible_windows == eligible_windows",
             self.source,
         )
+        self.assertIn(
+            "reason_covered_unsafe_windows == unsafe_eligible_windows",
+            self.source,
+        )
         for reason in (
             "bounds_rejected_windows",
             "active_source_rejected_windows",
@@ -276,7 +284,9 @@ class SsspOldResultHybridFullContract(unittest.TestCase):
             "response_closure",
         ):
             self.assertIn(field, self.runner)
-        self.assertIn("fallback_pages > 0", self.runner)
+        self.assertIn("fallback_pages == unsafe * 4", self.runner)
+        self.assertNotIn("fallback_pages > 0", self.runner)
+        self.assertIn("reason_covered == unsafe", self.runner)
         self.assertIn(
             "fallback_issue_pages == fallback_pages * 3", self.runner
         )
@@ -355,8 +365,8 @@ class SsspOldResultHybridFullContract(unittest.TestCase):
             "cpu_spd_out_of_range_rejections=0_required", self.small_runner
         )
         self.assertIn("aperture_rejections -eq 0", self.small_runner)
-        self.assertIn("stat_sum_optional_zero", self.small_runner)
-        self.assertIn("found ? sum : 0", self.small_runner)
+        self.assertNotIn("stat_sum_optional_zero", self.small_runner)
+        self.assertNotIn("found ? sum : 0", self.small_runner)
         self.assertNotIn("run_native", self.small_runner)
         self.assertIn('printf "%.0f\\n", sum', self.small_runner)
         self.assertNotIn('printf "%.0f\\\\n", sum', self.small_runner)

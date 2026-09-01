@@ -221,7 +221,9 @@ class HybridGoalAuditTest(unittest.TestCase):
         terminal = (
             "SSSP_OLD_RESULT_HYBRID_TERMINAL "
             "treatment=old_result_hybrid eligible_windows=2 routed_windows=1 "
-            "unsafe_eligible_windows=1 index_publish_pages=4 "
+            "unsafe_eligible_windows=1 reason_covered_unsafe_windows=1 "
+            "bounds_rejected_windows=0 active_source_rejected_windows=1 "
+            "cross_owner_rejected_windows=1 index_publish_pages=4 "
             "value_publish_pages=4 old_result_words=16384 "
             "legacy_words=16384 fallback_pages=4 "
             "fallback_publication_issue_pages=12 "
@@ -413,6 +415,50 @@ class HybridGoalAuditTest(unittest.TestCase):
         )
         self.assertEqual(
             AUDIT.audit_sssp(self.roots["sssp"])["status"], "failed"
+        )
+
+    def test_sssp_uncovered_unsafe_window_is_rejected(self) -> None:
+        restore = self.roots["sssp"] / "run/restore.log"
+        restore.write_text(
+            restore.read_text().replace(
+                "reason_covered_unsafe_windows=1",
+                "reason_covered_unsafe_windows=0",
+            )
+        )
+        self.assertEqual(
+            AUDIT.audit_sssp(self.roots["sssp"])["status"], "failed"
+        )
+
+    def test_sssp_overlapping_reasons_are_not_summed(self) -> None:
+        self.assertEqual(
+            AUDIT.audit_sssp(self.roots["sssp"])["status"], "passed"
+        )
+
+    def test_sssp_all_routed_without_full_page_fallback_is_accepted(
+        self,
+    ) -> None:
+        restore = self.roots["sssp"] / "run/restore.log"
+        replacements = {
+            "eligible_windows=2": "eligible_windows=1",
+            "unsafe_eligible_windows=1": "unsafe_eligible_windows=0",
+            "reason_covered_unsafe_windows=1": "reason_covered_unsafe_windows=0",
+            "active_source_rejected_windows=1": "active_source_rejected_windows=0",
+            "cross_owner_rejected_windows=1": "cross_owner_rejected_windows=0",
+            "legacy_words=16384": "legacy_words=0",
+            "fallback_pages=4": "fallback_pages=0",
+            "fallback_publication_issue_pages=12": "fallback_publication_issue_pages=0",
+            "fallback_publication_response_pages=12": "fallback_publication_response_pages=0",
+            "fallback_publication_words=49152": "fallback_publication_words=0",
+            "fallback_publication_bytes=196608": "fallback_publication_bytes=0",
+            "fallback_consumed_words=16384": "fallback_consumed_words=0",
+            "predicate_restore_words=16384": "predicate_restore_words=0",
+        }
+        contents = restore.read_text()
+        for old, new in replacements.items():
+            contents = contents.replace(old, new)
+        restore.write_text(contents)
+        self.assertEqual(
+            AUDIT.audit_sssp(self.roots["sssp"])["status"], "passed"
         )
 
     def test_sssp_restore_must_contain_exact_oracle(self) -> None:

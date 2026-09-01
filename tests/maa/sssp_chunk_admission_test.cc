@@ -33,6 +33,8 @@ mixedActiveSourceRejectsOnlyItsOwner()
     CHECK(tracker.safe(2));
     CHECK(tracker.safe(3));
     CHECK(tracker.hasReason(1, Tracker::ActiveSource));
+    CHECK(tracker.hasAnyReason(1));
+    CHECK(!tracker.hasAnyReason(0));
     CHECK(tracker.count(Tracker::ActiveSource) == 1);
 }
 
@@ -51,6 +53,26 @@ crossOwnerRejectsEveryConflictingOwnerOnly()
     CHECK(!tracker.safe(2));
     CHECK(!tracker.safe(3));
     CHECK(tracker.count(Tracker::CrossOwner) == 3);
+    CHECK(tracker.hasAnyReason(1));
+    CHECK(tracker.hasAnyReason(2));
+    CHECK(tracker.hasAnyReason(3));
+}
+
+static void
+overlappingReasonsCoverOwnersOnceWithoutChangingReasonTallies()
+{
+    Tracker tracker;
+    CHECK(tracker.reset(2));
+    uint32_t epoch = 0;
+    uint32_t owner = 0;
+    CHECK(tracker.observeDestination(0, true, 9, epoch, owner));
+    CHECK(tracker.observeDestination(1, false, 9, epoch, owner));
+    CHECK(tracker.count(Tracker::ActiveSource) == 1);
+    CHECK(tracker.count(Tracker::CrossOwner) == 2);
+    CHECK(tracker.hasReason(0, Tracker::ActiveSource));
+    CHECK(tracker.hasReason(0, Tracker::CrossOwner));
+    CHECK(tracker.hasAnyReason(0));
+    CHECK(tracker.hasAnyReason(1));
 }
 
 static void
@@ -73,6 +95,7 @@ main()
 {
     mixedActiveSourceRejectsOnlyItsOwner();
     crossOwnerRejectsEveryConflictingOwnerOnly();
+    overlappingReasonsCoverOwnersOnceWithoutChangingReasonTallies();
     globalBoundsAndInvalidInputsFailClosed();
     std::cout << "PASS SSSP chunk admission\n";
     return 0;

@@ -706,6 +706,10 @@ def audit_sssp(root: pathlib.Path) -> dict[str, Any]:
         "eligible_windows",
         "routed_windows",
         "unsafe_eligible_windows",
+        "reason_covered_unsafe_windows",
+        "bounds_rejected_windows",
+        "active_source_rejected_windows",
+        "cross_owner_rejected_windows",
         "index_publish_pages",
         "value_publish_pages",
         "old_result_words",
@@ -724,15 +728,17 @@ def audit_sssp(root: pathlib.Path) -> dict[str, Any]:
             numeric[key] = int(value)
         else:
             failures.append(f"SSSP: terminal {key} is absent or nonnumeric")
-    if len(numeric) == 15:
+    if len(numeric) == 19:
         eligible = numeric["eligible_windows"]
         routed = numeric["routed_windows"]
         unsafe = numeric["unsafe_eligible_windows"]
+        reason_covered = numeric["reason_covered_unsafe_windows"]
         fallback_pages = numeric["fallback_pages"]
         check(
             eligible > 0
             and routed > 0
             and routed + unsafe == eligible
+            and reason_covered == unsafe
             and numeric["index_publish_pages"] == routed * 4
             and numeric["value_publish_pages"] == routed * 4
             and numeric["old_result_words"] == routed * 16384,
@@ -743,6 +749,7 @@ def audit_sssp(root: pathlib.Path) -> dict[str, Any]:
             numeric["fallback_publication_issue_pages"]
             == numeric["fallback_publication_response_pages"]
             == fallback_pages * 3
+            and fallback_pages == unsafe * 4
             and numeric["fallback_publication_words"]
             == fallback_pages * 3 * 4096
             and numeric["fallback_publication_bytes"]
