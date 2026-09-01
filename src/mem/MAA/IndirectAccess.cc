@@ -6305,6 +6305,12 @@ IndirectAccessUnit::issueInlineRetirementWrites(SoaJitContext &context)
         inline_retirement_write_issues++;
         maa->sendPacket(FuncUnitType::INDIRECT, my_indirect_id, pkt,
                         maa->getClockEdge(Cycles(0)), true, true);
+        DPRINTF(MAAVirtualTrace,
+                "event=inline_retirement_issue schema=1 unit=%d "
+                "generation=%lu sequence=%u credit=%u records=%u "
+                "vaddr=0x%lx paddr=0x%lx\n",
+                my_indirect_id, credit.generation, credit.sequence,
+                credit_index, line_records, vaddr, paddr);
         consumed += line_records;
     }
     panic_if(consumed != count,
@@ -6327,6 +6333,10 @@ IndirectAccessUnit::completeInlineRetirementWrite(
         maa::InlineOperandRetirementState::Result::Accepted)
         return false;
     inline_retirement_write_responses++;
+    DPRINTF(MAAVirtualTrace,
+            "event=inline_retirement_response schema=1 unit=%d "
+            "generation=%lu sequence=%u credit=%u\n",
+            my_indirect_id, generation, sequence, credit);
     return true;
 }
 
@@ -6341,6 +6351,10 @@ IndirectAccessUnit::ackInlineRetirementLine(
              "I[%d] rejected inline retirement ACK generation=%lu "
              "sequence=%u\n", my_indirect_id, generation, sequence);
     inline_retirement_acks++;
+    DPRINTF(MAAVirtualTrace,
+            "event=inline_retirement_ack schema=1 unit=%d generation=%lu "
+            "sequence=%u\n",
+            my_indirect_id, generation, sequence);
     scheduleNextExecution(true);
     return Cycles(1);
 }
