@@ -7,6 +7,7 @@
 #include "base/logging.hh"
 #include "base/trace.hh"
 #include "debug/MAAInvalidator.hh"
+#include "debug/MAAVirtualTrace.hh"
 #include "mem/MAA/IndirectAccess.hh"
 #include "mem/MAA/MAA.hh"
 #include "mem/MAA/SPD.hh"
@@ -77,6 +78,10 @@ bool Invalidator::getAddrRegionPermit(Instruction *instruction) {
                      "Inline admission borrowed A read without the exact "
                      "modified owner\n");
             instruction->inlineOperandBorrowedReadPermit = true;
+            DPRINTF(MAAVirtualTrace,
+                    "event=inline_admission_invalidator_borrow schema=1 "
+                    "core=%d maa=%d region=%d\n",
+                    instruction->core_id, instruction->maa_id, region_id);
             return true;
         }
     }

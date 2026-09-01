@@ -3,6 +3,7 @@
 #include <cassert>
 
 #include "debug/MAAController.hh"
+#include "debug/MAAVirtualTrace.hh"
 #include "mem/MAA/IndirectAccess.hh"
 #include "mem/MAA/MAA.hh"
 #include "mem/MAA/SPD.hh"
@@ -612,7 +613,28 @@ bool IF::pushInstruction(Instruction _instruction, int *inserted_slot,
                             "%s: admitting same-core A read during exact "
                             "inline page-fill generation %lu\n",
                             __func__, open.soaJitPageFedGeneration);
+                    DPRINTF(MAAVirtualTrace,
+                            "event=inline_admission_if_borrow schema=1 "
+                            "core=%d maa=%d generation=%lu region=%d\n",
+                            open.core_id, open.maa_id,
+                            open.soaJitPageFedGeneration,
+                            open.addrRangeID);
                     continue;
+                }
+                if (open.isSoaJitInlineOperandRmw() ||
+                    _instruction.opcode ==
+                        Instruction::OpcodeType::INDIR_LD) {
+                    DPRINTF(MAAVirtualTrace,
+                            "event=inline_admission_if_reject schema=1 "
+                            "new_opcode=%d new_core=%d new_region=%d "
+                            "open_inline=%d open_core=%d open_region=%d "
+                            "generation=%lu\n",
+                            static_cast<int>(_instruction.opcode),
+                            _instruction.core_id,
+                            _instruction.addrRangeID,
+                            open.isSoaJitInlineOperandRmw(), open.core_id,
+                            open.addrRangeID,
+                            open.soaJitPageFedGeneration);
                 }
                 DPRINTF(MAAController,
                         "%s: %s cannot be pushed b/c of memory-region "
