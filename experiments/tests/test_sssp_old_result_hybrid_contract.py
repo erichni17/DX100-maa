@@ -144,6 +144,17 @@ class SsspOldResultHybridContract(unittest.TestCase):
         self.assertIn("result=PASS", self.runner)
         self.assertNotIn("sssp_maa_1K", self.runner)
 
+    def test_small_runner_persists_its_frozen_provenance(self):
+        self.assertIn(
+            'runner_snapshot="$out/provenance/'
+            'run_sssp_old_result_hybrid_small.frozen.sh"',
+            self.runner,
+        )
+        self.assertIn('cp -- "${SSSP_FROZEN_RUNNER_PATH:', self.runner)
+        self.assertIn("runner_snapshot_sha256=%s", self.runner)
+        self.assertEqual(self.runner.count('"$runner_snapshot"'), 6)
+        self.assertNotIn('"$ramulator" "$0"', self.runner)
+
     def test_host_oracle_fingerprints_the_base_delta_step(self):
         base_start = self.source.index("pvector<WeightT> DeltaStep(")
         base_end = self.source.index("void PrintSSSPStats", base_start)

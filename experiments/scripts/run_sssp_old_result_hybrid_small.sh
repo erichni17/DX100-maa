@@ -91,7 +91,11 @@ resolved_ramulator=$(ldd "$gem5" | awk '$1 == "libramulator.so" {print $3}')
     exit 1
 }
 
-mkdir -p "$out/bin" "$out/graph" "$out/checkpoint" "$out/run"
+mkdir -p "$out/bin" "$out/graph" "$out/checkpoint" "$out/run" \
+    "$out/provenance"
+runner_snapshot="$out/provenance/run_sssp_old_result_hybrid_small.frozen.sh"
+cp -- "${SSSP_FROZEN_RUNNER_PATH:?missing frozen runner}" "$runner_snapshot"
+chmod 0555 "$runner_snapshot"
 guest="$out/bin/sssp_maa_2G_old_result_hybrid_fp"
 oracle_guest="$out/bin/sssp_functional_fp"
 converter="$out/bin/converter"
@@ -294,12 +298,15 @@ restore_cmd=(
         printf 'oracle_guest_sha256=%s\n' "$(hash_value "$oracle_guest")"
     fi
     printf 'native_arms=0\nwall_timeout=none\nfull_graph=false\n'
+    printf 'runner_snapshot_path=%s\nrunner_snapshot_sha256=%s\n' \
+        "$runner_snapshot" "$(hash_value "$runner_snapshot")"
     printf 'cpu_spd_boundary_prefetch_drops=reported_not_forced\n'
     printf 'cpu_spd_out_of_range_rejections=0_required\n'
 } >"$out/manifest.txt"
 
 sha256sum "$gem5" "$frozen_ramulator" "$guest" "$graph" "$source_file" \
-    "$helper_file" "$admission_file" "$config" "$ramulator" "$0" \
+    "$helper_file" "$admission_file" "$config" "$ramulator" \
+    "$runner_snapshot" \
     >"$out/artifacts.before.sha256"
 if [[ $variant != all_safe && $prototype != 1 ]]; then
     sha256sum "$oracle_guest" "$out/graph/oracle.log" \
@@ -408,7 +415,8 @@ aperture_rejections=$(stat_sum cpu_spd_out_of_range_rejections)
 [[ $aperture_rejections -eq 0 ]]
 
 sha256sum "$gem5" "$frozen_ramulator" "$guest" "$graph" "$source_file" \
-    "$helper_file" "$admission_file" "$config" "$ramulator" "$0" \
+    "$helper_file" "$admission_file" "$config" "$ramulator" \
+    "$runner_snapshot" \
     >"$out/artifacts.after.sha256"
 if [[ $variant != all_safe && $prototype != 1 ]]; then
     sha256sum "$oracle_guest" "$out/graph/oracle.log" \
