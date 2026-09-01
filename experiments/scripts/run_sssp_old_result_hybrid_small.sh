@@ -1,14 +1,32 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ ${SSSP_FROZEN_RUNNER:-0} != 1 ]]; then
+    runner_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+    frozen_runner=$(mktemp /tmp/dx100-sssp-small.XXXXXX.sh)
+    cp -- "${BASH_SOURCE[0]}" "$frozen_runner"
+    chmod 0555 "$frozen_runner"
+    exec env SSSP_FROZEN_RUNNER=1 SSSP_RUNNER_ROOT="$runner_root" \
+        SSSP_FROZEN_RUNNER_PATH="$frozen_runner" \
+        "$frozen_runner" "$@"
+fi
+if [[ -n ${SSSP_FROZEN_RUNNER_PATH:-} ]]; then
+    trap 'rm -f -- "$SSSP_FROZEN_RUNNER_PATH"' EXIT
+fi
+
 if [[ $# -ne 2 ]]; then
     echo "usage: $0 GEM5_BIN OUTDIR" >&2
     exit 2
 fi
 
-root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+root=$(realpath "${SSSP_RUNNER_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}")
 gem5=$(realpath "$1")
 out=$(realpath -m "$2")
+variant=${SSSP_CHUNK_ADMISSION_VARIANT:-all_safe}
+case "$variant" in
+all_safe|active_source|cross_owner) ;;
+*) echo "invalid SSSP_CHUNK_ADMISSION_VARIANT: $variant" >&2; exit 2 ;;
+esac
 config="$root/configs/deprecated/example/se.py"
 ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
 source_file="$root/benchmarks/gapbs/src/sssp.cc"
@@ -86,6 +104,7 @@ resolved_ramulator=$(ldd "$gem5" | awk '$1 == "libramulator.so" {print $3}')
 
 mkdir -p "$out/bin" "$out/graph" "$out/checkpoint" "$out/run"
 guest="$out/bin/sssp_maa_2G_old_result_hybrid_fp"
+oracle_guest="$out/bin/sssp_functional_fp"
 converter="$out/bin/converter"
 wel="$out/graph/sssp_old_result_hybrid_small.wel"
 graph="$out/graph/sssp_old_result_hybrid_small.wsg"
@@ -103,6 +122,15 @@ graph="$out/graph/sssp_old_result_hybrid_small.wsg"
     -DSSSP_FP_ENABLE=1 -DSSSP_OLD_RESULT_HYBRID=1 \
     "$root/util/m5/src/abi/x86/m5op.S" "$source_file" -o "$guest"
 chmod 0555 "$guest"
+if [[ $variant != all_safe ]]; then
+    "${CXX:-g++}" -I"$root/benchmarks/gapbs/src" \
+        -I"$root/benchmarks/API" -I"$root/include" -std=c++11 -O3 \
+        -Wall -Wextra -Werror -Wno-ignored-qualifiers \
+        -Wno-unused-parameter -Wno-maybe-uninitialized -fopenmp \
+        -DSSSP_FP_ENABLE=1 \
+        "$source_file" -o "$oracle_guest"
+    chmod 0555 "$oracle_guest"
+fi
 
 # Directed two-level fanout chosen to activate exactly four safe logical
 # windows: the 4,096 active middle vertices each have 16 distinct destinations
@@ -114,13 +142,61 @@ done >"$wel"
 for ((u = 1; u <= 4096; ++u)); do
     base=$((4097 + (u - 1) * 16))
     for ((lane = 0; lane < 16; ++lane)); do
-        printf '%d %d 1\n' "$u" "$((base + lane))"
+        destination=$((base + lane))
+        if [[ $variant == active_source && $u -eq 1025 && \
+              $lane -eq 0 ]]; then
+            destination=1
+        elif [[ $variant == cross_owner && $lane -eq 0 && \
+                ( $u -eq 1025 || $u -eq 2049 ) ]]; then
+            destination=20481
+        fi
+        printf '%d %d 1\n' "$u" "$destination"
     done
 done >>"$wel"
 "$converter" -f "$wel" -w -b "$graph" >"$out/graph/converter.log" 2>&1
 chmod 0444 "$graph"
 
 options="-f $graph -n 1 -r 0 -d 1 -v"
+case "$variant" in
+all_safe)
+    expected_eligible=4
+    expected_routed=4
+    expected_unsafe=0
+    expected_bounds=0
+    expected_active=0
+    expected_cross=0
+    fingerprint='SSSP_FINGERPRINT vertices=69633 reached=69633 unreachable=0 distance_sum=135168 max_distance=2 hash_a=a0531a7ddb9387df hash_b=39f1ea63bc8817e8 triangle_violations=0 missing_predecessors=0 nonpositive_weights=0 negative_distances=0 result=PASS'
+    ;;
+active_source)
+    expected_eligible=4
+    expected_routed=3
+    expected_unsafe=1
+    expected_bounds=0
+    expected_active=1
+    expected_cross=0
+    ;;
+cross_owner)
+    expected_eligible=4
+    expected_routed=2
+    expected_unsafe=2
+    expected_bounds=0
+    expected_active=0
+    expected_cross=2
+    ;;
+esac
+if [[ $variant != all_safe ]]; then
+    OMP_NUM_THREADS=4 "$oracle_guest" $options \
+        >"$out/graph/oracle.log" 2>&1
+    fingerprint=$(grep '^SSSP_FINGERPRINT ' "$out/graph/oracle.log")
+    [[ $(grep -c '^SSSP_FINGERPRINT ' "$out/graph/oracle.log") -eq 1 && \
+       $fingerprint == *' result=PASS' ]]
+fi
+expected_index_pages=$((expected_routed * 4))
+expected_old_words=$((expected_routed * 16384))
+expected_legacy_words=$((expected_unsafe * 16384))
+expected_fallback_pages=$((expected_unsafe * 4))
+expected_fallback_issue_pages=$((expected_fallback_pages * 3))
+expected_fallback_words=$((expected_fallback_pages * 4096))
 checkpoint_cmd=(
     "$gem5" --listener-mode=off --outdir="$out/checkpoint" "$config"
     --cpu-type AtomicSimpleCPU -n 4 --mem-size 2GB --max-checkpoints=1
@@ -175,7 +251,17 @@ restore_cmd=(
         "$(hash_value "$guest")" "$(hash_value "$graph")"
     printf 'logical_elements=16384\nphysical_tile_elements=4096\n'
     printf 'mem_channels=2\nindirect_units=4\nrow_table_slices=32\n'
-    printf 'expected_routed_windows=4\n'
+    printf 'chunk_admission_variant=%s\n' "$variant"
+    printf 'expected_eligible_windows=%s\n' "$expected_eligible"
+    printf 'expected_routed_windows=%s\n' "$expected_routed"
+    printf 'expected_unsafe_windows=%s\n' "$expected_unsafe"
+    printf 'expected_bounds_rejected_windows=%s\n' "$expected_bounds"
+    printf 'expected_active_source_rejected_windows=%s\n' "$expected_active"
+    printf 'expected_cross_owner_rejected_windows=%s\n' "$expected_cross"
+    printf 'oracle_fingerprint=%s\n' "$fingerprint"
+    if [[ $variant != all_safe ]]; then
+        printf 'oracle_guest_sha256=%s\n' "$(hash_value "$oracle_guest")"
+    fi
     printf 'native_arms=0\nwall_timeout=none\nfull_graph=false\n'
     printf 'cpu_spd_boundary_prefetch_drops=reported_not_forced\n'
     printf 'cpu_spd_out_of_range_rejections=0_required\n'
@@ -184,6 +270,10 @@ restore_cmd=(
 sha256sum "$gem5" "$frozen_ramulator" "$guest" "$graph" "$source_file" \
     "$helper_file" "$admission_file" "$config" "$ramulator" "$0" \
     >"$out/artifacts.before.sha256"
+if [[ $variant != all_safe ]]; then
+    sha256sum "$oracle_guest" "$out/graph/oracle.log" \
+        >>"$out/artifacts.before.sha256"
+fi
 
 OMP_PROC_BIND=false OMP_NUM_THREADS=4 "${checkpoint_cmd[@]}" \
     >"$out/checkpoint.log" 2>&1
@@ -195,20 +285,28 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 "${restore_cmd[@]}" \
 
 restore="$out/run/restore.log"
 stats="$out/run/stats.txt"
-fingerprint='SSSP_FINGERPRINT vertices=69633 reached=69633 unreachable=0 distance_sum=135168 max_distance=2 hash_a=a0531a7ddb9387df hash_b=39f1ea63bc8817e8 triangle_violations=0 missing_predecessors=0 nonpositive_weights=0 negative_distances=0 result=PASS'
 [[ $(grep -Fxc "$fingerprint" "$restore" || true) -eq 1 ]]
 [[ $(grep -Ec '^SSSP_OLD_RESULT_HYBRID_TERMINAL ' "$restore" || true) -eq 1 ]]
 terminal=$(grep '^SSSP_OLD_RESULT_HYBRID_TERMINAL ' "$restore")
 for expected in \
-    treatment=old_result_hybrid eligible_windows=4 routed_windows=4 \
-    unsafe_eligible_windows=0 bounds_rejected_windows=0 \
-    active_source_rejected_windows=0 cross_owner_rejected_windows=0 \
-    index_publish_pages=16 value_publish_pages=16 old_result_words=65536 \
-    legacy_words=0 fallback_pages=0 \
-    fallback_publication_issue_pages=0 \
-    fallback_publication_response_pages=0 fallback_publication_words=0 \
-    fallback_publication_bytes=0 fallback_consumed_words=0 \
-    predicate_restore_words=0 coherent_tail_batches=0 \
+    treatment=old_result_hybrid \
+    eligible_windows="$expected_eligible" routed_windows="$expected_routed" \
+    unsafe_eligible_windows="$expected_unsafe" \
+    bounds_rejected_windows="$expected_bounds" \
+    active_source_rejected_windows="$expected_active" \
+    cross_owner_rejected_windows="$expected_cross" \
+    index_publish_pages="$expected_index_pages" \
+    value_publish_pages="$expected_index_pages" \
+    old_result_words="$expected_old_words" \
+    legacy_words="$expected_legacy_words" \
+    fallback_pages="$expected_fallback_pages" \
+    fallback_publication_issue_pages="$expected_fallback_issue_pages" \
+    fallback_publication_response_pages="$expected_fallback_issue_pages" \
+    fallback_publication_words="$((expected_fallback_issue_pages * 4096))" \
+    fallback_publication_bytes="$((expected_fallback_issue_pages * 4096 * 4))" \
+    fallback_consumed_words="$expected_fallback_words" \
+    predicate_restore_words="$expected_fallback_words" \
+    coherent_tail_batches=0 \
     coherent_tail_words=0 logical_reorder_words=16384 \
     physical_spd_words=4096 row_table_slices=32 \
     predicate_span=coherent_aligned old_result_span=coherent_aligned \
@@ -240,8 +338,10 @@ terminals=$(stat_sum IND_SoaJitTerminalCompletions)
 boundary_drops=$(stat_sum_optional_zero cpu_spd_boundary_prefetch_drops)
 aperture_rejections=$(stat_sum_optional_zero cpu_spd_out_of_range_rejections)
 
-[[ $instructions -eq 4 && $terminals -eq 4 ]]
-[[ $selected -eq 65536 && $rejected -eq 0 && $captures -eq 65536 ]]
+[[ $instructions -eq $expected_routed && \
+   $terminals -eq $expected_routed ]]
+[[ $selected -eq $expected_old_words && $rejected -eq 0 && \
+   $captures -eq $expected_old_words ]]
 [[ $issues -gt 0 && $issues -eq $responses ]]
 [[ $a_reads -gt 0 && $a_reads -eq $a_read_responses && \
    $a_reads -eq $a_writes && $a_writes -eq $a_write_responses ]]
@@ -251,13 +351,20 @@ aperture_rejections=$(stat_sum_optional_zero cpu_spd_out_of_range_rejections)
 sha256sum "$gem5" "$frozen_ramulator" "$guest" "$graph" "$source_file" \
     "$helper_file" "$admission_file" "$config" "$ramulator" "$0" \
     >"$out/artifacts.after.sha256"
+if [[ $variant != all_safe ]]; then
+    sha256sum "$oracle_guest" "$out/graph/oracle.log" \
+        >>"$out/artifacts.after.sha256"
+fi
 cmp -s "$out/artifacts.before.sha256" "$out/artifacts.after.sha256"
 
 sim_ticks=$(awk '$1 == "simTicks" { print $2; exit }' "$stats")
 [[ $sim_ticks =~ ^[1-9][0-9]*$ ]]
 {
     printf 'terminal=true\ncorrect=true\n'
-    printf 'simTicks=%s\neligible_windows=4\nrouted_windows=4\n' "$sim_ticks"
+    printf 'simTicks=%s\nchunk_admission_variant=%s\n' \
+        "$sim_ticks" "$variant"
+    printf 'eligible_windows=%s\nrouted_windows=%s\nunsafe_windows=%s\n' \
+        "$expected_eligible" "$expected_routed" "$expected_unsafe"
     printf 'old_result_captures=%s\nold_result_write_issues=%s\n' \
         "$captures" "$issues"
     printf 'old_result_write_responses=%s\n' "$responses"

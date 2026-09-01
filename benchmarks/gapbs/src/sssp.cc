@@ -1075,6 +1075,9 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
 #endif
     m5_exit(0);
 #endif
+#if defined(SSSP_FP_ENABLE) && !defined(GEM5)
+    PrintSSSPFingerprint(g, source, dist);
+#endif
     return dist;
 }
 

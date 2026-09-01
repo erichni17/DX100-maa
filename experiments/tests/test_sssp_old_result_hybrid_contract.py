@@ -132,7 +132,9 @@ class SsspOldResultHybridContract(unittest.TestCase):
         self.assertIn("--mem-channels=2", self.runner)
         self.assertIn("--maa_num_indirect_units_per_maa=4", self.runner)
         self.assertIn("--maa_num_initial_row_table_slices=32", self.runner)
-        self.assertIn("expected_routed_windows=4", self.runner)
+        self.assertIn("SSSP_CHUNK_ADMISSION_VARIANT", self.runner)
+        self.assertIn("expected_routed=4", self.runner)
+        self.assertIn("expected_routed_windows=%s", self.runner)
         self.assertIn("hash_a=a0531a7ddb9387df", self.runner)
         self.assertIn("hash_b=39f1ea63bc8817e8", self.runner)
         self.assertIn("result=PASS", self.runner)
@@ -153,10 +155,9 @@ class SsspOldResultHybridContract(unittest.TestCase):
         self,
     ):
         for exact in (
-            "fallback_pages=0",
-            "fallback_publication_issue_pages=0",
-            "fallback_publication_response_pages=0",
-            "fallback_consumed_words=0",
+            "expected_fallback_pages",
+            "expected_fallback_issue_pages",
+            "expected_fallback_words",
             "coherent_tail_words=0",
             "host_spd_reads=0",
             "max_host_spd_element=-1",
@@ -165,6 +166,9 @@ class SsspOldResultHybridContract(unittest.TestCase):
             "counts_close=1",
         ):
             self.assertIn(exact, self.runner)
+        self.assertIn("expected_unsafe=0", self.runner)
+        self.assertIn("active_source)", self.runner)
+        self.assertIn("cross_owner)", self.runner)
         self.assertIn("terminal_value", self.runner)
         self.assertIn("helper_sha256", self.runner)
 
