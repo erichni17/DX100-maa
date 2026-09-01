@@ -12030,13 +12030,15 @@ IndirectAccessUnit::setVirtualSharedPartialSpilled(Addr line_vaddr,
 bool
 IndirectAccessUnit::spillVirtualCombinePartialForSourceCredit()
 {
-    if (!virtual_shared_result_payload || !completeLineOnlyOperation() ||
-        !virtual_masked_writes || virtual_combine_words == 0 ||
+    if (!virtual_shared_result_payload || !virtual_masked_writes ||
+        virtual_combine_words == 0 ||
         virtual_outstanding_writes >= virtual_max_outstanding_writes_limit)
         return false;
 
-    // Drain legal full lines first. A remaining victim is necessarily a
-    // fragment whose backing write is required to make bounded progress.
+    // Drain legal full lines first. A remaining victim is a fragment whose
+    // backing write is required to make bounded progress. Generic masked mode
+    // permits this normally; complete-line mode records the exceptional spill
+    // so later fragments preserve exact backing state.
     drainVirtualCombiner(false);
     int victim = -1;
     int victim_words = 0;

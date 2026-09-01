@@ -153,6 +153,13 @@ class UmeTwoPassMatrixTest(unittest.TestCase):
         self.assertIn("spillVirtualCombinePartialForSourceCredit", bounded_global)
         self.assertIn("scheduleExecuteInstructionEvent(1)", bounded_global)
         self.assertNotIn("response_slots=%d/%zu", source)
+        spill = source[
+            source.index(
+                "IndirectAccessUnit::spillVirtualCombinePartialForSourceCredit()"
+            ) :
+            source.index("void IndirectAccessUnit::drainVirtualCombiner")
+        ]
+        self.assertNotIn("!completeLineOnlyOperation()", spill)
 
     def test_shared_source_payload_charges_unique_words_with_fanout(self) -> None:
         implementation = (ROOT / "src/mem/MAA/IndirectAccess.cc").read_text()
