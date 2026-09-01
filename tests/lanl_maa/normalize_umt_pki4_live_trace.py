@@ -60,21 +60,21 @@ NORMALIZER_REVIEW_SHA256 = (
 REPLAY_SOURCE = pathlib.Path(
     "/data1/nier/worktrees/DX100-umt-pki4-gate-a-replay-v2-20260831"
 )
-REPLAY_COMMIT = "7a39d29c49f159d55d14dcd9341b76712e31a463"
-REPLAY_TREE = "255498b6616c7417d447b87cc4506dc9f7f4805a"
+REPLAY_COMMIT = "d1e60928b9446624d829d767e7037a8e12a38448"
+REPLAY_TREE = "a3b103e64fd0243f87bd7ca842bbba7452d10865"
 REPLAY_GENERATOR = REPLAY_SOURCE / (
     "experiments/lanl_maa_fp64_physical/scripts/"
     "generate_umt_pki4_gate_a_replay.py"
 )
 REPLAY_GENERATOR_SHA256 = (
-    "c73bf8bce1dd534683ffa5b7bf167dd45348b22886a7efa6fd318221f03f0d81"
+    "daaccaff536697b4625d42f9318d2dc2b0159ec60f13136f2587d514684b2c04"
 )
 REPLAY_REVIEW = pathlib.Path(
     "/data1/nier/dx100-runs/2026-08-31-umt-pki4-gate-a-replay-v2-review/"
-    "pki4-gate-a-replay-v24-7a39d29c-independent-review-v4.json"
+    "pki4-gate-a-replay-v28-d1e60928-g31-independent-review-v7.json"
 )
 REPLAY_REVIEW_SHA256 = (
-    "90348ad431d6e87c5bbf0d4d4d51583f06b728f814c78b2cc7a3ebaf47068d63"
+    "05c9ff5dfc1e2bb1e3e9845ce8500ca0102b979c142b89e878dae485d1cb2824"
 )
 CLAIM_BOUNDARY = (
     "Full raw canonical-v3 normalization validates the C++ Gate-A trace. "
