@@ -17,6 +17,7 @@ config="$root/configs/deprecated/example/se.py"
 ramulator_config="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
 source_file="$root/benchmarks/gapbs/src/sssp.cc"
 helper_file="$root/benchmarks/gapbs/src/sssp_coherent_fallback.hh"
+admission_file="$root/benchmarks/gapbs/src/sssp_chunk_admission.hh"
 frozen_sweep="$root/experiments/analysis/physical_tile_sweep_baseline_20260822.json"
 frozen_sweep_sha256=d8cd2afe18de4f7983b1d9d59a0ea04e102a51bc7146a9d85c3c9a19cc73d069
 
@@ -136,6 +137,8 @@ validate_evidence() (
         "$(manifest_value "$manifest" candidate_guest_sha256)"
     require_hash "$helper_file" \
         "$(manifest_value "$manifest" coherent_fallback_helper_sha256)"
+    require_hash "$admission_file" \
+        "$(manifest_value "$manifest" chunk_admission_sha256)"
     require_hash "$frozen_sweep" "$frozen_sweep_sha256"
 
     hash_tree "$out/checkpoint" \
@@ -213,12 +216,19 @@ validate_evidence() (
     [[ $(terminal_value "$terminal" response_closure) == 1 ]]
     [[ $(terminal_value "$terminal" counts_close) == 1 ]]
 
-    local eligible routed index_pages value_pages old_words legacy_words
+    local eligible routed unsafe bounds_rejected active_rejected cross_rejected
+    local index_pages value_pages old_words legacy_words
     local fallback_pages fallback_issue_pages fallback_response_pages
     local fallback_words fallback_bytes fallback_consumed predicate_restores
     local tail_batches tail_words
     eligible=$(terminal_value "$terminal" eligible_windows)
     routed=$(terminal_value "$terminal" routed_windows)
+    unsafe=$(terminal_value "$terminal" unsafe_eligible_windows)
+    bounds_rejected=$(terminal_value "$terminal" bounds_rejected_windows)
+    active_rejected=$(terminal_value \
+        "$terminal" active_source_rejected_windows)
+    cross_rejected=$(terminal_value \
+        "$terminal" cross_owner_rejected_windows)
     index_pages=$(terminal_value "$terminal" index_publish_pages)
     value_pages=$(terminal_value "$terminal" value_publish_pages)
     old_words=$(terminal_value "$terminal" old_result_words)
@@ -234,7 +244,9 @@ validate_evidence() (
     predicate_restores=$(terminal_value "$terminal" predicate_restore_words)
     tail_batches=$(terminal_value "$terminal" coherent_tail_batches)
     tail_words=$(terminal_value "$terminal" coherent_tail_words)
-    for value in "$eligible" "$routed" "$index_pages" "$value_pages" \
+    for value in "$eligible" "$routed" "$unsafe" "$bounds_rejected" \
+        "$active_rejected" "$cross_rejected" \
+        "$index_pages" "$value_pages" \
         "$old_words" "$legacy_words" "$fallback_pages" \
         "$fallback_issue_pages" "$fallback_response_pages" \
         "$fallback_words" "$fallback_bytes" "$fallback_consumed" \
@@ -242,6 +254,8 @@ validate_evidence() (
         [[ $value =~ ^[0-9]+$ ]]
     done
     (( routed > 0 && routed <= eligible ))
+    (( routed + unsafe == eligible ))
+    (( unsafe == 0 || bounds_rejected + active_rejected + cross_rejected > 0 ))
     (( index_pages == routed * 4 ))
     (( value_pages == routed * 4 ))
     (( old_words == routed * 16384 ))
@@ -331,10 +345,12 @@ validate_evidence() (
 
 write_result() {
     local out=$1 restore="$1/run/restore.log" stats="$1/run/stats.txt"
-    local terminal eligible routed routing_status boundary_drops aperture_rejections
+    local terminal eligible routed unsafe routing_status
+    local boundary_drops aperture_rejections
     terminal=$(grep '^SSSP_OLD_RESULT_HYBRID_TERMINAL ' "$restore")
     eligible=$(terminal_value "$terminal" eligible_windows)
     routed=$(terminal_value "$terminal" routed_windows)
+    unsafe=$(terminal_value "$terminal" unsafe_eligible_windows)
     if (( routed == eligible )); then
         routing_status=all_eligible_windows_routed
     else
@@ -360,6 +376,13 @@ write_result() {
             "$native_first_roi_ticks"
         printf 'comparison_status=measured_candidate_unpromoted\n'
         printf 'eligible_windows=%s\nrouted_windows=%s\n' "$eligible" "$routed"
+        printf 'unsafe_eligible_windows=%s\n' "$unsafe"
+        printf 'bounds_rejected_windows=%s\n' \
+            "$(terminal_value "$terminal" bounds_rejected_windows)"
+        printf 'active_source_rejected_windows=%s\n' \
+            "$(terminal_value "$terminal" active_source_rejected_windows)"
+        printf 'cross_owner_rejected_windows=%s\n' \
+            "$(terminal_value "$terminal" cross_owner_rejected_windows)"
         printf 'routing_status=%s\n' "$routing_status"
         printf 'legacy_words=%s\n' \
             "$(terminal_value "$terminal" legacy_words)"
@@ -553,6 +576,9 @@ native_stats_sha256=$(hash_value "$native_out/stats.txt")
     printf 'coherent_fallback_helper_path=%s\n' "$helper_file"
     printf 'coherent_fallback_helper_sha256=%s\n' \
         "$(hash_value "$helper_file")"
+    printf 'chunk_admission_path=%s\n' "$admission_file"
+    printf 'chunk_admission_sha256=%s\n' \
+        "$(hash_value "$admission_file")"
     printf 'candidate_gem5_path=%s\ncandidate_gem5_sha256=%s\n' \
         "$gem5" "$gem5_sha256"
     printf 'default_gem5_path=%s\ndefault_gem5_sha256=%s\n' \
@@ -576,7 +602,7 @@ native_stats_sha256=$(hash_value "$native_out/stats.txt")
 } >"$out/candidate.manifest"
 
 sha256sum "$gem5" "$frozen_ramulator" "$guest" "$graph" "$source_file" \
-    "$helper_file" "$config" "$ramulator_config" "$0" \
+    "$helper_file" "$admission_file" "$config" "$ramulator_config" "$0" \
     >"$out/provenance/artifacts.before.sha256"
 
 checkpoint_command=(
@@ -658,7 +684,7 @@ hash_tree "$out/checkpoint" \
 hash_value "$out/provenance/checkpoint.after.files.sha256" \
     >"$out/provenance/checkpoint.after.identity.sha256"
 sha256sum "$gem5" "$frozen_ramulator" "$guest" "$graph" "$source_file" \
-    "$helper_file" "$config" "$ramulator_config" "$0" \
+    "$helper_file" "$admission_file" "$config" "$ramulator_config" "$0" \
     >"$out/provenance/artifacts.after.sha256"
 cmp -s "$out/provenance/artifacts.before.sha256" \
     "$out/provenance/artifacts.after.sha256"

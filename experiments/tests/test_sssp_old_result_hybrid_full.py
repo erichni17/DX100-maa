@@ -213,7 +213,16 @@ class SsspOldResultHybridFullContract(unittest.TestCase):
         self.assertIn(
             "sssp_hybrid_legacy_words[tid] += curr_size", self.source
         )
-        self.assertIn("routed_windows <= eligible_windows", self.source)
+        self.assertIn(
+            "routed_windows + unsafe_eligible_windows == eligible_windows",
+            self.source,
+        )
+        for reason in (
+            "bounds_rejected_windows",
+            "active_source_rejected_windows",
+            "cross_owner_rejected_windows",
+        ):
+            self.assertIn(reason, self.source)
         for field in (
             "fallback_pages",
             "fallback_publication_issue_pages",

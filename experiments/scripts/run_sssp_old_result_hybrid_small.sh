@@ -13,6 +13,7 @@ config="$root/configs/deprecated/example/se.py"
 ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
 source_file="$root/benchmarks/gapbs/src/sssp.cc"
 helper_file="$root/benchmarks/gapbs/src/sssp_coherent_fallback.hh"
+admission_file="$root/benchmarks/gapbs/src/sssp_chunk_admission.hh"
 frozen_ramulator=/data1/nier/dx100-runs/2026-08-12-hybrid-line-handoff-8a5c7712/input/libramulator.so
 frozen_ramulator_sha256=76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753
 
@@ -166,6 +167,7 @@ restore_cmd=(
     printf 'source_commit=%s\nsource_sha256=%s\nhelper_sha256=%s\n' \
         "$(git -C "$root" rev-parse HEAD)" "$(hash_value "$source_file")" \
         "$(hash_value "$helper_file")"
+    printf 'chunk_admission_sha256=%s\n' "$(hash_value "$admission_file")"
     printf 'gem5_path=%s\ngem5_sha256=%s\n' "$gem5" "$(hash_value "$gem5")"
     printf 'ramulator_library_path=%s\nramulator_library_sha256=%s\n' \
         "$frozen_ramulator" "$frozen_ramulator_sha256"
@@ -180,7 +182,7 @@ restore_cmd=(
 } >"$out/manifest.txt"
 
 sha256sum "$gem5" "$frozen_ramulator" "$guest" "$graph" "$source_file" \
-    "$helper_file" "$config" "$ramulator" "$0" \
+    "$helper_file" "$admission_file" "$config" "$ramulator" "$0" \
     >"$out/artifacts.before.sha256"
 
 OMP_PROC_BIND=false OMP_NUM_THREADS=4 "${checkpoint_cmd[@]}" \
@@ -199,6 +201,8 @@ fingerprint='SSSP_FINGERPRINT vertices=69633 reached=69633 unreachable=0 distanc
 terminal=$(grep '^SSSP_OLD_RESULT_HYBRID_TERMINAL ' "$restore")
 for expected in \
     treatment=old_result_hybrid eligible_windows=4 routed_windows=4 \
+    unsafe_eligible_windows=0 bounds_rejected_windows=0 \
+    active_source_rejected_windows=0 cross_owner_rejected_windows=0 \
     index_publish_pages=16 value_publish_pages=16 old_result_words=65536 \
     legacy_words=0 fallback_pages=0 \
     fallback_publication_issue_pages=0 \
@@ -245,7 +249,7 @@ aperture_rejections=$(stat_sum_optional_zero cpu_spd_out_of_range_rejections)
 [[ $aperture_rejections -eq 0 ]]
 
 sha256sum "$gem5" "$frozen_ramulator" "$guest" "$graph" "$source_file" \
-    "$helper_file" "$config" "$ramulator" "$0" \
+    "$helper_file" "$admission_file" "$config" "$ramulator" "$0" \
     >"$out/artifacts.after.sha256"
 cmp -s "$out/artifacts.before.sha256" "$out/artifacts.after.sha256"
 

@@ -32,14 +32,14 @@ class SsspOldResultHybridContract(unittest.TestCase):
         self.assertIn("candidate > kDistInf", self.source)
         self.assertIn("dist[wn.v] < 0 || dist[wn.v] > kDistInf", self.source)
         self.assertIn("hybrid_active_sources[wn.v]", self.source)
-        self.assertIn(
-            "hybrid_destination_epochs[wn.v] == hybrid_epoch", self.source
-        )
-        self.assertIn(
-            "hybrid_destination_owners[wn.v] != chunk_owner", self.source
-        )
+        self.assertIn("hybrid_chunk_admission.observeDestination", self.source)
+        self.assertIn("hybrid_chunk_admission.safe", self.source)
         self.assertIn("wn.w <= 0", self.source)
-        self.assertIn("routed_windows <= eligible_windows", self.source)
+        self.assertIn(
+            "routed_windows + unsafe_eligible_windows == eligible_windows",
+            self.source,
+        )
+        self.assertNotIn("hybrid_iteration_safe", self.source)
 
     def test_four_physical_pages_precede_ordered_old_result(self):
         chunk = self.source[

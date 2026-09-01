@@ -21,6 +21,7 @@
 #include "graph.h"
 #include "platform_atomics.h"
 #include "pvector.h"
+#include "sssp_chunk_admission.hh"
 #include "sssp_coherent_fallback.hh"
 #include "timer.h"
 
@@ -113,6 +114,10 @@ alignas(kSsspLogicalBytes) static WeightT
 
 static uint64_t sssp_hybrid_eligible_windows[NUM_CORES] = {};
 static uint64_t sssp_hybrid_routed_windows[NUM_CORES] = {};
+static uint64_t sssp_hybrid_unsafe_eligible_windows[NUM_CORES] = {};
+static uint64_t sssp_hybrid_bounds_rejected_windows[NUM_CORES] = {};
+static uint64_t sssp_hybrid_active_source_rejected_windows[NUM_CORES] = {};
+static uint64_t sssp_hybrid_cross_owner_rejected_windows[NUM_CORES] = {};
 static uint64_t sssp_hybrid_index_publish_pages[NUM_CORES] = {};
 static uint64_t sssp_hybrid_value_publish_pages[NUM_CORES] = {};
 static uint64_t sssp_hybrid_old_result_words[NUM_CORES] = {};
@@ -441,7 +446,8 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
     pvector<uint32_t> hybrid_destination_epochs(num_nodes, 0);
     pvector<uint32_t> hybrid_destination_owners(num_nodes, 0);
     uint32_t hybrid_epoch = 0;
-    bool hybrid_iteration_safe = false;
+    bool hybrid_global_safe = false;
+    sssp_chunk_admission::Tracker hybrid_chunk_admission;
     for (int core = 0; core < NUM_CORES; ++core) {
         fill(sssp_hybrid_predicates[core],
              sssp_hybrid_predicates[core] + kSsspLogicalWords, 1U);
@@ -528,12 +534,10 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
 #ifdef SSSP_OLD_RESULT_HYBRID
 #pragma omp single
             {
-                // A logical window may replace four legacy physical RMWs only
-                // if page aggregation cannot change any operand or winner.
-                // Prove that once for the whole iteration: every active edge
-                // has bounded nonnegative integer operands, destinations do
-                // not cross chunk owners, and none names an active source.
-                hybrid_iteration_safe = true;
+                // Global domain/bounds failures reject the iteration. Data
+                // hazards reject only the frontier chunks they affect, so an
+                // unrelated safe chunk can retain its logical 16K window.
+                hybrid_global_safe = true;
                 fill(hybrid_active_sources.begin(),
                      hybrid_active_sources.end(), 0);
                 if (++hybrid_epoch == 0) {
@@ -545,18 +549,23 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                 if (delta <= 0 ||
                     curr_bin_index >
                         static_cast<size_t>(kDistInf / max(delta, 1))) {
-                    hybrid_iteration_safe = false;
+                    hybrid_global_safe = false;
                 } else {
                     lower_bound = static_cast<int64_t>(delta) *
                         static_cast<int64_t>(curr_bin_index);
                 }
                 const int chunk_frontier_words =
                     SsspHybridChunkFrontierWords(curr_frontier_tail);
+                const size_t chunk_count =
+                    (curr_frontier_tail + chunk_frontier_words - 1) /
+                    chunk_frontier_words;
+                if (!hybrid_chunk_admission.reset(chunk_count))
+                    abort();
                 for (size_t pos = 0; pos < curr_frontier_tail; ++pos) {
                     const NodeID u = frontier[pos];
                     if (u < 0 || u >= num_nodes || dist[u] < 0 ||
                         dist[u] > kDistInf) {
-                        hybrid_iteration_safe = false;
+                        hybrid_global_safe = false;
                         continue;
                     }
                     if (dist[u] >= lower_bound)
@@ -576,19 +585,22 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                             static_cast<int64_t>(dist[u]) + wn.w;
                         if (wn.v < 0 || wn.v >= num_nodes || wn.w <= 0 ||
                             candidate < 0 || candidate > kDistInf ||
-                            dist[wn.v] < 0 || dist[wn.v] > kDistInf ||
-                            hybrid_active_sources[wn.v]) {
-                            hybrid_iteration_safe = false;
-                        } else if (
-                            hybrid_destination_epochs[wn.v] == hybrid_epoch) {
-                            if (hybrid_destination_owners[wn.v] != chunk_owner)
-                                hybrid_iteration_safe = false;
-                        } else {
-                            hybrid_destination_epochs[wn.v] = hybrid_epoch;
-                            hybrid_destination_owners[wn.v] = chunk_owner;
+                            dist[wn.v] < 0 || dist[wn.v] > kDistInf) {
+                            hybrid_global_safe = false;
+                            continue;
                         }
+                        if (!hybrid_chunk_admission.observeDestination(
+                                chunk_owner,
+                                hybrid_active_sources[wn.v] != 0,
+                                hybrid_epoch,
+                                hybrid_destination_epochs[wn.v],
+                                hybrid_destination_owners[wn.v]))
+                            abort();
                     }
                 }
+                if (!hybrid_global_safe)
+                    hybrid_chunk_admission.rejectAll(
+                        sssp_chunk_admission::Tracker::Bounds);
             }
 #endif
             if ((int)curr_frontier_tail < NUM_CORES * 1024) {
@@ -688,8 +700,37 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                         (hybrid_chunk_words / kSsspLogicalWords) *
                         kSsspLogicalWords;
                     const int tid = omp_get_thread_num();
-                    sssp_hybrid_eligible_windows[tid] +=
+                    const uint64_t eligible_chunk_windows =
                         hybrid_chunk_words / kSsspLogicalWords;
+                    const size_t hybrid_chunk_owner =
+                        static_cast<size_t>(idx) /
+                        SsspHybridChunkFrontierWords(cft);
+                    if (hybrid_chunk_owner >=
+                        hybrid_chunk_admission.chunks())
+                        abort();
+                    const bool hybrid_chunk_safe = hybrid_global_safe &&
+                        hybrid_chunk_admission.safe(hybrid_chunk_owner);
+                    sssp_hybrid_eligible_windows[tid] +=
+                        eligible_chunk_windows;
+                    if (!hybrid_chunk_safe && eligible_chunk_windows != 0) {
+                        sssp_hybrid_unsafe_eligible_windows[tid] +=
+                            eligible_chunk_windows;
+                        if (hybrid_chunk_admission.hasReason(
+                                hybrid_chunk_owner,
+                                sssp_chunk_admission::Tracker::Bounds))
+                            sssp_hybrid_bounds_rejected_windows[tid] +=
+                                eligible_chunk_windows;
+                        if (hybrid_chunk_admission.hasReason(
+                                hybrid_chunk_owner,
+                                sssp_chunk_admission::Tracker::ActiveSource))
+                            sssp_hybrid_active_source_rejected_windows[tid] +=
+                                eligible_chunk_windows;
+                        if (hybrid_chunk_admission.hasReason(
+                                hybrid_chunk_owner,
+                                sssp_chunk_admission::Tracker::CrossOwner))
+                            sssp_hybrid_cross_owner_rejected_windows[tid] +=
+                                eligible_chunk_windows;
+                    }
                     size_t hybrid_observed_words = 0;
                     int hybrid_cursor_pos = idx;
                     SGOffset hybrid_cursor_edge = -1;
@@ -766,7 +807,7 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                             if (curr_size !=
                                 static_cast<int>(kSsspPhysicalWords))
                                 abort();
-                            const bool route_page = hybrid_iteration_safe &&
+                            const bool route_page = hybrid_chunk_safe &&
                                 hybrid_observed_words < hybrid_route_words;
                             if (route_page) {
                                 if (curr_size !=
@@ -853,8 +894,7 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                         }
                     } while (curr_size > 0);
 #ifdef SSSP_OLD_RESULT_HYBRID
-                    if (hybrid_iteration_safe &&
-                        hybrid_observed_words != hybrid_chunk_words)
+                    if (hybrid_observed_words != hybrid_chunk_words)
                         abort();
 #endif
                 }
@@ -905,6 +945,10 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
 #ifdef SSSP_OLD_RESULT_HYBRID
     uint64_t eligible_windows = 0;
     uint64_t routed_windows = 0;
+    uint64_t unsafe_eligible_windows = 0;
+    uint64_t bounds_rejected_windows = 0;
+    uint64_t active_source_rejected_windows = 0;
+    uint64_t cross_owner_rejected_windows = 0;
     uint64_t index_publish_pages = 0;
     uint64_t value_publish_pages = 0;
     uint64_t old_result_words = 0;
@@ -924,6 +968,14 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
     for (int core = 0; core < NUM_CORES; ++core) {
         eligible_windows += sssp_hybrid_eligible_windows[core];
         routed_windows += sssp_hybrid_routed_windows[core];
+        unsafe_eligible_windows +=
+            sssp_hybrid_unsafe_eligible_windows[core];
+        bounds_rejected_windows +=
+            sssp_hybrid_bounds_rejected_windows[core];
+        active_source_rejected_windows +=
+            sssp_hybrid_active_source_rejected_windows[core];
+        cross_owner_rejected_windows +=
+            sssp_hybrid_cross_owner_rejected_windows[core];
         index_publish_pages += sssp_hybrid_index_publish_pages[core];
         value_publish_pages += sssp_hybrid_value_publish_pages[core];
         old_result_words += sssp_hybrid_old_result_words[core];
@@ -947,7 +999,12 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
         fallback_thread_closure =
             fallback_thread_closure && fallback.legal();
     }
-    const bool counts_close = routed_windows <= eligible_windows &&
+    const bool counts_close =
+        routed_windows + unsafe_eligible_windows == eligible_windows &&
+        (unsafe_eligible_windows == 0 ||
+         bounds_rejected_windows + active_source_rejected_windows +
+                 cross_owner_rejected_windows >
+             0) &&
         index_publish_pages == routed_windows * 4 &&
         value_publish_pages == routed_windows * 4 &&
         old_result_words == routed_windows * kSsspLogicalWords &&
@@ -964,6 +1021,12 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
     std::cout << "SSSP_OLD_RESULT_HYBRID_TERMINAL treatment=old_result_hybrid"
               << " eligible_windows=" << eligible_windows
               << " routed_windows=" << routed_windows
+              << " unsafe_eligible_windows=" << unsafe_eligible_windows
+              << " bounds_rejected_windows=" << bounds_rejected_windows
+              << " active_source_rejected_windows="
+              << active_source_rejected_windows
+              << " cross_owner_rejected_windows="
+              << cross_owner_rejected_windows
               << " index_publish_pages=" << index_publish_pages
               << " value_publish_pages=" << value_publish_pages
               << " old_result_words=" << old_result_words
