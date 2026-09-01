@@ -106,6 +106,9 @@ sha256sum "$gem5" "$binary" "$config" "$ramulator" "$0" \
     "$root/configs/common/Options.py" \
     "$root/src/mem/MAA/IndirectAccess.cc" \
     "$root/src/mem/MAA/IndirectAccess.hh" \
+    "$root/src/mem/MAA/VirtualSourceFanout.hh" \
+    "$root/src/mem/MAA/VirtualResponsePayloadStore.hh" \
+    "$root/src/mem/MAA/VirtualCombinePayloadStore.hh" \
     "$root/src/mem/MAA/MAA.cc" \
     "$root/src/mem/MAA/MAA.hh" \
     "$root/src/mem/MAA/MAA.py" \

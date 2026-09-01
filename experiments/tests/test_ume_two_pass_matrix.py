@@ -184,6 +184,14 @@ class UmeTwoPassMatrixTest(unittest.TestCase):
             row_source.index("virtualSourceCreditAvailable"),
         )
         self.assertIn("!fanout_wait &&", row_source)
+        self.assertIn("shared_word_refs", source)
+        self.assertIn("virtual_response_payload_words", source)
+        self.assertIn(
+            "virtual_shared_result_payload ||\n"
+            "            (virtual_response_words != 0",
+            source,
+        )
+        self.assertIn("line_shadow_bytes=%lu", source)
 
     def test_shared_source_payload_charges_unique_words_with_fanout(self) -> None:
         implementation = (ROOT / "src/mem/MAA/IndirectAccess.cc").read_text()

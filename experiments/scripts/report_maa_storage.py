@@ -290,11 +290,14 @@ def main() -> int:
     if shared_result_payload and (
         combine_words == 0
         or response_pool == 0
+        or combine_words + response_pool
+        <= SHARED_RESPONSE_MAX_LOGICAL_WORDS
         or combine_words + response_pool > physical
     ):
         fail(
             "shared virtual-result payload requires explicit nonzero "
-            "combiner/response capacities within physical storage"
+            "combiner/response capacities within physical storage and at "
+            "least 17 total words"
         )
     if shared_result_payload and logical > SHARED_RESPONSE_MAX_FANOUT_USES:
         fail(
@@ -694,12 +697,9 @@ def main() -> int:
     active_virtual_payload_total = (
         active_virtual_payload_per_unit * indirect_units
     )
-    # Shared mode deliberately selects the unpacked C++ response-line store,
-    # even though its line payload is a simulator-only functional shadow and
-    # not part of the packed hardware allocator modeled above.
-    excluded_cpp_response_line_shadow_bytes_per_unit = (
-        response_slots * 64 if shared_result_payload else 0
-    )
+    # Shared mode stores only referenced words in the unified fixed allocator;
+    # the unpacked C++ response-line store is disabled.
+    excluded_cpp_response_line_shadow_bytes_per_unit = 0
     excluded_cpp_response_line_shadow_bytes_total = (
         excluded_cpp_response_line_shadow_bytes_per_unit * indirect_units
     )
@@ -967,9 +967,9 @@ def main() -> int:
                 excluded_cpp_response_line_shadow_bytes_total
             ),
             "excluded_cpp_response_line_shadow_note": (
-                "Shared-result mode configures one unpacked 64-byte C++ "
-                "response line per slot as simulator-only functional shadow; "
-                "it is excluded from the modeled hardware allocator."
+                "Shared-result mode disables the unpacked C++ response-line "
+                "store and retains referenced words in the unified modeled "
+                "allocator."
             ),
         },
         "incremental_virtual_control_lower_bound": {
@@ -1392,9 +1392,9 @@ def main() -> int:
         "readiness, but this does not prove native-equivalent descriptor lifetime or",
         "issue order. Essential tags and bounded control arrays are included as a",
         "bit-count lower bound; ports, arbitration, wiring, and memory periphery are",
-        "still excluded. Shared-result mode separately reports its unpacked C++",
-        "response-line shadow as simulator-only state excluded from the hardware",
-        "and conservative views; when direct_retirement_line_handoff=true it additionally counts",
+        "still excluded. Shared-result mode disables the unpacked C++ response-line",
+        "shadow and charges fixed word references into the unified allocator; when",
+        "direct_retirement_line_handoff=true it additionally counts",
         "the fixed direct-retirement queue, execution records, request records, retry",
         "slots, early-line ledger, and producer-line metadata. The direct handoff",
         "views deliberately exclude indirect virtual buffers already charged above.",

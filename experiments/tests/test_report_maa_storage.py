@@ -156,7 +156,7 @@ class StorageReportTest(unittest.TestCase):
                 buffers[
                     "excluded_cpp_response_line_shadow_bytes_per_indirect_unit"
                 ],
-                128 * 64,
+                0,
             )
             control = json.loads((output / "maa_storage.json").read_text())[
                 "incremental_virtual_control_lower_bound"
@@ -182,7 +182,7 @@ class StorageReportTest(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            cases = ((0, 1024), (3072, 0), (4096, 1))
+            cases = ((0, 1024), (3072, 0), (8, 8), (4096, 1))
             for combine_words, response_pool in cases:
                 with self.subTest(
                     combine_words=combine_words, response_pool=response_pool

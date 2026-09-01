@@ -450,10 +450,15 @@ MAA::MAA(const MAAParams &p)
     panic_if(virtual_shared_result_payload &&
                  (virtual_combine_words == 0 ||
                   virtual_response_word_pool == 0 ||
+                  virtual_combine_words + virtual_response_word_pool <=
+                      VirtualCombinePayloadStore::MaxLineWords ||
                   virtual_combine_words + virtual_response_word_pool >
                       physical_tile_elements),
              "Shared virtual-result payload requires explicit nonzero "
-             "combiner/response capacities within physical storage\n");
+             "combiner/response capacities within physical storage and at "
+             "least %lu total words\n",
+             static_cast<unsigned long>(
+                 VirtualCombinePayloadStore::MaxLineWords + 1));
     if (virtual_strict_two_phase) {
         panic_if(num_tile_elements !=
                          maa::StrictTwoPhaseReference::LogicalElements ||

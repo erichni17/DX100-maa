@@ -195,7 +195,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
     virtual_response_slots.resize(_virtual_response_slots);
     virtual_response_line_payloads.configure(
         _virtual_response_slots,
-        !virtual_shared_result_payload &&
+        virtual_shared_result_payload ||
             (virtual_response_words != 0 ||
              virtual_response_word_pool_limit != 0));
     panic_if(_virtual_combine_lookup_latency_cycles < 0 ||
@@ -741,10 +741,14 @@ void IndirectAccessUnit::check_reset() {
              "I[%d] virtual retirement state is not empty: slots=%d writes=%d\n",
              my_indirect_id, virtual_reserved_responses,
              virtual_outstanding_writes);
-    panic_if(virtual_reserved_response_words != 0 || virtual_pending_source ||
+    panic_if(virtual_reserved_response_words != 0 ||
+                 virtual_response_payload_words != 0 ||
+                 virtual_pending_source ||
                  !virtual_source_reservations.empty(),
-             "I[%d] packed source reservation state is not empty\n",
-             my_indirect_id);
+             "I[%d] packed source state is not empty: reserved=%d "
+             "payload=%d\n",
+             my_indirect_id, virtual_reserved_response_words,
+             virtual_response_payload_words);
     panic_if(virtual_complete_line_payload_staging.isActive(),
              "I[%d] complete-line payload staging is not empty\n",
              my_indirect_id);
@@ -6344,6 +6348,10 @@ void IndirectAccessUnit::executeInstruction() {
             assert(false);
         }
         my_words_per_cl = 64 / my_word_size;
+        panic_if(virtual_shared_result_payload && isFusedP16Product(),
+                 "I[%d] fused-p16 requires per-use product staging and may "
+                 "not use shared source payload\n",
+                 my_indirect_id);
         panic_if(maa->virtual_strict_two_phase && isVirtualLoad() &&
                      !isDirectIndexLoad(),
                  "I[%d] strict two-phase requires a direct B/index stream\n",
@@ -6413,6 +6421,7 @@ void IndirectAccessUnit::executeInstruction() {
         source_issue_digest_secondary = 0x9e3779b97f4a7c15ULL;
         virtual_reserved_responses = 0;
         virtual_reserved_response_words = 0;
+        virtual_response_payload_words = 0;
         virtual_shared_payload_transfers = 0;
         virtual_shared_payload_rollbacks = 0;
         virtual_shared_payload_high_water = 0;
@@ -8155,7 +8164,10 @@ void IndirectAccessUnit::executeInstruction() {
                     virtual_partial_word_writes);
             if (virtual_shared_result_payload) {
                 panic_if(virtual_reserved_response_words != 0 ||
+                             virtual_response_payload_words != 0 ||
                              virtual_combine_words != 0 ||
+                             virtual_response_line_payloads.payloadBytes() !=
+                                 0 ||
                              std::any_of(
                                  virtual_shared_partial_spill_lines.begin(),
                                  virtual_shared_partial_spill_lines.end(),
@@ -8163,10 +8175,13 @@ void IndirectAccessUnit::executeInstruction() {
                              virtual_shared_payload_high_water >
                                  virtual_shared_result_payload_limit,
                          "I[%d] shared result payload terminal mismatch "
-                         "response=%d combine=%d spill_lines=%lu "
-                         "high_water=%d/%d\n",
+                         "response=%d resident=%d combine=%d "
+                         "line_shadow=%lu spill_lines=%lu high_water=%d/%d\n",
                          my_indirect_id, virtual_reserved_response_words,
+                         virtual_response_payload_words,
                          virtual_combine_words,
+                         static_cast<unsigned long>(
+                             virtual_response_line_payloads.payloadBytes()),
                          static_cast<unsigned long>(std::count(
                              virtual_shared_partial_spill_lines.begin(),
                              virtual_shared_partial_spill_lines.end(), true)),
@@ -8175,10 +8190,13 @@ void IndirectAccessUnit::executeInstruction() {
                 DPRINTF(MAAVirtualTrace,
                         "event=shared_result_payload_complete schema=1 "
                         "unit=%d operation_tick=%lu capacity=%d "
-                        "high_water=%d transfers=%lu rollbacks=%lu\n",
+                        "high_water=%d line_shadow_bytes=%lu "
+                        "transfers=%lu rollbacks=%lu\n",
                         my_indirect_id, my_decode_start_tick,
                         virtual_shared_result_payload_limit,
                         virtual_shared_payload_high_water,
+                        static_cast<unsigned long>(
+                            virtual_response_line_payloads.payloadBytes()),
                         virtual_shared_payload_transfers,
                         virtual_shared_payload_rollbacks);
                 (*maa->stats.IND_VirtSharedPayloadTransfers[
@@ -10059,7 +10077,28 @@ IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr,
         const bool packed_response = !virtual_shared_result_payload &&
             (virtual_response_words != 0 ||
              virtual_response_word_pool_limit != 0);
-        if (!packed_response) {
+        if (virtual_shared_result_payload) {
+            int retained_words = 0;
+            for (int word_id = 0; word_id < my_words_per_cl; ++word_id) {
+                if (slot->fanout.uses(word_id) == 0)
+                    continue;
+                const auto allocated = virtual_combine_payload.allocate(
+                    dataptr + word_id * my_word_size, my_word_size,
+                    slot->shared_word_refs[word_id]);
+                panic_if(
+                    allocated != VirtualCombinePayloadStore::Result::Ok,
+                    "I[%d] shared response 0x%lx could not retain word %d: "
+                    "%s\n",
+                    my_indirect_id, addr, word_id,
+                    VirtualCombinePayloadStore::resultName(allocated));
+                ++retained_words;
+                ++virtual_response_payload_words;
+            }
+            panic_if(retained_words != slot->reserved_words,
+                     "I[%d] shared response retained %d/%d payload words\n",
+                     my_indirect_id, retained_words,
+                     slot->reserved_words);
+        } else if (!packed_response) {
             std::memcpy(virtual_response_line_payloads.lineData(slot_idx),
                         dataptr, block_size);
         } else {
@@ -10088,6 +10127,17 @@ IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr,
                      my_indirect_id, slot->fanout.logicalUses(),
                      virtual_reserved_words, slot->fanout.payloadWords(),
                      slot->reserved_words);
+            panic_if(virtual_combine_payload.used() !=
+                         static_cast<size_t>(
+                             virtual_combine_words +
+                             virtual_response_payload_words),
+                     "I[%d] shared response payload occupancy mismatch "
+                     "%lu/%d+%d\n",
+                     my_indirect_id,
+                     static_cast<unsigned long>(
+                         virtual_combine_payload.used()),
+                     virtual_combine_words,
+                     virtual_response_payload_words);
         }
         if (isFusedP16Product())
             panic_if(!beginFusedP16ResponseHead(slot_idx, *slot),
@@ -10891,6 +10941,12 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                  "I[%d] native response 0x%lx head %d has no claim\n",
                  my_indirect_id, slot.claim_addr, slot.claim_head);
     };
+    struct SharedTransfer
+    {
+        bool final_use = false;
+        VirtualCombinePayloadStore::WordRef ref =
+            VirtualCombinePayloadStore::InvalidWord;
+    };
     const uint64_t current_cycle =
         static_cast<uint64_t>(maa->curCycle());
     if (virtual_word_budget_cycle != current_cycle) {
@@ -10944,8 +11000,16 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                  slot.packed_words.size());
         const bool retained_fanout = virtual_shared_result_payload &&
             !slot.fanout.empty();
+        const bool retained_refs = virtual_shared_result_payload &&
+            std::any_of(
+                slot.shared_word_refs.begin(),
+                slot.shared_word_refs.begin() + my_words_per_cl,
+                [](VirtualCombinePayloadStore::WordRef ref) {
+                    return ref != VirtualCombinePayloadStore::InvalidWord;
+                });
         panic_if(virtual_shared_result_payload &&
-                     (slot.reserved_words != 0 || retained_fanout),
+                     (slot.reserved_words != 0 || retained_fanout ||
+                      retained_refs),
                  "I[%d] shared lookup response closed with retained payload\n",
                  my_indirect_id);
         panic_if(virtual_reserved_response_words < slot.reserved_words,
@@ -10962,7 +11026,7 @@ bool IndirectAccessUnit::drainVirtualResponses() {
     auto begin_shared_transfer = [this](VirtualResponseSlot &slot,
                                         int word_id) {
         if (!virtual_shared_result_payload)
-            return false;
+            return SharedTransfer{};
         bool transferred = false;
         const auto result = slot.fanout.consume(
             static_cast<uint16_t>(word_id), transferred);
@@ -10971,18 +11035,25 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                  my_indirect_id, word_id,
                  maa::VirtualSourceFanout::resultName(result));
         if (!transferred)
-            return false;
+            return SharedTransfer{};
         panic_if(slot.reserved_words <= 0 ||
-                     virtual_reserved_response_words <= 0,
+                     virtual_reserved_response_words <= 0 ||
+                     virtual_response_payload_words <= 0 ||
+                     slot.shared_word_refs[word_id] ==
+                         VirtualCombinePayloadStore::InvalidWord,
                  "I[%d] shared result transfer has no response credit\n",
                  my_indirect_id);
+        SharedTransfer transfer{true, slot.shared_word_refs[word_id]};
+        slot.shared_word_refs[word_id] =
+            VirtualCombinePayloadStore::InvalidWord;
         --slot.reserved_words;
         --virtual_reserved_response_words;
-        return transferred;
+        --virtual_response_payload_words;
+        return transfer;
     };
     auto rollback_shared_transfer = [this](VirtualResponseSlot &slot,
                                            int word_id,
-                                           bool transferred) {
+                                           SharedTransfer transfer) {
         if (!virtual_shared_result_payload)
             return;
         const auto result = slot.fanout.rollback(
@@ -10991,14 +11062,28 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                  "I[%d] shared result word %d fanout rollback failed: %s\n",
                  my_indirect_id, word_id,
                  maa::VirtualSourceFanout::resultName(result));
-        if (transferred) {
+        if (transfer.final_use) {
+            panic_if(
+                transfer.ref == VirtualCombinePayloadStore::InvalidWord ||
+                    slot.shared_word_refs[word_id] !=
+                        VirtualCombinePayloadStore::InvalidWord,
+                "I[%d] shared result rollback lost word %d reference\n",
+                my_indirect_id, word_id);
+            slot.shared_word_refs[word_id] = transfer.ref;
             ++slot.reserved_words;
             ++virtual_reserved_response_words;
+            ++virtual_response_payload_words;
         }
+        panic_if(virtual_combine_payload.used() !=
+                     static_cast<size_t>(
+                         virtual_combine_words +
+                         virtual_response_payload_words),
+                 "I[%d] shared rollback payload occupancy mismatch\n",
+                 my_indirect_id);
         ++virtual_shared_payload_rollbacks;
     };
-    auto commit_shared_transfer = [this](bool transferred) {
-        if (!transferred)
+    auto commit_shared_transfer = [this](SharedTransfer transfer) {
+        if (!transfer.final_use)
             return;
         ++virtual_shared_payload_transfers;
         panic_if(virtual_combine_words + virtual_reserved_response_words >
@@ -11010,6 +11095,12 @@ bool IndirectAccessUnit::drainVirtualResponses() {
         virtual_shared_payload_high_water = std::max(
             virtual_shared_payload_high_water,
             virtual_combine_words + virtual_reserved_response_words);
+        panic_if(virtual_combine_payload.used() !=
+                     static_cast<size_t>(
+                         virtual_combine_words +
+                         virtual_response_payload_words),
+                 "I[%d] shared transfer payload occupancy mismatch\n",
+                 my_indirect_id);
     };
 
     bool lookup_blocked = false;
@@ -11064,7 +11155,13 @@ bool IndirectAccessUnit::drainVirtualResponses() {
             if (token.pass >= 0)
                 direct_index_partition = token.pass;
             const uint8_t *word = nullptr;
-            if (packed_response) {
+            if (virtual_shared_result_payload) {
+                word = virtual_combine_payload.data(
+                    slot.shared_word_refs[token.wordId]);
+                panic_if(word == nullptr,
+                         "I[%d] shared lookup word %d has no payload ref\n",
+                         my_indirect_id, token.wordId);
+            } else if (packed_response) {
                 panic_if(token.slotSequence >= slot.packed_words.size(),
                          "I[%d] virtual lookup packed reference %u exceeds "
                          "%zu words\n",
@@ -11080,13 +11177,15 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                 lookup_blocked = true;
                 continue;
             }
-            const bool transferred = begin_shared_transfer(slot, token.wordId);
-            if (!insertVirtualCombineWord(token.iteration, word)) {
-                rollback_shared_transfer(slot, token.wordId, transferred);
+            const SharedTransfer transfer =
+                begin_shared_transfer(slot, token.wordId);
+            if (!insertVirtualCombineWord(
+                    token.iteration, word, transfer.ref)) {
+                rollback_shared_transfer(slot, token.wordId, transfer);
                 lookup_blocked = true;
                 continue;
             }
-            commit_shared_transfer(transferred);
+            commit_shared_transfer(transfer);
             const auto completed = virtual_combine_lookup_pipeline.complete(
                 current_cycle, token);
             panic_if(completed != LookupPipeline::Result::Accepted,
@@ -11459,14 +11558,15 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                         bank_stalled = true;
                         break;
                     }
-                    const bool transferred =
+                    const SharedTransfer transfer =
                         begin_shared_transfer(slot, entry.wid);
-                    if (!insertVirtualCombineWord(entry.itr, word.data())) {
-                        rollback_shared_transfer(slot, entry.wid, transferred);
+                    if (!insertVirtualCombineWord(
+                            entry.itr, word.data(), transfer.ref)) {
+                        rollback_shared_transfer(slot, entry.wid, transfer);
                         capacity_stalled = true;
                         break;
                     }
-                    commit_shared_transfer(transferred);
+                    commit_shared_transfer(transfer);
                 } else {
                     panic_if(my_dst_tile == -1,
                              "I[%d] bounded native load has no destination "
@@ -11523,9 +11623,14 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                 return finish_drain(true);
             OffsetTableEntry entry = offset_table->peek_entry(slot.next_itr);
             virtual_word_attempts_this_cycle++;
-            const uint8_t *word =
-                virtual_response_line_payloads.lineData(slot_idx) +
-                entry.wid * my_word_size;
+            const uint8_t *word = virtual_shared_result_payload
+                ? virtual_combine_payload.data(
+                      slot.shared_word_refs[entry.wid])
+                : virtual_response_line_payloads.lineData(slot_idx) +
+                      entry.wid * my_word_size;
+            panic_if(word == nullptr,
+                     "I[%d] response word %d has no retained payload\n",
+                     my_indirect_id, entry.wid);
             if (virtual_load) {
                 if (entry.pass >= 0)
                     direct_index_partition = entry.pass;
@@ -11534,14 +11639,15 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                     bank_stalled = true;
                     break;
                 }
-                const bool transferred =
+                const SharedTransfer transfer =
                     begin_shared_transfer(slot, entry.wid);
-                if (!insertVirtualCombineWord(entry.itr, word)) {
-                    rollback_shared_transfer(slot, entry.wid, transferred);
+                if (!insertVirtualCombineWord(
+                        entry.itr, word, transfer.ref)) {
+                    rollback_shared_transfer(slot, entry.wid, transfer);
                     capacity_stalled = true;
                     break;
                 }
-                commit_shared_transfer(transferred);
+                commit_shared_transfer(transfer);
             } else {
                 panic_if(my_dst_tile == -1,
                          "I[%d] bounded native load has no destination tile\n",
@@ -11568,8 +11674,17 @@ bool IndirectAccessUnit::drainVirtualResponses() {
             if (slot.next_itr == -1) {
                 const bool retained_fanout =
                     virtual_shared_result_payload && !slot.fanout.empty();
+                const bool retained_refs = virtual_shared_result_payload &&
+                    std::any_of(
+                        slot.shared_word_refs.begin(),
+                        slot.shared_word_refs.begin() + my_words_per_cl,
+                        [](VirtualCombinePayloadStore::WordRef ref) {
+                            return ref !=
+                                VirtualCombinePayloadStore::InvalidWord;
+                        });
                 panic_if(virtual_shared_result_payload &&
-                             (slot.reserved_words != 0 || retained_fanout),
+                             (slot.reserved_words != 0 || retained_fanout ||
+                              retained_refs),
                          "I[%d] shared line response closed with retained "
                          "payload\n",
                          my_indirect_id);
@@ -11655,14 +11770,21 @@ IndirectAccessUnit::virtualCombineSet(Addr line_vaddr) const
     return line_number % num_sets;
 }
 
-bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
-                                                   const uint8_t *data) {
+bool IndirectAccessUnit::insertVirtualCombineWord(
+    int itr, const uint8_t *data,
+    VirtualCombinePayloadStore::WordRef transferred_ref) {
     // Each logical gather iteration owns one non-aliasing backing-array word.
+    const bool transferred =
+        transferred_ref != VirtualCombinePayloadStore::InvalidWord;
     panic_if(virtual_combine_payload.used() !=
-                 static_cast<size_t>(virtual_combine_words),
-             "I[%d] virtual payload occupancy mismatch: %zu != %d\n",
-             my_indirect_id, virtual_combine_payload.used(),
-             virtual_combine_words);
+                 static_cast<size_t>(
+                     virtual_combine_words +
+                     virtual_response_payload_words + transferred),
+             "I[%d] virtual payload occupancy mismatch: %lu != %d+%d+%d\n",
+             my_indirect_id,
+             static_cast<unsigned long>(virtual_combine_payload.used()),
+             virtual_combine_words, virtual_response_payload_words,
+             transferred);
     const Addr vaddr = backingWordAddr(itr);
     const Addr line_vaddr = vaddr & ~(block_size - 1);
     const unsigned word = (vaddr - line_vaddr) / my_word_size;
@@ -11683,9 +11805,10 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
         if (!slot.valid && free_slot == nullptr)
             free_slot = &slot;
     }
-    if (virtual_combine_payload.full())
+    if (!transferred && virtual_combine_payload.full())
         drainVirtualCombiner(false);
-    if (virtual_combine_payload.full() && completeLineOnlyOperation() &&
+    if (!transferred && virtual_combine_payload.full() &&
+        completeLineOnlyOperation() &&
         virtual_complete_line_payload_staging.isActive()) {
         // A finite payload port may still be serializing a complete line.
         // Backpressure the retained response instead of evicting a partial
@@ -11694,7 +11817,9 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
         return false;
     }
     panic_if(virtual_combine_payload.used() !=
-                 static_cast<size_t>(virtual_combine_words),
+                 static_cast<size_t>(
+                     virtual_combine_words +
+                     virtual_response_payload_words + transferred),
              "I[%d] virtual payload occupancy diverged after drain\n",
              my_indirect_id);
     const bool word_capacity_full = virtual_shared_result_payload
@@ -11851,18 +11976,30 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
     panic_if(target->valid_words & word_bit,
              "I[%d] duplicate virtual output word %d at 0x%lx\n",
              my_indirect_id, word, line_vaddr);
-    if (virtual_shared_result_payload &&
+    if (!transferred && virtual_shared_result_payload &&
         virtual_combine_words + virtual_reserved_response_words >=
             virtual_shared_result_payload_limit)
         return false;
-    const auto allocate_result = virtual_combine_payload.allocate(
-        data, my_word_size, target->word_refs[word]);
-    if (allocate_result == VirtualCombinePayloadStore::Result::Exhausted)
-        return false;
-    panic_if(allocate_result != VirtualCombinePayloadStore::Result::Ok,
-             "I[%d] could not allocate virtual output word %d at 0x%lx: %s\n",
-             my_indirect_id, word, line_vaddr,
-             VirtualCombinePayloadStore::resultName(allocate_result));
+    if (transferred) {
+        panic_if(target->word_refs[word] !=
+                         VirtualCombinePayloadStore::InvalidWord ||
+                     virtual_combine_payload.data(transferred_ref) == nullptr,
+                 "I[%d] could not transfer virtual output word %d at "
+                 "0x%lx\n",
+                 my_indirect_id, word, line_vaddr);
+        target->word_refs[word] = transferred_ref;
+    } else {
+        const auto allocate_result = virtual_combine_payload.allocate(
+            data, my_word_size, target->word_refs[word]);
+        if (allocate_result == VirtualCombinePayloadStore::Result::Exhausted)
+            return false;
+        panic_if(
+            allocate_result != VirtualCombinePayloadStore::Result::Ok,
+            "I[%d] could not allocate virtual output word %d at 0x%lx: "
+            "%s\n",
+            my_indirect_id, word, line_vaddr,
+            VirtualCombinePayloadStore::resultName(allocate_result));
+    }
     if (!target->valid) {
         target->valid = true;
         target->line_vaddr = line_vaddr;
@@ -11929,7 +12066,9 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
              my_indirect_id, virtual_combine_words,
              virtual_combine_words_limit);
     panic_if(virtual_combine_payload.used() !=
-                 static_cast<size_t>(virtual_combine_words),
+                 static_cast<size_t>(
+                     virtual_combine_words +
+                     virtual_response_payload_words),
              "I[%d] virtual payload occupancy mismatch after insert\n",
              my_indirect_id);
     virtual_max_combine_words =
@@ -12151,7 +12290,9 @@ IndirectAccessUnit::spillVirtualCombinePartialForSourceCredit()
 void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
     const uint16_t full_mask = (1U << my_words_per_cl) - 1;
     panic_if(virtual_combine_payload.used() !=
-                 static_cast<size_t>(virtual_combine_words),
+                 static_cast<size_t>(
+                     virtual_combine_words +
+                     virtual_response_payload_words),
              "I[%d] virtual payload occupancy mismatch before drain\n",
              my_indirect_id);
     if (maa->virtual_page_ordered_combiner_drain && my_max > 0) {
@@ -12359,13 +12500,16 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
         macro_backing_credit_stalls++;
     }
     panic_if(virtual_combine_payload.used() !=
-                 static_cast<size_t>(virtual_combine_words),
+                 static_cast<size_t>(
+                     virtual_combine_words +
+                     virtual_response_payload_words),
              "I[%d] virtual payload occupancy mismatch after drain\n",
              my_indirect_id);
 }
 
 bool IndirectAccessUnit::virtualCombinerEmpty() const {
-    return virtual_combine_payload.empty() &&
+    return virtual_response_payload_words == 0 &&
+        virtual_combine_payload.empty() &&
         std::all_of(virtual_combine_slots.begin(),
                     virtual_combine_slots.end(),
                     [](const VirtualCombineSlot &slot) {

@@ -109,6 +109,8 @@ protected:
         size_t next_packed_word = 0;
         int reserved_words = 0;
         maa::VirtualSourceFanout fanout{};
+        VirtualCombinePayloadStore::LineRefs shared_word_refs =
+            VirtualCombinePayloadStore::emptyLineRefs();
         int claim_rt_idx = -1;
         int claim_row_id = -1;
         int claim_entry_id = -1;
@@ -130,6 +132,7 @@ protected:
     uint64_t virtual_word_budget_cycle = 0;
     int virtual_word_attempts_this_cycle = 0;
     int virtual_reserved_response_words = 0;
+    int virtual_response_payload_words = 0;
     maa::VirtualCombineLookupPipeline virtual_combine_lookup_pipeline;
     uint64_t virtual_combine_lookup_generation = 0;
     uint64_t virtual_combine_lookup_next_generation = 0;
@@ -960,7 +963,10 @@ protected:
     bool drainVirtualResponses();
     bool reserveVirtualCombineBank(int itr);
     int virtualCombineSet(Addr line_vaddr) const;
-    bool insertVirtualCombineWord(int itr, const uint8_t *data);
+    bool insertVirtualCombineWord(
+        int itr, const uint8_t *data,
+        VirtualCombinePayloadStore::WordRef transferred_ref =
+            VirtualCombinePayloadStore::InvalidWord);
     bool completeLineDrainAvailable();
     void recordCompleteLineDrainIssue();
     maa::CompleteLinePayloadStaging::Identity completeLinePayloadIdentity(

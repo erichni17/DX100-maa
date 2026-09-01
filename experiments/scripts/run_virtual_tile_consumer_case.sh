@@ -681,6 +681,12 @@ cp -- "$root/benchmarks/API/test_virtual_tile_consumer.cpp" \
 cp -- "$root/benchmarks/API/MAA_gem5.hpp" "$snapshot/MAA_gem5.hpp"
 cp -- "$root/src/mem/MAA/IndirectAccess.cc" "$snapshot/IndirectAccess.cc"
 cp -- "$root/src/mem/MAA/IndirectAccess.hh" "$snapshot/IndirectAccess.hh"
+cp -- "$root/src/mem/MAA/VirtualSourceFanout.hh" \
+    "$snapshot/VirtualSourceFanout.hh"
+cp -- "$root/src/mem/MAA/VirtualResponsePayloadStore.hh" \
+    "$snapshot/VirtualResponsePayloadStore.hh"
+cp -- "$root/src/mem/MAA/VirtualCombinePayloadStore.hh" \
+    "$snapshot/VirtualCombinePayloadStore.hh"
 cp -- "$root/src/mem/MAA/BoundedRangePass.hh" \
     "$snapshot/BoundedRangePass.hh"
 cp -- "$root/src/mem/MAA/BoundedDescriptorSpool.hh" \
@@ -767,6 +773,9 @@ sha256sum "$gem5" "$binary" "$snapshot/se.py" \
     "$snapshot/test_virtual_tile_consumer.cpp" \
     "$snapshot/MAA_gem5.hpp" \
     "$snapshot/IndirectAccess.cc" "$snapshot/IndirectAccess.hh" \
+    "$snapshot/VirtualSourceFanout.hh" \
+    "$snapshot/VirtualResponsePayloadStore.hh" \
+    "$snapshot/VirtualCombinePayloadStore.hh" \
     "$snapshot/BoundedRangePass.hh" \
     "$snapshot/BoundedDescriptorSpool.hh" \
     "$snapshot/BoundedFourRunMerge.hh" \
