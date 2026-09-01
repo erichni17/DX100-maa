@@ -20,13 +20,17 @@ the exact frozen output hash `7602200327591349891` with zero reference errors.
 
 The hybrid reduces latency by 14.40% versus native4 and recovers 46.53% of the
 native4-to-native16 latency gap. This is the first GZZ result in this campaign
-with matched consumer instructions; unlike the earlier reused-control ratios,
-it supports performance attribution to tile geometry and virtualization.
+with matched consumer instructions. The remaining timing difference is
+attributable to the configured arm bundle, not tile geometry alone: the strict
+arm also enables direct-index virtualization, page materialization, strict
+two-phase ordering, shared payload, complete-line retirement, and bounded
+lookup/drain machinery.
 
-The fixed-active-RowTable storage ledger reports a 1,953,744-byte comparable
-lower bound for the hybrid versus 3,176,448 bytes for native16: 38.49% lower.
-It is 40.39% larger than native4's 1,391,616-byte lower bound. These are packed
-capacity estimates from the simulator configuration, not synthesized area.
+The previously reported 1,953,744-byte hybrid total and its 38.49%/40.39%
+comparisons are withdrawn. They used the generic-virtual reporter despite
+GZZ's direct-index feeder and omitted required shared-pool fanout metadata.
+The corrected direct-index ledger supersedes those exact values; all byte
+totals remain packed configuration lower bounds rather than synthesized area.
 
 Sealed evidence:
 `/data1/nier/dx100-runs/2026-08-31-ume-gzz-matched-consumer-r6`
@@ -89,13 +93,13 @@ does not increase configured tile capacity.
 
 ## Hardware caveat
 
-The shared data pool remains bounded to 4,096 words. Tracking pressure-spilled
-lines requires persistent identity metadata. A direct bitmap for this 16K
-logical window is 1,024 bits (128 bytes) per indirect unit; this may be folded
-into existing per-line retirement/page-readiness metadata, but that accounting
-still needs an explicit hardware report. The C++ response arrays are host-side
-simulation storage; the modeled hardware assumes compact useful-word storage
-and fanout counts, not one physical cache line per software response object.
+The shared data pool remains bounded to 4,096 words. The fixed pressure-spill
+bitmap costs 1,024 bits (128 bytes) per indirect unit. Duplicate source fanout
+now uses 16 bounded counters per response slot and a serialized four-descriptor
+scan port; its maximum-duplicate gem5 gate is recorded in
+`shared_source_fanout_2026-08-31.md`. The C++ response lines remain host-side
+functional shadows and must be reported separately from modeled hardware,
+which charges compact payload references and fanout counters.
 
 The successor replaces host-dynamic spilled-line identity with that fixed
 bitmap and charges it in `report_maa_storage.py`. Candidate-only replay at
