@@ -23,9 +23,14 @@ root=$(realpath "${SSSP_RUNNER_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 gem5=$(realpath "$1")
 out=$(realpath -m "$2")
 variant=${SSSP_CHUNK_ADMISSION_VARIANT:-all_safe}
+prototype=${SSSP_CONFLICT_SNAPSHOT_PROTOTYPE:-0}
 case "$variant" in
 all_safe|active_source|cross_owner) ;;
 *) echo "invalid SSSP_CHUNK_ADMISSION_VARIANT: $variant" >&2; exit 2 ;;
+esac
+case "$prototype" in
+0|1) ;;
+*) echo "SSSP_CONFLICT_SNAPSHOT_PROTOTYPE must be 0 or 1" >&2; exit 2 ;;
 esac
 config="$root/configs/deprecated/example/se.py"
 ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
@@ -92,6 +97,10 @@ oracle_guest="$out/bin/sssp_functional_fp"
 converter="$out/bin/converter"
 wel="$out/graph/sssp_old_result_hybrid_small.wel"
 graph="$out/graph/sssp_old_result_hybrid_small.wsg"
+prototype_cxxflags=()
+if [[ $prototype == 1 ]]; then
+    prototype_cxxflags=(-DSSSP_CONFLICT_SNAPSHOT_PROTOTYPE=1)
+fi
 
 "${CXX:-g++}" -I"$root/benchmarks/gapbs/src" -std=c++11 -O3 -Wall \
     -Wextra -Werror -Wno-unused-parameter -fopenmp \
@@ -104,9 +113,10 @@ graph="$out/graph/sssp_old_result_hybrid_small.wsg"
     -DNUM_TILES_PER_CORE=8 -DTILE_SIZE=16384 \
     -DMAA_CONSUMER_TILE_SIZE=4096 -DMAA_MEM_SIZE=0x80000000 \
     -DSSSP_FP_ENABLE=1 -DSSSP_OLD_RESULT_HYBRID=1 \
+    "${prototype_cxxflags[@]}" \
     "$root/util/m5/src/abi/x86/m5op.S" "$source_file" -o "$guest"
 chmod 0555 "$guest"
-if [[ $variant != all_safe ]]; then
+if [[ $variant != all_safe && $prototype != 1 ]]; then
     "${CXX:-g++}" -I"$root/benchmarks/gapbs/src" \
         -I"$root/benchmarks/API" -I"$root/include" -std=c++11 -O3 \
         -Wall -Wextra -Werror -Wno-ignored-qualifiers \
@@ -149,6 +159,10 @@ all_safe)
     expected_bounds=0
     expected_active=0
     expected_cross=0
+    expected_active_observed=0
+    expected_cross_observed=0
+    expected_active_tolerated=0
+    expected_cross_tolerated=0
     fingerprint='SSSP_FINGERPRINT vertices=69633 reached=69633 unreachable=0 distance_sum=135168 max_distance=2 hash_a=a0531a7ddb9387df hash_b=39f1ea63bc8817e8 triangle_violations=0 missing_predecessors=0 nonpositive_weights=0 negative_distances=0 result=PASS'
     ;;
 active_source)
@@ -158,6 +172,11 @@ active_source)
     expected_bounds=0
     expected_active=1
     expected_cross=0
+    expected_active_observed=1
+    expected_cross_observed=0
+    expected_active_tolerated=0
+    expected_cross_tolerated=0
+    fingerprint='SSSP_FINGERPRINT vertices=69633 reached=69632 unreachable=1 distance_sum=135166 max_distance=2 hash_a=24951adf631ff822 hash_b=1d2f7d2e3ed1aa0f triangle_violations=0 missing_predecessors=0 nonpositive_weights=0 negative_distances=0 result=PASS'
     ;;
 cross_owner)
     expected_eligible=4
@@ -166,9 +185,25 @@ cross_owner)
     expected_bounds=0
     expected_active=0
     expected_cross=2
+    expected_active_observed=0
+    expected_cross_observed=2
+    expected_active_tolerated=0
+    expected_cross_tolerated=0
+    fingerprint='SSSP_FINGERPRINT vertices=69633 reached=69632 unreachable=1 distance_sum=135166 max_distance=2 hash_a=4ab569558e397822 hash_b=005c7757503cab01 triangle_violations=0 missing_predecessors=0 nonpositive_weights=0 negative_distances=0 result=PASS'
     ;;
 esac
-if [[ $variant != all_safe ]]; then
+if [[ $prototype == 1 ]]; then
+    expected_routed=4
+    expected_unsafe=0
+    expected_active=0
+    expected_cross=0
+    expected_active_tolerated=$expected_active_observed
+    expected_cross_tolerated=$expected_cross_observed
+    expected_treatment=conflict_snapshot_prototype
+else
+    expected_treatment=old_result_hybrid
+fi
+if [[ $variant != all_safe && $prototype != 1 ]]; then
     OMP_NUM_THREADS=4 "$oracle_guest" $options \
         >"$out/graph/oracle.log" 2>&1
     fingerprint=$(grep '^SSSP_FINGERPRINT ' "$out/graph/oracle.log")
@@ -236,6 +271,9 @@ restore_cmd=(
     printf 'logical_elements=16384\nphysical_tile_elements=4096\n'
     printf 'mem_channels=2\nindirect_units=4\nrow_table_slices=32\n'
     printf 'chunk_admission_variant=%s\n' "$variant"
+    printf 'admission_policy=%s\n' \
+        "$([[ $prototype == 1 ]] && printf snapshot-tolerant || printf reject-hazards)"
+    printf 'conflict_snapshot_prototype=%s\n' "$prototype"
     printf 'expected_eligible_windows=%s\n' "$expected_eligible"
     printf 'expected_routed_windows=%s\n' "$expected_routed"
     printf 'expected_unsafe_windows=%s\n' "$expected_unsafe"
@@ -243,8 +281,16 @@ restore_cmd=(
     printf 'expected_bounds_rejected_windows=%s\n' "$expected_bounds"
     printf 'expected_active_source_rejected_windows=%s\n' "$expected_active"
     printf 'expected_cross_owner_rejected_windows=%s\n' "$expected_cross"
+    printf 'expected_active_source_observed_windows=%s\n' \
+        "$expected_active_observed"
+    printf 'expected_cross_owner_observed_windows=%s\n' \
+        "$expected_cross_observed"
+    printf 'expected_active_source_tolerated_windows=%s\n' \
+        "$expected_active_tolerated"
+    printf 'expected_cross_owner_tolerated_windows=%s\n' \
+        "$expected_cross_tolerated"
     printf 'oracle_fingerprint=%s\n' "$fingerprint"
-    if [[ $variant != all_safe ]]; then
+    if [[ $variant != all_safe && $prototype != 1 ]]; then
         printf 'oracle_guest_sha256=%s\n' "$(hash_value "$oracle_guest")"
     fi
     printf 'native_arms=0\nwall_timeout=none\nfull_graph=false\n'
@@ -255,7 +301,7 @@ restore_cmd=(
 sha256sum "$gem5" "$frozen_ramulator" "$guest" "$graph" "$source_file" \
     "$helper_file" "$admission_file" "$config" "$ramulator" "$0" \
     >"$out/artifacts.before.sha256"
-if [[ $variant != all_safe ]]; then
+if [[ $variant != all_safe && $prototype != 1 ]]; then
     sha256sum "$oracle_guest" "$out/graph/oracle.log" \
         >>"$out/artifacts.before.sha256"
 fi
@@ -274,13 +320,17 @@ stats="$out/run/stats.txt"
 [[ $(grep -Ec '^SSSP_OLD_RESULT_HYBRID_TERMINAL ' "$restore" || true) -eq 1 ]]
 terminal=$(grep '^SSSP_OLD_RESULT_HYBRID_TERMINAL ' "$restore")
 for expected in \
-    treatment=old_result_hybrid \
+    treatment="$expected_treatment" \
     eligible_windows="$expected_eligible" routed_windows="$expected_routed" \
     unsafe_eligible_windows="$expected_unsafe" \
     reason_covered_unsafe_windows="$expected_unsafe" \
     bounds_rejected_windows="$expected_bounds" \
     active_source_rejected_windows="$expected_active" \
     cross_owner_rejected_windows="$expected_cross" \
+    active_source_observed_windows="$expected_active_observed" \
+    cross_owner_observed_windows="$expected_cross_observed" \
+    active_source_tolerated_windows="$expected_active_tolerated" \
+    cross_owner_tolerated_windows="$expected_cross_tolerated" \
     index_publish_pages="$expected_index_pages" \
     value_publish_pages="$expected_index_pages" \
     old_result_words="$expected_old_words" \
@@ -304,6 +354,27 @@ for expected in \
     value=${expected#*=}
     [[ $(terminal_value "$terminal" "$key") == "$value" ]]
 done
+snapshot_span=$(terminal_value "$terminal" source_snapshot_span)
+snapshot_storage_words=$(terminal_value "$terminal" source_snapshot_storage_words)
+snapshot_storage_bytes=$(terminal_value "$terminal" source_snapshot_storage_bytes)
+snapshot_copied_words=$(terminal_value "$terminal" source_snapshot_copied_words)
+snapshot_copied_bytes=$(terminal_value "$terminal" source_snapshot_copied_bytes)
+snapshot_barriers=$(terminal_value "$terminal" source_snapshot_barriers)
+hidden_snapshot_bytes=$(terminal_value "$terminal" hidden_source_snapshot_bytes)
+if [[ $prototype == 1 ]]; then
+    [[ $snapshot_span == coherent_external && \
+       $snapshot_storage_words =~ ^[1-9][0-9]*$ && \
+       $snapshot_copied_words =~ ^[1-9][0-9]*$ && \
+       $snapshot_barriers =~ ^[1-9][0-9]*$ && \
+       $hidden_snapshot_bytes -eq 0 ]]
+    (( snapshot_storage_bytes == snapshot_storage_words * 4 ))
+    (( snapshot_copied_bytes == snapshot_copied_words * 4 ))
+else
+    [[ $snapshot_span == disabled && $snapshot_storage_words -eq 0 && \
+       $snapshot_storage_bytes -eq 0 && $snapshot_copied_words -eq 0 && \
+       $snapshot_copied_bytes -eq 0 && $snapshot_barriers -eq 0 && \
+       $hidden_snapshot_bytes -eq 0 ]]
+fi
 [[ $(grep -Ec '^Exiting @ tick [0-9]+ because m5_exit instruction encountered$' \
           "$restore" || true) -eq 1 ]]
 [[ $(grep -Eic 'panic|fatal|assert|abort|segmentation fault|error:' \
@@ -337,7 +408,7 @@ aperture_rejections=$(stat_sum cpu_spd_out_of_range_rejections)
 sha256sum "$gem5" "$frozen_ramulator" "$guest" "$graph" "$source_file" \
     "$helper_file" "$admission_file" "$config" "$ramulator" "$0" \
     >"$out/artifacts.after.sha256"
-if [[ $variant != all_safe ]]; then
+if [[ $variant != all_safe && $prototype != 1 ]]; then
     sha256sum "$oracle_guest" "$out/graph/oracle.log" \
         >>"$out/artifacts.after.sha256"
 fi

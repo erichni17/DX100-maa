@@ -82,11 +82,20 @@ execution order, leading to significant speedup on large diameter road networks.
 
 using namespace std;
 
+#if defined(SSSP_CONFLICT_SNAPSHOT_PROTOTYPE) && \
+    !defined(SSSP_OLD_RESULT_HYBRID)
+#error "SSSP conflict snapshot prototype requires old-result hybrid"
+#endif
+
 const WeightT kDistInf = numeric_limits<WeightT>::max() / 2;
 const size_t kMaxBin = numeric_limits<size_t>::max() / 2;
 const size_t kBinSizeThreshold = 1000;
 
 #ifdef SSSP_OLD_RESULT_HYBRID
+#if defined(SSSP_CONFLICT_SNAPSHOT_PROTOTYPE) && \
+    SSSP_CONFLICT_SNAPSHOT_PROTOTYPE != 1
+#error "SSSP conflict snapshot prototype must be defined as 1"
+#endif
 #if TILE_SIZE != 16384 || MAA_CONSUMER_TILE_SIZE != 4096
 #error "SSSP old-result hybrid requires 16K logical / 4K physical geometry"
 #endif
@@ -119,11 +128,19 @@ static uint64_t sssp_hybrid_reason_covered_unsafe_windows[NUM_CORES] = {};
 static uint64_t sssp_hybrid_bounds_rejected_windows[NUM_CORES] = {};
 static uint64_t sssp_hybrid_active_source_rejected_windows[NUM_CORES] = {};
 static uint64_t sssp_hybrid_cross_owner_rejected_windows[NUM_CORES] = {};
+static uint64_t sssp_hybrid_active_source_observed_windows[NUM_CORES] = {};
+static uint64_t sssp_hybrid_cross_owner_observed_windows[NUM_CORES] = {};
+static uint64_t sssp_hybrid_active_source_tolerated_windows[NUM_CORES] = {};
+static uint64_t sssp_hybrid_cross_owner_tolerated_windows[NUM_CORES] = {};
 static uint64_t sssp_hybrid_index_publish_pages[NUM_CORES] = {};
 static uint64_t sssp_hybrid_value_publish_pages[NUM_CORES] = {};
 static uint64_t sssp_hybrid_old_result_words[NUM_CORES] = {};
 static uint64_t sssp_hybrid_legacy_words[NUM_CORES] = {};
 static uint32_t sssp_hybrid_publish_generations[NUM_CORES] = {};
+#ifdef SSSP_CONFLICT_SNAPSHOT_PROTOTYPE
+static uint64_t sssp_hybrid_source_snapshot_words = 0;
+static uint64_t sssp_hybrid_source_snapshot_barriers = 0;
+#endif
 static sssp_coherent_fallback::Counters
     sssp_hybrid_fallback_counters[NUM_CORES];
 
@@ -245,6 +262,7 @@ static void
 RunSsspCoherentTail(int tid, size_t words, int idx_end,
                     const NodeID *frontier, const SGOffset *vertex_offsets,
                     const WGraph &g, const uint8_t *active_sources,
+                    const WeightT *source_snapshot,
                     WeightT *dist, int num_nodes, WeightT delta,
                     vector<vector<NodeID>> &local_bins, int &cursor_pos,
                     SGOffset &cursor_edge)
@@ -256,8 +274,14 @@ RunSsspCoherentTail(int tid, size_t words, int idx_end,
         cursor_pos, cursor_edge,
         [&](NodeID source, SGOffset edge, size_t lane) {
             const WNode wn = g.out_neighbors_[edge];
+#ifdef SSSP_CONFLICT_SNAPSHOT_PROTOTYPE
+            const WeightT source_distance = source_snapshot[cursor_pos];
+#else
+            (void)source_snapshot;
+            const WeightT source_distance = dist[source];
+#endif
             const int64_t candidate =
-                static_cast<int64_t>(dist[source]) + wn.w;
+                static_cast<int64_t>(source_distance) + wn.w;
             if (wn.v < 0 || wn.v >= num_nodes || candidate < 0 ||
                 candidate > kDistInf)
                 abort();
@@ -303,9 +327,10 @@ RunSsspHybridWindow(int tid, WeightT *dist, int num_nodes, WeightT delta,
     maa_const<int>(kSsspLogicalWords, max_reg);
     maa_const<int>(1, stride_reg);
     // For bit patterns [0, kDistInf], unsigned integer order and positive
-    // finite IEEE-754 order are identical.  The iteration admission proof
-    // below establishes those bounds, unique destinations, and source
-    // immutability before this FP32-tagged MIN is allowed to run.
+    // finite IEEE-754 order are identical. The iteration admission proof
+    // establishes those bounds. In prototype mode the explicit source
+    // snapshot makes observed source/destination aliases legal; the ordered
+    // old-result mechanism below preserves original per-page alias order.
     maa_indirect_rmw_vector_soa_jit_old_result(
         reinterpret_cast<float *>(dist), sssp_hybrid_indices[tid],
         reinterpret_cast<float *>(sssp_hybrid_values[tid]),
@@ -446,6 +471,12 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
     pvector<uint8_t> hybrid_active_sources(num_nodes, 0);
     pvector<uint32_t> hybrid_destination_epochs(num_nodes, 0);
     pvector<uint32_t> hybrid_destination_owners(num_nodes, 0);
+#ifdef SSSP_CONFLICT_SNAPSHOT_PROTOTYPE
+    // One ordinary coherent word per possible frontier occurrence. Every word
+    // consumed in an MAA-sized iteration is overwritten before the explicit
+    // snapshot barrier, so no epoch tags or hidden payload are required.
+    pvector<WeightT> hybrid_source_snapshot(num_directed_edges, kDistInf);
+#endif
     uint32_t hybrid_epoch = 0;
     bool hybrid_global_safe = false;
     sssp_chunk_admission::Tracker hybrid_chunk_admission;
@@ -476,6 +507,10 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
     add_mem_region(&sssp_hybrid_old_results[0][0],
                    &sssp_hybrid_old_results[0][0] +
                        NUM_CORES * kSsspLogicalWords);
+#ifdef SSSP_CONFLICT_SNAPSHOT_PROTOTYPE
+    add_mem_region(hybrid_source_snapshot.beginp(),
+                   hybrid_source_snapshot.endp());
+#endif
 #endif
     std::cout << "ROI started: " << omp_get_num_threads() << " threads"
               << std::endl;
@@ -533,7 +568,7 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
             size_t &curr_frontier_tail = frontier_tails[iter & 1];
             size_t &next_frontier_tail = frontier_tails[(iter + 1) & 1];
 #ifdef SSSP_OLD_RESULT_HYBRID
-#pragma omp single
+#pragma omp single nowait
             {
                 // Global domain/bounds failures reject the iteration. Data
                 // hazards reject only the frontier chunks they affect, so an
@@ -564,14 +599,29 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                     abort();
                 for (size_t pos = 0; pos < curr_frontier_tail; ++pos) {
                     const NodeID u = frontier[pos];
-                    if (u < 0 || u >= num_nodes || dist[u] < 0 ||
-                        dist[u] > kDistInf) {
+                    if (u < 0 || u >= num_nodes) {
                         hybrid_global_safe = false;
                         continue;
                     }
-                    if (dist[u] >= lower_bound)
+#ifdef SSSP_CONFLICT_SNAPSHOT_PROTOTYPE
+                    const WeightT source_distance = dist[u];
+                    hybrid_source_snapshot[pos] = source_distance;
+#else
+                    const WeightT source_distance = dist[u];
+#endif
+                    if (source_distance < 0 || source_distance > kDistInf) {
+                        hybrid_global_safe = false;
+                        continue;
+                    }
+                    if (source_distance >= lower_bound)
                         hybrid_active_sources[u] = 1;
                 }
+#ifdef SSSP_CONFLICT_SNAPSHOT_PROTOTYPE
+                if (curr_frontier_tail >= NUM_CORES * 1024) {
+                    sssp_hybrid_source_snapshot_words += curr_frontier_tail;
+                    ++sssp_hybrid_source_snapshot_barriers;
+                }
+#endif
                 for (size_t pos = 0; pos < curr_frontier_tail; ++pos) {
                     const uint32_t chunk_owner =
                         static_cast<uint32_t>(pos / chunk_frontier_words);
@@ -579,11 +629,17 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                     if (u < 0 || u >= num_nodes ||
                         !hybrid_active_sources[u])
                         continue;
+#ifdef SSSP_CONFLICT_SNAPSHOT_PROTOTYPE
+                    const WeightT source_distance =
+                        hybrid_source_snapshot[pos];
+#else
+                    const WeightT source_distance = dist[u];
+#endif
                     for (SGOffset edge = VertexOffsets[u];
                          edge < VertexOffsets[u + 1]; ++edge) {
                         const WNode wn = g.out_neighbors_[edge];
                         const int64_t candidate =
-                            static_cast<int64_t>(dist[u]) + wn.w;
+                            static_cast<int64_t>(source_distance) + wn.w;
                         if (wn.v < 0 || wn.v >= num_nodes || wn.w <= 0 ||
                             candidate < 0 || candidate > kDistInf ||
                             dist[wn.v] < 0 || dist[wn.v] > kDistInf) {
@@ -603,6 +659,7 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                     hybrid_chunk_admission.rejectAll(
                         sssp_chunk_admission::Tracker::Bounds);
             }
+#pragma omp barrier
 #endif
             if ((int)curr_frontier_tail < NUM_CORES * 1024) {
 #pragma omp master
@@ -709,10 +766,38 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                     if (hybrid_chunk_owner >=
                         hybrid_chunk_admission.chunks())
                         abort();
+#ifdef SSSP_CONFLICT_SNAPSHOT_PROTOTYPE
+                    const bool hybrid_chunk_safe = hybrid_global_safe &&
+                        hybrid_chunk_admission.snapshotSafe(
+                            hybrid_chunk_owner);
+#else
                     const bool hybrid_chunk_safe = hybrid_global_safe &&
                         hybrid_chunk_admission.safe(hybrid_chunk_owner);
+#endif
                     sssp_hybrid_eligible_windows[tid] +=
                         eligible_chunk_windows;
+                    const bool has_active_source =
+                        hybrid_chunk_admission.hasReason(
+                            hybrid_chunk_owner,
+                            sssp_chunk_admission::Tracker::ActiveSource);
+                    const bool has_cross_owner =
+                        hybrid_chunk_admission.hasReason(
+                            hybrid_chunk_owner,
+                            sssp_chunk_admission::Tracker::CrossOwner);
+                    if (has_active_source)
+                        sssp_hybrid_active_source_observed_windows[tid] +=
+                            eligible_chunk_windows;
+                    if (has_cross_owner)
+                        sssp_hybrid_cross_owner_observed_windows[tid] +=
+                            eligible_chunk_windows;
+#ifdef SSSP_CONFLICT_SNAPSHOT_PROTOTYPE
+                    if (hybrid_chunk_safe && has_active_source)
+                        sssp_hybrid_active_source_tolerated_windows[tid] +=
+                            eligible_chunk_windows;
+                    if (hybrid_chunk_safe && has_cross_owner)
+                        sssp_hybrid_cross_owner_tolerated_windows[tid] +=
+                            eligible_chunk_windows;
+#endif
                     if (!hybrid_chunk_safe && eligible_chunk_windows != 0) {
                         sssp_hybrid_unsafe_eligible_windows[tid] +=
                             eligible_chunk_windows;
@@ -725,14 +810,10 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                                 sssp_chunk_admission::Tracker::Bounds))
                             sssp_hybrid_bounds_rejected_windows[tid] +=
                                 eligible_chunk_windows;
-                        if (hybrid_chunk_admission.hasReason(
-                                hybrid_chunk_owner,
-                                sssp_chunk_admission::Tracker::ActiveSource))
+                        if (has_active_source)
                             sssp_hybrid_active_source_rejected_windows[tid] +=
                                 eligible_chunk_windows;
-                        if (hybrid_chunk_admission.hasReason(
-                                hybrid_chunk_owner,
-                                sssp_chunk_admission::Tracker::CrossOwner))
+                        if (has_cross_owner)
                             sssp_hybrid_cross_owner_rejected_windows[tid] +=
                                 eligible_chunk_windows;
                     }
@@ -744,8 +825,16 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                     maa_const<int>((int)min(cft, idx + tile_size), reg1);
                     // streaming load u
                     maa_stream_load<int>(frontier.data(), reg0, reg1, regOne, tileu);
+                    // The prototype streams the iteration snapshot directly;
+                    // the default-off path retains its live indirect load.
+#ifdef SSSP_CONFLICT_SNAPSHOT_PROTOTYPE
+                    maa_stream_load<WeightT>(
+                        hybrid_source_snapshot.data(), reg0, reg1, regOne,
+                        tile1);
+#else
                     // load dist[u]
                     maa_indirect_load<WeightT>(dist.data(), tileu, tile1);
+#endif
                     // alu ge on dist[u] and reg2
                     maa_alu_scalar<WeightT>(tile1, reg2, tileCond, Operation_t::GTE_OP);
                     // then load lower and upper bounds of VertexOffsets[u:u+TILE_SIZE] based on tileCond
@@ -778,7 +867,13 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                                 RunSsspCoherentTail(
                                     tid, hybrid_remaining_words, idx_end,
                                     frontier.data(), VertexOffsets.data(), g,
-                                    hybrid_active_sources.data(), dist.data(),
+                                    hybrid_active_sources.data(),
+#ifdef SSSP_CONFLICT_SNAPSHOT_PROTOTYPE
+                                    hybrid_source_snapshot.data(),
+#else
+                                    nullptr,
+#endif
+                                    dist.data(),
                                     num_nodes, delta, local_bins,
                                     hybrid_cursor_pos, hybrid_cursor_edge);
                                 hybrid_observed_words +=
@@ -801,8 +896,17 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                         maa_indirect_load<int>(frontier.data() + idx, tilei, tile2);
 #pragma omp critical
                         {
+                            // Load the source operand associated with each
+                            // range-lane occurrence. The snapshot path never
+                            // re-reads live dist[u] during the wave.
+#ifdef SSSP_CONFLICT_SNAPSHOT_PROTOTYPE
+                            maa_indirect_load<WeightT>(
+                                hybrid_source_snapshot.data() + idx, tilei,
+                                tile1);
+#else
                             // load dist[u] to tile1 using tilei
                             maa_indirect_load<WeightT>(dist.data(), tile2, tile1);
+#endif
                             // do plus on dist[u] and w
                             maa_alu_vector<WeightT>(tile1, tileu, tile2, Operation_t::ADD_OP);
 #ifdef SSSP_OLD_RESULT_HYBRID
@@ -955,6 +1059,10 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
     uint64_t bounds_rejected_windows = 0;
     uint64_t active_source_rejected_windows = 0;
     uint64_t cross_owner_rejected_windows = 0;
+    uint64_t active_source_observed_windows = 0;
+    uint64_t cross_owner_observed_windows = 0;
+    uint64_t active_source_tolerated_windows = 0;
+    uint64_t cross_owner_tolerated_windows = 0;
     uint64_t index_publish_pages = 0;
     uint64_t value_publish_pages = 0;
     uint64_t old_result_words = 0;
@@ -984,6 +1092,14 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
             sssp_hybrid_active_source_rejected_windows[core];
         cross_owner_rejected_windows +=
             sssp_hybrid_cross_owner_rejected_windows[core];
+        active_source_observed_windows +=
+            sssp_hybrid_active_source_observed_windows[core];
+        cross_owner_observed_windows +=
+            sssp_hybrid_cross_owner_observed_windows[core];
+        active_source_tolerated_windows +=
+            sssp_hybrid_active_source_tolerated_windows[core];
+        cross_owner_tolerated_windows +=
+            sssp_hybrid_cross_owner_tolerated_windows[core];
         index_publish_pages += sssp_hybrid_index_publish_pages[core];
         value_publish_pages += sssp_hybrid_value_publish_pages[core];
         old_result_words += sssp_hybrid_old_result_words[core];
@@ -1024,7 +1140,12 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
             fallback_pages * kSsspPhysicalWords + coherent_tail_words &&
         predicate_restore_words == fallback_pages * kSsspPhysicalWords &&
         legacy_words == fallback_consumed_words;
-    std::cout << "SSSP_OLD_RESULT_HYBRID_TERMINAL treatment=old_result_hybrid"
+    std::cout << "SSSP_OLD_RESULT_HYBRID_TERMINAL treatment="
+#ifdef SSSP_CONFLICT_SNAPSHOT_PROTOTYPE
+              << "conflict_snapshot_prototype"
+#else
+              << "old_result_hybrid"
+#endif
               << " eligible_windows=" << eligible_windows
               << " routed_windows=" << routed_windows
               << " unsafe_eligible_windows=" << unsafe_eligible_windows
@@ -1035,6 +1156,14 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
               << active_source_rejected_windows
               << " cross_owner_rejected_windows="
               << cross_owner_rejected_windows
+              << " active_source_observed_windows="
+              << active_source_observed_windows
+              << " cross_owner_observed_windows="
+              << cross_owner_observed_windows
+              << " active_source_tolerated_windows="
+              << active_source_tolerated_windows
+              << " cross_owner_tolerated_windows="
+              << cross_owner_tolerated_windows
               << " index_publish_pages=" << index_publish_pages
               << " value_publish_pages=" << value_publish_pages
               << " old_result_words=" << old_result_words
@@ -1065,6 +1194,28 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
               << " new_dedicated_payload_bytes=0"
               << " hidden_logical_spd_bytes=0"
               << " hidden_result_payload_bytes=0"
+#ifdef SSSP_CONFLICT_SNAPSHOT_PROTOTYPE
+              << " source_snapshot_span=coherent_external"
+              << " source_snapshot_storage_words="
+              << hybrid_source_snapshot.size()
+              << " source_snapshot_storage_bytes="
+              << hybrid_source_snapshot.size() * sizeof(WeightT)
+              << " source_snapshot_copied_words="
+              << sssp_hybrid_source_snapshot_words
+              << " source_snapshot_copied_bytes="
+              << sssp_hybrid_source_snapshot_words * sizeof(WeightT)
+              << " source_snapshot_barriers="
+              << sssp_hybrid_source_snapshot_barriers
+              << " hidden_source_snapshot_bytes=0"
+#else
+              << " source_snapshot_span=disabled"
+              << " source_snapshot_storage_words=0"
+              << " source_snapshot_storage_bytes=0"
+              << " source_snapshot_copied_words=0"
+              << " source_snapshot_copied_bytes=0"
+              << " source_snapshot_barriers=0"
+              << " hidden_source_snapshot_bytes=0"
+#endif
               << " response_closure="
               << (fallback_publication_issue_pages ==
                           fallback_publication_response_pages

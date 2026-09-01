@@ -70,6 +70,16 @@ class Tracker
         return owner < reasons.size() && reasons[owner] == None;
     }
 
+    // Stage-1 conflict-tolerant routing remains fail-closed for numeric and
+    // domain failures. Active-source and cross-owner hazards are still
+    // observed, but an iteration-wide source snapshot makes them legal routed
+    // work rather than admission failures.
+    bool snapshotSafe(std::size_t owner) const
+    {
+        return owner < reasons.size() &&
+            (reasons[owner] & Bounds) == 0;
+    }
+
     bool hasReason(std::size_t owner, Reason reason) const
     {
         return owner < reasons.size() &&
