@@ -10605,8 +10605,15 @@ IndirectAccessUnit::trackVirtualRetirementWrite(Addr write_key, Addr vaddr,
              "I[%d] virtual retirement write 0x%lx has no valid words\n",
              my_indirect_id, write_key);
     metadata.generation = maa->getVirtualPageGeneration(my_dst_tile);
-    const Addr backing_offset = vaddr - my_backing_addr;
-    panic_if(backing_offset % block_size + size > block_size,
+    const Addr backing_line_base =
+        my_backing_addr & ~(block_size - 1);
+    panic_if(vaddr < backing_line_base,
+             "I[%d] virtual retirement write 0x%lx precedes backing line "
+             "base 0x%lx\n",
+             my_indirect_id, vaddr, backing_line_base);
+    const Addr backing_offset = vaddr - backing_line_base;
+    const Addr line_offset = backing_offset & (block_size - 1);
+    panic_if(line_offset + size > block_size,
              "I[%d] virtual retirement write crosses a backing line\n",
              my_indirect_id);
     metadata.backingLine = backing_offset / block_size;
@@ -10616,7 +10623,7 @@ IndirectAccessUnit::trackVirtualRetirementWrite(Addr write_key, Addr vaddr,
             : valid_words;
     } else {
         const unsigned first_word =
-            (backing_offset % block_size) / my_word_size;
+            line_offset / my_word_size;
         const unsigned write_words = size / my_word_size;
         metadata.backingWordMask = static_cast<uint16_t>(
             ((1U << write_words) - 1) << first_word);

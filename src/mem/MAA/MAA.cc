@@ -6076,7 +6076,8 @@ void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
     virtualPageWordSize[tokenTileID] = wordSize;
     virtualProducerRegistrationTick[tokenTileID] = curTick();
     virtualPageLastReadyTick[tokenTileID] = 0;
-    if (direct_retirement_line_handoff) {
+    if (direct_retirement_line_handoff &&
+        (backingAddr & (HybridConsumerPipeline::LineBytes - 1)) == 0) {
         const uint64_t bytes =
             static_cast<uint64_t>(num_tile_elements) * wordSize;
         panic_if(wordSize <= 0 ||
@@ -6722,7 +6723,8 @@ MAA::setVirtualLineWordsReady(int tokenTileID, Addr backingAddr,
                               const uint8_t *writeRespPayload,
                               unsigned payloadBytes)
 {
-    if (!direct_retirement_line_handoff)
+    if (!direct_retirement_line_handoff ||
+        (backingAddr & (HybridConsumerPipeline::LineBytes - 1)) != 0)
         return;
     panic_if(tokenTileID < 0 || tokenTileID >= num_tiles || lineID < 0,
              "invalid virtual line token=%d line=%d\n", tokenTileID,

@@ -166,6 +166,11 @@ class UmeTwoPassMatrixTest(unittest.TestCase):
             spill,
         )
         self.assertNotIn("spill_lines=%zu", source)
+        self.assertIn(
+            "my_backing_addr & ~(block_size - 1)", source
+        )
+        self.assertIn("const Addr line_offset", source)
+        self.assertNotIn("backing_offset % block_size + size", source)
 
     def test_shared_source_payload_charges_unique_words_with_fanout(self) -> None:
         implementation = (ROOT / "src/mem/MAA/IndirectAccess.cc").read_text()
