@@ -151,6 +151,12 @@ sssp_maa_2G_old_result_hybrid_fp: src/sssp.cc src/*.h m5op.o
 	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DGEM5 -DMAA -DNUM_CORES=4 -DNUM_TILES_PER_CORE=8 -DTILE_SIZE=16384 -DMAA_CONSUMER_TILE_SIZE=4096 -DMAA_MEM_SIZE=0x80000000 -DSSSP_FP_ENABLE=1 -DSSSP_OLD_RESULT_HYBRID=1 $(GEM5_LIB) m5op.o $< -o $@.tmp
 	mv -f $@.tmp $@
 
+# Default-off stage-1 prototype: freeze one coherent external source-distance
+# word per frontier occurrence and tolerate snapshot-backed data hazards.
+sssp_maa_2G_conflict_snapshot_fp: src/sssp.cc src/*.h m5op.o
+	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DGEM5 -DMAA -DNUM_CORES=4 -DNUM_TILES_PER_CORE=8 -DTILE_SIZE=16384 -DMAA_CONSUMER_TILE_SIZE=4096 -DMAA_MEM_SIZE=0x80000000 -DSSSP_FP_ENABLE=1 -DSSSP_OLD_RESULT_HYBRID=1 -DSSSP_CONFLICT_TOLERANT_SNAPSHOT=1 $(GEM5_LIB) m5op.o $< -o $@.tmp
+	mv -f $@.tmp $@
+
 # Scale-22 BC correctness binary: end the ROI before the serial verifier, then
 # exit gem5 only after GAPBS reports the verification result.
 bc_maa_1K_verify: src/bc.cc src/*.h m5op.o

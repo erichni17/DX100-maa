@@ -36,6 +36,7 @@ mixedActiveSourceRejectsOnlyItsOwner()
     CHECK(tracker.hasAnyReason(1));
     CHECK(!tracker.hasAnyReason(0));
     CHECK(tracker.count(Tracker::ActiveSource) == 1);
+    CHECK(tracker.safeForConflictTolerantSnapshot(1));
 }
 
 static void
@@ -56,6 +57,9 @@ crossOwnerRejectsEveryConflictingOwnerOnly()
     CHECK(tracker.hasAnyReason(1));
     CHECK(tracker.hasAnyReason(2));
     CHECK(tracker.hasAnyReason(3));
+    CHECK(tracker.safeForConflictTolerantSnapshot(1));
+    CHECK(tracker.safeForConflictTolerantSnapshot(2));
+    CHECK(tracker.safeForConflictTolerantSnapshot(3));
 }
 
 static void
@@ -83,6 +87,9 @@ globalBoundsAndInvalidInputsFailClosed()
     CHECK(tracker.reset(3));
     tracker.rejectAll(Tracker::Bounds);
     CHECK(tracker.count(Tracker::Bounds) == 3);
+    CHECK(!tracker.safeForConflictTolerantSnapshot(0));
+    CHECK(!tracker.safeForConflictTolerantSnapshot(1));
+    CHECK(!tracker.safeForConflictTolerantSnapshot(2));
     uint32_t epoch = 0;
     uint32_t owner = 0;
     CHECK(!tracker.observeDestination(3, false, 1, epoch, owner));

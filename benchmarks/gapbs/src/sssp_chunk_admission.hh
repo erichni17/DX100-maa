@@ -70,6 +70,16 @@ class Tracker
         return owner < reasons.size() && reasons[owner] == None;
     }
 
+    // The conflict-tolerant prototype freezes every frontier occurrence's
+    // source operand before destination updates begin.  ActiveSource and
+    // CrossOwner therefore remain observable hazards, but only Bounds rejects
+    // a snapshot-backed window.
+    bool safeForConflictTolerantSnapshot(std::size_t owner) const
+    {
+        return owner < reasons.size() &&
+            (reasons[owner] & Bounds) == 0;
+    }
+
     bool hasReason(std::size_t owner, Reason reason) const
     {
         return owner < reasons.size() &&

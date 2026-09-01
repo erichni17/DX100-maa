@@ -31,7 +31,19 @@ constexpr int32_t kDistInf = std::numeric_limits<int32_t>::max() / 2;
 constexpr uint64_t kMaxBin = std::numeric_limits<uint64_t>::max() / 2;
 constexpr size_t kLogicalWords = 16 * 1024;
 constexpr int64_t kRandSeed = 27491095;
-constexpr const char *kToolVersion = "2";
+constexpr const char *kToolVersion = "3";
+
+enum class Policy
+{
+    RejectDataHazards,
+    ConflictTolerantSnapshot,
+};
+
+const char *policyName(Policy policy) {
+    return policy == Policy::ConflictTolerantSnapshot
+        ? "conflict-tolerant-snapshot"
+        : "reject-data-hazards";
+}
 
 enum Reason : uint8_t
 {
@@ -76,6 +88,9 @@ class Tracker
     }
 
     bool safe(size_t owner) const { return reasons_.at(owner) == None; }
+    bool safeForConflictTolerantSnapshot(size_t owner) const {
+        return (reasons_.at(owner) & Bounds) == 0;
+    }
     bool hasReason(size_t owner, Reason reason) const {
         return (reasons_.at(owner) & reason) != 0;
     }
@@ -251,6 +266,12 @@ struct Iteration
     uint64_t bounds = 0;
     uint64_t active_source = 0;
     uint64_t cross_owner = 0;
+    uint64_t observed_active_source = 0;
+    uint64_t observed_cross_owner = 0;
+    uint64_t tolerated_hazard = 0;
+    uint64_t active_source_tolerated = 0;
+    uint64_t cross_owner_tolerated = 0;
+    uint64_t snapshot_words = 0;
 };
 
 struct Totals
@@ -264,6 +285,12 @@ struct Totals
     uint64_t bounds = 0;
     uint64_t active_source = 0;
     uint64_t cross_owner = 0;
+    uint64_t observed_active_source = 0;
+    uint64_t observed_cross_owner = 0;
+    uint64_t tolerated_hazard = 0;
+    uint64_t active_source_tolerated = 0;
+    uint64_t cross_owner_tolerated = 0;
+    uint64_t snapshot_words = 0;
     uint64_t base_iterations = 0;
     uint64_t maa_iterations = 0;
 };
@@ -275,6 +302,7 @@ struct Options
     int32_t source = -1;
     int32_t delta = 1;
     int threads = 4;
+    Policy policy = Policy::RejectDataHazards;
 };
 
 int chunkFrontierWords(size_t frontier_words, int threads) {
@@ -332,10 +360,21 @@ Options parseOptions(int argc, char **argv) {
             options.delta = static_cast<int32_t>(std::stoll(value()));
         else if (arg == "--threads")
             options.threads = std::stoi(value());
+        else if (arg == "--policy") {
+            const std::string policy = value();
+            if (policy == "reject-data-hazards")
+                options.policy = Policy::RejectDataHazards;
+            else if (policy == "conflict-tolerant-snapshot")
+                options.policy = Policy::ConflictTolerantSnapshot;
+            else
+                throw std::runtime_error("unknown policy: " + policy);
+        }
         else if (arg == "--help") {
             std::cout <<
                 "usage: predict_sssp_chunk_admission --input GRAPH.wsg "
                          "[--source NODE] [--delta N] [--threads N] "
+                         "[--policy reject-data-hazards|"
+                         "conflict-tolerant-snapshot] "
                          "[--output RESULT.json]\n";
             std::exit(0);
         } else {
@@ -361,6 +400,12 @@ void appendTotals(Totals &totals, const Iteration &iteration) {
     totals.bounds += iteration.bounds;
     totals.active_source += iteration.active_source;
     totals.cross_owner += iteration.cross_owner;
+    totals.observed_active_source += iteration.observed_active_source;
+    totals.observed_cross_owner += iteration.observed_cross_owner;
+    totals.tolerated_hazard += iteration.tolerated_hazard;
+    totals.active_source_tolerated += iteration.active_source_tolerated;
+    totals.cross_owner_tolerated += iteration.cross_owner_tolerated;
+    totals.snapshot_words += iteration.snapshot_words;
     totals.base_iterations += !iteration.maa;
     totals.maa_iterations += iteration.maa;
 }
@@ -372,7 +417,7 @@ std::string renderJson(const MappedGraph &graph, const Options &options,
     std::ostringstream out;
     out << std::fixed << std::setprecision(6);
     out << "{\n"
-        << "  \"schema\": 2,\n"
+        << "  \"schema\": 3,\n"
         << "  \"tool\": \"predict_sssp_chunk_admission\",\n"
         << "  \"tool_version\": \"" << kToolVersion << "\",\n"
         << "  \"input\": \"" << jsonEscape(graph.path()) << "\",\n"
@@ -384,6 +429,12 @@ std::string renderJson(const MappedGraph &graph, const Options &options,
         << "  \"source_selection\": \"" << source_selection << "\",\n"
         << "  \"delta\": " << options.delta << ",\n"
         << "  \"threads\": " << options.threads << ",\n"
+        << "  \"policy\": \"" << policyName(options.policy) << "\",\n"
+        << "  \"source_operand_model\": \""
+        << (options.policy == Policy::ConflictTolerantSnapshot
+                ? "maa-iteration-frontier-occurrence-snapshot"
+                : "live-per-source-use")
+        << "\",\n"
         << "  \"logical_window_words\": " << kLogicalWords << ",\n"
         << "  \"ordering_model\": "
            "\"openmp-static-partition-thread-major-relax-and-merge\",\n"
@@ -393,7 +444,11 @@ std::string renderJson(const MappedGraph &graph, const Options &options,
         const auto &it = iterations[i];
         const bool counts_close =
             it.routed + it.unsafe == it.eligible &&
-            it.reason_covered == it.unsafe;
+            it.reason_covered == it.unsafe &&
+            (options.policy != Policy::ConflictTolerantSnapshot ||
+             (it.active_source == 0 && it.cross_owner == 0 &&
+              it.tolerated_hazard <= it.routed &&
+              it.snapshot_words == (it.maa ? it.frontier_words : 0)));
         out << "    {\"iteration\": " << it.number
             << ", \"bin\": " << it.bin
             << ", \"frontier_words\": " << it.frontier_words
@@ -410,12 +465,28 @@ std::string renderJson(const MappedGraph &graph, const Options &options,
             << ", \"bounds_rejected_windows\": " << it.bounds
             << ", \"active_source_rejected_windows\": " << it.active_source
             << ", \"cross_owner_rejected_windows\": " << it.cross_owner
+            << ", \"observed_active_source_windows\": "
+            << it.observed_active_source
+            << ", \"observed_cross_owner_windows\": "
+            << it.observed_cross_owner
+            << ", \"tolerated_hazard_windows\": "
+            << it.tolerated_hazard
+            << ", \"active_source_tolerated_windows\": "
+            << it.active_source_tolerated
+            << ", \"cross_owner_tolerated_windows\": "
+            << it.cross_owner_tolerated
+            << ", \"source_snapshot_words\": " << it.snapshot_words
+            << ", \"source_snapshot_bytes\": "
+            << it.snapshot_words * sizeof(int32_t)
             << ", \"counts_close\": " << (counts_close ? "true" : "false")
             << "}" << (i + 1 == iterations.size() ? "\n" : ",\n");
     }
     const bool totals_close =
         totals.routed + totals.unsafe == totals.eligible &&
-        totals.reason_covered == totals.unsafe;
+        totals.reason_covered == totals.unsafe &&
+        (options.policy != Policy::ConflictTolerantSnapshot ||
+         (totals.active_source == 0 && totals.cross_owner == 0 &&
+          totals.tolerated_hazard <= totals.routed));
     out << "  ],\n"
         << "  \"totals\": {\n"
         << "    \"iterations\": " << iterations.size() << ",\n"
@@ -433,6 +504,21 @@ std::string renderJson(const MappedGraph &graph, const Options &options,
         << totals.active_source << ",\n"
         << "    \"cross_owner_rejected_windows\": "
         << totals.cross_owner << ",\n"
+        << "    \"observed_active_source_windows\": "
+        << totals.observed_active_source << ",\n"
+        << "    \"observed_cross_owner_windows\": "
+        << totals.observed_cross_owner << ",\n"
+        << "    \"tolerated_hazard_windows\": "
+        << totals.tolerated_hazard << ",\n"
+        << "    \"active_source_tolerated_windows\": "
+        << totals.active_source_tolerated << ",\n"
+        << "    \"cross_owner_tolerated_windows\": "
+        << totals.cross_owner_tolerated << ",\n"
+        << "    \"source_snapshot_words\": " << totals.snapshot_words
+        << ",\n"
+        << "    \"source_snapshot_bytes\": "
+        << totals.snapshot_words * sizeof(int32_t) << ",\n"
+        << "    \"snapshot_hidden_sram_bytes\": 0,\n"
         << "    \"counts_close\": " << (totals_close ? "true" : "false")
         << "\n"
         << "  }\n"
@@ -486,6 +572,19 @@ int run(const Options &options) {
         record.frontier_words = frontier.size();
         record.maa = frontier.size() >=
             static_cast<size_t>(options.threads) * 1024;
+        std::vector<int32_t> source_snapshot;
+        if (record.maa &&
+            options.policy == Policy::ConflictTolerantSnapshot) {
+            source_snapshot.reserve(frontier.size());
+            for (const int32_t u : frontier) {
+                source_snapshot.push_back(
+                    u >= 0 && u < graph.nodes() ? dist[u] : kDistInf);
+            }
+            record.snapshot_words = source_snapshot.size();
+        }
+        auto sourceDistance = [&](size_t pos, int32_t u) {
+            return source_snapshot.empty() ? dist[u] : source_snapshot[pos];
+        };
         record.chunk_frontier_words =
             chunkFrontierWords(frontier.size(), options.threads);
         record.chunk_count =
@@ -502,13 +601,18 @@ int run(const Options &options) {
         }
 
         std::fill(active.begin(), active.end(), 0);
-        for (const int32_t u : frontier) {
-            if (u < 0 || u >= graph.nodes() || dist[u] < 0 ||
-                dist[u] > kDistInf) {
+        for (size_t pos = 0; pos < frontier.size(); ++pos) {
+            const int32_t u = frontier[pos];
+            if (u < 0 || u >= graph.nodes()) {
                 global_safe = false;
                 continue;
             }
-            if (dist[u] >= lower_bound && !active[u]) {
+            const int32_t source_distance = sourceDistance(pos, u);
+            if (source_distance < 0 || source_distance > kDistInf) {
+                global_safe = false;
+                continue;
+            }
+            if (source_distance >= lower_bound && !active[u]) {
                 active[u] = 1;
                 ++record.active_sources;
             }
@@ -531,8 +635,9 @@ int run(const Options &options) {
             record.active_edge_words += static_cast<uint64_t>(end - begin);
             for (int32_t edge = begin; edge < end; ++edge) {
                 const auto neighbor = graph.neighbor(edge);
-                const int64_t candidate = static_cast<int64_t>(dist[u]) +
-                    neighbor.weight;
+                const int64_t candidate =
+                    static_cast<int64_t>(sourceDistance(pos, u)) +
+                        neighbor.weight;
                 if (neighbor.vertex < 0 ||
                     neighbor.vertex >= graph.nodes() ||
                     neighbor.weight <= 0 || candidate < 0 ||
@@ -555,17 +660,35 @@ int run(const Options &options) {
             for (size_t owner = 0; owner < record.chunk_count; ++owner) {
                 const uint64_t windows = chunk_words[owner] / kLogicalWords;
                 record.eligible += windows;
-                if (global_safe && tracker.safe(owner)) {
+                const bool active_source =
+                    tracker.hasReason(owner, ActiveSource);
+                const bool cross_owner =
+                    tracker.hasReason(owner, CrossOwner);
+                if (active_source)
+                    record.observed_active_source += windows;
+                if (cross_owner)
+                    record.observed_cross_owner += windows;
+                const bool safe = global_safe &&
+                    (options.policy == Policy::ConflictTolerantSnapshot
+                         ? tracker.safeForConflictTolerantSnapshot(owner)
+                         : tracker.safe(owner));
+                if (safe) {
                     record.routed += windows;
+                    if (active_source)
+                        record.active_source_tolerated += windows;
+                    if (cross_owner)
+                        record.cross_owner_tolerated += windows;
+                    if (active_source || cross_owner)
+                        record.tolerated_hazard += windows;
                 } else if (windows != 0) {
                     record.unsafe += windows;
                     if (tracker.hasAnyReason(owner))
                         record.reason_covered += windows;
                     if (tracker.hasReason(owner, Bounds))
                         record.bounds += windows;
-                    if (tracker.hasReason(owner, ActiveSource))
+                    if (active_source)
                         record.active_source += windows;
-                    if (tracker.hasReason(owner, CrossOwner))
+                    if (cross_owner)
                         record.cross_owner += windows;
                 }
             }
@@ -573,7 +696,10 @@ int run(const Options &options) {
 
         auto relaxPosition = [&](size_t pos, int tid) {
             const int32_t u = frontier[pos];
-            if (u < 0 || u >= graph.nodes() || dist[u] < lower_bound)
+            if (u < 0 || u >= graph.nodes())
+                return;
+            const int32_t source_distance = sourceDistance(pos, u);
+            if (source_distance < lower_bound)
                 return;
             const int32_t begin = graph.offset(u);
             const int32_t end = graph.offset(u + 1);
@@ -583,7 +709,7 @@ int run(const Options &options) {
                     throw std::runtime_error(
                         "relaxation destination outside graph");
                 const int64_t wide_new =
-                    static_cast<int64_t>(dist[u]) + neighbor.weight;
+                    static_cast<int64_t>(source_distance) + neighbor.weight;
                 if (wide_new < std::numeric_limits<int32_t>::min() ||
                     wide_new > std::numeric_limits<int32_t>::max())
                     throw std::runtime_error("relaxation distance overflow");
@@ -635,7 +761,12 @@ int run(const Options &options) {
         }
         appendTotals(totals, record);
         if (record.routed + record.unsafe != record.eligible ||
-            record.reason_covered != record.unsafe)
+            record.reason_covered != record.unsafe ||
+            (options.policy == Policy::ConflictTolerantSnapshot &&
+             (record.active_source != 0 || record.cross_owner != 0 ||
+              record.tolerated_hazard > record.routed ||
+              record.snapshot_words !=
+                  (record.maa ? record.frontier_words : 0))))
             throw std::runtime_error(
                 "admission reason coverage does not close");
         iterations.push_back(record);
@@ -656,7 +787,10 @@ int run(const Options &options) {
     const double elapsed = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - start).count();
     if (totals.routed + totals.unsafe != totals.eligible ||
-        totals.reason_covered != totals.unsafe)
+        totals.reason_covered != totals.unsafe ||
+        (options.policy == Policy::ConflictTolerantSnapshot &&
+         (totals.active_source != 0 || totals.cross_owner != 0 ||
+          totals.tolerated_hazard > totals.routed)))
         throw std::runtime_error(
             "total admission reason coverage does not close");
     const std::string json = renderJson(

@@ -82,7 +82,7 @@ class SsspChunkAdmissionPredictorTest(unittest.TestCase):
     def tearDownClass(cls):
         cls.workspace.cleanup()
 
-    def predict(self, variant):
+    def predict(self, variant, policy="reject-data-hazards"):
         graph = self.temp / f"{variant}.wsg"
         if not graph.exists():
             write_directed_fixture(graph, variant)
@@ -97,6 +97,8 @@ class SsspChunkAdmissionPredictorTest(unittest.TestCase):
                 "1",
                 "--threads",
                 "4",
+                "--policy",
+                policy,
             ],
             check=True,
             capture_output=True,
@@ -106,8 +108,9 @@ class SsspChunkAdmissionPredictorTest(unittest.TestCase):
 
     def test_all_safe_routes_exactly_four_of_four(self):
         result = self.predict("all_safe")
-        self.assertEqual(result["schema"], 2)
-        self.assertEqual(result["tool_version"], "2")
+        self.assertEqual(result["schema"], 3)
+        self.assertEqual(result["tool_version"], "3")
+        self.assertEqual(result["policy"], "reject-data-hazards")
         self.assertEqual(result["totals"]["eligible_windows"], 4)
         self.assertEqual(result["totals"]["routed_windows"], 4)
         self.assertEqual(result["totals"]["unsafe_eligible_windows"], 0)
@@ -156,6 +159,42 @@ class SsspChunkAdmissionPredictorTest(unittest.TestCase):
         self.assertTrue(
             all(row["counts_close"] for row in result["iterations"])
         )
+
+    def test_snapshot_policy_tolerates_active_source_and_cross_owner(self):
+        expected = {
+            "all_safe": (0, 0, 0, 69_632),
+            "active_source": (1, 0, 1, 69_631),
+            "cross_owner": (0, 2, 2, 69_631),
+            "overlap": (2, 2, 2, 69_630),
+        }
+        for variant, (
+            active,
+            cross,
+            tolerated,
+            snapshot_words,
+        ) in expected.items():
+            with self.subTest(variant=variant):
+                result = self.predict(variant, "conflict-tolerant-snapshot")
+                totals = result["totals"]
+                self.assertEqual(
+                    result["policy"], "conflict-tolerant-snapshot"
+                )
+                self.assertEqual(totals["eligible_windows"], 4)
+                self.assertEqual(totals["routed_windows"], 4)
+                self.assertEqual(totals["unsafe_eligible_windows"], 0)
+                self.assertEqual(totals["bounds_rejected_windows"], 0)
+                self.assertEqual(totals["active_source_rejected_windows"], 0)
+                self.assertEqual(totals["cross_owner_rejected_windows"], 0)
+                self.assertEqual(
+                    totals["observed_active_source_windows"], active
+                )
+                self.assertEqual(totals["observed_cross_owner_windows"], cross)
+                self.assertEqual(totals["tolerated_hazard_windows"], tolerated)
+                self.assertEqual(
+                    totals["source_snapshot_words"], snapshot_words
+                )
+                self.assertEqual(totals["snapshot_hidden_sram_bytes"], 0)
+                self.assertTrue(totals["counts_close"])
 
     def test_repeated_prediction_is_deterministic(self):
         first = self.predict("all_safe")

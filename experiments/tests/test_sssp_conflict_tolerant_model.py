@@ -304,6 +304,21 @@ class SourceGroundingTest(unittest.TestCase):
         admission = ADMISSION.read_text()
         self.assertIn("reasons[owner] |= ActiveSource", admission)
         self.assertEqual(admission.count("|= CrossOwner"), 2)
+        self.assertIn("safeForConflictTolerantSnapshot", admission)
+        self.assertIn("(reasons[owner] & Bounds) == 0", admission)
+
+        snapshot = source[
+            source.index("hybrid_snapshot_iteration =") : source.index(
+                "if ((int)curr_frontier_tail <",
+                source.index("hybrid_snapshot_iteration ="),
+            )
+        ]
+        self.assertLess(
+            snapshot.index("hybrid_source_snapshot[pos] ="),
+            snapshot.index("fill(hybrid_active_sources.begin()"),
+        )
+        self.assertIn("hybrid_source_snapshot[pos]", snapshot)
+        self.assertIn("source_distance", snapshot)
 
         indirect = INDIRECT.read_text()
         ordered_apply = indirect[
