@@ -86,3 +86,27 @@ before sealing because the runner omitted the explicit `pingpong=0` token from
 its otherwise-correct marker check. The fail-closed `seal` path then classified
 and ledger-sealed that same completed restore after the check was corrected;
 no second checkpoint, restore, or native simulation was launched.
+
+## Phase-level regression gate
+
+The read-only comparator
+`experiments/scripts/compare_gzz_shared_payload_phases.py` classifies the
+current/historical difference as `SOURCE_MLP_COLLAPSE`. It launches no
+simulation and keeps the comparison explicitly cross-binary and
+non-attributable. B fetch is unchanged at 7,120 cycles and consumer time is
+22,952 versus 22,949 cycles. In contrast:
+
+| Metric | sealed r6 strict | current strict | Ratio |
+|---|---:|---:|---:|
+| A issue cycles | 7,154 | 60,978 | 8.524x |
+| Backing cycles | 6,817 | 49,629 | 7.280x |
+| Response-slot high water | 128 | 1 | 0.0078x |
+| Build rounds | 59 | 1,029 | 17.441x |
+
+The result is sealed at
+`/data1/nier/dx100-runs/2026-09-01-gzz-shared-phase-comparison-r1/comparison.json`
+with SHA-256
+`4c20c362fd1b74c15e603e3d50a70a389be5cb1929b0d46de51b46076e083d39`.
+This localizes the regression to lost source-line concurrency and backing
+overlap; it does not claim the historical hidden-storage implementation is a
+legal design or that one individual commit is solely responsible.
