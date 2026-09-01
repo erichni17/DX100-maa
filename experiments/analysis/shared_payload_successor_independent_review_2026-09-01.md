@@ -15,6 +15,20 @@ a failed final-use insertion. Promotion should remain blocked until a legal
 shared-pool-pressure case or focused unit around the production ownership
 transition observes at least one final-use rollback and exact empty closure.
 
+## Successor disposition
+
+Commit `a722af81` (cherry-picked from reviewed worker commit `39bf4a80`)
+closes this focused blocker. The local begin/rollback/commit lambdas were
+extracted into the bounded, payload-free `maa::SharedPayloadTransfer` helper,
+and all three production insertion sites now use that helper. Its optimized
+and ASan/UBSan unit executes nonfinal consume, final-use removal of the exact
+`WordRef` and all three credits, simulated insertion failure, exact rollback,
+retry, commit, illegal/stale/double rollback rejection, and empty closure.
+Neighboring fanout/combine/response units and the combined `IndirectAccess.o`
+and `MAA.o` build pass on the integrated branch. The original frozen runs still
+have zero natural rollbacks; this successor supplies deterministic execution
+of the exact production ownership transition rather than relabeling them.
+
 No source defect was found in the inspected rollback algebra: a final-use
 attempt removes one response reference and decrements all three response
 occupancy counters; failure restores the same reference and counters before
