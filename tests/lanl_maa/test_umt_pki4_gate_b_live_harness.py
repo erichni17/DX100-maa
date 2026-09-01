@@ -166,7 +166,7 @@ def show_bytes(arm, invocation, pid, terminal=False):
         "MainPID": "0" if terminal else str(pid),
         "ExecMainPID": str(pid),
         "ExecMainStartTimestampMonotonic": "1234567",
-        "WorkingDirectory": str(pathlib.Path.home()),
+        "WorkingDirectory": live.HOST_WORKING_DIRECTORY,
         **live.RESOURCE_SHOW,
         "ExecStart": (
             "{ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 "
@@ -439,6 +439,33 @@ def queue_document():
 
 
 class GateBLiveHarnessTest(unittest.TestCase):
+    def test_live_show_accepts_only_exact_host_working_directory(self):
+        arm = {
+            "unit": "umt-pki4-gate-b-test.service",
+            "wrapper_argv": ["/usr/bin/python3", "/pinned/wrapper.py"],
+            "gem5_argv_sha256": "a" * 64,
+        }
+        fields = live.parse_show(show_bytes(arm, "b" * 32, 1234))
+        self.assertEqual(
+            fields["WorkingDirectory"], live.HOST_WORKING_DIRECTORY
+        )
+        live.validate_show(fields, arm, "live")
+
+        for forged in (
+            "",
+            "/home/nier",
+            "!!/home/nier",
+            "!/home/nier/",
+            "!/home/nier ",
+            "!/home/other",
+        ):
+            with self.subTest(working_directory=forged):
+                changed = dict(fields, WorkingDirectory=forged)
+                with self.assertRaisesRegex(
+                    RuntimeError, "identity/resource/argv mismatch"
+                ):
+                    live.validate_show(changed, arm, "live")
+
     def test_reviewed_plan_has_only_two_exact_distinct_arms(self):
         plan, review, source = live.verify_fixed_inputs()
         self.assertEqual(set(plan["dispatch"]["arms"]), set(live.CASES))

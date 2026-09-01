@@ -141,6 +141,10 @@ SHOW_PROPERTIES = (
     "ExecMainStatus",
     "Result",
 )
+# This is the exact representation emitted by the reviewed host for the
+# implicit user-manager working directory.  Do not normalize it or accept the
+# pre-launch representations: this value participates in live process identity.
+HOST_WORKING_DIRECTORY = "!/home/nier"
 RESOURCE_SHOW = {
     "CPUQuotaPerSecUSec": "4s",
     "CPUWeight": "1000",
@@ -1011,7 +1015,7 @@ def validate_show(fields, arm, phase, live=None):
     if (
         fields["Id"] != arm["unit"]
         or not re.fullmatch(r"[0-9a-f]{32}", fields["InvocationID"])
-        or fields["WorkingDirectory"] not in ("", str(pathlib.Path.home()))
+        or fields["WorkingDirectory"] != HOST_WORKING_DIRECTORY
         or {key: fields[key] for key in RESOURCE_SHOW} != RESOURCE_SHOW
         or str(wrapper[1]) not in fields["ExecStart"]
         or arm["gem5_argv_sha256"] not in fields["ExecStart"]
