@@ -140,6 +140,19 @@ class SsspOldResultHybridContract(unittest.TestCase):
         self.assertIn("result=PASS", self.runner)
         self.assertNotIn("sssp_maa_1K", self.runner)
 
+    def test_host_oracle_fingerprints_the_base_delta_step(self):
+        base_start = self.source.index("pvector<WeightT> DeltaStep(")
+        base_end = self.source.index("void PrintSSSPStats", base_start)
+        base = self.source[base_start:base_end]
+        self.assertIn("#if defined(SSSP_FP_ENABLE) && !defined(GEM5)", base)
+        self.assertEqual(
+            base.count("PrintSSSPFingerprint(g, source, dist);"), 1
+        )
+        self.assertLess(
+            base.index("PrintSSSPFingerprint(g, source, dist);"),
+            base.index("return dist;"),
+        )
+
     def test_successor_is_not_the_rejected_pre_fallback_consumer_source(self):
         baseline = subprocess.run(
             ["git", "show", "e690867f:benchmarks/gapbs/src/sssp.cc"],
