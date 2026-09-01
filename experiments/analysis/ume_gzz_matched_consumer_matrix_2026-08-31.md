@@ -26,11 +26,12 @@ arm also enables direct-index virtualization, page materialization, strict
 two-phase ordering, shared payload, complete-line retirement, and bounded
 lookup/drain machinery.
 
-The previously reported 1,953,744-byte hybrid total and its 38.49%/40.39%
-comparisons are withdrawn. They used the generic-virtual reporter despite
-GZZ's direct-index feeder and omitted required shared-pool fanout metadata.
-The corrected direct-index ledger supersedes those exact values; all byte
-totals remain packed configuration lower bounds rather than synthesized area.
+The corrected direct-index ledger reports 2,014,760 bytes for the hybrid,
+3,185,920 bytes for native16, and 1,401,088 bytes for native4. The hybrid is
+therefore 36.760% below native16 and 43.800% above native4. These replace the
+withdrawn generic-virtual values and charge shared-pool fanout metadata. All
+totals remain packed configuration lower bounds rather than synthesized area;
+see `gzz_corrected_storage_2026-09-01.md`.
 
 Sealed evidence:
 `/data1/nier/dx100-runs/2026-08-31-ume-gzz-matched-consumer-r6`
