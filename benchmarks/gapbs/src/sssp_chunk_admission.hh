@@ -76,6 +76,11 @@ class Tracker
             (reasons[owner] & reason) != 0;
     }
 
+    bool hasAnyReason(std::size_t owner) const
+    {
+        return owner < reasons.size() && reasons[owner] != None;
+    }
+
     std::size_t chunks() const { return reasons.size(); }
 
     std::size_t count(Reason reason) const

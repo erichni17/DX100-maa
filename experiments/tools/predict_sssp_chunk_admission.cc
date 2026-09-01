@@ -31,7 +31,7 @@ constexpr int32_t kDistInf = std::numeric_limits<int32_t>::max() / 2;
 constexpr uint64_t kMaxBin = std::numeric_limits<uint64_t>::max() / 2;
 constexpr size_t kLogicalWords = 16 * 1024;
 constexpr int64_t kRandSeed = 27491095;
-constexpr const char *kToolVersion = "1";
+constexpr const char *kToolVersion = "2";
 
 enum Reason : uint8_t
 {
@@ -78,6 +78,9 @@ class Tracker
     bool safe(size_t owner) const { return reasons_.at(owner) == None; }
     bool hasReason(size_t owner, Reason reason) const {
         return (reasons_.at(owner) & reason) != 0;
+    }
+    bool hasAnyReason(size_t owner) const {
+        return reasons_.at(owner) != None;
     }
 
   private:
@@ -244,6 +247,7 @@ struct Iteration
     uint64_t eligible = 0;
     uint64_t routed = 0;
     uint64_t unsafe = 0;
+    uint64_t reason_covered = 0;
     uint64_t bounds = 0;
     uint64_t active_source = 0;
     uint64_t cross_owner = 0;
@@ -256,6 +260,7 @@ struct Totals
     uint64_t eligible = 0;
     uint64_t routed = 0;
     uint64_t unsafe = 0;
+    uint64_t reason_covered = 0;
     uint64_t bounds = 0;
     uint64_t active_source = 0;
     uint64_t cross_owner = 0;
@@ -352,6 +357,7 @@ void appendTotals(Totals &totals, const Iteration &iteration) {
     totals.eligible += iteration.eligible;
     totals.routed += iteration.routed;
     totals.unsafe += iteration.unsafe;
+    totals.reason_covered += iteration.reason_covered;
     totals.bounds += iteration.bounds;
     totals.active_source += iteration.active_source;
     totals.cross_owner += iteration.cross_owner;
@@ -366,7 +372,7 @@ std::string renderJson(const MappedGraph &graph, const Options &options,
     std::ostringstream out;
     out << std::fixed << std::setprecision(6);
     out << "{\n"
-        << "  \"schema\": 1,\n"
+        << "  \"schema\": 2,\n"
         << "  \"tool\": \"predict_sssp_chunk_admission\",\n"
         << "  \"tool_version\": \"" << kToolVersion << "\",\n"
         << "  \"input\": \"" << jsonEscape(graph.path()) << "\",\n"
@@ -385,6 +391,9 @@ std::string renderJson(const MappedGraph &graph, const Options &options,
         << "  \"iterations\": [\n";
     for (size_t i = 0; i < iterations.size(); ++i) {
         const auto &it = iterations[i];
+        const bool counts_close =
+            it.routed + it.unsafe == it.eligible &&
+            it.reason_covered == it.unsafe;
         out << "    {\"iteration\": " << it.number
             << ", \"bin\": " << it.bin
             << ", \"frontier_words\": " << it.frontier_words
@@ -396,11 +405,17 @@ std::string renderJson(const MappedGraph &graph, const Options &options,
             << ", \"eligible_windows\": " << it.eligible
             << ", \"routed_windows\": " << it.routed
             << ", \"unsafe_eligible_windows\": " << it.unsafe
+            << ", \"reason_covered_unsafe_windows\": "
+            << it.reason_covered
             << ", \"bounds_rejected_windows\": " << it.bounds
             << ", \"active_source_rejected_windows\": " << it.active_source
             << ", \"cross_owner_rejected_windows\": " << it.cross_owner
+            << ", \"counts_close\": " << (counts_close ? "true" : "false")
             << "}" << (i + 1 == iterations.size() ? "\n" : ",\n");
     }
+    const bool totals_close =
+        totals.routed + totals.unsafe == totals.eligible &&
+        totals.reason_covered == totals.unsafe;
     out << "  ],\n"
         << "  \"totals\": {\n"
         << "    \"iterations\": " << iterations.size() << ",\n"
@@ -411,11 +426,15 @@ std::string renderJson(const MappedGraph &graph, const Options &options,
         << "    \"eligible_windows\": " << totals.eligible << ",\n"
         << "    \"routed_windows\": " << totals.routed << ",\n"
         << "    \"unsafe_eligible_windows\": " << totals.unsafe << ",\n"
+        << "    \"reason_covered_unsafe_windows\": "
+        << totals.reason_covered << ",\n"
         << "    \"bounds_rejected_windows\": " << totals.bounds << ",\n"
         << "    \"active_source_rejected_windows\": "
         << totals.active_source << ",\n"
         << "    \"cross_owner_rejected_windows\": "
-        << totals.cross_owner << "\n"
+        << totals.cross_owner << ",\n"
+        << "    \"counts_close\": " << (totals_close ? "true" : "false")
+        << "\n"
         << "  }\n"
         << "}\n";
     return out.str();
@@ -540,6 +559,8 @@ int run(const Options &options) {
                     record.routed += windows;
                 } else if (windows != 0) {
                     record.unsafe += windows;
+                    if (tracker.hasAnyReason(owner))
+                        record.reason_covered += windows;
                     if (tracker.hasReason(owner, Bounds))
                         record.bounds += windows;
                     if (tracker.hasReason(owner, ActiveSource))
@@ -613,6 +634,10 @@ int run(const Options &options) {
             }
         }
         appendTotals(totals, record);
+        if (record.routed + record.unsafe != record.eligible ||
+            record.reason_covered != record.unsafe)
+            throw std::runtime_error(
+                "admission reason coverage does not close");
         iterations.push_back(record);
         frontier.clear();
         if (next_bin != kMaxBin) {
@@ -630,6 +655,10 @@ int run(const Options &options) {
 
     const double elapsed = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - start).count();
+    if (totals.routed + totals.unsafe != totals.eligible ||
+        totals.reason_covered != totals.unsafe)
+        throw std::runtime_error(
+            "total admission reason coverage does not close");
     const std::string json = renderJson(
         graph, options, source, source_selection, iterations, totals, elapsed);
     if (options.output.empty()) {

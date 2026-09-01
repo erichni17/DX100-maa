@@ -3,6 +3,11 @@
 Recorded 2026-08-31 22:47 EDT. This is a host-only screening result. No gem5
 or native SSSP execution was launched.
 
+The ledger was regenerated with predictor schema 2 after the exact reason
+coverage closure. Every unsafe eligible window is now counted once in
+`reason_covered_unsafe_windows`, independently of the overlapping reason
+columns.
+
 ## Recommendation
 
 **NO LAUNCH.** The deterministic model predicts 7,232 size-eligible logical
@@ -29,13 +34,15 @@ least one complete 16K window. None contained a routed window.
 | Eligible 16K windows | 7,232 |
 | Routed windows | 0 |
 | Unsafe eligible windows | 7,232 |
+| Reason-covered unsafe windows | 7,232 |
 | Bounds-rejected windows | 0 |
 | Active-source-rejected windows | 7,232 |
 | Cross-owner-rejected windows | 7,232 |
 
 Reason counts overlap: each unsafe window can carry more than one reason and
-must not be added across reason columns. The accounting invariant closes:
-`routed_windows + unsafe_eligible_windows == eligible_windows`.
+must not be added across reason columns. Both accounting invariants close:
+`routed_windows + unsafe_eligible_windows == eligible_windows` and
+`reason_covered_unsafe_windows == unsafe_eligible_windows`.
 
 The largest eligible iteration is iteration 114 (bin 135): frontier 152,407,
 38 positional 4K chunks, 127,379 active sources, 4,121,664 active edge words,
@@ -45,7 +52,8 @@ reasons and no bounds reason.
 The complete machine-readable per-iteration ledger, including all zero-window
 base and tail iterations, is
 `experiments/analysis/sssp_chunk_admission_predictor_s22_2026-09-01.json`
-(SHA-256 `eb43461cd867b2f72f6b826ce28eba5a1bf5ab9835d88fb0590fafa4814979a9`).
+(schema 2, SHA-256
+`2ae007490d74ff91768f6864e9eb7db97d7452d0c76ddb4b6bff59ffb33554a4`).
 
 ## Directed validation gates
 
@@ -53,11 +61,12 @@ The test constructs the same directed two-level 4,096-source fanout used by
 `run_sssp_old_result_hybrid_small.sh` and checks the exact mixed-admission
 outcomes before S22 is accepted:
 
-| Fixture | Eligible | Routed | Unsafe | Active-source rejected | Cross-owner rejected |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| `all_safe` | 4 | 4 | 0 | 0 | 0 |
-| `active_source` | 4 | 3 | 1 | 1 | 0 |
-| `cross_owner` | 4 | 2 | 2 | 0 | 2 |
+| Fixture | Eligible | Routed | Unsafe | Reason-covered | Active-source rejected | Cross-owner rejected |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `all_safe` | 4 | 4 | 0 | 0 | 0 | 0 |
+| `active_source` | 4 | 3 | 1 | 1 | 1 | 0 |
+| `cross_owner` | 4 | 2 | 2 | 2 | 0 | 2 |
+| `overlap` | 4 | 2 | 2 | 2 | 2 | 2 |
 
 Command:
 
@@ -65,8 +74,9 @@ Command:
 python3 -m unittest -v experiments.tests.test_predict_sssp_chunk_admission
 ```
 
-Result: 5/5 PASS, including deterministic replay and truncated-input
-rejection. The validation constructs inputs only; it does not run GAPBS.
+Result: 6/6 PASS, including an active-source/cross-owner overlap fixture,
+deterministic replay, and truncated-input rejection. The validation constructs
+inputs only; it does not run GAPBS.
 
 ## Method and provenance
 
@@ -79,6 +89,8 @@ The tool memory-maps GAPBS `.wsg` CSR data and mirrors these current
   thresholds;
 - per-destination epoch/first-owner tracking and propagation of
   `ActiveSource`, `CrossOwner`, and global `Bounds` reasons;
+- once-per-window coverage whenever any reason bit is present, without summing
+  the overlapping reason-specific counts;
 - eligible windows as each chunk's active outgoing words divided by 16,384;
   and
 - the production distinction between base and MAA-sized iterations, so base
@@ -92,13 +104,13 @@ does not invoke MAA or simulate timing.
 | Artifact | Identity |
 | --- | --- |
 | Baseline source commit | `5fbaa33e38d3c63bee905c78f6459ad295737870` |
-| Predictor source | `experiments/tools/predict_sssp_chunk_admission.cc`, SHA-256 `1aa554add1dbcd31fb9e8f1d01370a17b8db1302a0041b0356fcbbea2ce6696a` |
-| Predictor test | `experiments/tests/test_predict_sssp_chunk_admission.py`, SHA-256 `8e69c88699b88802938697c3228f022f400461dd3205e6ed4b9d6a389c047c62` |
-| Host binary | `/tmp/predict_sssp_chunk_admission`, SHA-256 `6c9e3af5c2a53d4ae43969483e65444941cbf75eb77df4844ada61e639e0c203`, 51,016 bytes |
+| Predictor source | `experiments/tools/predict_sssp_chunk_admission.cc`, SHA-256 `16cabf7cebc5d4786331e279c6cf822907614eed03d1fc55089cb558e74e620e` |
+| Predictor test | `experiments/tests/test_predict_sssp_chunk_admission.py`, SHA-256 `089ee8b1a1b72c5cb97e50dfdfccf221d4d3e4fbc7dd34015503374d3ab2a605` |
+| Host binary | `/tmp/predict_sssp_chunk_admission_exact`, SHA-256 `b302356ff3b421d7ffff6b64f9daca39d729d5f3c6b31ca86e3d744a29a20153`, 55,456 bytes |
 | Compiler | `g++ (Ubuntu 9.5.0-1ubuntu1~22.04.1) 9.5.0` |
-| Production SSSP source | `benchmarks/gapbs/src/sssp.cc`, SHA-256 `567a6ad9dd37441e69018e264e7c380be7805a9f9911c0441c015ae0cb12738d` |
-| Tracker source | `benchmarks/gapbs/src/sssp_chunk_admission.hh`, SHA-256 `e391f23eaa2a25c20c4f9354461351197858fd92a98f3a359e5ecd3f9cf39151` |
-| Frozen full runner | `experiments/scripts/run_sssp_old_result_hybrid_full.sh`, SHA-256 `8067edd11a15b94e8856fe7b32e1b8980551fb9f17ec7dc2f80a8dc06d770623` |
+| Production SSSP source | `benchmarks/gapbs/src/sssp.cc`, SHA-256 `2e3e8b2c85c43520f2938be2b04a209fc53a8241316cba613f42fa1521352c4e` |
+| Tracker source | `benchmarks/gapbs/src/sssp_chunk_admission.hh`, SHA-256 `8add7b1c3ffa07aa990dd0c3d75da901ff382fbe5571c80321affdfa7d6096e5` |
+| Frozen full runner | `experiments/scripts/run_sssp_old_result_hybrid_full.sh`, SHA-256 `22e3bb5336e80ca9cb2549d53845d0cf8d26868fcb627ed3f7fbb7249dd36dbf` |
 | Frozen S22 input | `/data1/nier/worktrees/DX100-full-tile-sweep-20260720/benchmarks/gapbs/serialized_graph_22.wsg`, SHA-256 `23eb25e34343334976554071a8184f7b03358fe1892ba44cd2f5a38369f4eebc`, 1,090,514,493 bytes |
 
 Build and prediction command:
@@ -106,16 +118,16 @@ Build and prediction command:
 ```text
 g++ -std=c++17 -O3 -Wall -Wextra -Werror \
   experiments/tools/predict_sssp_chunk_admission.cc \
-  -o /tmp/predict_sssp_chunk_admission
-/usr/bin/time -v /tmp/predict_sssp_chunk_admission \
+  -o /tmp/predict_sssp_chunk_admission_exact
+/tmp/predict_sssp_chunk_admission_exact \
   --input /data1/nier/worktrees/DX100-full-tile-sweep-20260720/benchmarks/gapbs/serialized_graph_22.wsg \
   --delta 1 --threads 4 \
-  --output /tmp/sssp_chunk_admission_s22.json
+  --output experiments/analysis/sssp_chunk_admission_predictor_s22_2026-09-01.json
 ```
 
-The tool reports 16.971486 seconds internally; `/usr/bin/time` reports 17.00
-seconds wall, 16.73 seconds user, 0.25 seconds system, and 1,193,024 KiB peak
-RSS. These are reproducibility/resource observations only.
+The schema-2 regeneration reports 16.673816 seconds internally. The original
+schema-1 run reported 17.00 seconds wall and 1,193,024 KiB peak RSS. These are
+reproducibility/resource observations only.
 
 ## Limitations
 

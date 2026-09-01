@@ -101,22 +101,6 @@ stat_sum() {
     ' "$stats"
 }
 
-stat_sum_optional_zero() {
-    local stats=$1 suffix=$2
-    awk -v suffix="$suffix" '
-        /^---------- Begin Simulation Statistics/ { section++ }
-        section == 1 &&
-            ($1 == "system.maa." suffix || $1 ~ ("_" suffix "$")) {
-            sum += $2
-            found++
-        }
-        /^---------- End Simulation Statistics/ && section == 1 {
-            printf "%.0f\n", found ? sum : 0
-            exit
-        }
-    ' "$stats"
-}
-
 validate_evidence() (
     set -euo pipefail
     local out=$1 require_wrapper=${2:-false}
@@ -240,7 +224,8 @@ validate_evidence() (
     [[ $(terminal_value "$terminal" response_closure) == 1 ]]
     [[ $(terminal_value "$terminal" counts_close) == 1 ]]
 
-    local eligible routed unsafe bounds_rejected active_rejected cross_rejected
+    local eligible routed unsafe reason_covered
+    local bounds_rejected active_rejected cross_rejected
     local index_pages value_pages old_words legacy_words
     local fallback_pages fallback_issue_pages fallback_response_pages
     local fallback_words fallback_bytes fallback_consumed predicate_restores
@@ -248,6 +233,8 @@ validate_evidence() (
     eligible=$(terminal_value "$terminal" eligible_windows)
     routed=$(terminal_value "$terminal" routed_windows)
     unsafe=$(terminal_value "$terminal" unsafe_eligible_windows)
+    reason_covered=$(terminal_value \
+        "$terminal" reason_covered_unsafe_windows)
     bounds_rejected=$(terminal_value "$terminal" bounds_rejected_windows)
     active_rejected=$(terminal_value \
         "$terminal" active_source_rejected_windows)
@@ -268,7 +255,8 @@ validate_evidence() (
     predicate_restores=$(terminal_value "$terminal" predicate_restore_words)
     tail_batches=$(terminal_value "$terminal" coherent_tail_batches)
     tail_words=$(terminal_value "$terminal" coherent_tail_words)
-    for value in "$eligible" "$routed" "$unsafe" "$bounds_rejected" \
+    for value in "$eligible" "$routed" "$unsafe" "$reason_covered" \
+        "$bounds_rejected" \
         "$active_rejected" "$cross_rejected" \
         "$index_pages" "$value_pages" \
         "$old_words" "$legacy_words" "$fallback_pages" \
@@ -279,11 +267,11 @@ validate_evidence() (
     done
     (( routed > 0 && routed <= eligible ))
     (( routed + unsafe == eligible ))
-    (( unsafe == 0 || bounds_rejected + active_rejected + cross_rejected > 0 ))
+    (( reason_covered == unsafe ))
     (( index_pages == routed * 4 ))
     (( value_pages == routed * 4 ))
     (( old_words == routed * 16384 ))
-    (( fallback_pages > 0 ))
+    (( fallback_pages == unsafe * 4 ))
     (( fallback_issue_pages == fallback_response_pages ))
     (( fallback_issue_pages == fallback_pages * 3 ))
     (( fallback_words == fallback_pages * 3 * 4096 ))
@@ -354,9 +342,9 @@ validate_evidence() (
 
     if [[ $aperture_candidate_gate == true ]]; then
         local boundary_drops aperture_rejections
-        boundary_drops=$(stat_sum_optional_zero \
+        boundary_drops=$(stat_sum \
             "$stats" cpu_spd_boundary_prefetch_drops)
-        aperture_rejections=$(stat_sum_optional_zero \
+        aperture_rejections=$(stat_sum \
             "$stats" cpu_spd_out_of_range_rejections)
         [[ $boundary_drops =~ ^[0-9]+$ && $aperture_rejections =~ ^[0-9]+$ ]]
         [[ $(manifest_value "$manifest" \
@@ -381,9 +369,9 @@ write_result() {
         routing_status=eligible_subset_routed_fallbacks_preserved
     fi
     if [[ $aperture_candidate_gate == true ]]; then
-        boundary_drops=$(stat_sum_optional_zero \
+        boundary_drops=$(stat_sum \
             "$stats" cpu_spd_boundary_prefetch_drops)
-        aperture_rejections=$(stat_sum_optional_zero \
+        aperture_rejections=$(stat_sum \
             "$stats" cpu_spd_out_of_range_rejections)
     else
         boundary_drops=not_checked
@@ -401,6 +389,8 @@ write_result() {
         printf 'comparison_status=measured_candidate_unpromoted\n'
         printf 'eligible_windows=%s\nrouted_windows=%s\n' "$eligible" "$routed"
         printf 'unsafe_eligible_windows=%s\n' "$unsafe"
+        printf 'reason_covered_unsafe_windows=%s\n' \
+            "$(terminal_value "$terminal" reason_covered_unsafe_windows)"
         printf 'bounds_rejected_windows=%s\n' \
             "$(terminal_value "$terminal" bounds_rejected_windows)"
         printf 'active_source_rejected_windows=%s\n' \
@@ -448,9 +438,9 @@ write_result() {
 record_aperture_stats() {
     local out=$1 stats="$1/run/stats.txt" boundary_drops aperture_rejections
     if [[ $aperture_candidate_gate == true ]]; then
-        boundary_drops=$(stat_sum_optional_zero \
+        boundary_drops=$(stat_sum \
             "$stats" cpu_spd_boundary_prefetch_drops)
-        aperture_rejections=$(stat_sum_optional_zero \
+        aperture_rejections=$(stat_sum \
             "$stats" cpu_spd_out_of_range_rejections)
     else
         boundary_drops=not_checked

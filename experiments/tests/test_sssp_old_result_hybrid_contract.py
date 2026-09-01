@@ -39,6 +39,10 @@ class SsspOldResultHybridContract(unittest.TestCase):
             "routed_windows + unsafe_eligible_windows == eligible_windows",
             self.source,
         )
+        self.assertIn(
+            "reason_covered_unsafe_windows == unsafe_eligible_windows",
+            self.source,
+        )
         self.assertNotIn("hybrid_iteration_safe", self.source)
 
     def test_four_physical_pages_precede_ordered_old_result(self):
@@ -171,6 +175,7 @@ class SsspOldResultHybridContract(unittest.TestCase):
             "expected_fallback_pages",
             "expected_fallback_issue_pages",
             "expected_fallback_words",
+            'reason_covered_unsafe_windows="$expected_unsafe"',
             "coherent_tail_words=0",
             "host_spd_reads=0",
             "max_host_spd_element=-1",
@@ -180,6 +185,7 @@ class SsspOldResultHybridContract(unittest.TestCase):
         ):
             self.assertIn(exact, self.runner)
         self.assertIn("expected_unsafe=0", self.runner)
+        self.assertNotIn("stat_sum_optional_zero", self.runner)
         self.assertIn("active_source)", self.runner)
         self.assertIn("cross_owner)", self.runner)
         self.assertIn("terminal_value", self.runner)

@@ -19,14 +19,17 @@ def write_directed_fixture(path: pathlib.Path, variant: str) -> None:
         base = 4_097 + (vertex - 1) * 16
         for lane in range(16):
             destination = base + lane
-            if variant == "active_source" and vertex == 1_025 and lane == 0:
-                destination = 1
-            elif (
-                variant == "cross_owner"
+            if (
+                variant in ("active_source", "overlap")
+                and vertex == 1_025
                 and lane == 0
-                and vertex in (1_025, 2_049)
             ):
-                destination = 20_481
+                destination = 1
+            elif lane == 0 and (
+                (variant == "cross_owner" and vertex in (1_025, 2_049))
+                or (variant == "overlap" and vertex == 2_049)
+            ):
+                destination = 1 if variant == "overlap" else 20_481
             outgoing[vertex].append((destination, 1))
 
     incoming = [[] for _ in range(nodes)]
@@ -103,9 +106,13 @@ class SsspChunkAdmissionPredictorTest(unittest.TestCase):
 
     def test_all_safe_routes_exactly_four_of_four(self):
         result = self.predict("all_safe")
+        self.assertEqual(result["schema"], 2)
+        self.assertEqual(result["tool_version"], "2")
         self.assertEqual(result["totals"]["eligible_windows"], 4)
         self.assertEqual(result["totals"]["routed_windows"], 4)
         self.assertEqual(result["totals"]["unsafe_eligible_windows"], 0)
+        self.assertEqual(result["totals"]["reason_covered_unsafe_windows"], 0)
+        self.assertTrue(result["totals"]["counts_close"])
         self.assertEqual(result["totals"]["active_source_rejected_windows"], 0)
         self.assertEqual(result["totals"]["cross_owner_rejected_windows"], 0)
 
@@ -114,6 +121,8 @@ class SsspChunkAdmissionPredictorTest(unittest.TestCase):
         self.assertEqual(result["totals"]["eligible_windows"], 4)
         self.assertEqual(result["totals"]["routed_windows"], 3)
         self.assertEqual(result["totals"]["unsafe_eligible_windows"], 1)
+        self.assertEqual(result["totals"]["reason_covered_unsafe_windows"], 1)
+        self.assertTrue(result["totals"]["counts_close"])
         self.assertEqual(result["totals"]["active_source_rejected_windows"], 1)
         self.assertEqual(result["totals"]["cross_owner_rejected_windows"], 0)
 
@@ -122,8 +131,31 @@ class SsspChunkAdmissionPredictorTest(unittest.TestCase):
         self.assertEqual(result["totals"]["eligible_windows"], 4)
         self.assertEqual(result["totals"]["routed_windows"], 2)
         self.assertEqual(result["totals"]["unsafe_eligible_windows"], 2)
+        self.assertEqual(result["totals"]["reason_covered_unsafe_windows"], 2)
+        self.assertTrue(result["totals"]["counts_close"])
         self.assertEqual(result["totals"]["active_source_rejected_windows"], 0)
         self.assertEqual(result["totals"]["cross_owner_rejected_windows"], 2)
+
+    def test_reason_coverage_is_exact_without_summing_overlapping_reasons(
+        self,
+    ):
+        result = self.predict("overlap")
+        totals = result["totals"]
+        self.assertEqual(totals["unsafe_eligible_windows"], 2)
+        self.assertEqual(totals["active_source_rejected_windows"], 2)
+        self.assertEqual(totals["cross_owner_rejected_windows"], 2)
+        self.assertEqual(
+            totals["reason_covered_unsafe_windows"],
+            totals["unsafe_eligible_windows"],
+        )
+        self.assertLess(
+            totals["reason_covered_unsafe_windows"],
+            totals["active_source_rejected_windows"]
+            + totals["cross_owner_rejected_windows"],
+        )
+        self.assertTrue(
+            all(row["counts_close"] for row in result["iterations"])
+        )
 
     def test_repeated_prediction_is_deterministic(self):
         first = self.predict("all_safe")

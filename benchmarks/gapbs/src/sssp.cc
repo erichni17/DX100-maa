@@ -115,6 +115,7 @@ alignas(kSsspLogicalBytes) static WeightT
 static uint64_t sssp_hybrid_eligible_windows[NUM_CORES] = {};
 static uint64_t sssp_hybrid_routed_windows[NUM_CORES] = {};
 static uint64_t sssp_hybrid_unsafe_eligible_windows[NUM_CORES] = {};
+static uint64_t sssp_hybrid_reason_covered_unsafe_windows[NUM_CORES] = {};
 static uint64_t sssp_hybrid_bounds_rejected_windows[NUM_CORES] = {};
 static uint64_t sssp_hybrid_active_source_rejected_windows[NUM_CORES] = {};
 static uint64_t sssp_hybrid_cross_owner_rejected_windows[NUM_CORES] = {};
@@ -715,6 +716,10 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                     if (!hybrid_chunk_safe && eligible_chunk_windows != 0) {
                         sssp_hybrid_unsafe_eligible_windows[tid] +=
                             eligible_chunk_windows;
+                        if (hybrid_chunk_admission.hasAnyReason(
+                                hybrid_chunk_owner))
+                            sssp_hybrid_reason_covered_unsafe_windows[tid] +=
+                                eligible_chunk_windows;
                         if (hybrid_chunk_admission.hasReason(
                                 hybrid_chunk_owner,
                                 sssp_chunk_admission::Tracker::Bounds))
@@ -946,6 +951,7 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
     uint64_t eligible_windows = 0;
     uint64_t routed_windows = 0;
     uint64_t unsafe_eligible_windows = 0;
+    uint64_t reason_covered_unsafe_windows = 0;
     uint64_t bounds_rejected_windows = 0;
     uint64_t active_source_rejected_windows = 0;
     uint64_t cross_owner_rejected_windows = 0;
@@ -970,6 +976,8 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
         routed_windows += sssp_hybrid_routed_windows[core];
         unsafe_eligible_windows +=
             sssp_hybrid_unsafe_eligible_windows[core];
+        reason_covered_unsafe_windows +=
+            sssp_hybrid_reason_covered_unsafe_windows[core];
         bounds_rejected_windows +=
             sssp_hybrid_bounds_rejected_windows[core];
         active_source_rejected_windows +=
@@ -1001,13 +1009,11 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
     }
     const bool counts_close =
         routed_windows + unsafe_eligible_windows == eligible_windows &&
-        (unsafe_eligible_windows == 0 ||
-         bounds_rejected_windows + active_source_rejected_windows +
-                 cross_owner_rejected_windows >
-             0) &&
+        reason_covered_unsafe_windows == unsafe_eligible_windows &&
         index_publish_pages == routed_windows * 4 &&
         value_publish_pages == routed_windows * 4 &&
         old_result_words == routed_windows * kSsspLogicalWords &&
+        fallback_pages == unsafe_eligible_windows * 4 &&
         fallback_thread_closure &&
         fallback_publication_issue_pages ==
             fallback_publication_response_pages &&
@@ -1022,6 +1028,8 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
               << " eligible_windows=" << eligible_windows
               << " routed_windows=" << routed_windows
               << " unsafe_eligible_windows=" << unsafe_eligible_windows
+              << " reason_covered_unsafe_windows="
+              << reason_covered_unsafe_windows
               << " bounds_rejected_windows=" << bounds_rejected_windows
               << " active_source_rejected_windows="
               << active_source_rejected_windows
