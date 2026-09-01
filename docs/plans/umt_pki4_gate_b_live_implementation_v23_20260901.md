@@ -1,4 +1,4 @@
-# UMT PKI4 Gate-B live implementation v23
+# UMT PKI4 Gate-B live implementation v23 / audited review bundle v24
 
 Status: implementation and offline adversarial testing only. This commit did
 not run a build, systemd unit, gem5, opcode 11, or RTL.
@@ -15,9 +15,10 @@ The freezer checks a separate exact-terminal-proof audit before it reads the
 proof, hashes the binary, or executes the validator. That audit can resolve a
 validator delta only by binding both the original dry-plan hash and the exact
 successor hash; it authorizes proof consumption but never live or RTL launch.
-If the validator's observed SHA-256 differs from the v22 review's pinned
-SHA-256, the implementation plan records the blocker and freeze fails before
-any dispatch reservation or live action.
+The independent proof audit binds and approves the exact successor validator
+delta while retaining the v22 dry review's original SHA-256. Freeze requires
+the currently observed validator to equal that audited successor SHA-256; any
+later drift fails before any dispatch reservation or live action.
 
 Dispatch reserves its campaign receipt before executing either command. The
 existing reviewed service wrapper owns each arm root and reserves all raw

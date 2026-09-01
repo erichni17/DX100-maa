@@ -36,6 +36,9 @@ BUILD_PROOF = pathlib.Path(
     "/data1/nier/dx100-runs/2026-08-31-umt-pki4-gate-b-lifecycle-build-v21-live/"
     "identity/pki4-gate-b-lifecycle-build-proof-v21.json"
 )
+BUILD_PROOF_SHA256 = (
+    "51122bdcd72f609188e1116f652f60fbbad42aa7918840a6eafa9033d519dbd5"
+)
 BUILD_FINALIZER = pathlib.Path(
     "/data1/nier/dx100-runs/2026-08-31-umt-pki4-gate-b-lifecycle-build-v21-live/"
     "finalize_gate_b_build_v21.py"
@@ -45,7 +48,16 @@ BUILD_FINALIZER_SHA256 = (
 )
 BUILD_PROOF_AUDIT = pathlib.Path(
     "/data1/nier/dx100-runs/2026-08-31-umt-pki4-gate-b-lifecycle-build-v21-live/"
-    "pki4-gate-b-lifecycle-build-proof-independent-audit-v21.json"
+    "gate-b-lifecycle-build-proof-independent-audit-v21.json"
+)
+BUILD_PROOF_AUDIT_SHA256 = (
+    "efe54eb5f379dbb132e60462f31cc88850cb74e1774ba604de0642d103254fa1"
+)
+BUILD_FINALIZER_AUDITED_SHA256 = (
+    "77d4ddeaa6fffc4af3ec7acb685006ce37592929b11e4f09c1faff8a65756eb3"
+)
+BUILD_VALIDATION_STDOUT_SHA256 = (
+    "d355c35cbb7727467ea3374a2e70da5ff81edb53f172478e15d790fbbc8bda17"
 )
 SCHEMA_BUILD_PROOF_AUDIT = (
     "lanl-maa-umt-pki4-gate-b-lifecycle-build-proof-independent-audit-v21"
@@ -56,6 +68,9 @@ SOURCE = pathlib.Path(
 SOURCE_COMMIT = "40c8861ba4242101c6f9235a893ccfe2f1a13ab0"
 SOURCE_TREE = "07bfe75479fd2d901a5cd138a318e10701c0d5b5"
 GEM5 = SOURCE / "build/X86_UMT_T32_W2/gem5.opt"
+GEM5_SHA256 = (
+    "4bc16e27cfa8f8d285810b41c798e5d04087c5cbc44ee3bd0ee7d2b4b8cae7bc"
+)
 DEFINES = [
     "-DLANL_MAA_UMT_PKI4_CONFORMANCE_TEST",
     "-DLANL_MAA_UMT_PKI4_LIFECYCLE_TEST",
@@ -73,17 +88,17 @@ VALIDATION_TRANSCRIPT = (
     CAMPAIGN / "identity/gate-b-build-proof-validation-v21.stdout"
 )
 IMPLEMENTATION_PLAN = (
-    CAMPAIGN / "gate-b-lifecycle-live-implementation-plan-v23.json"
+    CAMPAIGN / "gate-b-lifecycle-live-implementation-plan-v24.json"
 )
 IMPLEMENTATION_REQUEST = (
-    CAMPAIGN / "gate-b-lifecycle-live-implementation-review-request-v23.json"
+    CAMPAIGN / "gate-b-lifecycle-live-implementation-review-request-v24.json"
 )
 IMPLEMENTATION_TESTS = (
-    CAMPAIGN / "gate-b-lifecycle-live-implementation-tests-v23.txt"
+    CAMPAIGN / "gate-b-lifecycle-live-implementation-tests-v24.txt"
 )
 IMPLEMENTATION_REVIEW = (
     CAMPAIGN
-    / "gate-b-lifecycle-live-implementation-independent-review-v23.json"
+    / "gate-b-lifecycle-live-implementation-independent-review-v24.json"
 )
 DISPATCH_RESERVATION = CAMPAIGN / "identity/dispatch-reservation-v23.json"
 DISPATCH_RECEIPT = CAMPAIGN / "identity/dispatch-live-receipt-v23.json"
@@ -91,13 +106,13 @@ DISPATCH_RECEIPT = CAMPAIGN / "identity/dispatch-live-receipt-v23.json"
 CASES = ("d32-g32", "d64-g31")
 SCHEMA_CONTRACT = "lanl-maa-umt-pki4-gate-b-live-contract-v23"
 SCHEMA_IMPLEMENTATION_PLAN = (
-    "lanl-maa-umt-pki4-gate-b-live-implementation-plan-v23"
+    "lanl-maa-umt-pki4-gate-b-live-implementation-plan-v24"
 )
 SCHEMA_IMPLEMENTATION_REQUEST = (
-    "lanl-maa-umt-pki4-gate-b-live-implementation-review-request-v23"
+    "lanl-maa-umt-pki4-gate-b-live-implementation-review-request-v24"
 )
 SCHEMA_IMPLEMENTATION_REVIEW = (
-    "lanl-maa-umt-pki4-gate-b-live-implementation-independent-review-v23"
+    "lanl-maa-umt-pki4-gate-b-live-implementation-independent-review-v24"
 )
 SCHEMA_MANAGER_LIVE = "lanl-maa-umt-pki4-gate-b-manager-live-v23"
 SCHEMA_MANAGER_TERMINAL = "lanl-maa-umt-pki4-gate-b-manager-terminal-v23"
@@ -336,8 +351,12 @@ def build_finalizer_status():
     return {
         "path": str(BUILD_FINALIZER),
         "reviewed_sha256": BUILD_FINALIZER_SHA256,
+        "proof_audit_successor_sha256": BUILD_FINALIZER_AUDITED_SHA256,
         "observed_sha256": observed,
         "matches_reviewed_dry_plan": observed == BUILD_FINALIZER_SHA256,
+        "matches_proof_audit_successor": (
+            observed == BUILD_FINALIZER_AUDITED_SHA256
+        ),
     }
 
 
@@ -352,13 +371,23 @@ def verify_build_finalizer():
 
 def verify_build_finalizer_for_audit(audit):
     status = build_finalizer_status()
-    reviewed = audit.get("reviewed_validator", {})
+    reviewed = audit.get("independent_revalidation", {}).get(
+        "current_validator", {}
+    )
+    delta = audit.get("finalizer_delta_audit", {})
     if (
         reviewed.get("path") != str(BUILD_FINALIZER)
-        or reviewed.get("reviewed_dry_plan_sha256") != BUILD_FINALIZER_SHA256
-        or reviewed.get("observed_sha256") != status["observed_sha256"]
-        or reviewed.get("validator_delta_disposition")
-        != "passed_exact_successor_validator_delta"
+        or reviewed.get("sha256") != BUILD_FINALIZER_AUDITED_SHA256
+        or reviewed.get("schema")
+        != "lanl-maa-umt-pki4-gate-b-lifecycle-build-proof-validation-v21"
+        or reviewed.get("status") != "passed"
+        or delta.get("plan_pinned_sha256") != BUILD_FINALIZER_SHA256
+        or delta.get("current_sha256") != BUILD_FINALIZER_AUDITED_SHA256
+        or delta.get("allowed_changes_only") is not True
+        or delta.get("proof_validation_weakened") is not False
+        or delta.get("artifact_identity_validation_weakened") is not False
+        or delta.get("forgery_acceptance_added") is not False
+        or status["matches_proof_audit_successor"] is not True
     ):
         raise RuntimeError(
             "proof audit does not resolve the exact build-finalizer identity"
@@ -371,19 +400,41 @@ def verify_proof_audit(path, digest, proof_digest):
     if path != BUILD_PROOF_AUDIT:
         raise RuntimeError("proof audit path is not the canonical successor")
     regular_nofollow(path)
-    if sha256(path) != digest:
+    if digest != BUILD_PROOF_AUDIT_SHA256 or sha256(path) != digest:
         raise RuntimeError("proof audit SHA-256 mismatch")
     value = read_json_nofollow(path)
+    scope = value.get("authorization", {}).get("scope", "")
     if (
         value.get("schema") != SCHEMA_BUILD_PROOF_AUDIT
-        or value.get("status") != "passed_exact_terminal_build_proof"
-        or value.get("reviewed_input")
-        != {"path": str(BUILD_PROOF), "sha256": proof_digest}
-        or value.get("source")
-        != {"commit": SOURCE_COMMIT, "tree": SOURCE_TREE, "clean": True}
-        or value.get("authorization", {}).get("proof_consumption") is not True
-        or value.get("authorization", {}).get("live_launch") is not False
-        or value.get("authorization", {}).get("rtl_launch") is not False
+        or value.get("decision") != "PASS"
+        or value.get("status")
+        != "passed_exact_terminal_build_proof_consumption_authorized"
+        or proof_digest != BUILD_PROOF_SHA256
+        or value.get("authorization", {}).get(
+            "proof_consumption_by_live_freezer"
+        )
+        is not True
+        or value.get("authorization", {}).get("proof_path") != str(BUILD_PROOF)
+        or value.get("authorization", {}).get("proof_sha256") != proof_digest
+        or value.get("authorization", {}).get("binary_path") != str(GEM5)
+        or value.get("authorization", {}).get("binary_sha256") != GEM5_SHA256
+        or "does not itself authorize a command" not in scope
+        or "gem5/opcode launch" not in scope
+        or "RTL replay" not in scope
+        or value.get("independent_revalidation", {})
+        .get("source", {})
+        .get("commit")
+        != SOURCE_COMMIT
+        or value.get("independent_revalidation", {})
+        .get("source", {})
+        .get("tree")
+        != SOURCE_TREE
+        or value.get("independent_revalidation", {})
+        .get("source", {})
+        .get("clean")
+        is not True
+        or value.get("cleanup", {}).get("proof_current_validation") != "passed"
+        or value.get("findings") != []
     ):
         raise RuntimeError("independent proof audit is not an exact PASS")
     verify_build_finalizer_for_audit(value)
@@ -399,6 +450,23 @@ def harness_files():
         "docs/plans/umt_pki4_gate_b_live_implementation_v23_20260901.md",
     )
     return {name: sha256(ROOT / name) for name in names}
+
+
+def audited_build_anchors():
+    return {
+        "proof": {"path": str(BUILD_PROOF), "sha256": BUILD_PROOF_SHA256},
+        "proof_audit": {
+            "path": str(BUILD_PROOF_AUDIT),
+            "sha256": BUILD_PROOF_AUDIT_SHA256,
+        },
+        "binary": {"path": str(GEM5), "sha256": GEM5_SHA256},
+        "validator": {
+            "path": str(BUILD_FINALIZER),
+            "reviewed_dry_plan_sha256": BUILD_FINALIZER_SHA256,
+            "audited_successor_sha256": BUILD_FINALIZER_AUDITED_SHA256,
+            "validation_stdout_sha256": BUILD_VALIDATION_STDOUT_SHA256,
+        },
+    }
 
 
 def expected_implementation_plan(
@@ -430,22 +498,29 @@ def expected_implementation_plan(
         if recorded_finalizer is None
         else recorded_finalizer
     )
+    verify_proof_audit(
+        BUILD_PROOF_AUDIT, BUILD_PROOF_AUDIT_SHA256, BUILD_PROOF_SHA256
+    )
     if (
         finalizer.get("path") != str(BUILD_FINALIZER)
         or finalizer.get("reviewed_sha256") != BUILD_FINALIZER_SHA256
+        or finalizer.get("proof_audit_successor_sha256")
+        != BUILD_FINALIZER_AUDITED_SHA256
         or not re.fullmatch(
             r"[0-9a-f]{64}", finalizer.get("observed_sha256", "")
         )
         or finalizer.get("matches_reviewed_dry_plan")
         != (finalizer["observed_sha256"] == BUILD_FINALIZER_SHA256)
+        or finalizer.get("matches_proof_audit_successor")
+        != (finalizer["observed_sha256"] == BUILD_FINALIZER_AUDITED_SHA256)
     ):
         raise RuntimeError("recorded build finalizer identity is malformed")
     return {
         "schema": SCHEMA_IMPLEMENTATION_PLAN,
         "status": (
-            "implemented_tested_waiting_for_exact_command_review"
-            if finalizer["matches_reviewed_dry_plan"]
-            else "implemented_tested_blocked_build_finalizer_anchor_changed"
+            "implemented_tested_audited_proof_waiting_exact_command_review"
+            if finalizer["matches_proof_audit_successor"]
+            else "implemented_tested_blocked_audited_finalizer_changed"
         ),
         "campaign_root": str(CAMPAIGN),
         "reviewed_dry_plan": {
@@ -463,6 +538,9 @@ def expected_implementation_plan(
         "source": source,
         "future_build_dependency": {
             "proof_path": str(BUILD_PROOF),
+            "proof_sha256": BUILD_PROOF_SHA256,
+            "binary_path": str(GEM5),
+            "binary_sha256": GEM5_SHA256,
             "proof_schema": "lanl-maa-umt-pki4-gate-b-lifecycle-build-proof-v21",
             "proof_must_bind_source_commit": SOURCE_COMMIT,
             "proof_must_bind_source_tree": SOURCE_TREE,
@@ -474,13 +552,17 @@ def expected_implementation_plan(
             "proof_validation_stdout_must_be_frozen": True,
             "independent_proof_audit": {
                 "path": str(BUILD_PROOF_AUDIT),
+                "sha256": BUILD_PROOF_AUDIT_SHA256,
                 "required_schema": SCHEMA_BUILD_PROOF_AUDIT,
-                "required_status": "passed_exact_terminal_build_proof",
+                "required_status": (
+                    "passed_exact_terminal_build_proof_consumption_authorized"
+                ),
+                "required_decision": "PASS",
                 "must_authorize_proof_consumption": True,
                 "must_not_authorize_live_or_rtl_launch": True,
             },
             "validator_identity": finalizer,
-            "freeze_fails_while_validator_identity_mismatches": True,
+            "freeze_requires_current_validator_match_audited_successor": True,
         },
         "exact_commands": commands,
         "concurrency": {
@@ -489,7 +571,7 @@ def expected_implementation_plan(
             "distinct_units_and_roots": True,
         },
         "implemented_gates": [
-            "future v21 proof and validator transcript identity",
+            "audited exact v21 proof, binary, validator, and validation transcript identity",
             "separate implementation review binding",
             "fresh roots and no-clobber dispatch reservation",
             "service-owned reservation/launch/terminal receipts",
@@ -524,6 +606,7 @@ def implementation_review_request(plan_digest, test_artifact):
             "sha256": plan_digest,
         },
         "implementation": plan["implementation"],
+        "audited_build_anchors": audited_build_anchors(),
         "tests": test_artifact,
         "requested_checks": [
             "recompute every exact command argv hash from the reviewed v22 dry plan",
@@ -541,6 +624,7 @@ def implementation_review_request(plan_digest, test_artifact):
             "status": "passed_exact_two_command_launch_authorized",
             "must_bind_plan_sha256": plan_digest,
             "must_bind_review_request_sha256": "sha256 of this request",
+            "must_bind_audited_build_anchors": audited_build_anchors(),
             "authorized_arms": list(CASES),
             "maximum_concurrent": 2,
             "rtl_launch_authorized": False,
@@ -663,6 +747,7 @@ def verify_launch_review(path, digest):
         or value.get("authorization", {}).get("maximum_concurrent") != 2
         or value.get("authorization", {}).get("rtl_launch") is not False
         or value.get("command_hashes") != command_hashes
+        or value.get("audited_build_anchors") != audited_build_anchors()
     ):
         raise RuntimeError(
             "implementation review does not authorize exact commands"
@@ -672,7 +757,11 @@ def verify_launch_review(path, digest):
 
 def validate_build_proof(path, digest, validation_raw=None):
     path = pathlib.Path(path).resolve()
-    if path != BUILD_PROOF or sha256(path) != digest:
+    if (
+        path != BUILD_PROOF
+        or digest != BUILD_PROOF_SHA256
+        or sha256(path) != digest
+    ):
         raise RuntimeError("exact v21 build proof path/hash mismatch")
     proof = read_json_nofollow(path)
     contract = proof.get("compile_and_link_contract", {})
@@ -689,6 +778,7 @@ def validate_build_proof(path, digest, validation_raw=None):
         or source.get("clean") is not True
         or contract.get("fixed_ordered_defines") != DEFINES
         or binary.get("path") != str(GEM5)
+        or binary.get("sha256") != GEM5_SHA256
         or terminal
         not in (
             {
@@ -721,7 +811,8 @@ def validate_build_proof(path, digest, validation_raw=None):
                 "build proof validator stdout is invalid JSON"
             ) from error
         if (
-            validation.get("schema")
+            sha256_bytes(validation_raw) != BUILD_VALIDATION_STDOUT_SHA256
+            or validation.get("schema")
             != "lanl-maa-umt-pki4-gate-b-lifecycle-build-proof-validation-v21"
             or validation.get("status") != "passed"
             or validation.get("proof")
@@ -734,6 +825,10 @@ def validate_build_proof(path, digest, validation_raw=None):
 
 
 def run_build_validator():
+    if build_finalizer_status()["matches_proof_audit_successor"] is not True:
+        raise RuntimeError(
+            "current validator no longer matches the proof audit"
+        )
     completed = subprocess.run(
         ["/usr/bin/python3", str(BUILD_FINALIZER), "validate"],
         cwd=BUILD_FINALIZER.parent,
@@ -743,6 +838,8 @@ def run_build_validator():
     )
     if completed.returncode != 0 or completed.stderr:
         raise RuntimeError("exact v21 proof validator failed or wrote stderr")
+    if sha256_bytes(completed.stdout) != BUILD_VALIDATION_STDOUT_SHA256:
+        raise RuntimeError("exact v21 proof validator stdout changed")
     return completed.stdout
 
 

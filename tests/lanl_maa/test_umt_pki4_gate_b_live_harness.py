@@ -470,33 +470,55 @@ class GateBLiveHarnessTest(unittest.TestCase):
             proof_digest = "1" * 64
             audit = {
                 "schema": live.SCHEMA_BUILD_PROOF_AUDIT,
-                "status": "passed_exact_terminal_build_proof",
-                "reviewed_input": {
-                    "path": str(live.BUILD_PROOF),
-                    "sha256": proof_digest,
-                },
-                "source": {
-                    "commit": live.SOURCE_COMMIT,
-                    "tree": live.SOURCE_TREE,
-                    "clean": True,
-                },
-                "reviewed_validator": {
-                    "path": str(finalizer),
-                    "reviewed_dry_plan_sha256": live.BUILD_FINALIZER_SHA256,
-                    "observed_sha256": live.sha256(finalizer),
-                    "validator_delta_disposition": (
-                        "passed_exact_successor_validator_delta"
+                "decision": "PASS",
+                "status": (
+                    "passed_exact_terminal_build_proof_consumption_authorized"
+                ),
+                "authorization": {
+                    "proof_consumption_by_live_freezer": True,
+                    "proof_path": str(live.BUILD_PROOF),
+                    "proof_sha256": proof_digest,
+                    "binary_path": str(live.GEM5),
+                    "binary_sha256": live.GEM5_SHA256,
+                    "scope": (
+                        "Consume proof only; this audit does not itself authorize a command, "
+                        "gem5/opcode launch, or RTL replay."
                     ),
                 },
-                "authorization": {
-                    "proof_consumption": True,
-                    "live_launch": False,
-                    "rtl_launch": False,
+                "independent_revalidation": {
+                    "current_validator": {
+                        "path": str(finalizer),
+                        "sha256": live.sha256(finalizer),
+                        "schema": (
+                            "lanl-maa-umt-pki4-gate-b-lifecycle-build-proof-validation-v21"
+                        ),
+                        "status": "passed",
+                    },
+                    "source": {
+                        "commit": live.SOURCE_COMMIT,
+                        "tree": live.SOURCE_TREE,
+                        "clean": True,
+                    },
                 },
+                "finalizer_delta_audit": {
+                    "plan_pinned_sha256": live.BUILD_FINALIZER_SHA256,
+                    "current_sha256": live.sha256(finalizer),
+                    "allowed_changes_only": True,
+                    "proof_validation_weakened": False,
+                    "artifact_identity_validation_weakened": False,
+                    "forgery_acceptance_added": False,
+                },
+                "cleanup": {"proof_current_validation": "passed"},
+                "findings": [],
             }
             write_json(audit_path, audit)
             with mock.patch.multiple(
-                live, BUILD_PROOF_AUDIT=audit_path, BUILD_FINALIZER=finalizer
+                live,
+                BUILD_PROOF_AUDIT=audit_path,
+                BUILD_PROOF_AUDIT_SHA256=live.sha256(audit_path),
+                BUILD_PROOF_SHA256=proof_digest,
+                BUILD_FINALIZER=finalizer,
+                BUILD_FINALIZER_AUDITED_SHA256=live.sha256(finalizer),
             ):
                 self.assertEqual(
                     live.verify_proof_audit(
@@ -504,9 +526,11 @@ class GateBLiveHarnessTest(unittest.TestCase):
                     ),
                     audit,
                 )
-                audit["authorization"]["live_launch"] = True
+                audit["findings"] = ["forged"]
                 write_json(audit_path, audit)
-                with self.assertRaisesRegex(RuntimeError, "not an exact PASS"):
+                with self.assertRaisesRegex(
+                    RuntimeError, "mismatch|not an exact PASS"
+                ):
                     live.verify_proof_audit(
                         audit_path, live.sha256(audit_path), proof_digest
                     )
@@ -536,7 +560,14 @@ class GateBLiveHarnessTest(unittest.TestCase):
             binary, proof_path, proof, validation = proof_fixture(temporary)
             digest = live.sha256(proof_path)
             with mock.patch.multiple(
-                live, BUILD_PROOF=proof_path, GEM5=binary
+                live,
+                BUILD_PROOF=proof_path,
+                BUILD_PROOF_SHA256=digest,
+                GEM5=binary,
+                GEM5_SHA256=live.sha256(binary),
+                BUILD_VALIDATION_STDOUT_SHA256=hashlib.sha256(
+                    validation
+                ).hexdigest(),
             ):
                 self.assertEqual(
                     live.validate_build_proof(proof_path, digest, validation),
@@ -605,6 +636,7 @@ class GateBLiveHarnessTest(unittest.TestCase):
                     "rtl_launch": False,
                 },
                 "command_hashes": command_hashes,
+                "audited_build_anchors": live.audited_build_anchors(),
             }
             write_json(review_path, review)
             with (
