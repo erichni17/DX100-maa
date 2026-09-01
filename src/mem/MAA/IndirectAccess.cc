@@ -2907,6 +2907,8 @@ IndirectAccessUnit::issueBoundedGlobalSourceLine()
              my_indirect_id);
     if (!virtualSourceCreditAvailable(bounded_global_merge_source_head,
                                       bounded_global_merge_source_words)) {
+        const bool spilled =
+            spillVirtualCombinePartialForSourceCredit();
         if (virtual_reserved_responses >=
             static_cast<int>(virtual_response_slots.size()))
             macro_a_retries++;
@@ -2915,12 +2917,13 @@ IndirectAccessUnit::issueBoundedGlobalSourceLine()
         DPRINTF(MAAVirtualTrace,
                 "event=bounded_global_stream_stall schema=1 unit=%d "
                 "operation_tick=%lu reason=source_credit paddr=0x%lx "
-                "words=%d reserved=%d reserved_words=%d\n",
+                "words=%d reserved=%d reserved_words=%d spilled=%d\n",
                 my_indirect_id, my_decode_start_tick,
                 bounded_global_merge_source_paddr,
                 bounded_global_merge_source_words,
                 virtual_reserved_responses,
-                virtual_reserved_response_words);
+                virtual_reserved_response_words, spilled);
+        scheduleExecuteInstructionEvent(1);
         return false;
     }
     const auto end = bounded_global_merge.endSourceLine();
@@ -7357,13 +7360,14 @@ void IndirectAccessUnit::executeInstruction() {
                 DPRINTF(MAAVirtualTrace,
                         "event=shared_source_credit_stall schema=1 unit=%d "
                         "operation_tick=%lu logical_words=%d "
-                        "payload_words=%d response_slots=%d/%zu "
+                        "payload_words=%d response_slots=%d/%lu "
                         "response_words=%d combine_words=%d capacity=%d "
                         "writes=%d spilled=%d\n",
                         my_indirect_id, my_decode_start_tick,
                         virtual_pending_source_words, payload_words,
                         virtual_reserved_responses,
-                        virtual_response_slots.size(),
+                        static_cast<unsigned long>(
+                            virtual_response_slots.size()),
                         virtual_reserved_response_words,
                         virtual_combine_words,
                         virtual_shared_result_payload_limit,
