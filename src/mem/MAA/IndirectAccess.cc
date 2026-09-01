@@ -20,6 +20,7 @@
 #include "mem/MAA/IF.hh"
 #include "mem/MAA/MAA.hh"
 #include "mem/MAA/SPD.hh"
+#include "mem/MAA/SharedPayloadTransfer.hh"
 #include "mem/MAA/SoaJitSafety.hh"
 #include "mem/MAA/Tables.hh"
 #include "mem/packet.hh"
@@ -10941,12 +10942,6 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                  "I[%d] native response 0x%lx head %d has no claim\n",
                  my_indirect_id, slot.claim_addr, slot.claim_head);
     };
-    struct SharedTransfer
-    {
-        bool final_use = false;
-        VirtualCombinePayloadStore::WordRef ref =
-            VirtualCombinePayloadStore::InvalidWord;
-    };
     const uint64_t current_cycle =
         static_cast<uint64_t>(maa->curCycle());
     if (virtual_word_budget_cycle != current_cycle) {
@@ -11023,84 +11018,49 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                  my_indirect_id);
         --virtual_reserved_responses;
     };
-    auto begin_shared_transfer = [this](VirtualResponseSlot &slot,
-                                        int word_id) {
-        if (!virtual_shared_result_payload)
-            return SharedTransfer{};
-        bool transferred = false;
-        const auto result = slot.fanout.consume(
-            static_cast<uint16_t>(word_id), transferred);
-        panic_if(result != maa::VirtualSourceFanout::Result::Accepted,
-                 "I[%d] shared result word %d fanout consume failed: %s\n",
+    maa::SharedPayloadTransfer shared_transfer(
+        virtual_shared_result_payload, virtual_combine_payload,
+        virtual_combine_words, virtual_reserved_response_words,
+        virtual_response_payload_words, virtual_shared_result_payload_limit,
+        virtual_shared_payload_transfers, virtual_shared_payload_rollbacks,
+        virtual_shared_payload_high_water);
+    auto begin_shared_transfer = [this, &shared_transfer](
+                                     VirtualResponseSlot &slot, int word_id,
+                                     maa::SharedPayloadTransfer::Transaction
+                                         &transaction) {
+        const auto result = shared_transfer.begin(
+            slot.fanout, slot.shared_word_refs, slot.reserved_words,
+            static_cast<uint16_t>(word_id), transaction);
+        panic_if(result != maa::SharedPayloadTransfer::Result::Ok,
+                 "I[%d] shared result word %d transfer begin failed: %s "
+                 "(fanout=%s)\n",
                  my_indirect_id, word_id,
-                 maa::VirtualSourceFanout::resultName(result));
-        if (!transferred)
-            return SharedTransfer{};
-        panic_if(slot.reserved_words <= 0 ||
-                     virtual_reserved_response_words <= 0 ||
-                     virtual_response_payload_words <= 0 ||
-                     slot.shared_word_refs[word_id] ==
-                         VirtualCombinePayloadStore::InvalidWord,
-                 "I[%d] shared result transfer has no response credit\n",
-                 my_indirect_id);
-        SharedTransfer transfer{true, slot.shared_word_refs[word_id]};
-        slot.shared_word_refs[word_id] =
-            VirtualCombinePayloadStore::InvalidWord;
-        --slot.reserved_words;
-        --virtual_reserved_response_words;
-        --virtual_response_payload_words;
-        return transfer;
+                 maa::SharedPayloadTransfer::resultName(result),
+                 maa::VirtualSourceFanout::resultName(
+                     shared_transfer.lastFanoutResult()));
     };
-    auto rollback_shared_transfer = [this](VirtualResponseSlot &slot,
-                                           int word_id,
-                                           SharedTransfer transfer) {
-        if (!virtual_shared_result_payload)
-            return;
-        const auto result = slot.fanout.rollback(
-            static_cast<uint16_t>(word_id));
-        panic_if(result != maa::VirtualSourceFanout::Result::Accepted,
-                 "I[%d] shared result word %d fanout rollback failed: %s\n",
+    auto rollback_shared_transfer = [this, &shared_transfer](
+                                        int word_id,
+                                        maa::SharedPayloadTransfer::Transaction
+                                            &transaction) {
+        const auto result = shared_transfer.rollback(transaction);
+        panic_if(result != maa::SharedPayloadTransfer::Result::Ok,
+                 "I[%d] shared result word %d transfer rollback failed: %s "
+                 "(fanout=%s)\n",
                  my_indirect_id, word_id,
-                 maa::VirtualSourceFanout::resultName(result));
-        if (transfer.final_use) {
-            panic_if(
-                transfer.ref == VirtualCombinePayloadStore::InvalidWord ||
-                    slot.shared_word_refs[word_id] !=
-                        VirtualCombinePayloadStore::InvalidWord,
-                "I[%d] shared result rollback lost word %d reference\n",
-                my_indirect_id, word_id);
-            slot.shared_word_refs[word_id] = transfer.ref;
-            ++slot.reserved_words;
-            ++virtual_reserved_response_words;
-            ++virtual_response_payload_words;
-        }
-        panic_if(virtual_combine_payload.used() !=
-                     static_cast<size_t>(
-                         virtual_combine_words +
-                         virtual_response_payload_words),
-                 "I[%d] shared rollback payload occupancy mismatch\n",
-                 my_indirect_id);
-        ++virtual_shared_payload_rollbacks;
+                 maa::SharedPayloadTransfer::resultName(result),
+                 maa::VirtualSourceFanout::resultName(
+                     shared_transfer.lastFanoutResult()));
     };
-    auto commit_shared_transfer = [this](SharedTransfer transfer) {
-        if (!transfer.final_use)
-            return;
-        ++virtual_shared_payload_transfers;
-        panic_if(virtual_combine_words + virtual_reserved_response_words >
-                     virtual_shared_result_payload_limit,
-                 "I[%d] shared result payload exceeded %d+%d/%d\n",
-                 my_indirect_id, virtual_combine_words,
-                 virtual_reserved_response_words,
-                 virtual_shared_result_payload_limit);
-        virtual_shared_payload_high_water = std::max(
-            virtual_shared_payload_high_water,
-            virtual_combine_words + virtual_reserved_response_words);
-        panic_if(virtual_combine_payload.used() !=
-                     static_cast<size_t>(
-                         virtual_combine_words +
-                         virtual_response_payload_words),
-                 "I[%d] shared transfer payload occupancy mismatch\n",
-                 my_indirect_id);
+    auto commit_shared_transfer = [this, &shared_transfer](
+                                      int word_id,
+                                      maa::SharedPayloadTransfer::Transaction
+                                          &transaction) {
+        const auto result = shared_transfer.commit(transaction);
+        panic_if(result != maa::SharedPayloadTransfer::Result::Ok,
+                 "I[%d] shared result word %d transfer commit failed: %s\n",
+                 my_indirect_id, word_id,
+                 maa::SharedPayloadTransfer::resultName(result));
     };
 
     bool lookup_blocked = false;
@@ -11177,15 +11137,15 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                 lookup_blocked = true;
                 continue;
             }
-            const SharedTransfer transfer =
-                begin_shared_transfer(slot, token.wordId);
+            maa::SharedPayloadTransfer::Transaction transfer;
+            begin_shared_transfer(slot, token.wordId, transfer);
             if (!insertVirtualCombineWord(
-                    token.iteration, word, transfer.ref)) {
-                rollback_shared_transfer(slot, token.wordId, transfer);
+                    token.iteration, word, transfer.wordRef())) {
+                rollback_shared_transfer(token.wordId, transfer);
                 lookup_blocked = true;
                 continue;
             }
-            commit_shared_transfer(transfer);
+            commit_shared_transfer(token.wordId, transfer);
             const auto completed = virtual_combine_lookup_pipeline.complete(
                 current_cycle, token);
             panic_if(completed != LookupPipeline::Result::Accepted,
@@ -11558,15 +11518,15 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                         bank_stalled = true;
                         break;
                     }
-                    const SharedTransfer transfer =
-                        begin_shared_transfer(slot, entry.wid);
+                    maa::SharedPayloadTransfer::Transaction transfer;
+                    begin_shared_transfer(slot, entry.wid, transfer);
                     if (!insertVirtualCombineWord(
-                            entry.itr, word.data(), transfer.ref)) {
-                        rollback_shared_transfer(slot, entry.wid, transfer);
+                            entry.itr, word.data(), transfer.wordRef())) {
+                        rollback_shared_transfer(entry.wid, transfer);
                         capacity_stalled = true;
                         break;
                     }
-                    commit_shared_transfer(transfer);
+                    commit_shared_transfer(entry.wid, transfer);
                 } else {
                     panic_if(my_dst_tile == -1,
                              "I[%d] bounded native load has no destination "
@@ -11639,15 +11599,15 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                     bank_stalled = true;
                     break;
                 }
-                const SharedTransfer transfer =
-                    begin_shared_transfer(slot, entry.wid);
+                maa::SharedPayloadTransfer::Transaction transfer;
+                begin_shared_transfer(slot, entry.wid, transfer);
                 if (!insertVirtualCombineWord(
-                        entry.itr, word, transfer.ref)) {
-                    rollback_shared_transfer(slot, entry.wid, transfer);
+                        entry.itr, word, transfer.wordRef())) {
+                    rollback_shared_transfer(entry.wid, transfer);
                     capacity_stalled = true;
                     break;
                 }
-                commit_shared_transfer(transfer);
+                commit_shared_transfer(entry.wid, transfer);
             } else {
                 panic_if(my_dst_tile == -1,
                          "I[%d] bounded native load has no destination tile\n",
