@@ -82,7 +82,7 @@ class SsspChunkAdmissionPredictorTest(unittest.TestCase):
     def tearDownClass(cls):
         cls.workspace.cleanup()
 
-    def predict(self, variant):
+    def predict(self, variant, policy="reject-hazards"):
         graph = self.temp / f"{variant}.wsg"
         if not graph.exists():
             write_directed_fixture(graph, variant)
@@ -97,6 +97,8 @@ class SsspChunkAdmissionPredictorTest(unittest.TestCase):
                 "1",
                 "--threads",
                 "4",
+                "--admission-policy",
+                policy,
             ],
             check=True,
             capture_output=True,
@@ -106,8 +108,9 @@ class SsspChunkAdmissionPredictorTest(unittest.TestCase):
 
     def test_all_safe_routes_exactly_four_of_four(self):
         result = self.predict("all_safe")
-        self.assertEqual(result["schema"], 2)
-        self.assertEqual(result["tool_version"], "2")
+        self.assertEqual(result["schema"], 3)
+        self.assertEqual(result["tool_version"], "3")
+        self.assertEqual(result["admission_policy"], "reject-hazards")
         self.assertEqual(result["totals"]["eligible_windows"], 4)
         self.assertEqual(result["totals"]["routed_windows"], 4)
         self.assertEqual(result["totals"]["unsafe_eligible_windows"], 0)
@@ -115,6 +118,29 @@ class SsspChunkAdmissionPredictorTest(unittest.TestCase):
         self.assertTrue(result["totals"]["counts_close"])
         self.assertEqual(result["totals"]["active_source_rejected_windows"], 0)
         self.assertEqual(result["totals"]["cross_owner_rejected_windows"], 0)
+
+    def test_snapshot_policy_tolerates_active_source(self):
+        result = self.predict("active_source", "snapshot-tolerant")
+        totals = result["totals"]
+        self.assertEqual(result["admission_policy"], "snapshot-tolerant")
+        self.assertEqual(totals["eligible_windows"], 4)
+        self.assertEqual(totals["routed_windows"], 4)
+        self.assertEqual(totals["unsafe_eligible_windows"], 0)
+        self.assertEqual(totals["active_source_observed_windows"], 1)
+        self.assertEqual(totals["active_source_tolerated_windows"], 1)
+        self.assertEqual(totals["active_source_rejected_windows"], 0)
+        self.assertEqual(totals["cross_owner_observed_windows"], 0)
+
+    def test_snapshot_policy_tolerates_cross_owner(self):
+        result = self.predict("cross_owner", "snapshot-tolerant")
+        totals = result["totals"]
+        self.assertEqual(totals["eligible_windows"], 4)
+        self.assertEqual(totals["routed_windows"], 4)
+        self.assertEqual(totals["unsafe_eligible_windows"], 0)
+        self.assertEqual(totals["cross_owner_observed_windows"], 2)
+        self.assertEqual(totals["cross_owner_tolerated_windows"], 2)
+        self.assertEqual(totals["cross_owner_rejected_windows"], 0)
+        self.assertEqual(totals["active_source_observed_windows"], 0)
 
     def test_active_source_routes_exactly_three_of_four(self):
         result = self.predict("active_source")
