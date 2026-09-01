@@ -87,3 +87,41 @@ shadow must be reported explicitly as simulator-only storage, while the real
 hardware ledger must charge the shared payload allocator, per-slot payload
 references, and the 15-bit fanout counters.  The storage-accounting successor
 is tracked separately and supersedes prior exact hybrid byte totals.
+
+## Shadow-free successor
+
+The preceding decision applies to commits through `035cf130` and is retained
+as historical, reviewer-blocked evidence. Commits `c06e43b3` and `6602846c`
+supersede its open mechanism issues:
+
+- source credit and issue cannot observe a fanout histogram before the
+  serialized scan-ready tick;
+- shared responses allocate only unique source words in the unified fixed
+  source/combiner pool and retain 16 fixed references per response slot;
+- final use transfers the existing reference into the destination combiner;
+- shared mode allocates zero `VirtualResponsePayloadStore` lines; and
+- pools of 16 words or fewer fail configuration because a worst-case retained
+  line plus one duplicate copy requires at least 17 words.
+
+Two deterministic maximum-fanout runs at 17 words close exactly:
+
+| Counter | r5 | r6 |
+|---|---:|---:|
+| Output hash | `7221120122736935811` | `7221120122736935811` |
+| `simTicks` | 7,989,951 | 7,989,951 |
+| Scan events / words / cycles | 1 / 16,384 / 4,096 | 1 / 16,384 / 4,096 |
+| Scan wait events / cycles | 1 / 4,096 | 1 / 4,096 |
+| Shared transfer / rollback | 1 / 0 | 1 / 0 |
+| Shared high water | 17 / 17 | 17 / 17 |
+| Full / partial writes | 1,024 / 0 | 1,024 / 0 |
+| Write issues / ACKs | 1,024 / 1,024 | 1,024 / 1,024 |
+
+Roots:
+
+- `/data1/nier/dx100-runs/2026-08-31-shared-fanout-6602846c-r5`
+- `/data1/nier/dx100-runs/2026-08-31-shared-fanout-6602846c-r6`
+
+Both `result.tsv` files hash to
+`bb4b202142389b1d2ab10453b7002844134f2b66122c79fa4180e2aca6c75de2`.
+Their ledgers directly hash the fanout and both payload-store headers. A fresh
+independent successor review remains the promotion authority.

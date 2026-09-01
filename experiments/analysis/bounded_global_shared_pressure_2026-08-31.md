@@ -90,6 +90,22 @@ case.  It does not establish useful performance at 16 payload words, nor does
 it replace the selected 4,096-word GZZ configuration or full-application
 promotion gates.
 
+## Unified-pool successor
+
+The valid 17-word, shadow-free successor at
+`/data1/nier/dx100-runs/2026-08-31-bounded-global-unified-pool-6602846c-r11`
+also passes the complete physical-record/source-digest gate. It records 9,523
+fanout scans and exactly 9,523 scan-wait events/cycles, proving the decision
+path is serialized across many source lines rather than only one maximum
+fanout line. It closes 16,384 shared transfers, high water 17/17, 15,430
+writes/ACKs, four ready pages, exact output, and
+`line_shadow_bytes=0`.
+
+- `result.tsv` SHA-256:
+  `75cbbf749f21e5dce0c89260a4fbb59dc005ca2b3d1bf16ffacabd44986bb6f9`
+- trace SHA-256:
+  `fb290c44b37fa962b87486fa8004cf9aa092e720f2c804f3df83546a96c100cb`
+
 ## Unaligned generic-backing successor
 
 Commit `ae109eee` makes generic masked retirement identify cache lines relative
