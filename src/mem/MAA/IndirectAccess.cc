@@ -8136,6 +8136,12 @@ void IndirectAccessUnit::executeInstruction() {
                         virtual_shared_payload_high_water,
                         virtual_shared_payload_transfers,
                         virtual_shared_payload_rollbacks);
+                (*maa->stats.IND_VirtSharedPayloadTransfers[
+                    my_indirect_id]) += virtual_shared_payload_transfers;
+                (*maa->stats.IND_VirtSharedPayloadRollbacks[
+                    my_indirect_id]) += virtual_shared_payload_rollbacks;
+                (*maa->stats.IND_VirtSharedPayloadHighWater[
+                    my_indirect_id]) += virtual_shared_payload_high_water;
             }
             (*maa->stats.IND_VirtOutstandingWriteHighWater[my_indirect_id]) +=
                 virtual_max_outstanding_writes;

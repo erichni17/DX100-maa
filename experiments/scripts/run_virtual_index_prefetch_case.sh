@@ -18,6 +18,10 @@ rt_rows=${VIRTUAL_RT_ROWS_PER_SLICE:-64}
 rt_entries=${VIRTUAL_RT_ENTRIES_PER_SUBSLICE_ROW:-8}
 response_slots=${VIRTUAL_RESPONSE_SLOTS:-96}
 response_word_pool=${VIRTUAL_RESPONSE_WORD_POOL:-480}
+combine_slots=${VIRTUAL_COMBINE_SLOTS:-384}
+combine_words=${VIRTUAL_COMBINE_WORDS:-4096}
+combine_ways=${VIRTUAL_COMBINE_WAYS:-4}
+shared_result_payload=${MAA_VIRTUAL_SHARED_RESULT_PAYLOAD:-0}
 grow_order=${MAA_VIRTUAL_GROW_ORDER:-0}
 debug_flags=${VIRTUAL_DEBUG_FLAGS:-}
 debug_args=()
@@ -28,6 +32,14 @@ fi
     echo "MAA_VIRTUAL_GROW_ORDER must be 0 or 1" >&2
     exit 2
 }
+[[ $shared_result_payload == 0 || $shared_result_payload == 1 ]] || {
+    echo "MAA_VIRTUAL_SHARED_RESULT_PAYLOAD must be 0 or 1" >&2
+    exit 2
+}
+shared_result_args=()
+if [[ $shared_result_payload == 1 ]]; then
+    shared_result_args+=(--maa_virtual_shared_result_payload)
+fi
 grow_order_args=()
 if [[ $grow_order == 1 ]]; then
     grow_order_args+=(--maa_virtual_grow_order)
@@ -46,7 +58,8 @@ random|fanout|same_line|line_revisit) ;;
 *) echo "invalid VIRTUAL_INDEX_PATTERN: $pattern" >&2; exit 2 ;;
 esac
 for value in "$physical" "$rt_rows" "$rt_entries" "$response_slots" \
-             "$response_word_pool"; do
+             "$response_word_pool" "$combine_slots" "$combine_words" \
+             "$combine_ways"; do
     [[ $value =~ ^[1-9][0-9]*$ ]] || {
         echo "virtual gate capacities must be positive integers" >&2
         exit 2
@@ -76,6 +89,10 @@ ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
     printf 'row_table_entries_per_subslice_row=%s\n' "$rt_entries"
     printf 'virtual_response_slots=%s\n' "$response_slots"
     printf 'virtual_response_word_pool=%s\n' "$response_word_pool"
+    printf 'virtual_combine_slots=%s\n' "$combine_slots"
+    printf 'virtual_combine_words=%s\n' "$combine_words"
+    printf 'virtual_combine_ways=%s\n' "$combine_ways"
+    printf 'virtual_shared_result_payload=%s\n' "$shared_result_payload"
     printf 'virtual_grow_order=%s\n' "$grow_order"
     printf 'debug_flags=%s\n' "$debug_flags"
     printf 'index_payload_capacity_bytes=%s\n' "$((buffer_lines * 64))"
@@ -136,8 +153,11 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     --maa_num_initial_row_table_slices=16 \
     --maa_num_row_table_rows_per_slice="$rt_rows" \
     --maa_num_row_table_entries_per_subslice_row="$rt_entries" \
-    --maa_virtual_combine_slots=384 --maa_virtual_combine_words=4096 \
-    --maa_virtual_combine_ways=4 --maa_virtual_combine_banks=0 \
+    --maa_virtual_combine_slots="$combine_slots" \
+    --maa_virtual_combine_words="$combine_words" \
+    --maa_virtual_combine_ways="$combine_ways" \
+    --maa_virtual_combine_banks=0 \
+    "${shared_result_args[@]}" \
     --maa_virtual_response_slots="$response_slots" \
     --maa_virtual_response_word_pool="$response_word_pool" \
     --maa_virtual_words_per_cycle=4 \
@@ -174,7 +194,9 @@ output_hash=$(sed -nE \
 }
 
 read -r ticks insts line_reads line_hwm index_words index_hwm rt_full \
-    write_issues write_completions spd_reads total_indirect_reads < <(
+    write_issues write_completions spd_reads total_indirect_reads \
+    fanout_events fanout_words fanout_cycles shared_transfers \
+    shared_rollbacks shared_high_water < <(
     awk '
         /^---------- Begin Simulation Statistics/ { section++ }
         section == 1 && $1 == "simTicks" { ticks = $2 }
@@ -187,13 +209,20 @@ read -r ticks insts line_reads line_hwm index_words index_hwm rt_full \
         section == 1 && $1 ~ /IND_VirtWriteIssues$/ { wi += $2 }
         section == 1 && $1 ~ /IND_VirtWriteCompletions$/ { wc += $2 }
         section == 1 && $1 ~ /IND_CyclesSPDReadAccess$/ { sr += $2 }
+        section == 1 && $1 ~ /IND_VirtFanoutScanEvents$/ { fe += $2 }
+        section == 1 && $1 ~ /IND_VirtFanoutScanWords$/ { fw += $2 }
+        section == 1 && $1 ~ /IND_VirtFanoutScanCycles$/ { fc += $2 }
+        section == 1 && $1 ~ /IND_VirtSharedPayloadTransfers$/ { st += $2 }
+        section == 1 && $1 ~ /IND_VirtSharedPayloadRollbacks$/ { rb += $2 }
+        section == 1 && $1 ~ /IND_VirtSharedPayloadHighWater$/ { sh += $2 }
         section == 1 && $1 ~ /IND_LoadsCacheHitResponding$/ { cr += $2 }
         section == 1 && $1 ~ /IND_LoadsCacheHitAccessing$/ { ca += $2 }
         section == 1 && $1 ~ /IND_LoadsMemAccessing$/ { mr += $2 }
         /^---------- End Simulation Statistics/ && section == 1 {
             print ticks + 0, insts + 0, lr + 0, lh + 0, iw + 0,
                   wh + 0, rf + 0, wi + 0, wc + 0, sr + 0,
-                  cr + ca + mr
+                  cr + ca + mr, fe + 0, fw + 0, fc + 0, st + 0, rb + 0,
+                  sh + 0
             exit
         }
     ' "$out/run/stats.txt"
@@ -227,18 +256,38 @@ source_reads=$((total_indirect_reads - line_reads))
     echo "direct-index case used $spd_reads SPD read cycles" >&2
     exit 1
 }
+if [[ $shared_result_payload -eq 1 ]]; then
+    [[ $fanout_events -gt 0 && $fanout_words -eq $n && \
+       $fanout_cycles -eq $(((n + 3) / 4)) && \
+       $shared_transfers -gt 0 && $shared_high_water -gt 0 && \
+       $shared_high_water -le $((combine_words + response_word_pool)) ]] || {
+        echo "shared fanout accounting failed: events=$fanout_events words=$fanout_words/$n cycles=$fanout_cycles transfers=$shared_transfers rollbacks=$shared_rollbacks high_water=$shared_high_water/$((combine_words + response_word_pool))" >&2
+        exit 1
+    }
+else
+    [[ $fanout_events -eq 0 && $fanout_words -eq 0 && \
+       $fanout_cycles -eq 0 && $shared_transfers -eq 0 && \
+       $shared_rollbacks -eq 0 && $shared_high_water -eq 0 ]] || {
+        echo "non-shared arm reported shared fanout activity" >&2
+        exit 1
+    }
+fi
 
 {
     printf 'elements\tpattern\tphysical_elements\tbuffer_lines\tbuffer_bytes'
     printf '\toutput_hash\tsimTicks\tsimInsts'
     printf '\tline_reads\tline_hwm\tindex_words\tindex_hwm\trt_full'
-    printf '\tsource_reads\twrite_issues\twrite_completions\tspd_read_cycles\n'
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '\tsource_reads\twrite_issues\twrite_completions\tspd_read_cycles'
+    printf '\tfanout_events\tfanout_words\tfanout_cycles'
+    printf '\tshared_transfers\tshared_rollbacks\tshared_high_water\n'
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$n" "$pattern" "$physical" "$buffer_lines" \
         "$((buffer_lines * 64))" "$output_hash" \
         "$ticks" "$insts" "$line_reads" "$line_hwm" "$index_words" \
         "$index_hwm" "$rt_full" "$source_reads" "$write_issues" \
-        "$write_completions" "$spd_reads"
+        "$write_completions" "$spd_reads" "$fanout_events" \
+        "$fanout_words" "$fanout_cycles" "$shared_transfers" \
+        "$shared_rollbacks" "$shared_high_water"
 } > "$out/result.tsv"
 touch "$out/virtual_index_prefetch_case.pass"
 cat "$out/result.tsv"
