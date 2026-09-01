@@ -199,6 +199,15 @@ class HybridGoalAuditTest(unittest.TestCase):
             "native_arms=0\nlogical_elements=16384\n"
             "physical_tile_elements=4096\nactive_contexts=8\n"
             "full_graph=true\ntrace=false\nwall_timeout=none\n"
+            "external_coherent_backing_bytes=1048576\n"
+            "external_admission_dense_metadata_bytes=37748736\n"
+            "external_admission_tracker_max_bytes=1024\n"
+            "external_application_metadata_bytes=37749760\n"
+            "admission_metadata_accelerator_sram_bytes=0\n"
+            "page_final_map_entries_per_thread=4096\n"
+            "page_final_map_threads=4\n"
+            "page_final_map_allocator_bytes="
+            "implementation_defined_external_application_memory\n"
         )
         oracle = (
             "SSSP_FINGERPRINT vertices=8 reached=8 unreachable=0 "
@@ -426,6 +435,18 @@ class HybridGoalAuditTest(unittest.TestCase):
             self.roots["sssp"],
             "provenance/artifacts.after.sha256",
             [witness],
+        )
+        self.assertEqual(
+            AUDIT.audit_sssp(self.roots["sssp"])["status"], "failed"
+        )
+
+    def test_sssp_external_metadata_must_be_disclosed(self) -> None:
+        manifest = self.roots["sssp"] / "candidate.manifest"
+        manifest.write_text(
+            manifest.read_text().replace(
+                "external_application_metadata_bytes=37749760",
+                "external_application_metadata_bytes=0",
+            )
         )
         self.assertEqual(
             AUDIT.audit_sssp(self.roots["sssp"])["status"], "failed"

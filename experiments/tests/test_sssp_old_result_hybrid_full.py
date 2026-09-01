@@ -192,6 +192,19 @@ class SsspOldResultHybridFullContract(unittest.TestCase):
         self.assertNotIn('"$ramulator_config" "$0"', self.runner)
         self.assertGreaterEqual(self.runner.count('"$runner_snapshot"'), 5)
 
+    def test_full_manifest_discloses_external_software_storage(self):
+        for accounting in (
+            "external_coherent_backing_bytes=1048576",
+            "external_admission_dense_metadata_bytes=37748736",
+            "external_admission_tracker_max_bytes=1024",
+            "external_application_metadata_bytes=37749760",
+            "admission_metadata_accelerator_sram_bytes=0",
+            "page_final_map_entries_per_thread=4096",
+            "page_final_map_threads=4",
+            "implementation_defined_external_application_memory",
+        ):
+            self.assertIn(accounting, self.runner)
+
     def test_requires_one_certificate_exit_roi_and_final_stats(self):
         self.assertIn('grep -Fxc "$oracle"', self.runner)
         self.assertIn("m5_exit instruction encountered", self.runner)

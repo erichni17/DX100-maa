@@ -616,6 +616,20 @@ def audit_sssp(root: pathlib.Path) -> dict[str, Any]:
         failures,
     )
     check(
+        candidate.get("external_coherent_backing_bytes") == "1048576"
+        and candidate.get("external_admission_dense_metadata_bytes")
+        == "37748736"
+        and candidate.get("external_admission_tracker_max_bytes") == "1024"
+        and candidate.get("external_application_metadata_bytes") == "37749760"
+        and candidate.get("admission_metadata_accelerator_sram_bytes") == "0"
+        and candidate.get("page_final_map_entries_per_thread") == "4096"
+        and candidate.get("page_final_map_threads") == "4"
+        and candidate.get("page_final_map_allocator_bytes")
+        == "implementation_defined_external_application_memory",
+        "SSSP: external backing/admission metadata accounting is absent",
+        failures,
+    )
+    check(
         candidate.get("full_graph") == "true"
         and candidate.get("trace") == "false"
         and candidate.get("wall_timeout") == "none",
@@ -821,6 +835,7 @@ def hardware_summary() -> dict[str, Any]:
         "physical_spd_payload": "8 tiles/core × 4 cores × 4096 32-bit words = 524288 B; no hidden payload accepted.",
         "row_offset_configuration": "16K logical Offset scope; 32 RowTable slices are configuration, not virtualized payload.",
         "external_coherent_backing": "ordinary coherent backing is external capacity and must be separately charged, never SPD SRAM.",
+        "sssp_external_software_state": "S22 charges 1048576 B coherent backing plus 37749760 B dense admission/tracker metadata in application DRAM; four 4096-entry winner maps are externally allocated and entry-bounded.",
         "target_only_assumptions": "candidate-only full runs; no native rerun and no native-speedup claim.",
         "simulator_only_counters": "gem5 routing/prefetch counters are instrumentation, not modeled hardware area.",
     }
