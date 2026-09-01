@@ -385,6 +385,7 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
             self.indirect,
             r"bool IndirectAccessUnit::usesBoundedDirectIndexPasses\(\) const "
             r"\{\s*return isDirectIndexLoad\(\)\s*&&\s*"
+            r"!isSoaJitRmw\(\)\s*&&\s*"
             r"maa->virtual_index_range_passes;\s*\}",
         )
         for pattern in (
@@ -402,7 +403,8 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
             self.assertRegex(self.indirect, pattern)
         self.assertRegex(
             self.indirect,
-            r"direct_index_partitions\s*=\s*isDirectIndexLoad\(\)\s*\?\s*"
+            r"direct_index_partitions\s*=\s*isDirectIndexLoad\(\)\s*&&\s*"
+            r"!isSoaJitRmw\(\)\s*\?\s*"
             r"direct_index_max_partitions\s*:\s*1;",
         )
         self.assertRegex(
@@ -437,10 +439,11 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
         self,
     ) -> None:
         self.assertIn(
-            "const size_t line_capacity =\n"
-            "        static_cast<size_t>(direct_index_buffer_lines);",
+            "direct_index_feeder.configure(\n"
+            "        direct_index_buffer_lines, direct_index_issue_lines_per_cycle)",
             self.indirect,
         )
+        self.assertIn("while (!direct_index_feeder.full())", self.indirect)
         self.assertNotRegex(
             self.indirect,
             r"line_capacity = maa->virtual_index_descriptor_spool",
