@@ -1071,6 +1071,8 @@ public:
                                           int8_t region_id) const;
     bool inlineOperandAdmissionAllowsRead(int core_id,
                                           int8_t region_id) const;
+    bool inlineOperandAdmissionAllowsReadForMaa(int maa_id,
+                                                int8_t region_id) const;
     Cycles admitPageFedSoaJitIndexPage(uint64_t generation, uint8_t page,
                                       uint8_t index_tile);
     Cycles admitPageFedSoaJitIndexValuePage(

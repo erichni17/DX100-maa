@@ -50,7 +50,7 @@ class InlineOperandRetirementContract(unittest.TestCase):
         invalidator = (ROOT / "src/mem/MAA/Invalidator.cc").read_text()
         for token in (
             "inlineOperandAdmissionAllowsRead",
-            "_instruction.core_id == open.core_id",
+            "_instruction.maa_id == open.maa_id",
             "_instruction.addrRangeID == open.addrRangeID",
             "open.soaJitPageFedGeneration",
         ):

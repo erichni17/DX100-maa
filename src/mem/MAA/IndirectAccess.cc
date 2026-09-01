@@ -3945,6 +3945,20 @@ IndirectAccessUnit::inlineOperandAdmissionAllowsRead(
             region_id);
 }
 
+bool
+IndirectAccessUnit::inlineOperandAdmissionAllowsReadForMaa(
+    int maa_id, int8_t region_id) const
+{
+    return my_instruction != nullptr && isSoaJitInlineOperandRmw() &&
+        my_instruction->maa_id == maa_id && state == Status::Fill &&
+        soa_jit_page_fed_state.active() &&
+        !soa_jit_page_fed_state.closed() &&
+        !soa_jit_page_fed_state.executing() &&
+        soa_jit_page_fed_state.currentGeneration() ==
+            my_instruction->soaJitPageFedGeneration &&
+        my_instruction->addrRangeID == region_id;
+}
+
 Cycles
 IndirectAccessUnit::admitPageFedSoaJitIndexValuePage(
     uint64_t generation, uint8_t page, uint8_t index_tile,

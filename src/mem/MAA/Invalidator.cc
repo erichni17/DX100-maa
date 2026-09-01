@@ -70,8 +70,8 @@ bool Invalidator::getAddrRegionPermit(Instruction *instruction) {
         for (unsigned unit = 0; unit < maa->num_indirect_units_total;
              ++unit) {
             if (!maa->indirectAccessUnits[unit].
-                    inlineOperandAdmissionAllowsRead(
-                        instruction->core_id, region_id))
+                    inlineOperandAdmissionAllowsReadForMaa(
+                        instruction->maa_id, region_id))
                 continue;
             panic_if(rg_status[maa_id][region_id] !=
                          RGStatus::UsingModified,
