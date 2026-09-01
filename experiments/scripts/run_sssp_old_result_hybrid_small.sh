@@ -348,7 +348,7 @@ for expected in \
     predicate_span=coherent_aligned old_result_span=coherent_aligned \
     duplicate_order=legacy_physical_pages host_spd_reads=0 \
     max_host_spd_element=-1 illegal_host_spd_line_starts=0 \
-    new_dedicated_payload_bytes=0 hidden_logical_spd_bytes=0 \
+    hidden_logical_spd_bytes=0 \
     hidden_result_payload_bytes=0 response_closure=1 counts_close=1; do
     key=${expected%%=*}
     value=${expected#*=}
@@ -361,6 +361,7 @@ snapshot_copied_words=$(terminal_value "$terminal" source_snapshot_copied_words)
 snapshot_copied_bytes=$(terminal_value "$terminal" source_snapshot_copied_bytes)
 snapshot_barriers=$(terminal_value "$terminal" source_snapshot_barriers)
 hidden_snapshot_bytes=$(terminal_value "$terminal" hidden_source_snapshot_bytes)
+dedicated_payload_bytes=$(terminal_value "$terminal" new_dedicated_payload_bytes)
 if [[ $prototype == 1 ]]; then
     [[ $snapshot_span == coherent_external && \
        $snapshot_storage_words =~ ^[1-9][0-9]*$ && \
@@ -369,11 +370,12 @@ if [[ $prototype == 1 ]]; then
        $hidden_snapshot_bytes -eq 0 ]]
     (( snapshot_storage_bytes == snapshot_storage_words * 4 ))
     (( snapshot_copied_bytes == snapshot_copied_words * 4 ))
+    (( dedicated_payload_bytes == snapshot_storage_bytes ))
 else
     [[ $snapshot_span == disabled && $snapshot_storage_words -eq 0 && \
        $snapshot_storage_bytes -eq 0 && $snapshot_copied_words -eq 0 && \
        $snapshot_copied_bytes -eq 0 && $snapshot_barriers -eq 0 && \
-       $hidden_snapshot_bytes -eq 0 ]]
+       $hidden_snapshot_bytes -eq 0 && $dedicated_payload_bytes -eq 0 ]]
 fi
 [[ $(grep -Ec '^Exiting @ tick [0-9]+ because m5_exit instruction encountered$' \
           "$restore" || true) -eq 1 ]]

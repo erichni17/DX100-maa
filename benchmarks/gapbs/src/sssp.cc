@@ -1191,7 +1191,12 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
               << " max_host_spd_element=" << max_host_spd_element
               << " illegal_host_spd_line_starts="
               << illegal_host_spd_line_starts
+#ifdef SSSP_CONFLICT_SNAPSHOT_PROTOTYPE
+              << " new_dedicated_payload_bytes="
+              << hybrid_source_snapshot.size() * sizeof(WeightT)
+#else
               << " new_dedicated_payload_bytes=0"
+#endif
               << " hidden_logical_spd_bytes=0"
               << " hidden_result_payload_bytes=0"
 #ifdef SSSP_CONFLICT_SNAPSHOT_PROTOTYPE

@@ -147,6 +147,7 @@ class SsspConflictSnapshotContract(unittest.TestCase):
             "source_snapshot_copied_bytes=",
             "source_snapshot_barriers=",
             "hidden_source_snapshot_bytes=0",
+            '<< " new_dedicated_payload_bytes="',
             "duplicate_order=legacy_physical_pages",
             "response_closure=",
         ):
@@ -160,6 +161,9 @@ class SsspConflictSnapshotContract(unittest.TestCase):
         self.assertIn("expected_routed=4", self.runner)
         self.assertIn("expected_active_tolerated", self.runner)
         self.assertIn("expected_cross_tolerated", self.runner)
+        self.assertIn(
+            "dedicated_payload_bytes == snapshot_storage_bytes", self.runner
+        )
         self.assertIn("hash_a=24951adf631ff822", self.runner)
         self.assertIn("hash_b=005c7757503cab01", self.runner)
         self.assertIn("native_arms=0", self.runner)
