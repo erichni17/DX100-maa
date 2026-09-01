@@ -288,6 +288,7 @@ def classify(root: Path) -> dict[str, Any]:
     )
     manifest = json.loads((root / "manifest.json").read_text())
     sealed_result_path = root / "result.json"
+    sealed_identity_record = None
     if sealed_result_path.is_file():
         sealed_identity_record = json.loads(sealed_result_path.read_text())
         sealer_commit = sealed_identity_record["sealer_commit"]
@@ -405,6 +406,16 @@ def classify(root: Path) -> dict[str, Any]:
     phase_comparison = phase_compare.compare(
         current_stats, current_trace, candidate_stats, candidate_trace
     )
+    if sealed_identity_record is not None:
+        sealed_analyzer = sealed_identity_record[
+            "integrated_phase_comparison"
+        ]["artifacts"]["analyzer"]
+        current_analyzer = phase_comparison["artifacts"]["analyzer"]
+        require(
+            current_analyzer["sha256"] == sealed_analyzer["sha256"],
+            "sealed phase analyzer changed",
+        )
+        current_analyzer["path"] = sealed_analyzer["path"]
     require(
         phase_comparison["diagnosis"]["classification"]
         == "SOURCE_MLP_RECOVERED",

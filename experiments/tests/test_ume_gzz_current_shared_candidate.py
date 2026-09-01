@@ -108,11 +108,25 @@ class UmeGzzCurrentSharedCandidateTest(unittest.TestCase):
         self.assertIn("result = classify(root)", seal_body)
         self.assertNotIn("run_arm(", seal_body)
 
-    def test_sealed_validation_preserves_original_sealer_identity(self) -> None:
+    def test_sealed_validation_preserves_original_sealer_identity(
+        self,
+    ) -> None:
         source = Path(runner.__file__).read_text()
         self.assertIn('sealed_result_path = root / "result.json"', source)
         self.assertIn('sealed_identity_record["sealer_commit"]', source)
         self.assertIn('sealed_identity_record["sealer_sha256"]', source)
+
+    def test_sealed_validation_preserves_authenticated_analyzer_identity(
+        self,
+    ) -> None:
+        source = Path(runner.__file__).read_text()
+        self.assertIn('sealed_analyzer["sha256"]', source)
+        self.assertIn('current_analyzer["sha256"]', source)
+        self.assertIn('"sealed phase analyzer changed"', source)
+        self.assertLess(
+            source.index('current_analyzer["sha256"]'),
+            source.index('current_analyzer["path"] = sealed_analyzer["path"]'),
+        )
 
 
 if __name__ == "__main__":
