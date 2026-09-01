@@ -1222,6 +1222,9 @@ public:
         std::vector<statistics::Scalar *> IND_VirtResponseSlotHighWater;
         std::vector<statistics::Scalar *> IND_VirtResponseWordHighWater;
         std::vector<statistics::Scalar *> IND_VirtResponseWordPoolStalls;
+        std::vector<statistics::Scalar *> IND_VirtFanoutScanEvents;
+        std::vector<statistics::Scalar *> IND_VirtFanoutScanWords;
+        std::vector<statistics::Scalar *> IND_VirtFanoutScanCycles;
         std::vector<statistics::Scalar *> IND_VirtOutstandingWriteHighWater;
         std::vector<statistics::Scalar *> IND_VirtCombineLineHighWater;
         std::vector<statistics::Scalar *> IND_VirtCombineWordHighWater;

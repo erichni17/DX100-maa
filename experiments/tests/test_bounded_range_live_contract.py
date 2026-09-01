@@ -172,8 +172,16 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
         self.assertRegex(
             self.indirect,
             r"if \(!virtualSourceCreditAvailable\("
-            r"bounded_global_merge_source_words\)\)",
+            r"\s*bounded_global_merge_source_fanout\)\)",
         )
+        issue = re.search(
+            r"IndirectAccessUnit::issueBoundedGlobalSourceLine\(\).*?\n}",
+            self.indirect,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(issue)
+        self.assertIn("spillVirtualCombinePartialForSourceCredit", issue.group(0))
+        self.assertIn("scheduleExecuteInstructionEvent(1)", issue.group(0))
         self.assertIn(
             "direct_index_partition = entry.pass",
             self.indirect,

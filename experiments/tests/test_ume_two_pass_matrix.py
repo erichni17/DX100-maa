@@ -140,13 +140,8 @@ class UmeTwoPassMatrixTest(unittest.TestCase):
 
     def test_build_admission_uses_shared_source_credit(self) -> None:
         source = (ROOT / "src/mem/MAA/IndirectAccess.cc").read_text()
-        self.assertIn(
-            "!virtualSourceCreditAvailable(virtual_pending_source_head,",
-            source,
-        )
-        self.assertIn(
-            "!virtualSourceCreditAvailable(virtual_head,", source
-        )
+        self.assertIn("virtual_pending_source_fanout))", source)
+        self.assertIn("virtual_fanout))", source)
         self.assertIn("event=shared_source_credit_stall schema=1", source)
         self.assertIn("event=shared_source_partial_spill schema=1", source)
         self.assertIn("spillVirtualCombinePartialForSourceCredit", source)
@@ -162,13 +157,18 @@ class UmeTwoPassMatrixTest(unittest.TestCase):
     def test_shared_source_payload_charges_unique_words_with_fanout(self) -> None:
         implementation = (ROOT / "src/mem/MAA/IndirectAccess.cc").read_text()
         header = (ROOT / "src/mem/MAA/IndirectAccess.hh").read_text()
+        fanout = (ROOT / "src/mem/MAA/VirtualSourceFanout.hh").read_text()
         for token in (
+            "buildVirtualSourceFanout",
             "virtualSourcePayloadWords",
-            "remaining_word_uses",
+            "VirtualSourceFanout",
+            "virtual_pending_source_fanout",
             "shared response retained",
             "shared result word",
         ):
-            self.assertIn(token, implementation + header)
+            self.assertIn(token, implementation + header + fanout)
+        self.assertNotIn("remaining_word_uses", implementation + header)
+        self.assertIn("static constexpr uint16_t ScanWidth = 4", fanout)
 
     def test_page_materializer_closes_strict_consumer_lifetime(self) -> None:
         source = (ROOT / "src/mem/MAA/MAA.cc").read_text()

@@ -2714,6 +2714,9 @@ void IndirectAccessUnit::serviceBoundedGlobalRunMaterialization()
     bounded_global_merge_source_head = -1;
     bounded_global_merge_source_tail = -1;
     bounded_global_merge_source_words = 0;
+    bounded_global_merge_source_fanout_valid = false;
+    bounded_global_merge_source_fanout = maa::VirtualSourceFanout();
+    bounded_global_merge_source_fanout_ready_tick = 0;
     direct_index_partition = 0;
     my_i = my_max;
     my_fill_finished = false;
@@ -2784,48 +2787,87 @@ IndirectAccessUnit::boundedGlobalMergeKey(
     return {slice_rank, grow_addr, line_paddr, descriptor.iteration};
 }
 
-int
-IndirectAccessUnit::virtualSourcePayloadWords(int source_head,
-                                              int source_words) const
+maa::VirtualSourceFanout
+IndirectAccessUnit::buildVirtualSourceFanout(int source_head,
+                                             int source_words,
+                                             Tick &ready_tick)
 {
     panic_if(source_head < 0 || source_words <= 0,
-             "I[%d] virtual source payload requested for head=%d words=%d\n",
+             "I[%d] virtual source fanout requested for head=%d words=%d\n",
              my_indirect_id, source_head, source_words);
-    if (!virtual_shared_result_payload)
-        return source_words;
-    std::array<bool, 16> seen{};
+    panic_if(source_words > maa::VirtualSourceFanout::MaxLogicalUses,
+             "I[%d] virtual source fanout exceeds logical bound %d/%u\n",
+             my_indirect_id, source_words,
+             maa::VirtualSourceFanout::MaxLogicalUses);
+    maa::VirtualSourceFanout fanout;
+    auto result = fanout.reset(static_cast<uint16_t>(my_words_per_cl));
+    panic_if(result != maa::VirtualSourceFanout::Result::Accepted,
+             "I[%d] virtual source fanout reset failed: %s\n",
+             my_indirect_id,
+             maa::VirtualSourceFanout::resultName(result));
     int logical_words = 0;
-    int payload_words = 0;
     int itr = source_head;
     while (itr != -1) {
         const OffsetTableEntry entry = offset_table->peek_entry(itr);
-        panic_if(entry.wid < 0 || entry.wid >= my_words_per_cl,
-                 "I[%d] virtual source head=%d has invalid word id %d\n",
-                 my_indirect_id, source_head, entry.wid);
-        if (!seen[entry.wid]) {
-            seen[entry.wid] = true;
-            payload_words++;
-        }
+        result = fanout.observe(static_cast<uint16_t>(entry.wid));
+        panic_if(result != maa::VirtualSourceFanout::Result::Accepted,
+                 "I[%d] virtual source head=%d word=%d fanout failed: %s\n",
+                 my_indirect_id, source_head, entry.wid,
+                 maa::VirtualSourceFanout::resultName(result));
         logical_words++;
         panic_if(logical_words > source_words,
                  "I[%d] virtual source head=%d exceeds claimed words=%d\n",
                  my_indirect_id, source_head, source_words);
         itr = entry.next_itr;
     }
-    panic_if(logical_words != source_words || payload_words <= 0,
-             "I[%d] virtual source head=%d payload mismatch logical=%d/%d "
-             "unique=%d\n",
+    result = fanout.seal(static_cast<uint16_t>(source_words));
+    panic_if(result != maa::VirtualSourceFanout::Result::Accepted,
+             "I[%d] virtual source head=%d fanout mismatch logical=%d/%d "
+             "unique=%u: %s\n",
              my_indirect_id, source_head, logical_words, source_words,
-             payload_words);
-    return payload_words;
+             fanout.payloadWords(),
+             maa::VirtualSourceFanout::resultName(result));
+    ready_tick = curTick();
+    if (virtual_shared_result_payload) {
+        const Tick scan_start = std::max(
+            curTick(), virtual_fanout_scan_finish_tick);
+        virtual_fanout_scan_finish_tick = scan_start +
+            maa->getCyclesToTicks(Cycles(fanout.scanCycles()));
+        ready_tick = virtual_fanout_scan_finish_tick;
+        (*maa->stats.IND_VirtFanoutScanEvents[my_indirect_id])++;
+        (*maa->stats.IND_VirtFanoutScanWords[my_indirect_id]) +=
+            fanout.logicalUses();
+        (*maa->stats.IND_VirtFanoutScanCycles[my_indirect_id]) +=
+            fanout.scanCycles();
+        DPRINTF(MAAVirtualTrace,
+                "event=source_fanout_scan schema=1 unit=%d "
+                "operation_tick=%lu head=%d logical_words=%u "
+                "payload_words=%u width=%u cycles=%u start=%lu "
+                "ready=%lu\n",
+                my_indirect_id, my_decode_start_tick, source_head,
+                fanout.logicalUses(), fanout.payloadWords(),
+                maa::VirtualSourceFanout::ScanWidth,
+                fanout.scanCycles(), scan_start, ready_tick);
+    }
+    return fanout;
+}
+
+int
+IndirectAccessUnit::virtualSourcePayloadWords(
+    const maa::VirtualSourceFanout &fanout) const
+{
+    panic_if(!fanout.isSealed(),
+             "I[%d] virtual source payload used before fanout seal\n",
+             my_indirect_id);
+    return virtual_shared_result_payload ? fanout.payloadWords()
+                                         : fanout.logicalUses();
 }
 
 bool
-IndirectAccessUnit::virtualSourceCreditAvailable(int source_head,
-                                                 int source_words) const
+IndirectAccessUnit::virtualSourceCreditAvailable(
+    const maa::VirtualSourceFanout &fanout) const
 {
-    const int payload_words =
-        virtualSourcePayloadWords(source_head, source_words);
+    const int payload_words = virtualSourcePayloadWords(fanout);
     if (virtual_reserved_responses >=
         static_cast<int>(virtual_response_slots.size()))
         return false;
@@ -2839,11 +2881,17 @@ IndirectAccessUnit::virtualSourceCreditAvailable(int source_head,
 
 void
 IndirectAccessUnit::issueVirtualSource(
-    Addr source_addr, int source_head, int source_words, int source_rt_idx,
-    int source_row_id, int source_entry_id, Addr source_grow_addr, int latency)
+    Addr source_addr, int source_head, int source_words,
+    const maa::VirtualSourceFanout &fanout, Tick fanout_ready_tick,
+    int source_rt_idx,
+    int source_row_id, int source_entry_id, Addr source_grow_addr,
+    int latency)
 {
     panic_if(source_head < 0 || source_words <= 0,
              "I[%d] virtual source claim is empty\n", my_indirect_id);
+    panic_if(!fanout.isSealed() || fanout.logicalUses() != source_words,
+             "I[%d] virtual source claim has invalid fanout %u/%d\n",
+             my_indirect_id, fanout.logicalUses(), source_words);
     if (virtual_response_words != 0 &&
         virtual_response_word_pool_limit == 0)
         panic_if(source_words > virtual_response_words,
@@ -2855,9 +2903,8 @@ IndirectAccessUnit::issueVirtualSource(
                  "I[%d] source response needs %d/%d pooled words\n",
                  my_indirect_id, source_words,
                  virtual_response_word_pool_limit);
-    const int payload_words =
-        virtualSourcePayloadWords(source_head, source_words);
-    panic_if(!virtualSourceCreditAvailable(source_head, source_words),
+    const int payload_words = virtualSourcePayloadWords(fanout);
+    panic_if(!virtualSourceCreditAvailable(fanout),
              "I[%d] cannot issue virtual source without bounded credit\n",
              my_indirect_id);
 
@@ -2877,7 +2924,7 @@ IndirectAccessUnit::issueVirtualSource(
     panic_if(!virtual_source_reservations
                   .emplace(source_addr,
                            VirtualSourceReservation{
-                               source_head, source_words, payload_words,
+                               source_head, source_words, fanout,
                                source_rt_idx, source_row_id, source_entry_id,
                                source_grow_addr})
                   .second,
@@ -2892,7 +2939,12 @@ IndirectAccessUnit::issueVirtualSource(
         virtual_max_reserved_response_words,
         virtual_reserved_response_words);
     recordReorderSurvivalIssue(source_addr);
-    createReadPacket(source_addr, latency);
+    const Tick row_ready_tick = maa->getClockEdge(Cycles(latency));
+    const Tick issue_ready_tick = std::max(
+        row_ready_tick, fanout_ready_tick);
+    const int issue_latency = static_cast<int>(
+        maa->getTicksToCycles(issue_ready_tick - curTick()));
+    createReadPacket(source_addr, issue_latency);
 }
 
 bool
@@ -2905,8 +2957,15 @@ IndirectAccessUnit::issueBoundedGlobalSourceLine()
                  bounded_global_merge_source_words <= 0,
              "I[%d] bounded global source line is incomplete\n",
              my_indirect_id);
-    if (!virtualSourceCreditAvailable(bounded_global_merge_source_head,
-                                      bounded_global_merge_source_words)) {
+    if (!bounded_global_merge_source_fanout_valid) {
+        bounded_global_merge_source_fanout = buildVirtualSourceFanout(
+            bounded_global_merge_source_head,
+            bounded_global_merge_source_words,
+            bounded_global_merge_source_fanout_ready_tick);
+        bounded_global_merge_source_fanout_valid = true;
+    }
+    if (!virtualSourceCreditAvailable(
+            bounded_global_merge_source_fanout)) {
         const bool spilled =
             spillVirtualCombinePartialForSourceCredit();
         if (virtual_reserved_responses >=
@@ -2933,7 +2992,10 @@ IndirectAccessUnit::issueBoundedGlobalSourceLine()
     issueVirtualSource(
         bounded_global_merge_source_paddr,
         bounded_global_merge_source_head,
-        bounded_global_merge_source_words, -1, -1, -1, 0, 0);
+        bounded_global_merge_source_words,
+        bounded_global_merge_source_fanout,
+        bounded_global_merge_source_fanout_ready_tick,
+        -1, -1, -1, 0, 0);
     DPRINTF(MAAVirtualTrace,
             "event=bounded_global_stream_issue schema=1 unit=%d "
             "operation_tick=%lu paddr=0x%lx vaddr=0x%lx head=%d "
@@ -2951,6 +3013,9 @@ IndirectAccessUnit::issueBoundedGlobalSourceLine()
     bounded_global_merge_source_head = -1;
     bounded_global_merge_source_tail = -1;
     bounded_global_merge_source_words = 0;
+    bounded_global_merge_source_fanout_valid = false;
+    bounded_global_merge_source_fanout = maa::VirtualSourceFanout();
+    bounded_global_merge_source_fanout_ready_tick = 0;
     return true;
 }
 
@@ -3073,6 +3138,9 @@ void IndirectAccessUnit::serviceBoundedGlobalMerge()
         bounded_global_merge_source_head = -1;
         bounded_global_merge_source_tail = -1;
         bounded_global_merge_source_words = 0;
+        bounded_global_merge_source_fanout_valid = false;
+        bounded_global_merge_source_fanout = maa::VirtualSourceFanout();
+        bounded_global_merge_source_fanout_ready_tick = 0;
         if (!bounded_global_merge_last_row_valid ||
             bounded_global_merge_last_slice != key[0] ||
             bounded_global_merge_last_row != key[1]) {
@@ -6341,6 +6409,9 @@ void IndirectAccessUnit::executeInstruction() {
         virtual_pending_source_row_id = -1;
         virtual_pending_source_entry_id = -1;
         virtual_pending_source_grow_addr = 0;
+        virtual_pending_source_fanout = maa::VirtualSourceFanout();
+        virtual_pending_source_fanout_ready_tick = 0;
+        virtual_fanout_scan_finish_tick = curTick();
         virtual_source_reservations.clear();
         virtual_outstanding_writes = 0;
         const auto scoreboard_reset = virtual_retirement_scoreboard.reset(
@@ -6477,6 +6548,9 @@ void IndirectAccessUnit::executeInstruction() {
         bounded_global_merge_source_head = -1;
         bounded_global_merge_source_tail = -1;
         bounded_global_merge_source_words = 0;
+        bounded_global_merge_source_fanout_valid = false;
+        bounded_global_merge_source_fanout = maa::VirtualSourceFanout();
+        bounded_global_merge_source_fanout_ready_tick = 0;
         bounded_global_merge_source_data.fill(0);
         descriptor_spool_bucket_active = false;
         descriptor_spool_bucket_scan_complete = false;
@@ -7350,13 +7424,12 @@ void IndirectAccessUnit::executeInstruction() {
         }
         bool virtual_capacity_full = false;
         if (usesBoundedSourceResponses() && virtual_pending_source) {
-            if (!virtualSourceCreditAvailable(virtual_pending_source_head,
-                                              virtual_pending_source_words)) {
+            if (!virtualSourceCreditAvailable(
+                    virtual_pending_source_fanout)) {
                 const bool spilled =
                     spillVirtualCombinePartialForSourceCredit();
                 const int payload_words = virtualSourcePayloadWords(
-                    virtual_pending_source_head,
-                    virtual_pending_source_words);
+                    virtual_pending_source_fanout);
                 DPRINTF(MAAVirtualTrace,
                         "event=shared_source_credit_stall schema=1 unit=%d "
                         "operation_tick=%lu logical_words=%d "
@@ -7379,6 +7452,8 @@ void IndirectAccessUnit::executeInstruction() {
                 issueVirtualSource(virtual_pending_source_addr,
                                    virtual_pending_source_head,
                                    virtual_pending_source_words,
+                                   virtual_pending_source_fanout,
+                                   virtual_pending_source_fanout_ready_tick,
                                    virtual_pending_source_rt_idx,
                                    virtual_pending_source_row_id,
                                    virtual_pending_source_entry_id,
@@ -7391,6 +7466,9 @@ void IndirectAccessUnit::executeInstruction() {
                 virtual_pending_source_row_id = -1;
                 virtual_pending_source_entry_id = -1;
                 virtual_pending_source_grow_addr = 0;
+                virtual_pending_source_fanout =
+                    maa::VirtualSourceFanout();
+                virtual_pending_source_fanout_ready_tick = 0;
             }
         }
         while (!virtual_capacity_full) {
@@ -7413,6 +7491,8 @@ void IndirectAccessUnit::executeInstruction() {
                     int virtual_row_id = -1;
                     int virtual_entry_id = -1;
                     Addr virtual_grow_addr = 0;
+                    maa::VirtualSourceFanout virtual_fanout;
+                    Tick virtual_fanout_ready_tick = 0;
                     bool entry_ready;
                     if (native_order_claim) {
                         entry_ready = RT[my_RT_config][RT_idx]
@@ -7466,8 +7546,11 @@ void IndirectAccessUnit::executeInstruction() {
                                          "I[%d] source response needs %d/%d pooled words\n",
                                          my_indirect_id, virtual_words,
                                          virtual_response_word_pool_limit);
-                            if (!virtualSourceCreditAvailable(virtual_head,
-                                                              virtual_words)) {
+                            virtual_fanout = buildVirtualSourceFanout(
+                                virtual_head, virtual_words,
+                                virtual_fanout_ready_tick);
+                            if (!virtualSourceCreditAvailable(
+                                    virtual_fanout)) {
                                 if (!native_order_claim) {
                                     Addr committed_addr = 0;
                                     int committed_head = -1;
@@ -7500,6 +7583,10 @@ void IndirectAccessUnit::executeInstruction() {
                                     virtual_entry_id;
                                 virtual_pending_source_grow_addr =
                                     virtual_grow_addr;
+                                virtual_pending_source_fanout =
+                                    virtual_fanout;
+                                virtual_pending_source_fanout_ready_tick =
+                                    virtual_fanout_ready_tick;
                                 if (native_order_claim) {
                                     last_RT_sent++;
                                     if (last_RT_sent ==
@@ -7533,6 +7620,8 @@ void IndirectAccessUnit::executeInstruction() {
                         if (usesBoundedSourceResponses()) {
                             issueVirtualSource(
                                 addr, virtual_head, virtual_words,
+                                virtual_fanout,
+                                virtual_fanout_ready_tick,
                                 RT_idx, virtual_row_id, virtual_entry_id,
                                 virtual_grow_addr,
                                 getCeiling(num_rowtable_accesses + 1,
@@ -9258,6 +9347,9 @@ void IndirectAccessUnit::executeInstruction() {
             bounded_global_merge_source_head = -1;
             bounded_global_merge_source_tail = -1;
             bounded_global_merge_source_words = 0;
+            bounded_global_merge_source_fanout_valid = false;
+            bounded_global_merge_source_fanout = maa::VirtualSourceFanout();
+            bounded_global_merge_source_fanout_ready_tick = 0;
             bounded_global_merge_source_data.fill(0);
         }
         finishReorderSurvival();
@@ -9837,6 +9929,7 @@ IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr,
     int virtual_claim_row_id = -1;
     int virtual_claim_entry_id = -1;
     Addr virtual_claim_grow_addr = 0;
+    maa::VirtualSourceFanout virtual_fanout;
     std::vector<OffsetTableEntry> entries;
     if (bounded_response_load) {
         auto reservation = virtual_source_reservations.find(addr);
@@ -9844,7 +9937,8 @@ IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr,
             return false;
         virtual_head = reservation->second.head;
         virtual_reserved_words = reservation->second.words;
-        virtual_payload_words = reservation->second.payload_words;
+        virtual_fanout = reservation->second.fanout;
+        virtual_payload_words = virtualSourcePayloadWords(virtual_fanout);
         virtual_claim_rt_idx = reservation->second.rt_idx;
         virtual_claim_row_id = reservation->second.row_id;
         virtual_claim_entry_id = reservation->second.entry_id;
@@ -9900,6 +9994,7 @@ IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr,
         slot->claim_grow_addr = virtual_claim_grow_addr;
         slot->claim_addr = addr;
         slot->claim_head = virtual_head;
+        slot->fanout = virtual_fanout;
         if (maa->virtual_bounded_global_merge &&
             bounded_global_merge_phase == BoundedGlobalMergePhase::Merge) {
             bounded_global_merge_source_responses++;
@@ -9932,19 +10027,16 @@ IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr,
             }
         }
         if (virtual_shared_result_payload) {
-            int itr = virtual_head;
-            while (itr != -1) {
-                const OffsetTableEntry entry = offset_table->peek_entry(itr);
-                slot->remaining_word_uses[entry.wid]++;
-                itr = entry.next_itr;
-            }
-            const int retained_words = std::count_if(
-                slot->remaining_word_uses.begin(),
-                slot->remaining_word_uses.begin() + my_words_per_cl,
-                [](uint32_t uses) { return uses != 0; });
-            panic_if(retained_words != slot->reserved_words,
-                     "I[%d] shared response retained %d/%d unique words\n",
-                     my_indirect_id, retained_words, slot->reserved_words);
+            panic_if(!slot->fanout.isSealed() ||
+                         slot->fanout.logicalUses() !=
+                             virtual_reserved_words ||
+                         slot->fanout.payloadWords() !=
+                             slot->reserved_words,
+                     "I[%d] shared response retained invalid fanout "
+                     "logical=%u/%d payload=%u/%d\n",
+                     my_indirect_id, slot->fanout.logicalUses(),
+                     virtual_reserved_words, slot->fanout.payloadWords(),
+                     slot->reserved_words);
         }
         if (isFusedP16Product())
             panic_if(!beginFusedP16ResponseHead(slot_idx, *slot),
@@ -10792,10 +10884,8 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                  "I[%d] virtual lookup packed response closed at %zu/%zu\n",
                  my_indirect_id, slot.next_packed_word,
                  slot.packed_words.size());
-        const bool retained_fanout = std::any_of(
-            slot.remaining_word_uses.begin(),
-            slot.remaining_word_uses.begin() + my_words_per_cl,
-            [](uint32_t uses) { return uses != 0; });
+        const bool retained_fanout = virtual_shared_result_payload &&
+            !slot.fanout.empty();
         panic_if(virtual_shared_result_payload &&
                      (slot.reserved_words != 0 || retained_fanout),
                  "I[%d] shared lookup response closed with retained payload\n",
@@ -10815,12 +10905,14 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                                         int word_id) {
         if (!virtual_shared_result_payload)
             return false;
-        panic_if(word_id < 0 || word_id >= my_words_per_cl ||
-                     slot.remaining_word_uses[word_id] == 0,
-                 "I[%d] shared result word %d has no retained fanout\n",
-                 my_indirect_id, word_id);
-        --slot.remaining_word_uses[word_id];
-        if (slot.remaining_word_uses[word_id] != 0)
+        bool transferred = false;
+        const auto result = slot.fanout.consume(
+            static_cast<uint16_t>(word_id), transferred);
+        panic_if(result != maa::VirtualSourceFanout::Result::Accepted,
+                 "I[%d] shared result word %d fanout consume failed: %s\n",
+                 my_indirect_id, word_id,
+                 maa::VirtualSourceFanout::resultName(result));
+        if (!transferred)
             return false;
         panic_if(slot.reserved_words <= 0 ||
                      virtual_reserved_response_words <= 0,
@@ -10828,17 +10920,19 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                  my_indirect_id);
         --slot.reserved_words;
         --virtual_reserved_response_words;
-        return true;
+        return transferred;
     };
     auto rollback_shared_transfer = [this](VirtualResponseSlot &slot,
                                            int word_id,
                                            bool transferred) {
         if (!virtual_shared_result_payload)
             return;
-        panic_if(word_id < 0 || word_id >= my_words_per_cl,
-                 "I[%d] shared result rollback has invalid word %d\n",
-                 my_indirect_id, word_id);
-        ++slot.remaining_word_uses[word_id];
+        const auto result = slot.fanout.rollback(
+            static_cast<uint16_t>(word_id));
+        panic_if(result != maa::VirtualSourceFanout::Result::Accepted,
+                 "I[%d] shared result word %d fanout rollback failed: %s\n",
+                 my_indirect_id, word_id,
+                 maa::VirtualSourceFanout::resultName(result));
         if (transferred) {
             ++slot.reserved_words;
             ++virtual_reserved_response_words;
@@ -11349,10 +11443,8 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                 panic_if(virtual_reserved_response_words < slot.reserved_words,
                          "I[%d] packed response word accounting underflow\n",
                          my_indirect_id);
-                const bool retained_fanout = std::any_of(
-                    slot.remaining_word_uses.begin(),
-                    slot.remaining_word_uses.begin() + my_words_per_cl,
-                    [](uint32_t uses) { return uses != 0; });
+                const bool retained_fanout =
+                    virtual_shared_result_payload && !slot.fanout.empty();
                 panic_if(virtual_shared_result_payload &&
                              (slot.reserved_words != 0 || retained_fanout),
                          "I[%d] shared packed response closed with retained "
@@ -11416,10 +11508,8 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                      my_indirect_id);
             recordReorderSurvivalIssuedEntries(1);
             if (slot.next_itr == -1) {
-                const bool retained_fanout = std::any_of(
-                    slot.remaining_word_uses.begin(),
-                    slot.remaining_word_uses.begin() + my_words_per_cl,
-                    [](uint32_t uses) { return uses != 0; });
+                const bool retained_fanout =
+                    virtual_shared_result_payload && !slot.fanout.empty();
                 panic_if(virtual_shared_result_payload &&
                              (slot.reserved_words != 0 || retained_fanout),
                          "I[%d] shared line response closed with retained "

@@ -39,6 +39,7 @@
 #include "mem/MAA/VirtualCombinerPageOrder.hh"
 #include "mem/MAA/VirtualResponsePayloadStore.hh"
 #include "mem/MAA/VirtualRetirementScoreboard.hh"
+#include "mem/MAA/VirtualSourceFanout.hh"
 #include "mem/packet.hh"
 #include "mem/request.hh"
 #include "sim/system.hh"
@@ -107,7 +108,7 @@ protected:
         std::vector<std::array<uint8_t, 8>> packed_words;
         size_t next_packed_word = 0;
         int reserved_words = 0;
-        std::array<uint32_t, 16> remaining_word_uses{};
+        maa::VirtualSourceFanout fanout{};
         int claim_rt_idx = -1;
         int claim_row_id = -1;
         int claim_entry_id = -1;
@@ -143,11 +144,14 @@ protected:
     int virtual_pending_source_row_id = -1;
     int virtual_pending_source_entry_id = -1;
     Addr virtual_pending_source_grow_addr = 0;
+    maa::VirtualSourceFanout virtual_pending_source_fanout{};
+    Tick virtual_pending_source_fanout_ready_tick = 0;
+    Tick virtual_fanout_scan_finish_tick = 0;
     struct VirtualSourceReservation
     {
         int head = -1;
         int words = 0;
-        int payload_words = 0;
+        maa::VirtualSourceFanout fanout{};
         int rt_idx = -1;
         int row_id = -1;
         int entry_id = -1;
@@ -469,6 +473,9 @@ protected:
     int bounded_global_merge_source_head = -1;
     int bounded_global_merge_source_tail = -1;
     int bounded_global_merge_source_words = 0;
+    bool bounded_global_merge_source_fanout_valid = false;
+    maa::VirtualSourceFanout bounded_global_merge_source_fanout{};
+    Tick bounded_global_merge_source_fanout_ready_tick = 0;
     std::array<uint8_t, BoundedFourRunMerge::LineBytes>
         bounded_global_merge_source_data{};
     bool descriptor_spool_bucket_active = false;
@@ -895,10 +902,17 @@ protected:
     void startBoundedGlobalRunMaterialization();
     void serviceBoundedGlobalRunMaterialization();
     void serviceBoundedGlobalMerge();
-    int virtualSourcePayloadWords(int source_head, int source_words) const;
-    bool virtualSourceCreditAvailable(int source_head, int source_words) const;
+    maa::VirtualSourceFanout buildVirtualSourceFanout(
+        int source_head, int source_words, Tick &ready_tick);
+    int virtualSourcePayloadWords(
+        const maa::VirtualSourceFanout &fanout) const;
+    bool virtualSourceCreditAvailable(
+        const maa::VirtualSourceFanout &fanout) const;
     void issueVirtualSource(Addr source_addr, int source_head,
-                            int source_words, int source_rt_idx,
+                            int source_words,
+                            const maa::VirtualSourceFanout &fanout,
+                            Tick fanout_ready_tick,
+                            int source_rt_idx,
                             int source_row_id, int source_entry_id,
                             Addr source_grow_addr, int latency);
     bool issueBoundedGlobalSourceLine();
