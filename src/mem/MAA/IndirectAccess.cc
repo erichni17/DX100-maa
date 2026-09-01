@@ -8119,11 +8119,11 @@ void IndirectAccessUnit::executeInstruction() {
                              virtual_shared_payload_high_water >
                                  virtual_shared_result_payload_limit,
                          "I[%d] shared result payload terminal mismatch "
-                         "response=%d combine=%d spill_lines=%zu "
+                         "response=%d combine=%d spill_lines=%lu "
                          "high_water=%d/%d\n",
                          my_indirect_id, virtual_reserved_response_words,
                          virtual_combine_words,
-                         static_cast<size_t>(std::count(
+                         static_cast<unsigned long>(std::count(
                              virtual_shared_partial_spill_lines.begin(),
                              virtual_shared_partial_spill_lines.end(), true)),
                          virtual_shared_payload_high_water,
@@ -12082,7 +12082,8 @@ IndirectAccessUnit::spillVirtualCombinePartialForSourceCredit()
              VirtualCombinePayloadStore::resultName(released));
     virtual_combine_words -= victim_words;
     virtual_partial_word_writes++;
-    setVirtualSharedPartialSpilled(spilled_line, true);
+    if (completeLineOnlyOperation())
+        setVirtualSharedPartialSpilled(spilled_line, true);
     slot = VirtualCombineSlot();
     virtual_combine_victim = (victim + 1) % virtual_combine_slots.size();
     DPRINTF(MAAVirtualTrace,
