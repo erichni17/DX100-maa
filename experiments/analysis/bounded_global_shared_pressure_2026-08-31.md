@@ -89,3 +89,23 @@ This closes the independent review's bounded-global fragmented-pool deadlock
 case.  It does not establish useful performance at 16 payload words, nor does
 it replace the selected 4,096-word GZZ configuration or full-application
 promotion gates.
+
+## Unaligned generic-backing successor
+
+Commit `ae109eee` makes generic masked retirement identify cache lines relative
+to the aligned envelope around an arbitrary backing base. Direct line handoff
+remains enabled only for aligned backing, so an unaligned application stays on
+the ordinary coherent fallback rather than panicking or inventing a line ID.
+
+The frozen unaligned August 10 guest then passes at
+`/data1/nier/dx100-runs/2026-08-31-bounded-global-shared-pressure-unaligned-guest-ae109eee-r10`:
+
+- exact output hash `7228541527853630339` and zero errors;
+- 16,384 fanout words and shared high water 16/16;
+- 15,327 retirement issues and 15,327 ACKs;
+- all four pages ready and one terminal `m5_exit`.
+
+Its `result.tsv` SHA-256 is
+`9a6d10fa443e65d53a3f0cfe851064c9bba0b309fbec74103908059d703b12a2`.
+This successor is compatibility evidence, not a performance comparison with
+the aligned `r9` guest.
