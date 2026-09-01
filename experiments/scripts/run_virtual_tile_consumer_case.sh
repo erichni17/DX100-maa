@@ -1422,11 +1422,18 @@ elif [[ $virtual -eq 1 ]]; then
         exit 1
     }
     expected_pages=$((16384 / physical))
+    expected_page_span=$((all_page_cycles - first_page_cycles))
+    page_span_delta=$((page_span_cycles - expected_page_span))
+    if [[ $page_span_delta -lt 0 ]]; then
+        page_span_delta=$((-page_span_delta))
+    fi
+    # Each statistic floors an independent tick interval to whole cycles.
+    # floor(all-first) can differ by one from floor(all-decode)-floor(first-decode).
     [[ $pages_ready -eq $expected_pages && $first_page_cycles -gt 0 && \
        $all_page_cycles -ge $first_page_cycles && \
-       $page_span_cycles -eq $((all_page_cycles - first_page_cycles)) && \
+       $page_span_delta -le 1 && \
        $page_ready_signals -eq $expected_pages ]] || {
-        echo "invalid virtual page readiness: pages=$pages_ready/$expected_pages first=$first_page_cycles all=$all_page_cycles span=$page_span_cycles" >&2
+        echo "invalid virtual page readiness: pages=$pages_ready/$expected_pages first=$first_page_cycles all=$all_page_cycles span=$page_span_cycles delta=$page_span_delta" >&2
         exit 1
     }
     trace="$out/run/virtual_trace.log"

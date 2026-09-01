@@ -375,6 +375,11 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
             "row_slices * row_rows * row_entries",
         ):
             self.assertIn(token, self.runner)
+        self.assertIn("page_span_delta -le 1", self.runner)
+        self.assertNotIn(
+            "page_span_cycles -eq $((all_page_cycles - first_page_cycles))",
+            self.runner,
+        )
 
     def test_bounded_pass_state_is_scoped_to_direct_index_operations(
         self,
