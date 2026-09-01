@@ -196,27 +196,82 @@ class HybridGoalAuditTest(unittest.TestCase):
     def _sssp(self, gated: bool) -> None:
         root = self.roots["sssp"]
         (root / "candidate.manifest").write_text(
-            "native_arms=0\nlogical_elements=16384\nphysical_tile_elements=4096\nactive_contexts=8\n"
+            "native_arms=0\nlogical_elements=16384\n"
+            "physical_tile_elements=4096\nactive_contexts=8\n"
+            "full_graph=true\ntrace=false\nwall_timeout=none\n"
         )
-        (root / "external_reference.manifest").write_text(
-            "oracle=SSSP_FINGERPRINT result=PASS\n"
+        oracle = (
+            "SSSP_FINGERPRINT vertices=8 reached=8 unreachable=0 "
+            "distance_sum=12 max_distance=3 hash_a=0123456789abcdef "
+            "hash_b=fedcba9876543210 triangle_violations=0 "
+            "missing_predecessors=0 nonpositive_weights=0 "
+            "negative_distances=0 result=PASS"
         )
+        (root / "external_reference.manifest").write_text(f"oracle={oracle}\n")
         (root / "run").mkdir(exist_ok=True)
+        terminal = (
+            "SSSP_OLD_RESULT_HYBRID_TERMINAL "
+            "treatment=old_result_hybrid eligible_windows=2 routed_windows=1 "
+            "unsafe_eligible_windows=1 index_publish_pages=4 "
+            "value_publish_pages=4 old_result_words=16384 "
+            "legacy_words=16384 fallback_pages=4 "
+            "fallback_publication_issue_pages=12 "
+            "fallback_publication_response_pages=12 "
+            "fallback_publication_words=49152 "
+            "fallback_publication_bytes=196608 "
+            "fallback_consumed_words=16384 predicate_restore_words=16384 "
+            "coherent_tail_words=0 logical_reorder_words=16384 "
+            "physical_spd_words=4096 row_table_slices=32 host_spd_reads=0 "
+            "illegal_host_spd_line_starts=0 new_dedicated_payload_bytes=0 "
+            "hidden_logical_spd_bytes=0 hidden_result_payload_bytes=0 "
+            "response_closure=1 counts_close=1"
+        )
         (root / "run/restore.log").write_text(
-            "coherent fallback accounting closed\n"
+            f"{terminal}\nROI End!!!\n{oracle}\n"
+            "Exiting @ tick 9 because m5_exit instruction encountered\n"
+        )
+        (root / "run/stats.txt").write_text(
+            "---------- Begin Simulation Statistics ----------\n"
+            "simTicks 8\n"
+            "---------- End Simulation Statistics ----------\n"
+            "---------- Begin Simulation Statistics ----------\n"
+            "simTicks 9\n"
+            "---------- End Simulation Statistics ----------\n"
+        )
+        (root / "checkpoint.exit").write_text("0\n")
+        (root / "run/restore.exit").write_text("0\n")
+        (root / "wrapper.status").write_text("exit_code=0\n")
+        (root / "result.txt").write_text(
+            "validation=PASS\n"
+            "routing_status=eligible_subset_routed_fallbacks_preserved\n"
         )
         if gated:
             (root / "gate.complete").write_text("PASS\n")
         else:
             (root / "gate.complete").unlink(missing_ok=True)
+        artifact_witness = root / "artifact.witness"
+        checkpoint_witness = root / "checkpoint.witness"
+        artifact_witness.write_text("artifact")
+        checkpoint_witness.write_text("checkpoint")
         for name in (
             "provenance/artifacts.before.sha256",
-            "provenance/checkpoint.before.files.sha256",
-            "provenance/checkpoint.before.identity.sha256",
+            "provenance/artifacts.after.sha256",
         ):
-            witness = root / (name.replace("/", "_") + ".witness")
-            witness.write_text(name)
-            self._ledger(root, name, [witness])
+            self._ledger(root, name, [artifact_witness])
+        for name in (
+            "provenance/checkpoint.before.files.sha256",
+            "provenance/checkpoint.after.files.sha256",
+        ):
+            self._ledger(root, name, [checkpoint_witness])
+        identity = self._hash(
+            root / "provenance/checkpoint.before.files.sha256"
+        )
+        (root / "provenance/checkpoint.before.identity.sha256").write_text(
+            identity + "\n"
+        )
+        (root / "provenance/checkpoint.after.identity.sha256").write_text(
+            identity + "\n"
+        )
 
     def result(self) -> dict:
         return AUDIT.audit(self.roots)
@@ -332,6 +387,45 @@ class HybridGoalAuditTest(unittest.TestCase):
     def test_hidden_hardware_bytes_are_rejected(self) -> None:
         self.roots["sssp"].joinpath("candidate.manifest").write_text(
             "native_arms=0\nlogical_elements=16384\nphysical_tile_elements=4096\nactive_contexts=8\nhidden_payload_bytes=4\n"
+        )
+        self.assertEqual(
+            AUDIT.audit_sssp(self.roots["sssp"])["status"], "failed"
+        )
+
+    def test_sssp_zero_routed_windows_are_rejected(self) -> None:
+        restore = self.roots["sssp"] / "run/restore.log"
+        restore.write_text(
+            restore.read_text()
+            .replace("routed_windows=1", "routed_windows=0")
+            .replace("unsafe_eligible_windows=1", "unsafe_eligible_windows=2")
+            .replace("index_publish_pages=4", "index_publish_pages=0")
+            .replace("value_publish_pages=4", "value_publish_pages=0")
+            .replace("old_result_words=16384", "old_result_words=0")
+        )
+        self.assertEqual(
+            AUDIT.audit_sssp(self.roots["sssp"])["status"], "failed"
+        )
+
+    def test_sssp_restore_must_contain_exact_oracle(self) -> None:
+        restore = self.roots["sssp"] / "run/restore.log"
+        restore.write_text(restore.read_text().replace("hash_a=", "hash_a=x"))
+        self.assertEqual(
+            AUDIT.audit_sssp(self.roots["sssp"])["status"], "failed"
+        )
+
+    def test_sssp_nonzero_restore_exit_is_rejected(self) -> None:
+        self.roots["sssp"].joinpath("run/restore.exit").write_text("1\n")
+        self.assertEqual(
+            AUDIT.audit_sssp(self.roots["sssp"])["status"], "failed"
+        )
+
+    def test_sssp_before_after_artifact_drift_is_rejected(self) -> None:
+        witness = self.roots["sssp"] / "artifact-after.witness"
+        witness.write_text("changed")
+        self._ledger(
+            self.roots["sssp"],
+            "provenance/artifacts.after.sha256",
+            [witness],
         )
         self.assertEqual(
             AUDIT.audit_sssp(self.roots["sssp"])["status"], "failed"

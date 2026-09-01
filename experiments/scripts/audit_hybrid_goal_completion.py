@@ -251,7 +251,9 @@ def audit_cg(
             candidate.get("stats", {}) if isinstance(candidate, dict) else {}
         )
         terminal = (
-            candidate.get("terminal", {}) if isinstance(candidate, dict) else {}
+            candidate.get("terminal", {})
+            if isinstance(candidate, dict)
+            else {}
         )
         accounting = (
             lane4_certificate.get("hardware_accounting", {})
@@ -433,10 +435,8 @@ def audit_cg(
         and accounting.get("new_ports") == 0
         and accounting.get("fixed_value_owner_lines_per_unit") == 128
         and accounting.get("active_value_owner_lines_per_unit") == 32
-        and accounting.get("fixed_value_owner_payload_bytes_per_maa")
-        == 32768
-        and accounting.get("active_value_owner_payload_bytes_per_maa")
-        == 8192,
+        and accounting.get("fixed_value_owner_payload_bytes_per_maa") == 32768
+        and accounting.get("active_value_owner_payload_bytes_per_maa") == 8192,
         "CG direct4: bounded value-retention accounting absent",
         failures,
     )
@@ -450,7 +450,10 @@ def audit_cg(
     merged = stats.get("IND_SoaJitValueMergedWaiters")
     deliveries = stats.get("IND_SoaJitValueDeliveries")
     check(
-        all(isinstance(value, int) for value in (issues, hits, merged, deliveries))
+        all(
+            isinstance(value, int)
+            for value in (issues, hits, merged, deliveries)
+        )
         and 0 < issues < deliveries
         and hits > 0
         and issues + hits + merged == deliveries,
@@ -583,9 +586,14 @@ def audit_sssp(root: pathlib.Path) -> dict[str, Any]:
             "failures": ["SSSP: gate.complete is absent"],
             "validator": verifier,
         }
-    candidate, external = kv_file(root / "candidate.manifest"), kv_file(
-        root / "external_reference.manifest"
-    )
+    candidate = kv_file(root / "candidate.manifest")
+    external = kv_file(root / "external_reference.manifest")
+    result = kv_file(root / "result.txt")
+    wrapper = kv_file(root / "wrapper.status")
+    checkpoint_exit = text(root / "checkpoint.exit")
+    restore_exit = text(root / "run/restore.exit")
+    restore = text(root / "run/restore.log") or ""
+    stats = text(root / "run/stats.txt") or ""
     check(
         gate.strip() == "PASS",
         "SSSP: missing or forged terminal gate",
@@ -608,28 +616,189 @@ def audit_sssp(root: pathlib.Path) -> dict[str, Any]:
         failures,
     )
     check(
-        "oracle=SSSP_FINGERPRINT"
-        in (text(root / "external_reference.manifest") or "")
-        and "result=PASS"
-        in (text(root / "external_reference.manifest") or ""),
+        candidate.get("full_graph") == "true"
+        and candidate.get("trace") == "false"
+        and candidate.get("wall_timeout") == "none",
+        "SSSP: full trace-free no-timeout contract mismatch",
+        failures,
+    )
+    check(
+        wrapper.get("exit_code") == "0"
+        and checkpoint_exit is not None
+        and checkpoint_exit.strip() == "0"
+        and restore_exit is not None
+        and restore_exit.strip() == "0",
+        "SSSP: wrapper/checkpoint/restore did not all exit zero",
+        failures,
+    )
+    check(
+        result.get("validation") == "PASS"
+        and result.get("routing_status")
+        in (
+            "all_eligible_windows_routed",
+            "eligible_subset_routed_fallbacks_preserved",
+        ),
+        "SSSP: terminal result record is absent or rejected",
+        failures,
+    )
+    oracle = external.get("oracle")
+    check(
+        oracle is not None
+        and oracle.startswith("SSSP_FINGERPRINT ")
+        and oracle.endswith(" result=PASS")
+        and restore.splitlines().count(oracle) == 1,
         "SSSP: exact fingerprint/oracle absent",
+        failures,
+    )
+    check(
+        restore.count("because m5_exit instruction encountered") == 1
+        and restore.splitlines().count("ROI End!!!") == 1
+        and not any(
+            marker in restore.lower()
+            for marker in (
+                "panic",
+                "fatal",
+                "assert",
+                "abort",
+                "segmentation fault",
+                "error:",
+            )
+        ),
+        "SSSP: restore is nonterminal or contains a fatal marker",
+        failures,
+    )
+    terminal_lines = [
+        line
+        for line in restore.splitlines()
+        if line.startswith("SSSP_OLD_RESULT_HYBRID_TERMINAL ")
+    ]
+    check(
+        len(terminal_lines) == 1,
+        "SSSP: exact terminal mechanism record absent",
+        failures,
+    )
+    terminal = (
+        dict(
+            token.split("=", 1)
+            for token in terminal_lines[0].split()[1:]
+            if "=" in token
+        )
+        if len(terminal_lines) == 1
+        else {}
+    )
+
+    numeric: dict[str, int] = {}
+    for key in (
+        "eligible_windows",
+        "routed_windows",
+        "unsafe_eligible_windows",
+        "index_publish_pages",
+        "value_publish_pages",
+        "old_result_words",
+        "legacy_words",
+        "fallback_pages",
+        "fallback_publication_issue_pages",
+        "fallback_publication_response_pages",
+        "fallback_publication_words",
+        "fallback_publication_bytes",
+        "fallback_consumed_words",
+        "predicate_restore_words",
+        "coherent_tail_words",
+    ):
+        value = terminal.get(key, "")
+        if value.isdigit():
+            numeric[key] = int(value)
+        else:
+            failures.append(f"SSSP: terminal {key} is absent or nonnumeric")
+    if len(numeric) == 15:
+        eligible = numeric["eligible_windows"]
+        routed = numeric["routed_windows"]
+        unsafe = numeric["unsafe_eligible_windows"]
+        fallback_pages = numeric["fallback_pages"]
+        check(
+            eligible > 0
+            and routed > 0
+            and routed + unsafe == eligible
+            and numeric["index_publish_pages"] == routed * 4
+            and numeric["value_publish_pages"] == routed * 4
+            and numeric["old_result_words"] == routed * 16384,
+            "SSSP: routed-window work conservation failed",
+            failures,
+        )
+        check(
+            numeric["fallback_publication_issue_pages"]
+            == numeric["fallback_publication_response_pages"]
+            == fallback_pages * 3
+            and numeric["fallback_publication_words"]
+            == fallback_pages * 3 * 4096
+            and numeric["fallback_publication_bytes"]
+            == numeric["fallback_publication_words"] * 4
+            and numeric["fallback_consumed_words"]
+            == fallback_pages * 4096 + numeric["coherent_tail_words"]
+            and numeric["predicate_restore_words"] == fallback_pages * 4096
+            and numeric["legacy_words"] == numeric["fallback_consumed_words"],
+            "SSSP: coherent fallback work conservation failed",
+            failures,
+        )
+    for key, expected in (
+        ("treatment", "old_result_hybrid"),
+        ("logical_reorder_words", "16384"),
+        ("physical_spd_words", "4096"),
+        ("row_table_slices", "32"),
+        ("host_spd_reads", "0"),
+        ("illegal_host_spd_line_starts", "0"),
+        ("new_dedicated_payload_bytes", "0"),
+        ("hidden_logical_spd_bytes", "0"),
+        ("hidden_result_payload_bytes", "0"),
+        ("response_closure", "1"),
+        ("counts_close", "1"),
+    ):
+        check(
+            terminal.get(key) == expected,
+            f"SSSP: terminal {key} contract mismatch",
+            failures,
+        )
+    sim_ticks = [
+        line.split()[1]
+        for line in stats.splitlines()
+        if line.startswith("simTicks ") and len(line.split()) >= 2
+    ]
+    check(
+        len(sim_ticks) == 2
+        and all(value.isdigit() and int(value) > 0 for value in sim_ticks),
+        "SSSP: two nonzero simulation windows are absent",
         failures,
     )
     for name in (
         "provenance/artifacts.before.sha256",
+        "provenance/artifacts.after.sha256",
         "provenance/checkpoint.before.files.sha256",
-        "provenance/checkpoint.before.identity.sha256",
+        "provenance/checkpoint.after.files.sha256",
     ):
         check_ledger(root / name, failures, f"SSSP {name}")
-    log = text(root / "run/restore.log") or ""
+    before_identity = text(
+        root / "provenance/checkpoint.before.identity.sha256"
+    )
+    after_identity = text(root / "provenance/checkpoint.after.identity.sha256")
     check(
-        "host SPD" not in log.lower() and "out-of-range" not in log.lower(),
-        "SSSP: host SPD or out-of-range access observed",
+        before_identity is not None
+        and after_identity is not None
+        and valid_sha256(before_identity.strip())
+        and valid_sha256(after_identity.strip()),
+        "SSSP: checkpoint identity digest is malformed",
         failures,
     )
     check(
-        "coherent" in log.lower() and "fallback" in log.lower(),
-        "SSSP: full routed/coherent fallback accounting absent",
+        text(root / "provenance/artifacts.before.sha256")
+        == text(root / "provenance/artifacts.after.sha256"),
+        "SSSP: before/after artifact identity changed",
+        failures,
+    )
+    check(
+        text(root / "provenance/checkpoint.before.files.sha256")
+        == text(root / "provenance/checkpoint.after.files.sha256")
+        and before_identity == after_identity,
+        "SSSP: checkpoint identity changed",
         failures,
     )
     check(
