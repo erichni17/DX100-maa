@@ -7540,7 +7540,8 @@ void IndirectAccessUnit::executeInstruction() {
                             panic_if(virtual_head < 0 || virtual_words <= 0,
                                      "I[%d] virtual source claim is empty\n",
                                      my_indirect_id);
-                            if (virtual_response_word_pool_limit != 0)
+                            if (virtual_response_word_pool_limit != 0 &&
+                                !virtual_shared_result_payload)
                                 panic_if(virtual_words >
                                              virtual_response_word_pool_limit,
                                          "I[%d] source response needs %d/%d pooled words\n",

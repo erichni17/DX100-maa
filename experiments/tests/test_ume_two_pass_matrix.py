@@ -169,6 +169,18 @@ class UmeTwoPassMatrixTest(unittest.TestCase):
             self.assertIn(token, implementation + header + fanout)
         self.assertNotIn("remaining_word_uses", implementation + header)
         self.assertIn("static constexpr uint16_t ScanWidth = 4", fanout)
+        self.assertGreaterEqual(
+            implementation.count(
+                "virtual_response_word_pool_limit != 0 &&\n"
+                "        !virtual_shared_result_payload"
+            ),
+            1,
+        )
+        self.assertNotIn(
+            "if (virtual_response_word_pool_limit != 0)\n"
+            "                                panic_if(virtual_words >",
+            implementation,
+        )
 
     def test_page_materializer_closes_strict_consumer_lifetime(self) -> None:
         source = (ROOT / "src/mem/MAA/MAA.cc").read_text()
