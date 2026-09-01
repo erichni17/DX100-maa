@@ -1227,6 +1227,12 @@ public:
         std::vector<statistics::Scalar *> IND_VirtFanoutScanCycles;
         std::vector<statistics::Scalar *> IND_VirtFanoutScanWaitEvents;
         std::vector<statistics::Scalar *> IND_VirtFanoutScanWaitCycles;
+        std::vector<statistics::Scalar *> IND_VirtFanoutOverlapResumes;
+        std::vector<statistics::Scalar *> IND_VirtFanoutOverlapSlotStalls;
+        std::vector<statistics::Scalar *> IND_VirtFanoutOverlapCreditStalls;
+        std::vector<statistics::Scalar *>
+            IND_VirtFanoutOverlapCreditStallCycles;
+        std::vector<statistics::Scalar *> IND_VirtPendingSourceHighWater;
         std::vector<statistics::Scalar *> IND_VirtSharedPayloadTransfers;
         std::vector<statistics::Scalar *> IND_VirtSharedPayloadRollbacks;
         std::vector<statistics::Scalar *> IND_VirtSharedPayloadHighWater;

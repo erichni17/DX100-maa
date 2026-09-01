@@ -34,6 +34,11 @@ class GzzSharedPayloadPhaseComparisonTest(unittest.TestCase):
             "IND_VirtBuildRounds": multiplier,
             "IND_VirtFanoutScanCycles": 4 if multiplier > 1 else 0,
             "IND_VirtFanoutScanWaitCycles": 4 if multiplier > 1 else 0,
+            "IND_VirtFanoutOverlapResumes": 0,
+            "IND_VirtFanoutOverlapSlotStalls": 0,
+            "IND_VirtFanoutOverlapCreditStalls": 0,
+            "IND_VirtFanoutOverlapCreditStallCycles": 0,
+            "IND_VirtPendingSourceHighWater": 0,
         }
         lines = ["---------- Begin Simulation Statistics ----------"]
         for key, value in values.items():
@@ -44,6 +49,21 @@ class GzzSharedPayloadPhaseComparisonTest(unittest.TestCase):
         lines.append("simTicks 999")
         lines.append("---------- End Simulation Statistics ----------")
         path.write_text("\n".join(lines) + "\n")
+        return path
+
+    def recovered_stats(self) -> pathlib.Path:
+        path = self.stats("recovered", 1, 16)
+        text = path.read_text()
+        text = text.replace("simTicks 100", "simTicks 90")
+        text = text.replace(
+            "system.maa.I0_IND_VirtFanoutOverlapResumes 0",
+            "system.maa.I0_IND_VirtFanoutOverlapResumes 1024",
+        )
+        text = text.replace(
+            "system.maa.I0_IND_VirtPendingSourceHighWater 0",
+            "system.maa.I0_IND_VirtPendingSourceHighWater 1",
+        )
+        path.write_text(text)
         return path
 
     def trace(self, name: str, high_water: int) -> pathlib.Path:
@@ -81,6 +101,19 @@ class GzzSharedPayloadPhaseComparisonTest(unittest.TestCase):
         trace.write_text(trace.read_text() * 2)
         with self.assertRaisesRegex(ValueError, "expected one"):
             compare.parse_event(trace, "strict_two_phase_timing")
+
+    def test_accepts_material_source_mlp_recovery(self):
+        result = compare.compare(
+            self.stats("collapsed-reference", 2, 1),
+            self.trace("collapsed-reference", 3484),
+            self.recovered_stats(),
+            self.trace("recovered", 4096),
+        )
+        self.assertEqual(
+            result["diagnosis"]["classification"],
+            "SOURCE_MLP_RECOVERED",
+        )
+        self.assertTrue(result["diagnosis"]["source_mlp_recovered"])
 
     def test_sums_per_unit_stats(self):
         path = self.stats("per-unit", 1, 64)

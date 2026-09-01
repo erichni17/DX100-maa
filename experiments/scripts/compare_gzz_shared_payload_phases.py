@@ -21,7 +21,23 @@ COUNTERS = (
     "IND_VirtBuildRounds",
     "IND_VirtFanoutScanCycles",
     "IND_VirtFanoutScanWaitCycles",
+    "IND_VirtFanoutOverlapResumes",
+    "IND_VirtFanoutOverlapSlotStalls",
+    "IND_VirtFanoutOverlapCreditStalls",
+    "IND_VirtFanoutOverlapCreditStallCycles",
+    "IND_VirtPendingSourceHighWater",
 )
+
+OPTIONAL_COUNTERS = {
+    "IND_VirtSharedPayloadHighWater",
+    "IND_VirtFanoutScanCycles",
+    "IND_VirtFanoutScanWaitCycles",
+    "IND_VirtFanoutOverlapResumes",
+    "IND_VirtFanoutOverlapSlotStalls",
+    "IND_VirtFanoutOverlapCreditStalls",
+    "IND_VirtFanoutOverlapCreditStallCycles",
+    "IND_VirtPendingSourceHighWater",
+}
 
 
 def digest(path: pathlib.Path) -> str:
@@ -54,15 +70,7 @@ def parse_first_stats(path: pathlib.Path) -> dict[str, float]:
                 values[name].append(float(fields[1]))
     result: dict[str, float] = {}
     for name, matches in values.items():
-        if (
-            name
-            in (
-                "IND_VirtSharedPayloadHighWater",
-                "IND_VirtFanoutScanCycles",
-                "IND_VirtFanoutScanWaitCycles",
-            )
-            and not matches
-        ):
+        if name in OPTIONAL_COUNTERS and not matches:
             result[name] = 0.0
             continue
         if not matches or (name == "simTicks" and len(matches) != 1):
@@ -143,6 +151,20 @@ def compare(
         and abs(comparisons["IND_StrictTwoPhaseConsumerCycles"]["ratio"] - 1.0)
         <= 0.02
     )
+    source_mlp_recovered = (
+        candidate["IND_VirtResponseSlotHighWater"] > 1
+        and comparisons["IND_StrictTwoPhaseAIssueCycles"]["ratio"] <= 0.50
+        and comparisons["IND_StrictTwoPhaseBackingCycles"]["ratio"] <= 0.50
+        and comparisons["simTicks"]["ratio"] <= 0.95
+        and candidate["IND_VirtFanoutOverlapResumes"] > 0
+        and candidate["IND_VirtPendingSourceHighWater"] == 1
+    )
+    if mlp_collapse and stable_front_end:
+        classification = "SOURCE_MLP_COLLAPSE"
+    elif source_mlp_recovered and stable_front_end:
+        classification = "SOURCE_MLP_RECOVERED"
+    else:
+        classification = "UNRESOLVED"
     return {
         "schema": "dx100.gzz_shared_payload_phase_comparison.v1",
         "historical_cross_binary": True,
@@ -150,11 +172,8 @@ def compare(
         "diagnosis": {
             "stable_front_end_and_consumer": stable_front_end,
             "source_mlp_collapse": mlp_collapse,
-            "classification": (
-                "SOURCE_MLP_COLLAPSE"
-                if mlp_collapse and stable_front_end
-                else "UNRESOLVED"
-            ),
+            "source_mlp_recovered": source_mlp_recovered,
+            "classification": classification,
         },
         "comparisons": comparisons,
         "trace": {

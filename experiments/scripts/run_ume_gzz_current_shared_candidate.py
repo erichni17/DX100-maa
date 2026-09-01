@@ -16,6 +16,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from experiments.scripts import (  # noqa: E402
+    compare_gzz_shared_payload_phases as phase_compare,
+)
+from experiments.scripts import (  # noqa: E402
     run_ume_gzz_matched_consumer_matrix as matched,
 )
 from experiments.scripts import (  # noqa: E402
@@ -25,6 +28,9 @@ from experiments.scripts import run_ume_two_pass_matrix as base  # noqa: E402
 
 AUTHORITY = Path(
     "/data1/nier/dx100-runs/2026-08-31-ume-gzz-matched-consumer-r6"
+)
+CURRENT_BASELINE = Path(
+    "/data1/nier/dx100-runs/" "2026-09-01-ume-gzz-current-shared-candidate-r1"
 )
 DEFAULT_BUILD_ROOT = Path(
     "/data1/nier/worktrees/DX100-virtualization-selected-integration-cont-20260826"
@@ -48,6 +54,8 @@ TREATMENT_SOURCES = (
     "src/mem/MAA/MAA.cc",
     "src/mem/MAA/MAA.hh",
     "src/mem/MAA/MAA.py",
+    "src/mem/MAA/SharedPayloadTransfer.hh",
+    "src/mem/MAA/SharedSourceOverlapScheduler.hh",
     "src/mem/MAA/VirtualCombinePayloadStore.hh",
     "src/mem/MAA/VirtualResponsePayloadStore.hh",
     "src/mem/MAA/VirtualSourceFanout.hh",
@@ -77,13 +85,26 @@ def authority_identity() -> dict[str, str]:
     }
 
 
-def verify_current_sources(source_root: Path, gem5: Path) -> dict[str, Any]:
+def sealed_identity(root: Path) -> dict[str, str]:
+    return {
+        "artifacts_sha256": bridge.sha256(root / "artifacts.sha256"),
+        "manifest_sha256": bridge.sha256(root / "manifest.json"),
+        "result_sha256": bridge.sha256(root / "result.json"),
+    }
+
+
+def verify_current_sources(
+    source_root: Path,
+    gem5: Path,
+    expected_commit: str = EXPECTED_SIMULATOR_COMMIT,
+    expected_gem5_sha256: str = EXPECTED_GEM5_SHA256,
+) -> dict[str, Any]:
     require(
         source_root.is_dir(), f"missing simulator source root: {source_root}"
     )
     require(gem5.is_file() and not gem5.is_symlink(), f"missing gem5: {gem5}")
     worktree_head = git_text(source_root, "rev-parse", "HEAD")
-    commit = EXPECTED_SIMULATOR_COMMIT
+    commit = expected_commit
     subprocess.run(
         [
             "git",
@@ -95,8 +116,9 @@ def verify_current_sources(source_root: Path, gem5: Path) -> dict[str, Any]:
         ],
         check=True,
     )
+    require(worktree_head == commit, "simulator worktree is not exact commit")
     require(
-        bridge.sha256(gem5) == EXPECTED_GEM5_SHA256,
+        bridge.sha256(gem5) == expected_gem5_sha256,
         "current gem5 binary identity changed",
     )
     hashes: dict[str, str] = {}
@@ -252,10 +274,17 @@ def run_arm(
 
 def classify(root: Path) -> dict[str, Any]:
     authority_before = authority_identity()
+    current_before = sealed_identity(CURRENT_BASELINE)
     authority = matched.validate(AUTHORITY)
+    bridge.verify_ledger(CURRENT_BASELINE)
+    current_sealed = json.loads((CURRENT_BASELINE / "result.json").read_text())
     require(
         authority_identity() == authority_before,
         "sealed r6 authority changed during read-only validation",
+    )
+    require(
+        sealed_identity(CURRENT_BASELINE) == current_before,
+        "current baseline changed during read-only validation",
     )
     manifest = json.loads((root / "manifest.json").read_text())
     candidate = base.classify_arm(root, ARM, manifest)
@@ -277,6 +306,11 @@ def classify(root: Path) -> dict[str, Any]:
         == native4["output_hash"]
         == base.EXPECTED_OUTPUT_HASH,
         "exact output mismatch",
+    )
+    require(
+        current_sealed["candidate"]["output_hash"] == base.EXPECTED_OUTPUT_HASH
+        and current_sealed["candidate"]["counters"]["simTicks"] == 42_346_396,
+        "current 42,346,396-tick baseline identity/result changed",
     )
     for field in ("numInst_INDRD", "numInst_INDRMW", "index_words"):
         require(
@@ -303,6 +337,26 @@ def classify(root: Path) -> dict[str, Any]:
         "shared payload high-water bound",
     )
     require(int(shared["transfers"]) > 0, "shared payload transfer missing")
+    require(
+        int(shared["transfers"]) == 16_384 and int(shared["rollbacks"]) == 0,
+        "exact shared transfer/rollback closure",
+    )
+
+    overlap = base.base.exactly_one_event(
+        trace_lines, "fanout_overlap_complete"
+    )
+    require(overlap.get("schema") == "1", "overlap summary schema")
+    require(int(overlap["resumes"]) > 0, "overlap resume missing")
+    require(int(overlap["pending_hwm"]) == 1, "pending latch HWM")
+    resume_events = [
+        event
+        for line in trace_lines
+        if (event := base.base.parse_event(line, "fanout_overlap_resume"))
+    ]
+    require(
+        len(resume_events) == int(overlap["resumes"]),
+        "overlap resume trace/stat mismatch",
+    )
 
     counters = candidate["counters"]
     strict_trace = candidate["strict_trace"]
@@ -320,6 +374,64 @@ def classify(root: Path) -> dict[str, Any]:
         and counters["pages_ready"] == 4,
         "strict mechanism closure",
     )
+    require(
+        int(strict_trace["a_issues"])
+        == int(strict_trace["a_responses"])
+        == 1_025,
+        "exact source issue/response closure",
+    )
+    require(
+        counters["full_line_writes"] == 1_024
+        and counters["partial_writes"] == 0
+        and int(strict_trace["backing_transport_bytes"]) == 65_536
+        and int(strict_trace["backing_semantic_bytes"]) == 65_536,
+        "exact full-line backing closure",
+    )
+
+    candidate_stats = root / "arms" / ARM.name / "run/stats.txt"
+    candidate_trace = root / "arms" / ARM.name / "run/contract_trace.log"
+    current_stats = CURRENT_BASELINE / "arms" / ARM.name / "run/stats.txt"
+    current_trace = (
+        CURRENT_BASELINE / "arms" / ARM.name / "run/contract_trace.log"
+    )
+    phase_comparison = phase_compare.compare(
+        current_stats, current_trace, candidate_stats, candidate_trace
+    )
+    require(
+        phase_comparison["diagnosis"]["classification"]
+        == "SOURCE_MLP_RECOVERED",
+        "integrated phase comparator rejected source MLP recovery",
+    )
+    phase = phase_comparison["comparisons"]
+    require(
+        phase["simTicks"]["reference"] == 42_346_396,
+        "integrated comparator used the wrong current baseline",
+    )
+    require(
+        phase["IND_VirtResponseSlotHighWater"]["candidate"] > 1,
+        "response HWM did not recover",
+    )
+    require(
+        phase["IND_VirtSharedPayloadHighWater"]["candidate"] <= 4_096,
+        "shared pool exceeded 4096 words",
+    )
+    require(
+        phase["IND_VirtPendingSourceHighWater"]["candidate"] == 1
+        and phase["IND_VirtFanoutOverlapResumes"]["candidate"] > 0,
+        "single pending overlap mechanism missing",
+    )
+    require(
+        phase["IND_StrictTwoPhaseAIssueCycles"]["ratio"] <= 0.50
+        and phase["IND_StrictTwoPhaseBackingCycles"]["ratio"] <= 0.50
+        and phase["simTicks"]["ratio"] <= 0.95,
+        "A/backing/total improvement is not material",
+    )
+    require(
+        abs(phase["IND_StrictTwoPhaseBFetchCycles"]["ratio"] - 1.0) <= 0.01
+        and abs(phase["IND_StrictTwoPhaseConsumerCycles"]["ratio"] - 1.0)
+        <= 0.01,
+        "B/consumer phase changed by more than 1%",
+    )
 
     current_ticks = counters["simTicks"]
     r6_ticks = r6_strict["counters"]["simTicks"]
@@ -328,16 +440,20 @@ def classify(root: Path) -> dict[str, Any]:
     return {
         "schema": "dx100.ume_gzz_current_shared_candidate.result.v1",
         "terminal": True,
-        "decision": "ACCEPT_CURRENT_SOURCE_CORRECTNESS",
+        "decision": "ACCEPT_SHARED_SOURCE_OVERLAP_REPAIR",
         "candidate_only": True,
         "simulated_arms": [ARM.name],
         "native_simulations": 0,
         "performance_attribution": False,
         "authority": str(AUTHORITY),
         "authority_identity": authority_before,
+        "current_baseline": str(CURRENT_BASELINE),
+        "current_baseline_identity": current_before,
         "candidate": candidate,
         "shared_payload_closure": shared,
         "line_shadow_bytes": 0,
+        "fanout_overlap_closure": overlap,
+        "integrated_phase_comparison": phase_comparison,
         "comparisons": {
             "current_ticks": current_ticks,
             "r6_strict_ticks": r6_ticks,
@@ -365,10 +481,19 @@ def classify(root: Path) -> dict[str, Any]:
     }
 
 
-def prepare(root: Path, gem5: Path, source_root: Path) -> dict[str, Any]:
+def prepare(
+    root: Path,
+    gem5: Path,
+    source_root: Path,
+    expected_commit: str = EXPECTED_SIMULATOR_COMMIT,
+    expected_gem5_sha256: str = EXPECTED_GEM5_SHA256,
+) -> dict[str, Any]:
     require(not root.exists(), f"output exists: {root}")
-    source_identity = verify_current_sources(source_root, gem5)
+    source_identity = verify_current_sources(
+        source_root, gem5, expected_commit, expected_gem5_sha256
+    )
     authority = matched.validate(AUTHORITY)
+    bridge.verify_ledger(CURRENT_BASELINE)
     authority_hashes = authority_identity()
     root.mkdir(parents=True)
     inputs = root / "inputs"
@@ -377,7 +502,7 @@ def prepare(root: Path, gem5: Path, source_root: Path) -> dict[str, Any]:
     frozen_ramulator = inputs / "libramulator.so"
     frozen_config = inputs / "ramulator.yaml"
     require(
-        base.copy_stable(gem5, frozen_gem5) == EXPECTED_GEM5_SHA256,
+        base.copy_stable(gem5, frozen_gem5) == expected_gem5_sha256,
         "gem5 changed while freezing",
     )
     base.copy_stable(AUTHORITY / "inputs/libramulator.so", frozen_ramulator)
@@ -426,6 +551,8 @@ def prepare(root: Path, gem5: Path, source_root: Path) -> dict[str, Any]:
         "timeout": "none",
         "authority": str(AUTHORITY),
         "authority_identity": authority_hashes,
+        "current_baseline": str(CURRENT_BASELINE),
+        "current_baseline_identity": sealed_identity(CURRENT_BASELINE),
         "authority_output_hash": authority["output_hash"],
         "expected_output_hash": base.EXPECTED_OUTPUT_HASH,
         "matched_consumer": "maa_div_mul",
@@ -462,8 +589,16 @@ def seal(root: Path) -> dict[str, Any]:
     return result
 
 
-def run(root: Path, gem5: Path, source_root: Path) -> dict[str, Any]:
-    prepared = prepare(root, gem5, source_root)
+def run(
+    root: Path,
+    gem5: Path,
+    source_root: Path,
+    expected_commit: str = EXPECTED_SIMULATOR_COMMIT,
+    expected_gem5_sha256: str = EXPECTED_GEM5_SHA256,
+) -> dict[str, Any]:
+    prepared = prepare(
+        root, gem5, source_root, expected_commit, expected_gem5_sha256
+    )
     run_arm(
         root,
         prepared["gem5"],
@@ -479,9 +614,7 @@ def validate(root: Path) -> dict[str, Any]:
     bridge.verify_ledger(root)
     manifest = json.loads((root / "manifest.json").read_text())
     require(
-        bridge.sha256(root / "inputs/gem5.opt")
-        == manifest["gem5_sha256"]
-        == EXPECTED_GEM5_SHA256,
+        bridge.sha256(root / "inputs/gem5.opt") == manifest["gem5_sha256"],
         "sealed gem5 provenance",
     )
     for relative, expected in manifest["treatment_sha256"].items():
@@ -493,6 +626,11 @@ def validate(root: Path) -> dict[str, Any]:
     require(
         authority_identity() == manifest["authority_identity"],
         "sealed r6 authority identity changed",
+    )
+    require(
+        sealed_identity(CURRENT_BASELINE)
+        == manifest["current_baseline_identity"],
+        "sealed current baseline identity changed",
     )
     sealed = json.loads((root / "result.json").read_text())
     require(classify(root) == sealed, "sealed candidate result changed")
@@ -510,10 +648,17 @@ def main() -> int:
     parser.add_argument(
         "--gem5-source-root", type=Path, default=DEFAULT_BUILD_ROOT
     )
+    parser.add_argument(
+        "--expected-simulator-commit", default=EXPECTED_SIMULATOR_COMMIT
+    )
+    parser.add_argument("--expected-gem5-sha256", default=EXPECTED_GEM5_SHA256)
     args = parser.parse_args()
     if args.command == "preflight":
         source_identity = verify_current_sources(
-            args.gem5_source_root.resolve(), args.gem5.resolve()
+            args.gem5_source_root.resolve(),
+            args.gem5.resolve(),
+            args.expected_simulator_commit,
+            args.expected_gem5_sha256,
         )
         authority = matched.validate(AUTHORITY)
         result: dict[str, Any] = {
@@ -531,6 +676,8 @@ def main() -> int:
                 args.out.resolve(),
                 args.gem5.resolve(),
                 args.gem5_source_root.resolve(),
+                args.expected_simulator_commit,
+                args.expected_gem5_sha256,
             )
         elif args.command == "seal":
             result = seal(args.out.resolve())

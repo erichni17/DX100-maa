@@ -32,6 +32,8 @@ class UmeGzzCurrentSharedCandidateTest(unittest.TestCase):
     ) -> None:
         for relative in (
             "src/mem/MAA/VirtualSourceFanout.hh",
+            "src/mem/MAA/SharedPayloadTransfer.hh",
+            "src/mem/MAA/SharedSourceOverlapScheduler.hh",
             "src/mem/MAA/VirtualResponsePayloadStore.hh",
             "src/mem/MAA/VirtualCombinePayloadStore.hh",
             "src/mem/MAA/IndirectAccess.cc",
@@ -43,6 +45,21 @@ class UmeGzzCurrentSharedCandidateTest(unittest.TestCase):
             '"treatment_sha256": source_identity["treatment_sha256"]', source
         )
         self.assertIn('root / "inputs/treatment_sources" / relative', source)
+
+    def test_repair_gate_integrates_phase_and_overlap_closure(self) -> None:
+        source = Path(runner.__file__).read_text()
+        for token in (
+            "phase_compare.compare(",
+            '== "SOURCE_MLP_RECOVERED"',
+            'phase["simTicks"]["reference"] == 42_346_396',
+            'phase["IND_VirtResponseSlotHighWater"]["candidate"] > 1',
+            'phase["IND_VirtPendingSourceHighWater"]["candidate"] == 1',
+            'phase["IND_StrictTwoPhaseAIssueCycles"]["ratio"] <= 0.50',
+            'phase["IND_StrictTwoPhaseBackingCycles"]["ratio"] <= 0.50',
+            'phase["simTicks"]["ratio"] <= 0.95',
+            'trace_lines, "fanout_overlap_complete"',
+        ):
+            self.assertIn(token, source)
 
     def test_classification_requires_exact_mechanism_ack_and_shadow_closure(
         self,

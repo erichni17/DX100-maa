@@ -1,0 +1,371 @@
+#include <algorithm>
+#include <cstdint>
+#include <cstdlib>
+#include <functional>
+#include <iostream>
+#include <queue>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+#include "mem/MAA/SharedSourceOverlapScheduler.hh"
+
+using Scheduler = gem5::maa::SharedSourceOverlapScheduler;
+using Decision = Scheduler::Decision;
+
+#define CHECK(condition)                                                     \
+    do {                                                                     \
+        if (!(condition)) {                                                  \
+            std::cerr << __FILE__ << ':' << __LINE__                         \
+                      << ": check failed: " #condition << std::endl;         \
+            std::exit(1);                                                    \
+        }                                                                    \
+    } while (false)
+
+static Scheduler::Snapshot
+readySnapshot()
+{
+    return Scheduler::Snapshot{
+        true, 100, 100, 7, 128, 2'000, 1'000, 16, 4'096, true};
+}
+
+static void
+checkReadinessAndExactCredit()
+{
+    auto snapshot = readySnapshot();
+    snapshot.ready = 101;
+    CHECK(Scheduler::evaluate(snapshot) == Decision::WaitForScan);
+
+    snapshot.ready = snapshot.now;
+    CHECK(Scheduler::evaluate(snapshot) == Decision::ResumeBuild);
+    snapshot.combineWords = 3'080;
+    CHECK(Scheduler::evaluate(snapshot) == Decision::ResumeBuild);
+    snapshot.combineWords = 3'081;
+    CHECK(Scheduler::evaluate(snapshot) ==
+          Decision::WaitForUnifiedCredit);
+
+    snapshot = readySnapshot();
+    snapshot.responseSlotsUsed = 128;
+    CHECK(Scheduler::evaluate(snapshot) ==
+          Decision::WaitForResponseSlot);
+    snapshot.responseSlotsUsed = 127;
+    CHECK(Scheduler::evaluate(snapshot) == Decision::ResumeBuild);
+}
+
+static void
+checkSameTickResponseAndWriteProgress()
+{
+    auto snapshot = readySnapshot();
+    snapshot.responseSlotsUsed = 128;
+    CHECK(Scheduler::evaluate(snapshot) ==
+          Decision::WaitForResponseSlot);
+    // Request drains the completing response before reevaluating the latch.
+    snapshot.responseSlotsUsed = 127;
+    snapshot.progressPossible = false;
+    CHECK(Scheduler::evaluate(snapshot) == Decision::ResumeBuild);
+
+    snapshot = readySnapshot();
+    snapshot.combineWords = 3'081;
+    CHECK(Scheduler::evaluate(snapshot) ==
+          Decision::WaitForUnifiedCredit);
+    // A legal full-line write/spill releases credit in the same tick.
+    snapshot.combineWords = 3'065;
+    snapshot.progressPossible = false;
+    CHECK(Scheduler::evaluate(snapshot) == Decision::ResumeBuild);
+}
+
+static void
+checkNoProgressRejection()
+{
+    auto snapshot = readySnapshot();
+    snapshot.responseSlotsUsed = 128;
+    snapshot.progressPossible = false;
+    CHECK(Scheduler::evaluate(snapshot) == Decision::RejectNoProgress);
+
+    snapshot = readySnapshot();
+    snapshot.combineWords = 4'096;
+    snapshot.progressPossible = false;
+    CHECK(Scheduler::evaluate(snapshot) == Decision::RejectNoProgress);
+
+    snapshot.pending = false;
+    CHECK(Scheduler::evaluate(snapshot) == Decision::NoPending);
+}
+
+static uint16_t
+hexDigit(char value)
+{
+    if (value >= '0' && value <= '9')
+        return value - '0';
+    if (value >= 'a' && value <= 'f')
+        return value - 'a' + 10;
+    CHECK(false);
+    return 0;
+}
+
+static std::vector<uint16_t>
+decodeLatencies(std::string_view encoded)
+{
+    CHECK(encoded.size() % 4 == 0);
+    std::vector<uint16_t> values;
+    values.reserve(encoded.size() / 4);
+    for (size_t offset = 0; offset < encoded.size(); offset += 4) {
+        uint16_t value = 0;
+        for (size_t digit = 0; digit < 4; ++digit)
+            value = static_cast<uint16_t>(
+                value * 16 + hexDigit(encoded[offset + digit]));
+        values.push_back(value);
+    }
+    return values;
+}
+
+struct ReplayResult
+{
+    uint32_t scans = 0;
+    uint32_t words = 0;
+    uint32_t scanCycles = 0;
+    uint32_t issues = 0;
+    uint32_t responses = 0;
+    uint32_t responseHighWater = 0;
+    uint32_t pendingHighWater = 0;
+    uint32_t terminalResponseCycle = 0;
+    bool postScanLegal = true;
+    bool outOfOrder = false;
+};
+
+static ReplayResult
+replay(const std::vector<uint16_t> &latencies)
+{
+    using Completion = std::pair<uint32_t, uint32_t>;
+    std::priority_queue<Completion, std::vector<Completion>,
+                        std::greater<Completion>> completions;
+    ReplayResult result;
+    uint32_t cycle = 0;
+    uint32_t last_response_sequence = 0;
+    bool have_response = false;
+    CHECK(latencies.size() == 1'025);
+
+    for (uint32_t sequence = 0; sequence < latencies.size(); ++sequence) {
+        const uint32_t words = sequence == 70 ? 12 :
+            sequence == 1'015 ? 4 : 16;
+        const uint32_t scan_cycles = (words + 3) / 4;
+        const uint32_t scan_start = cycle;
+        const uint32_t ready = scan_start + scan_cycles;
+        result.pendingHighWater = std::max(result.pendingHighWater, 1U);
+        cycle = ready;
+
+        // Request drains responses first, including a same-cycle completion.
+        while (!completions.empty() &&
+               completions.top().first <= cycle) {
+            const uint32_t completed_sequence = completions.top().second;
+            completions.pop();
+            if (have_response &&
+                completed_sequence < last_response_sequence)
+                result.outOfOrder = true;
+            last_response_sequence = completed_sequence;
+            have_response = true;
+            ++result.responses;
+        }
+
+        const auto decision = Scheduler::evaluate(Scheduler::Snapshot{
+            true, cycle, ready,
+            static_cast<uint32_t>(completions.size()), 128,
+            0, static_cast<uint32_t>(completions.size()) * 16,
+            words, 4'096, !completions.empty()});
+        CHECK(decision == Decision::ResumeBuild);
+        result.postScanLegal =
+            result.postScanLegal && cycle >= ready &&
+            cycle - scan_start == scan_cycles;
+        completions.emplace(cycle + latencies[sequence], sequence);
+        ++result.issues;
+        ++result.scans;
+        result.words += words;
+        result.scanCycles += scan_cycles;
+        result.responseHighWater = std::max(
+            result.responseHighWater,
+            static_cast<uint32_t>(completions.size()));
+    }
+
+    while (!completions.empty()) {
+        result.terminalResponseCycle =
+            std::max(result.terminalResponseCycle,
+                     completions.top().first);
+        const uint32_t completed_sequence = completions.top().second;
+        completions.pop();
+        if (have_response && completed_sequence < last_response_sequence)
+            result.outOfOrder = true;
+        last_response_sequence = completed_sequence;
+        have_response = true;
+        ++result.responses;
+    }
+    return result;
+}
+
+// Captured from the exact source_issue/source_response pairs in the current
+// strict GZZ candidate (operation_tick=4642375623), converted with gem5's
+// ceil(ticks / 313-tick MAA cycle).
+static constexpr std::string_view CurrentLatencyHex =
+    "005a0030003100310031003100320031003100320032003100300031003100310031"
+    "00310031003100310031003100300031003100310031003200320031003100310032"
+    "0031005a003200310031003200320031003200310031003000320032003200310032"
+    "00320032003200310031003000320031003200320031003100310031003100320031"
+    "00310031003200590032003200320031003100300031003100310032003100310032"
+    "00320031003100310032003200320032003100310031003200310032003100310031"
+    "00320031003100320032003100310031003000320031003100320032003100310031"
+    "00310032003100310031003100310031003100310032003200310030003200320031"
+    "00310032003200320032003100320031003100310032003100310031003100310031"
+    "00310030003200310031003100310031003100310031003200300031003200320031"
+    "00310031003200310031003200300031003200310031003200310032003100310032"
+    "00300031003100310032003100310031003200310031003000590031003100320032"
+    "00310031003100320031003000310032003200310031003200310031003200320030"
+    "04e30031003100310031003200310031003200320031003000310031003100310031"
+    "00320031003100310032003100320031003100320032003100310032003200320030"
+    "00310031003200320031003100310032003100320031003200320031003100310032"
+    "00320031003100320031003100310031003200320031003100320032003100300031"
+    "00320031003100310031003200320031003100310031003100310031003200320032"
+    "00310032003200310032003100310031003200310032003200320031003100310031"
+    "0032003200310031005a003100310030003100310031003200310031003200320031"
+    "00310031003200320031003200320031003100310032003100310032003200320031"
+    "00310031003200310032003200300031003200310031003200320031003100310032"
+    "00310031003100310031003100310032003200320032003000320032003100310032"
+    "00320032003200310031003000310032003100310031003100310031003100310031"
+    "00310031003200320031003100310032003100310030003200320031003100310032"
+    "00320031003200310030003200310031003200310032003200310031003200300031"
+    "00310032003100320031003100310032003100300031003100320059003200310031"
+    "00310032003100310031003200310031003200320031003100310032003200310031"
+    "00320032003100310032003200310031003100320031003100310031003100310031"
+    "00320031003200310032003200310031003100310032003200310032003200320032"
+    "00310031003200320031003100310032003100320032003200320031003100310032"
+    "00310031003100320032003100310031003200310031003000310032003200310031"
+    "00320031003100310031003100320031003100310032003200310031003100320031"
+    "00310032003200320031003100310032003200310030003200310032003100310032"
+    "00320031003100320030005a00310031003100310031003200310031003200310031"
+    "00310032003200320031003100310031003100300031003100310032003200320032"
+    "00320031003100300032003100320032003100310032003100310032003100310031"
+    "0031003200320031003100310031003104df00300032003200310031003100320032"
+    "00310031003200310032003200310032003200310031003100310031003000310031"
+    "00310032003100310032003200310031003000320031003100310032003100310032"
+    "00310031003100310032003200310031003200310031003200310031003100310032"
+    "00310031003100310032003100310030003200320031003100320032005900310031"
+    "00310032003100310031003200320031003200310031003100320032003200310031"
+    "00320032003100310031003000320031003100320032003200310031003100320031"
+    "00310031003100320031003100310032003200320030003100320032003100310032"
+    "00320031003200320031003200310031003100320032003100310032003200300031"
+    "00310032003200310031003200320031003100300031003200310031003100310032"
+    "00320031003100310032003100310031003200310032003200320031003100310031"
+    "00320032003100310032003100320031003000310032003100310031003100320031"
+    "00320032003100310031003100590032003200320031003200310031003100310032"
+    "00310032003200320032003200300031003100320032003100310031003100320031"
+    "00300032003200310031003100310031003100320032003000310032003200320032"
+    "00310032003200310031003000310031003100310031003100320031003200320031"
+    "00320031003200310031003200310031003200310031003100310032003100310032"
+    "00310031003100310032003200320031003200310032003100320032005900310031"
+    "00310032003200310031003100310032003200300031003200320032003100310032"
+    "00320031003100320031003100310032003200310031003200320032003200310032"
+    "00320031003100320032003100320032003100320031003100310032003200320031"
+    "00310031003200310031003100310031003100320032003100310031003200310031"
+    "00310032003100320032003200310031003200310031003200310032003200310032"
+    "00320031003100310031";
+
+// Captured equivalently from sealed r6 strict (operation_tick=4642320535).
+static constexpr std::string_view LoadedLatencyHex =
+    "005a005a0089008900a100a100620062006a006a007a007a0099009900b100b10072"
+    "00720091009100a900a900b900b900c100c10082008200c900c900d900d900d100d1"
+    "00e100e100e900e900f100f10101010100f900f90109010901110111011901190129"
+    "01290121012101310131013901390141014101510151014901490159015901610161"
+    "01690169017901790171017101810181018901890191019101a101a10199019901a9"
+    "01a901b101b101b901b901c901c901c101c101d101d101d901d901e101e101f101f1"
+    "01e901e901f901f90201020102090209021902190211021102210221022902290231"
+    "02310241024102390239024902490251025100330033003b003b00430043004b004b"
+    "0053005300630063005b005b006a006a00720072007a007a008a008a008200820092"
+    "0092009a009a00a200a200b200b200aa00aa00ba00ba00c200c200ca00ca00da00da"
+    "00d200d200e200e200ea00ea00f200f20102010200fa00fa010a010a01120112011a"
+    "011a012a012a0122012201320132013a013a0142014201520152014a014a015a015a"
+    "01620162016a016a017a017a0172017201820182018a018a0192019201a201a2019a"
+    "019a01aa01aa01b201b201ba01ba01ca01ca01c201c201d201d201da01da01e201e2"
+    "01f201f201ea01ea01fa01fa02020202020a020a021a021a0212021202220222022a"
+    "022a00330033003b003b00430043004b004b0053005300630063005b005b006b006b"
+    "00730073007b007b008a008a0082008200920092009a009a00a200a200b200b200aa"
+    "00aa00ba00ba00c200c200ca00ca00da00da0032003a00320042003a004a00420052"
+    "004a005a0052006a00620062005a0072006a007a00720082007a003200420032003a"
+    "003a004a00420052004a003100330039003b00310033003100310031003500320031"
+    "00310032003100310032003200320041003100310041003100330041003b00390043"
+    "00320032003a003a00420042004a004a0052003200420032003a003a004a00420052"
+    "004a005a00520062005a006a00620072006a007a003200320042003a003a0042004a"
+    "004a00520052005a005a00620062006a006a00720072007a007a00820082008a008a"
+    "00920092003100330041003b003900430049004b005100530059005b006100630069"
+    "006b00710031004100330039003b004900430031003900330041003b004900430051"
+    "004b005900530061003100330039003b004100430049004b005100530059005b0031"
+    "00330039003b004100430049004b005100530059005b006100630069006b00710030"
+    "004000320038003a004800420050004a005800520060005a006800620070006a0078"
+    "00720080007a008800820090008a0098009200a0009a00a800a200b000320032003a"
+    "003a00420042004a004a00520052005a005a00620062006a006a0072003200420032"
+    "003a003a004a00420052004a005a00520062005a006a00320032003a003a00420042"
+    "004a004a00520052005a005a00620062006a006a00720072007a0031003900330041"
+    "003b004900430050004b005800520060005a006800620070006a007800720080007a"
+    "008800820090008a0098009200a0009a00a800a200b000320032003a003a00420042"
+    "004a004a00520052005a005a00620062006a006a00720072007a007a00820082008a"
+    "008a00920092009a009a003100330039003b004100430049004b005100530059005b"
+    "006100630069006b007100730079007b008100830089008b009100930099009b00a1"
+    "00a300a900ab00b100b3003200320042003a003a0042004a004a00520052005a005a"
+    "00620062006a006a00720072007900790081008100890089009100910099009900a1"
+    "0031003900330041003b004900430051004b005900530061005b006900630071006b"
+    "007900730081007b008900830091008b009900930031003900330041003b00490043"
+    "0051004b005900530061005b006900630071006b007900730081007b008900830091"
+    "008b0099009300a1009b00a900a300b1003100330039003b004100430049004b0051"
+    "00530059005b006100630069006b007100730079007b008100830089008b00910093"
+    "0099009b00a100a300a900ab00b100b300b900bb00c000c2003100330039003b0041"
+    "00430049004b005100530059005b006100630069006b007100730079007b00810083"
+    "0089008b009100930099009b00a100a300a900ab00b100b300b900bb00c100c300c9"
+    "00cb00d100d300d900db00e10031003900330041003b004900430051004b00590053"
+    "0061005b006900630071006b007900730081007b008900830091008b0099009300a1"
+    "009b00a900a300b100ab00b900b300c100bb00c900c30032003a00320042003a004a"
+    "00420052004a005a00520062005a006a00620072006a007900720081007900890081"
+    "0091008900910099009900a100a100a900a900b100b100b900b900c100c100c900d1"
+    "00c900d900d100e100e900f100d900f900e101010109011100e9011900f101210129"
+    "013100f901390101014101490109015101110031003900330041003b004900510043"
+    "0059004b0061006900530071005b0079008100630089006b00910099007300a1007b"
+    "00a900b1008300b9008b00c100c9009300d1009b00d900e100a300e900ab00f100f9"
+    "00b3010100bb0109011100c3011900cb0121012900d3013100db0139014100e30149"
+    "00eb015100f3015900fb016101030169010b017101130179011b018101230189012b"
+    "019001330198013b01a001a8014b01b001b8015b01c001c8016b01d0017b01e0018b"
+    "01f0019a020002100220";
+
+static void
+checkCapturedGzzReplay()
+{
+    const auto current = replay(decodeLatencies(CurrentLatencyHex));
+    CHECK(current.scans == 1'025);
+    CHECK(current.words == 16'384);
+    CHECK(current.scanCycles == 4'096);
+    CHECK(current.issues == 1'025);
+    CHECK(current.responses == 1'025);
+    CHECK(current.responseHighWater == 15);
+    CHECK(current.pendingHighWater == 1);
+    CHECK(current.terminalResponseCycle == 4'145);
+    CHECK(current.postScanLegal);
+    CHECK(current.outOfOrder);
+
+    const auto loaded = replay(decodeLatencies(LoadedLatencyHex));
+    CHECK(loaded.scans == 1'025);
+    CHECK(loaded.words == 16'384);
+    CHECK(loaded.scanCycles == 4'096);
+    CHECK(loaded.issues == 1'025);
+    CHECK(loaded.responses == 1'025);
+    CHECK(loaded.responseHighWater == 83);
+    CHECK(loaded.responseHighWater < 128);
+    CHECK(loaded.pendingHighWater == 1);
+    CHECK(loaded.terminalResponseCycle == 4'640);
+    CHECK(loaded.postScanLegal);
+    CHECK(loaded.outOfOrder);
+}
+
+int
+main()
+{
+    checkReadinessAndExactCredit();
+    checkSameTickResponseAndWriteProgress();
+    checkNoProgressRejection();
+    checkCapturedGzzReplay();
+    std::cout << "PASS shared source overlap scheduler\n";
+    return 0;
+}

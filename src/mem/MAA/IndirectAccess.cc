@@ -2909,6 +2909,183 @@ IndirectAccessUnit::virtualSourceCreditAvailable(
 }
 
 void
+IndirectAccessUnit::clearPendingVirtualSource()
+{
+    virtual_pending_source = false;
+    virtual_pending_source_addr = 0;
+    virtual_pending_source_head = -1;
+    virtual_pending_source_words = 0;
+    virtual_pending_source_rt_idx = -1;
+    virtual_pending_source_row_id = -1;
+    virtual_pending_source_entry_id = -1;
+    virtual_pending_source_grow_addr = 0;
+    virtual_pending_source_fanout = maa::VirtualSourceFanout();
+    virtual_pending_source_fanout_ready_tick = 0;
+}
+
+void
+IndirectAccessUnit::issuePendingVirtualSource()
+{
+    panic_if(!virtual_pending_source,
+             "I[%d] cannot issue an empty pending source latch\n",
+             my_indirect_id);
+    issueVirtualSource(virtual_pending_source_addr,
+                       virtual_pending_source_head,
+                       virtual_pending_source_words,
+                       virtual_pending_source_fanout,
+                       virtual_pending_source_fanout_ready_tick,
+                       virtual_pending_source_rt_idx,
+                       virtual_pending_source_row_id,
+                       virtual_pending_source_entry_id,
+                       virtual_pending_source_grow_addr, 0);
+    // issueVirtualSource commits the address/word reservation and packet.
+    // Only that completed transaction relinquishes the single pending owner.
+    clearPendingVirtualSource();
+}
+
+bool
+IndirectAccessUnit::virtualOverlapProgressPossible(
+    bool response_throttled, bool spill_succeeded) const
+{
+    return response_throttled || spill_succeeded ||
+        virtual_reserved_responses != 0 ||
+        virtual_outstanding_writes != 0 ||
+        !virtual_combine_lookup_pipeline.empty() ||
+        virtual_write_address_blocked ||
+        virtual_complete_line_payload_staging.isActive() ||
+        virtual_complete_line_drain_retry_tick > curTick();
+}
+
+bool
+IndirectAccessUnit::resumePendingVirtualSourceFromRequest(
+    bool response_throttled)
+{
+    using Scheduler = maa::SharedSourceOverlapScheduler;
+    if (!virtual_shared_result_payload || !virtual_pending_source)
+        return false;
+
+    const int payload_words =
+        virtualSourcePayloadWords(virtual_pending_source_fanout);
+    auto snapshot = [this, payload_words](bool progress_possible) {
+        return Scheduler::Snapshot{
+            true,
+            static_cast<uint64_t>(curTick()),
+            static_cast<uint64_t>(virtual_pending_source_fanout_ready_tick),
+            static_cast<uint32_t>(virtual_reserved_responses),
+            static_cast<uint32_t>(virtual_response_slots.size()),
+            static_cast<uint32_t>(virtual_combine_words),
+            static_cast<uint32_t>(virtual_reserved_response_words),
+            static_cast<uint32_t>(payload_words),
+            static_cast<uint32_t>(virtual_shared_result_payload_limit),
+            progress_possible};
+    };
+
+    // First identify the exact blocking resource.  Pool blocking gets one and
+    // only one existing legal partial-spill attempt after response/full-line
+    // drain; the second evaluation uses the resulting exact occupancy.
+    Scheduler::Decision decision = Scheduler::evaluate(snapshot(true));
+    bool spilled = false;
+    if (decision == Scheduler::Decision::WaitForUnifiedCredit) {
+        spilled = spillVirtualCombinePartialForSourceCredit();
+        decision = Scheduler::evaluate(snapshot(
+            virtualOverlapProgressPossible(response_throttled, spilled)));
+    } else if (decision == Scheduler::Decision::WaitForResponseSlot) {
+        decision = Scheduler::evaluate(snapshot(
+            virtualOverlapProgressPossible(response_throttled, false)));
+    }
+
+    const Scheduler::Decision previous_block =
+        virtual_fanout_overlap_last_block;
+    if (decision != Scheduler::Decision::WaitForUnifiedCredit &&
+        virtual_fanout_overlap_credit_stall_start_tick != MaxTick) {
+        virtual_fanout_overlap_credit_stall_cycles +=
+            static_cast<uint64_t>(maa->getTicksToCycles(
+                curTick() -
+                virtual_fanout_overlap_credit_stall_start_tick));
+        virtual_fanout_overlap_credit_stall_start_tick = MaxTick;
+    }
+
+    if (decision == Scheduler::Decision::WaitForScan) {
+        deferVirtualSourceFanout(virtual_pending_source_fanout_ready_tick,
+                                 "request_overlap_pending", false);
+        virtual_fanout_overlap_last_block = decision;
+        return false;
+    }
+    panic_if(decision == Scheduler::Decision::RejectNoProgress,
+             "I[%d] scan-ready pending source has no legal credit-progress "
+             "owner: slots=%d/%lu response_words=%d combine_words=%d "
+             "payload_words=%d capacity=%d writes=%d\n",
+             my_indirect_id, virtual_reserved_responses,
+             static_cast<unsigned long>(virtual_response_slots.size()),
+             virtual_reserved_response_words, virtual_combine_words,
+             payload_words, virtual_shared_result_payload_limit,
+             virtual_outstanding_writes);
+
+    if (decision == Scheduler::Decision::WaitForResponseSlot ||
+        decision == Scheduler::Decision::WaitForUnifiedCredit) {
+        if (decision != virtual_fanout_overlap_last_block) {
+            if (decision == Scheduler::Decision::WaitForResponseSlot) {
+                ++virtual_fanout_overlap_slot_stalls;
+            } else {
+                ++virtual_fanout_overlap_credit_stalls;
+                virtual_fanout_overlap_credit_stall_start_tick = curTick();
+            }
+            DPRINTF(MAAVirtualTrace,
+                    "event=fanout_overlap_credit_stall schema=1 unit=%d "
+                    "operation_tick=%lu reason=%s ready=%lu current=%lu "
+                    "response_slots=%d/%lu response_words=%d "
+                    "combine_words=%d payload_words=%d capacity=%d "
+                    "writes=%d response_throttled=%d spilled=%d\n",
+                    my_indirect_id, my_decode_start_tick,
+                    Scheduler::decisionName(decision),
+                    virtual_pending_source_fanout_ready_tick, curTick(),
+                    virtual_reserved_responses,
+                    static_cast<unsigned long>(
+                        virtual_response_slots.size()),
+                    virtual_reserved_response_words, virtual_combine_words,
+                    payload_words, virtual_shared_result_payload_limit,
+                    virtual_outstanding_writes, response_throttled, spilled);
+        }
+        virtual_fanout_overlap_last_block = decision;
+        return false;
+    }
+
+    panic_if(decision != Scheduler::Decision::ResumeBuild,
+             "I[%d] unexpected pending overlap decision %s\n",
+             my_indirect_id, Scheduler::decisionName(decision));
+    const char *cause = spilled ? "spill" :
+        response_throttled ? "response_drain" :
+        previous_block == Scheduler::Decision::WaitForResponseSlot
+            ? "response_slot"
+            : previous_block == Scheduler::Decision::WaitForUnifiedCredit
+                ? "unified_credit"
+                : "scan_ready";
+    ++virtual_fanout_overlap_resumes;
+    DPRINTF(MAAVirtualTrace,
+            "event=fanout_overlap_resume schema=1 unit=%d "
+            "operation_tick=%lu cause=%s ready=%lu current=%lu "
+            "inflight_sources=%d response_slots=%d/%lu "
+            "response_words=%d combine_words=%d payload_words=%d "
+            "capacity=%d writes=%d pending_hwm=%d\n",
+            my_indirect_id, my_decode_start_tick, cause,
+            virtual_pending_source_fanout_ready_tick, curTick(),
+            virtual_source_expected - virtual_source_received,
+            virtual_reserved_responses,
+            static_cast<unsigned long>(virtual_response_slots.size()),
+            virtual_reserved_response_words, virtual_combine_words,
+            payload_words, virtual_shared_result_payload_limit,
+            virtual_outstanding_writes, virtual_pending_source_high_water);
+    virtual_fanout_overlap_last_block = Scheduler::Decision::NoPending;
+    accountVirtualRequestInterval();
+    state = Status::Build;
+    transitionAttributionStage(AttributionStage::Build,
+                               "fanout_overlap_resume");
+    virtual_build_incomplete = false;
+    scheduleNextExecution(true);
+    return true;
+}
+
+void
 IndirectAccessUnit::issueVirtualSource(
     Addr source_addr, int source_head, int source_words,
     const maa::VirtualSourceFanout &fanout, Tick fanout_ready_tick,
@@ -6452,6 +6629,14 @@ void IndirectAccessUnit::executeInstruction() {
         virtual_pending_source_fanout = maa::VirtualSourceFanout();
         virtual_pending_source_fanout_ready_tick = 0;
         virtual_fanout_scan_finish_tick = curTick();
+        virtual_pending_source_high_water = 0;
+        virtual_fanout_overlap_resumes = 0;
+        virtual_fanout_overlap_slot_stalls = 0;
+        virtual_fanout_overlap_credit_stalls = 0;
+        virtual_fanout_overlap_credit_stall_cycles = 0;
+        virtual_fanout_overlap_credit_stall_start_tick = MaxTick;
+        virtual_fanout_overlap_last_block =
+            maa::SharedSourceOverlapScheduler::Decision::NoPending;
         virtual_source_reservations.clear();
         virtual_outstanding_writes = 0;
         const auto scoreboard_reset = virtual_retirement_scoreboard.reset(
@@ -7493,26 +7678,7 @@ void IndirectAccessUnit::executeInstruction() {
                 macro_a_retries++;
                 virtual_capacity_full = true;
             } else {
-                issueVirtualSource(virtual_pending_source_addr,
-                                   virtual_pending_source_head,
-                                   virtual_pending_source_words,
-                                   virtual_pending_source_fanout,
-                                   virtual_pending_source_fanout_ready_tick,
-                                   virtual_pending_source_rt_idx,
-                                   virtual_pending_source_row_id,
-                                   virtual_pending_source_entry_id,
-                                   virtual_pending_source_grow_addr, 0);
-                virtual_pending_source = false;
-                virtual_pending_source_addr = 0;
-                virtual_pending_source_head = -1;
-                virtual_pending_source_words = 0;
-                virtual_pending_source_rt_idx = -1;
-                virtual_pending_source_row_id = -1;
-                virtual_pending_source_entry_id = -1;
-                virtual_pending_source_grow_addr = 0;
-                virtual_pending_source_fanout =
-                    maa::VirtualSourceFanout();
-                virtual_pending_source_fanout_ready_tick = 0;
+                issuePendingVirtualSource();
             }
         }
         while (!virtual_capacity_full) {
@@ -7626,6 +7792,9 @@ void IndirectAccessUnit::executeInstruction() {
                                         "changed between peek and commit\n",
                                         my_indirect_id);
                                 }
+                                panic_if(virtual_pending_source,
+                                         "I[%d] pending source latch already "
+                                         "owns a claim\n", my_indirect_id);
                                 virtual_pending_source = true;
                                 virtual_pending_source_addr = addr;
                                 virtual_pending_source_head = virtual_head;
@@ -7640,6 +7809,8 @@ void IndirectAccessUnit::executeInstruction() {
                                     virtual_fanout;
                                 virtual_pending_source_fanout_ready_tick =
                                     virtual_fanout_ready_tick;
+                                virtual_pending_source_high_water = std::max(
+                                    virtual_pending_source_high_water, 1);
                                 if (native_order_claim) {
                                     last_RT_sent++;
                                     if (last_RT_sent ==
@@ -7910,7 +8081,14 @@ void IndirectAccessUnit::executeInstruction() {
         }
         accountVirtualRequestInterval();
         serviceDescriptorSpoolReadAhead();
-        if (usesBoundedSourceResponses() && drainVirtualResponses()) {
+        const bool virtual_response_throttled =
+            usesBoundedSourceResponses() && drainVirtualResponses();
+        if (usesBoundedSourceResponses() &&
+            resumePendingVirtualSourceFromRequest(
+                virtual_response_throttled)) {
+            break;
+        }
+        if (virtual_response_throttled) {
             scheduleExecuteInstructionEvent(1);
             break;
         }
@@ -8098,6 +8276,37 @@ void IndirectAccessUnit::executeInstruction() {
                 virtual_max_reserved_response_words;
             (*maa->stats.IND_VirtResponseWordPoolStalls[my_indirect_id]) +=
                 virtual_response_word_pool_stalls;
+            panic_if(virtual_pending_source_high_water > 1,
+                     "I[%d] pending source latch exceeded one owner\n",
+                     my_indirect_id);
+            panic_if(virtual_fanout_overlap_credit_stall_start_tick !=
+                         MaxTick,
+                     "I[%d] terminal source overlap retained a credit stall "
+                     "interval\n", my_indirect_id);
+            (*maa->stats.IND_VirtFanoutOverlapResumes[my_indirect_id]) +=
+                virtual_fanout_overlap_resumes;
+            (*maa->stats.IND_VirtFanoutOverlapSlotStalls[my_indirect_id]) +=
+                virtual_fanout_overlap_slot_stalls;
+            (*maa->stats.IND_VirtFanoutOverlapCreditStalls[my_indirect_id]) +=
+                virtual_fanout_overlap_credit_stalls;
+            (*maa->stats.IND_VirtFanoutOverlapCreditStallCycles[
+                my_indirect_id]) +=
+                virtual_fanout_overlap_credit_stall_cycles;
+            (*maa->stats.IND_VirtPendingSourceHighWater[my_indirect_id]) +=
+                virtual_pending_source_high_water;
+            if (virtual_shared_result_payload) {
+                DPRINTF(MAAVirtualTrace,
+                        "event=fanout_overlap_complete schema=1 unit=%d "
+                        "operation_tick=%lu resumes=%lu slot_stalls=%lu "
+                        "credit_stalls=%lu credit_stall_cycles=%lu "
+                        "pending_hwm=%d\n",
+                        my_indirect_id, my_decode_start_tick,
+                        virtual_fanout_overlap_resumes,
+                        virtual_fanout_overlap_slot_stalls,
+                        virtual_fanout_overlap_credit_stalls,
+                        virtual_fanout_overlap_credit_stall_cycles,
+                        virtual_pending_source_high_water);
+            }
         }
         if (isVirtualLoad()) {
             if (virtual_combine_lookup_pipeline.isActive()) {
