@@ -287,6 +287,14 @@ def classify(root: Path) -> dict[str, Any]:
         "current baseline changed during read-only validation",
     )
     manifest = json.loads((root / "manifest.json").read_text())
+    sealed_result_path = root / "result.json"
+    if sealed_result_path.is_file():
+        sealed_identity_record = json.loads(sealed_result_path.read_text())
+        sealer_commit = sealed_identity_record["sealer_commit"]
+        sealer_sha256 = sealed_identity_record["sealer_sha256"]
+    else:
+        sealer_commit = git_text(ROOT, "rev-parse", "HEAD")
+        sealer_sha256 = bridge.sha256(Path(__file__))
     candidate = base.classify_arm(root, ARM, manifest)
     log = (root / "arms" / ARM.name / "restore.log").read_text(
         errors="replace"
@@ -444,8 +452,8 @@ def classify(root: Path) -> dict[str, Any]:
         "simulated_arms": [ARM.name],
         "native_simulations": 0,
         "performance_attribution": False,
-        "sealer_commit": git_text(ROOT, "rev-parse", "HEAD"),
-        "sealer_sha256": bridge.sha256(Path(__file__)),
+        "sealer_commit": sealer_commit,
+        "sealer_sha256": sealer_sha256,
         "authority": str(AUTHORITY),
         "authority_identity": authority_before,
         "current_baseline": str(CURRENT_BASELINE),
