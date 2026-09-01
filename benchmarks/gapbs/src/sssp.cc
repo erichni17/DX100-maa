@@ -406,11 +406,21 @@ RunSsspHybridWindow(int tid, WeightT *dist, int num_nodes, WeightT delta,
         maa_inline_operand_retirement_ack(
             generation, static_cast<uint16_t>(sequence));
         atomic_thread_fence(memory_order_seq_cst);
+        if (sequence == 0)
+            cout << "SSSP_INLINE_ACK_RETURN generation=" << generation
+                 << " sequence=0" << endl;
         volatile maa_inline_retirement_record *line =
             &sssp_inline_retirement_ring[tid][slot * records_per_line];
         for (uint32_t word = 0; word < records_per_line; ++word) {
-            if (line[word].destination == UINT32_MAX)
+            if (line[word].destination == UINT32_MAX) {
+                cout << "SSSP_INLINE_STALE_RING generation=" << generation
+                     << " sequence=" << sequence << " word=" << word
+                     << endl;
+#ifdef GEM5
+                m5_exit(90);
+#endif
                 abort();
+            }
             const NodeID destination =
                 static_cast<NodeID>(line[word].destination);
             const WeightT final_distance =
