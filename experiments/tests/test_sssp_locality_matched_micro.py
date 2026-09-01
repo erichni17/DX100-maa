@@ -128,6 +128,31 @@ class SsspLocalityMatchedMicroTest(unittest.TestCase):
             self.assertIn(token, runner)
         self.assertRegex(runner, re.compile(r"campaign_status=PASS\n"))
 
+    def test_postprocessing_reuses_completed_arms_without_launching(
+        self,
+    ) -> None:
+        runner = runner_text()
+        self.assertIn(
+            "postprocess_only=${SSSP_LOCALITY_POSTPROCESS_ONLY:-0}", runner
+        )
+        start = runner.index("if [[ $postprocess_only == 1 ]]")
+        arm_loop = runner.index('for arm in "${arms[@]}"; do', start)
+        close = runner.index("\nfi\n\nprintf 'arm", arm_loop)
+        self.assertLess(start, arm_loop)
+        self.assertLess(arm_loop, close)
+        self.assertIn(
+            'sha256sum -c "$out/artifacts.before.sha256"',
+            runner[start:arm_loop],
+        )
+        self.assertIn('status":"POSTPROCESSING', runner[start:arm_loop])
+
+        result_start = runner.index("    printf '%s\\t%s\\tPENDING")
+        result_end = runner.index("\ndone\n", result_start)
+        result_block = runner[result_start:result_end]
+        result_format = result_block.split("'", 2)[1]
+        self.assertEqual(result_format.count("%s"), 27)
+        self.assertIn('lineterminator="\\n"', runner)
+
 
 if __name__ == "__main__":
     unittest.main()

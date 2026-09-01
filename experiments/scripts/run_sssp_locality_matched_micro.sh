@@ -43,6 +43,10 @@ admission_file="$root/benchmarks/gapbs/src/sssp_chunk_admission.hh"
 fingerprint='SSSP_FINGERPRINT vertices=69633 reached=69633 unreachable=0 distance_sum=135168 max_distance=2 hash_a=a0531a7ddb9387df hash_b=39f1ea63bc8817e8 triangle_violations=0 missing_predecessors=0 nonpositive_weights=0 negative_distances=0 result=PASS'
 arms=(native4 native16 hybrid)
 campaign_status=FAIL
+postprocess_only=${SSSP_LOCALITY_POSTPROCESS_ONLY:-0}
+converter="$out/bin/converter"
+wel="$out/graph/sssp_locality_matched.wel"
+graph="$out/graph/sssp_locality_matched.wsg"
 
 hash_value() {
     sha256sum "$1" | awk '{ print $1 }'
@@ -109,14 +113,22 @@ terminal_value() {
 dram_value() {
     local log=$1 command=$2
     awk -v command="$command" '
+        BEGIN {
+            value[0] = 0
+            value[1] = 0
+        }
         $1 ~ ("^CH[01]_num_" command "_commands_T:$") {
             channel=$1
             sub(/^CH/, "", channel)
             sub(/_num_.*/, "", channel)
             value[channel]=$2
+            found[channel]=1
         }
         END {
-            if (!(0 in value) || !(1 in value))
+            # Ramulator suppresses a zero command counter.  WR is absent on
+            # all three completed arms and is therefore an exact zero, while
+            # the locality-bearing RD/ACT/PRE counters must exist per channel.
+            if (command != "WR" && (!(0 in found) || !(1 in found)))
                 exit 2
             print value[0] + value[1]
         }
@@ -155,6 +167,29 @@ run_recorded() {
     [[ $rc -eq 0 ]]
 }
 
+if [[ $postprocess_only == 1 ]]; then
+    [[ -s $out/artifacts.before.sha256 ]] || {
+        echo "missing frozen artifact manifest for postprocessing" >&2
+        exit 2
+    }
+    sha256sum -c "$out/artifacts.before.sha256" >/dev/null
+    if [[ ! -f $out/postprocess.recovery.txt ]]; then
+        previous_terminal=$(tr -d '\n' <"$out/terminal.json")
+        {
+            printf 'schema=dx100.sssp.locality_matched_micro.postprocess_recovery.v1\n'
+            printf 'reason=ramulator_zero_WR_counter_omitted\n'
+            printf 'previous_terminal=%s\n' "$previous_terminal"
+            printf 'gem5_reruns=0\ncheckpoint_reruns=0\n'
+        } >"$out/postprocess.recovery.txt"
+    fi
+    {
+        printf 'postprocessor_path=%s\npostprocessor_sha256=%s\n' \
+            "$0" "$(hash_value "$0")"
+        printf 'gem5_reruns=0\ncheckpoint_reruns=0\n'
+    } >"$out/postprocess.latest.txt"
+    printf '{"terminal":false,"status":"POSTPROCESSING","driver_rc":null}\n' \
+        >"$out/terminal.json"
+else
 require_hash "$gem5" "$gem5_sha256" || {
     echo "missing or mismatched accepted all-safe gem5 binary" >&2
     exit 2
@@ -182,10 +217,6 @@ printf '{"terminal":false,"status":"RUNNING","driver_rc":null}\n' \
 printf 'pid=%s\nproc_start_ticks=%s\n' "$$" \
     "$(awk '{ print $22 }' "/proc/$$/stat")" >"$out/driver.process"
 mkdir -p "$out/bin" "$out/graph" "$out/arms"
-
-converter="$out/bin/converter"
-wel="$out/graph/sssp_locality_matched.wel"
-graph="$out/graph/sssp_locality_matched.wsg"
 "${CXX:-g++}" -I"$root/benchmarks/gapbs/src" -std=c++11 -O3 \
     -Wall -Wextra -Werror -Wno-unused-parameter -fopenmp \
     "$root/benchmarks/gapbs/src/converter.cc" -o "$converter"
@@ -400,6 +431,7 @@ for arm in "${arms[@]}"; do
         LD_LIBRARY_PATH="$LD_LIBRARY_PATH" "${restore_cmd[@]}"
     verify_checkpoint "$checkpoint" "$checkpoint_manifest"
 done
+fi
 
 printf 'arm\tsimTicks\tspeedup_vs_native4\tmaa_cycles\tcache_lines\tunique_cache_lines\trows\tunique_rows\tfill_cycles\trequest_cycles\tdram_reads\tdram_writes\tdram_activates\tdram_precharges\tsoa_instructions\tsoa_selected\tsoa_rejected\tsoa_captures\tsoa_a_read_issues\tsoa_a_read_responses\tsoa_a_write_issues\tsoa_a_write_responses\tsoa_old_write_issues\tsoa_old_write_responses\tpublish_issues\tpublish_responses\tpublish_terminals\tcheckpoint_identity\tcorrect\n' \
     >"$out/results.tsv"
@@ -478,7 +510,7 @@ for arm in "${arms[@]}"; do
            $publish_responses -eq 0 && $publish_terminals -eq 0 ]]
     fi
 
-    printf '%s\t%s\tPENDING\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\ttrue\n' \
+    printf '%s\t%s\tPENDING\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\ttrue\n' \
         "$arm" "${ticks[$arm]}" "$maa_cycles" "${cache_lines[$arm]}" \
         "$unique_cache_lines" "${rows[$arm]}" "$unique_rows" \
         "$fill_cycles" "$request_cycles" "$dram_reads" "$dram_writes" \
@@ -502,7 +534,9 @@ native4 = int(next(row["simTicks"] for row in rows if row["arm"] == "native4"))
 for row in rows:
     row["speedup_vs_native4"] = f"{native4 / int(row['simTicks']):.9f}"
 with path.open("w", newline="", encoding="utf-8") as stream:
-    writer = csv.DictWriter(stream, fieldnames=rows[0].keys(), delimiter="\t")
+    writer = csv.DictWriter(
+        stream, fieldnames=rows[0].keys(), delimiter="\t", lineterminator="\n"
+    )
     writer.writeheader()
     writer.writerows(rows)
 PY
@@ -538,9 +572,15 @@ sha256sum "$gem5" "$frozen_ramulator" "$config" "$ramulator" \
     "$out/bin/sssp_native16_fp" "$out/bin/sssp_hybrid_fp" \
     "$wel" "$graph" "$out/prediction.txt" >"$out/artifacts.after.sha256"
 cmp -s "$out/artifacts.before.sha256" "$out/artifacts.after.sha256"
-sha256sum "$out/manifest.txt" "$out/prediction.txt" "$out/results.tsv" \
-    "$out/summary.txt" "$out/artifacts.before.sha256" \
-    >"$out/evidence.identity.sha256"
+identity_files=("$out/manifest.txt" "$out/prediction.txt" "$out/results.tsv"
+    "$out/summary.txt" "$out/artifacts.before.sha256")
+if [[ -f $out/postprocess.recovery.txt ]]; then
+    identity_files+=("$out/postprocess.recovery.txt")
+fi
+if [[ -f $out/postprocess.latest.txt ]]; then
+    identity_files+=("$out/postprocess.latest.txt")
+fi
+sha256sum "${identity_files[@]}" >"$out/evidence.identity.sha256"
 campaign_status=PASS
 rm -f "$out/current_arm.txt"
 touch "$out/gate.complete"
