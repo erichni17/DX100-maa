@@ -380,6 +380,9 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
             "page_span_cycles -eq $((all_page_cycles - first_page_cycles))",
             self.runner,
         )
+        self.assertEqual(
+            self.runner.count("private=direct_index_(words|feeder)"), 4
+        )
 
     def test_bounded_pass_state_is_scoped_to_direct_index_operations(
         self,

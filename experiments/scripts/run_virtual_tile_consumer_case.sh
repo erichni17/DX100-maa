@@ -1796,16 +1796,16 @@ feeder_summary_discards=0
 if [[ $direct -eq 1 && $reload_only -eq 0 ]]; then
     trace="$out/run/virtual_trace.log"
     feeder_descriptor_discards=$(grep -c \
-        'event=index_feeder_discard .*poisoned=1 poison=0xd15ca4d reason=descriptor_inserted private=direct_index_words' \
+        -E 'event=index_feeder_discard .*poisoned=1 poison=0xd15ca4d reason=descriptor_inserted private=direct_index_(words|feeder)' \
         "$trace" || true)
     feeder_partition_discards=$(grep -c \
-        'event=index_feeder_discard .*poisoned=0 poison=0x0 reason=partition_rejected private=direct_index_words' \
+        -E 'event=index_feeder_discard .*poisoned=0 poison=0x0 reason=partition_rejected private=direct_index_(words|feeder)' \
         "$trace" || true)
     feeder_predicate_discards=$(grep -c \
-        'event=index_feeder_discard .*poisoned=0 poison=0x0 reason=predicate_rejected private=direct_index_words' \
+        -E 'event=index_feeder_discard .*poisoned=0 poison=0x0 reason=predicate_rejected private=direct_index_(words|feeder)' \
         "$trace" || true)
     feeder_summary_discards=$(grep -c \
-        'event=index_feeder_discard .*poisoned=0 poison=0x0 reason=summary_observed private=direct_index_words' \
+        -E 'event=index_feeder_discard .*poisoned=0 poison=0x0 reason=summary_observed private=direct_index_(words|feeder)' \
         "$trace" || true)
     expected_descriptor_discards=16384
     expected_summary_discards=0
