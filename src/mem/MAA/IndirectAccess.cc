@@ -3922,6 +3922,19 @@ IndirectAccessUnit::inlineOperandActiveForCore(int core_id) const
     return pageFedActiveForCore(core_id) && isSoaJitInlineOperandRmw();
 }
 
+bool
+IndirectAccessUnit::inlineOperandAdmissionAllowsRead(
+    int core_id, uint64_t generation, int8_t region_id) const
+{
+    return inlineOperandActiveForCore(core_id) &&
+        state == Status::Fill && soa_jit_page_fed_state.active() &&
+        !soa_jit_page_fed_state.closed() &&
+        !soa_jit_page_fed_state.executing() &&
+        soa_jit_page_fed_state.currentGeneration() == generation &&
+        my_instruction->soaJitPageFedGeneration == generation &&
+        my_instruction->addrRangeID == region_id;
+}
+
 Cycles
 IndirectAccessUnit::admitPageFedSoaJitIndexValuePage(
     uint64_t generation, uint8_t page, uint8_t index_tile,

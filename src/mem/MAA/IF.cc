@@ -3,6 +3,7 @@
 #include <cassert>
 
 #include "debug/MAAController.hh"
+#include "mem/MAA/IndirectAccess.hh"
 #include "mem/MAA/MAA.hh"
 #include "mem/MAA/SPD.hh"
 #include "mem/MAA/SoaJitSafety.hh"
@@ -582,6 +583,36 @@ bool IF::pushInstruction(Instruction _instruction, int *inserted_slot,
                 }
             }
             if (_instruction.hasMemoryHazard(instructions[maa_id][i])) {
+                const Instruction &open = instructions[maa_id][i];
+                bool admission_read =
+                    open.isSoaJitInlineOperandRmw() &&
+                    _instruction.opcode ==
+                        Instruction::OpcodeType::INDIR_LD &&
+                    _instruction.accessType ==
+                        Instruction::AccessType::READ &&
+                    _instruction.core_id == open.core_id &&
+                    _instruction.addrRangeID == open.addrRangeID;
+                if (admission_read) {
+                    admission_read = false;
+                    for (unsigned unit = 0;
+                         unit < maa->num_indirect_units_total; ++unit) {
+                        if (maa->indirectAccessUnits[unit].
+                                inlineOperandAdmissionAllowsRead(
+                                    open.core_id,
+                                    open.soaJitPageFedGeneration,
+                                    open.addrRangeID)) {
+                            admission_read = true;
+                            break;
+                        }
+                    }
+                }
+                if (admission_read) {
+                    DPRINTF(MAAController,
+                            "%s: admitting same-core A read during exact "
+                            "inline page-fill generation %lu\n",
+                            __func__, open.soaJitPageFedGeneration);
+                    continue;
+                }
                 DPRINTF(MAAController,
                         "%s: %s cannot be pushed b/c of memory-region "
                         "hazard with %s!\n", __func__,

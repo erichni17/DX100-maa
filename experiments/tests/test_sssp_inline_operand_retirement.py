@@ -45,6 +45,23 @@ class InlineOperandRetirementContract(unittest.TestCase):
         self.assertIn("markWriteResponse", self.indirect)
         self.assertIn("ackInlineRetirementLine", self.indirect)
 
+    def test_preclose_a_read_exception_is_phase_and_generation_bound(self):
+        interface = (ROOT / "src/mem/MAA/IF.cc").read_text()
+        for token in (
+            "inlineOperandAdmissionAllowsRead",
+            "_instruction.core_id == open.core_id",
+            "_instruction.addrRangeID == open.addrRangeID",
+            "open.soaJitPageFedGeneration",
+        ):
+            self.assertIn(token, interface)
+        for token in (
+            "state == Status::Fill",
+            "!soa_jit_page_fed_state.closed()",
+            "!soa_jit_page_fed_state.executing()",
+            "currentGeneration() == generation",
+        ):
+            self.assertIn(token, self.indirect)
+
     def test_candidate_only_frozen_acceptance(self):
         self.assertNotIn("native4 checkpoint", self.runner)
         self.assertNotIn("native16 checkpoint", self.runner)
