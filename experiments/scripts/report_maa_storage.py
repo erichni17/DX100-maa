@@ -30,6 +30,8 @@ INACTIVE_MASKED_MAA_LOOKUP_CONTROL_BITS = (
     INACTIVE_MASKED_LOOKUP_PIPELINE_BITS + INACTIVE_MASKED_FALLBACK_REBIND_BITS
 )
 INACTIVE_MASKED_INCARNATION_BITS_PER_TOKEN = 64
+SHARED_RESPONSE_MAX_LOGICAL_WORDS = 16
+SHARED_RESPONSE_MAX_FANOUT_USES = 16384
 
 
 def fail(message: str) -> None:
@@ -285,6 +287,20 @@ def main() -> int:
             "virtual_complete_line_only requires explicit combiner/response "
             "word pools within physical_tile_elements"
         )
+    if shared_result_payload and (
+        combine_words == 0
+        or response_pool == 0
+        or combine_words + response_pool > physical
+    ):
+        fail(
+            "shared virtual-result payload requires explicit nonzero "
+            "combiner/response capacities within physical storage"
+        )
+    if shared_result_payload and logical > SHARED_RESPONSE_MAX_FANOUT_USES:
+        fail(
+            "shared virtual-result payload supports at most 16384 logical "
+            "uses per response word"
+        )
     try:
         inactive_masked_retention_entries = int(
             maa.get("inactive_page_masked_fragment_retention_lines", "0")
@@ -475,7 +491,28 @@ def main() -> int:
     )
     response_pool_pointer_bits = bits_for_values(response_pool_words + 1)
     effective_combine_words = combine_words or (combine_slots * words_per_line)
-    combine_reference_bits = bits_for_values(effective_combine_words)
+    shared_result_allocator_words = (
+        effective_combine_words + response_pool if shared_result_payload else 0
+    )
+    combine_allocator_words = (
+        shared_result_allocator_words
+        if shared_result_payload
+        else effective_combine_words
+    )
+    combine_reference_bits = bits_for_values(combine_allocator_words)
+    shared_response_word_count = SHARED_RESPONSE_MAX_LOGICAL_WORDS
+    shared_response_word_reference_bits_per_slot = (
+        shared_response_word_count
+        * bits_for_values(shared_result_allocator_words)
+        if shared_result_payload
+        else 0
+    )
+    shared_response_fanout_counter_bits_per_slot = (
+        shared_response_word_count
+        * bits_for_values(SHARED_RESPONSE_MAX_FANOUT_USES + 1)
+        if shared_result_payload
+        else 0
+    )
 
     index_line_metadata_bits = (
         args.address_bits  # physical response-match tag
@@ -504,6 +541,8 @@ def main() -> int:
         + row_entry_bits
         + args.address_bits  # claimed DRAM grow
         + iteration_bits  # claimed chain head
+        + shared_response_word_reference_bits_per_slot
+        + shared_response_fanout_counter_bits_per_slot
     )
     combine_metadata_bits_per_unit = combine_slots * (
         1
@@ -511,9 +550,9 @@ def main() -> int:
         + words_per_line
         + words_per_line * combine_reference_bits
     )
-    combine_allocator_bits_per_unit = effective_combine_words * (
+    combine_allocator_bits_per_unit = combine_allocator_words * (
         1 + combine_reference_bits
-    ) + bits_for_values(effective_combine_words + 1)
+    ) + bits_for_values(combine_allocator_words + 1)
     combine_sets = (
         1
         if integer(maa, "virtual_combine_ways") == 0
@@ -595,24 +634,37 @@ def main() -> int:
     )
 
     combine_payload_per_unit = effective_combine_words * args.word_bytes
-    if response_pool:
+    if shared_result_payload:
+        response_storage_mode = "shared-result-allocator"
+        response_payload_per_unit = 0
+        shared_result_payload_per_unit = (
+            shared_result_allocator_words * args.word_bytes
+        )
+    elif response_pool:
         response_storage_mode = (
             "shared-packed-word-pool"
             if shared_result_payload
             else "packed-word-pool"
         )
         response_payload_per_unit = response_pool * args.word_bytes
+        shared_result_payload_per_unit = 0
     elif response_words:
         response_storage_mode = "packed-words-per-slot"
         response_payload_per_unit = (
             response_slots * response_words * args.word_bytes
         )
+        shared_result_payload_per_unit = 0
     else:
         response_storage_mode = "unpacked-fixed-lines"
         response_payload_per_unit = response_slots * 64
+        shared_result_payload_per_unit = 0
     index_payload_per_unit = index_lines * 64
     configured_virtual_payload_per_unit = (
-        combine_payload_per_unit
+        (
+            shared_result_payload_per_unit
+            if shared_result_payload
+            else combine_payload_per_unit
+        )
         + response_payload_per_unit
         + index_payload_per_unit
     )
@@ -623,23 +675,33 @@ def main() -> int:
     elif args.mechanism == "direct-index":
         active_index_payload = index_payload_per_unit
         active_response_payload = response_payload_per_unit
-        active_combine_payload = combine_payload_per_unit
+        active_combine_payload = (
+            shared_result_payload_per_unit
+            if shared_result_payload
+            else combine_payload_per_unit
+        )
     else:
         active_index_payload = 0
         active_response_payload = response_payload_per_unit
-        active_combine_payload = combine_payload_per_unit
+        active_combine_payload = (
+            shared_result_payload_per_unit
+            if shared_result_payload
+            else combine_payload_per_unit
+        )
     active_virtual_payload_per_unit = (
         active_index_payload + active_response_payload + active_combine_payload
     )
     active_virtual_payload_total = (
         active_virtual_payload_per_unit * indirect_units
     )
-    # Packed response slots retain only useful-word vectors plus metadata.
-    # The fixed line store is instantiated exclusively for unpacked mode and
-    # is already included in response_payload_per_unit above.
-    inactive_cpp_response_line_bytes_per_unit = 0
-    inactive_cpp_response_line_bytes_total = (
-        inactive_cpp_response_line_bytes_per_unit * indirect_units
+    # Shared mode deliberately selects the unpacked C++ response-line store,
+    # even though its line payload is a simulator-only functional shadow and
+    # not part of the packed hardware allocator modeled above.
+    excluded_cpp_response_line_shadow_bytes_per_unit = (
+        response_slots * 64 if shared_result_payload else 0
+    )
+    excluded_cpp_response_line_shadow_bytes_total = (
+        excluded_cpp_response_line_shadow_bytes_per_unit * indirect_units
     )
 
     # Direct retirement owns a second, finite set of credits only when the
@@ -717,19 +779,16 @@ def main() -> int:
     )
     conservative_cpp_static_bounded_state = (
         bounded_state_total
-        + inactive_cpp_response_line_bytes_total
         + direct_cpp_static_bytes
         - direct_hardware_lower_bound_bytes
     )
     conservative_cpp_static_comparable_storage = (
         comparable_storage
-        + inactive_cpp_response_line_bytes_total
         + direct_cpp_static_bytes
         - direct_hardware_lower_bound_bytes
     )
     conservative_cpp_static_allocated_storage = (
         allocated_comparable_storage
-        + inactive_cpp_response_line_bytes_total
         + direct_cpp_static_bytes
         - direct_hardware_lower_bound_bytes
     )
@@ -846,9 +905,10 @@ def main() -> int:
                 shared_spill_bitmap_bytes_per_unit
             ),
             "shared_result_payload_words_per_indirect_unit": (
-                effective_combine_words + response_pool
-                if shared_result_payload
-                else 0
+                shared_result_allocator_words
+            ),
+            "shared_result_allocator_bytes_per_indirect_unit": (
+                shared_result_payload_per_unit
             ),
             "source_response_storage_mode": response_storage_mode,
             "source_response_slots_per_indirect_unit": response_slots,
@@ -868,13 +928,15 @@ def main() -> int:
                 response_payload_per_unit * indirect_units
             ),
             "configured_destination_combiner_bytes_per_indirect_unit": (
-                combine_payload_per_unit
+                shared_result_payload_per_unit
+                if shared_result_payload
+                else combine_payload_per_unit
             ),
             "destination_combiner_line_tags_per_indirect_unit": (
                 combine_slots
             ),
             "destination_combiner_word_pool_per_indirect_unit": (
-                effective_combine_words
+                combine_allocator_words
             ),
             "destination_combiner_reference_bits": combine_reference_bits,
             "configured_total_bytes_per_indirect_unit": (
@@ -898,16 +960,16 @@ def main() -> int:
             "active_total_bytes_all_indirect_units": (
                 active_virtual_payload_total
             ),
-            "inactive_cpp_response_line_bytes_per_indirect_unit": (
-                inactive_cpp_response_line_bytes_per_unit
+            "excluded_cpp_response_line_shadow_bytes_per_indirect_unit": (
+                excluded_cpp_response_line_shadow_bytes_per_unit
             ),
-            "inactive_cpp_response_line_bytes_all_indirect_units": (
-                inactive_cpp_response_line_bytes_total
+            "excluded_cpp_response_line_shadow_bytes_all_indirect_units": (
+                excluded_cpp_response_line_shadow_bytes_total
             ),
-            "inactive_cpp_response_line_note": (
-                "No inactive fixed response-line payload is allocated. The "
-                "bounded line store exists only in unpacked mode; packed mode "
-                "retains useful words plus response metadata."
+            "excluded_cpp_response_line_shadow_note": (
+                "Shared-result mode configures one unpacked 64-byte C++ "
+                "response line per slot as simulator-only functional shadow; "
+                "it is excluded from the modeled hardware allocator."
             ),
         },
         "incremental_virtual_control_lower_bound": {
@@ -951,6 +1013,29 @@ def main() -> int:
             ),
             "source_response_metadata_bits_per_indirect_unit": (
                 active_response_metadata_bits
+            ),
+            "shared_response_word_reference_bits_per_slot": (
+                shared_response_word_reference_bits_per_slot
+                if args.mechanism != "native"
+                else 0
+            ),
+            "shared_response_word_reference_bits_per_indirect_unit": (
+                response_slots * shared_response_word_reference_bits_per_slot
+                if args.mechanism != "native"
+                else 0
+            ),
+            "shared_response_fanout_counter_bits_per_slot": (
+                shared_response_fanout_counter_bits_per_slot
+                if args.mechanism != "native"
+                else 0
+            ),
+            "shared_response_fanout_counter_bits_per_indirect_unit": (
+                response_slots * shared_response_fanout_counter_bits_per_slot
+                if args.mechanism != "native"
+                else 0
+            ),
+            "shared_response_fanout_max_uses_per_word": (
+                SHARED_RESPONSE_MAX_FANOUT_USES if shared_result_payload else 0
             ),
             "destination_combiner_metadata_bits_per_indirect_unit": (
                 active_combine_metadata_bits
@@ -1195,8 +1280,8 @@ def main() -> int:
                 "active payload plus fixed-width lower bounds; packed-word "
                 "STL/container and allocator overhead remains excluded"
             ),
-            "inactive_fixed_response_line_bytes": (
-                inactive_cpp_response_line_bytes_total
+            "excluded_simulator_only_response_line_shadow_bytes": (
+                excluded_cpp_response_line_shadow_bytes_total
             ),
             "bounded_state_bytes": conservative_cpp_static_bounded_state,
             "comparable_configured_bytes": (
@@ -1247,8 +1332,8 @@ def main() -> int:
         f"| Configured physical SPD payload | {format_bytes(physical_spd_bytes)} |",
         f"| Active direct-index B feeder | {format_bytes(active_index_payload)} / indirect unit |",
         f"| Active source-response payload | {format_bytes(active_response_payload)} / indirect unit |",
-        "| Inactive fixed C++ response-line payload | "
-        f"{format_bytes(inactive_cpp_response_line_bytes_per_unit)} / indirect unit |",
+        "| Excluded simulator-only C++ response-line shadow | "
+        f"{format_bytes(excluded_cpp_response_line_shadow_bytes_per_unit)} / indirect unit |",
         f"| Active destination-combiner payload | {format_bytes(active_combine_payload)} / indirect unit |",
         "| Incremental virtual tags/control (lower bound) | "
         f"{format_bytes(virtual_control_bytes_per_unit)} / indirect unit |",
@@ -1296,8 +1381,8 @@ def main() -> int:
         "**"
         f"{report['allocated_model_storage_lower_bound']['reduction_vs_native_pct']:.3f}%"
         "**.",
-        "Conservative C++ static-view reduction (no inactive packed-mode "
-        "response lines): "
+        "Conservative C++ static-view reduction (excluding simulator-only "
+        "shared response-line shadows): "
         "**"
         f"{report['conservative_cpp_static_storage_view']['comparable_reduction_vs_native_pct']:.3f}%"
         "**.",
@@ -1307,8 +1392,9 @@ def main() -> int:
         "readiness, but this does not prove native-equivalent descriptor lifetime or",
         "issue order. Essential tags and bounded control arrays are included as a",
         "bit-count lower bound; ports, arbitration, wiring, and memory periphery are",
-        "still excluded. The conservative C++ view has no inactive fixed response",
-        "lines; when direct_retirement_line_handoff=true it additionally counts",
+        "still excluded. Shared-result mode separately reports its unpacked C++",
+        "response-line shadow as simulator-only state excluded from the hardware",
+        "and conservative views; when direct_retirement_line_handoff=true it additionally counts",
         "the fixed direct-retirement queue, execution records, request records, retry",
         "slots, early-line ledger, and producer-line metadata. The direct handoff",
         "views deliberately exclude indirect virtual buffers already charged above.",

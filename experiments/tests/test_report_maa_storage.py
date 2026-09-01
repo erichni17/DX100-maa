@@ -127,9 +127,7 @@ class StorageReportTest(unittest.TestCase):
                 4096,
             )
             self.assertEqual(
-                buffers[
-                    "shared_pressure_spill_bitmap_bits_per_indirect_unit"
-                ],
+                buffers["shared_pressure_spill_bitmap_bits_per_indirect_unit"],
                 1024,
             )
             self.assertEqual(
@@ -140,15 +138,91 @@ class StorageReportTest(unittest.TestCase):
             )
             self.assertEqual(
                 buffers["source_response_storage_mode"],
-                "shared-packed-word-pool",
+                "shared-result-allocator",
             )
             self.assertEqual(
-                buffers["active_source_response_bytes_per_indirect_unit"]
-                + buffers[
-                    "active_destination_combiner_bytes_per_indirect_unit"
-                ],
+                buffers["active_source_response_bytes_per_indirect_unit"],
+                0,
+            )
+            self.assertEqual(
+                buffers["active_destination_combiner_bytes_per_indirect_unit"],
                 4096 * 4,
             )
+            self.assertEqual(
+                buffers["shared_result_allocator_bytes_per_indirect_unit"],
+                4096 * 4,
+            )
+            self.assertEqual(
+                buffers[
+                    "excluded_cpp_response_line_shadow_bytes_per_indirect_unit"
+                ],
+                128 * 64,
+            )
+            control = json.loads((output / "maa_storage.json").read_text())[
+                "incremental_virtual_control_lower_bound"
+            ]
+            self.assertEqual(
+                control["shared_response_word_reference_bits_per_slot"],
+                16 * 12,
+            )
+            self.assertEqual(
+                control["shared_response_fanout_counter_bits_per_slot"],
+                16 * 15,
+            )
+            self.assertEqual(
+                control["shared_response_fanout_max_uses_per_word"], 16384
+            )
+            self.assertEqual(
+                buffers["destination_combiner_word_pool_per_indirect_unit"],
+                4096,
+            )
+
+    def test_shared_result_payload_fails_closed_without_bounded_pools(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cases = ((0, 1024), (3072, 0), (4096, 1))
+            for combine_words, response_pool in cases:
+                with self.subTest(
+                    combine_words=combine_words, response_pool=response_pool
+                ):
+                    case_root = root / f"{combine_words}-{response_pool}"
+                    case_root.mkdir()
+                    config = self.write_config(
+                        case_root,
+                        4096,
+                        False,
+                        combine_words=combine_words,
+                        response_pool=response_pool,
+                        shared_result_payload=True,
+                    )
+                    result, _ = self.run_report(
+                        case_root, config, "generic-virtual"
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(
+                        "requires explicit nonzero combiner/response "
+                        "capacities within physical storage",
+                        result.stderr,
+                    )
+
+            oversized = self.write_config(
+                root,
+                16385,
+                False,
+                combine_words=3072,
+                response_pool=1024,
+                shared_result_payload=True,
+            )
+            parser = configparser.ConfigParser()
+            parser.read(oversized)
+            parser["system.maa"]["num_tile_elements"] = "16385"
+            with oversized.open("w", encoding="utf-8") as stream:
+                parser.write(stream)
+            result, _ = self.run_report(root, oversized, "generic-virtual")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("at most 16384 logical uses", result.stderr)
 
     def test_direct4_bounded_control_ledger(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -226,12 +300,17 @@ class StorageReportTest(unittest.TestCase):
                 9,
             )
             self.assertEqual(
-                buffers["inactive_cpp_response_line_bytes_per_indirect_unit"],
+                buffers[
+                    "excluded_cpp_response_line_shadow_bytes_per_indirect_unit"
+                ],
                 0,
             )
             conservative = report["conservative_cpp_static_storage_view"]
             self.assertEqual(
-                conservative["inactive_fixed_response_line_bytes"], 0
+                conservative[
+                    "excluded_simulator_only_response_line_shadow_bytes"
+                ],
+                0,
             )
             self.assertEqual(conservative["bounded_state_bytes"], 584492)
             self.assertEqual(
@@ -791,7 +870,9 @@ class StorageReportTest(unittest.TestCase):
                 128 * 64,
             )
             self.assertEqual(
-                buffers["inactive_cpp_response_line_bytes_per_indirect_unit"],
+                buffers[
+                    "excluded_cpp_response_line_shadow_bytes_per_indirect_unit"
+                ],
                 0,
             )
 
@@ -806,7 +887,7 @@ class StorageReportTest(unittest.TestCase):
             self.assertEqual(control["metadata_bytes_per_indirect_unit"], 0)
             self.assertEqual(
                 report["conservative_cpp_static_storage_view"][
-                    "inactive_fixed_response_line_bytes"
+                    "excluded_simulator_only_response_line_shadow_bytes"
                 ],
                 0,
             )
