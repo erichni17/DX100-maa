@@ -20,10 +20,12 @@ Instruction::Instruction() : baseAddr(0xFFFFFFFFFFFFFFFF),
                              soaJitMaskedIndex(false),
                              soaJitOldResult(false),
                              soaJitPageFed(false),
+                             soaJitInlineOperand(false),
                              fusedP16CoefficientWordReceived(false),
                              soaJitPredicateWordReceived(false),
                              soaJitResultWordReceived(false),
                              soaJitPageFedGeneration(0),
+                             soaJitRetirementRecords(0),
                              soaJitScalarRegID(-1),
                              logicalSourceBackingAddr(0xFFFFFFFFFFFFFFFF),
                              logicalSource2BackingAddr(0xFFFFFFFFFFFFFFFF),
@@ -248,7 +250,9 @@ Instruction::getMemoryAccesses(
         append(backingAddrRangeID, AccessType::WRITE);
     } else if (isSoaJitRmw()) {
         append(addrRangeID, AccessType::WRITE);
-        if (isSoaJitVectorRmw())
+        if (isSoaJitInlineOperandRmw())
+            append(backingAddrRangeID, AccessType::WRITE);
+        else if (isSoaJitVectorRmw())
             append(backingAddrRangeID, AccessType::READ);
         if (!isSoaJitPageFedRmw()) {
             append(indexAddrRangeID, AccessType::READ);

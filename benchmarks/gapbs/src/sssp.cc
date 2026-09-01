@@ -86,6 +86,14 @@ using namespace std;
     !defined(SSSP_OLD_RESULT_HYBRID)
 #error "SSSP conflict snapshot prototype requires old-result hybrid"
 #endif
+#if defined(SSSP_INLINE_OPERAND_RETIREMENT) && \
+    !defined(SSSP_OLD_RESULT_HYBRID)
+#error "SSSP inline-operand retirement extends the guarded hybrid arm"
+#endif
+#if defined(SSSP_INLINE_OPERAND_RETIREMENT) && \
+    defined(SSSP_CONFLICT_SNAPSHOT_PROTOTYPE)
+#error "SSSP inline retirement and snapshot prototypes are distinct arms"
+#endif
 
 const WeightT kDistInf = numeric_limits<WeightT>::max() / 2;
 const size_t kMaxBin = numeric_limits<size_t>::max() / 2;
@@ -120,6 +128,16 @@ alignas(kSsspLogicalBytes) static uint32_t
     sssp_hybrid_predicates[NUM_CORES][kSsspLogicalWords];
 alignas(kSsspLogicalBytes) static WeightT
     sssp_hybrid_old_results[NUM_CORES][kSsspLogicalWords];
+#ifdef SSSP_INLINE_OPERAND_RETIREMENT
+alignas(64) static maa_inline_retirement_record
+    sssp_inline_retirement_ring[NUM_CORES]
+                               [gem5::maa::InlineOperandPageFedABI::
+                                    RetirementRingRecords];
+static uint64_t sssp_inline_logical_operations[NUM_CORES] = {};
+static uint64_t sssp_inline_paired_admissions[NUM_CORES] = {};
+static uint64_t sssp_inline_retirement_records[NUM_CORES] = {};
+static uint64_t sssp_inline_retirement_acked_lines[NUM_CORES] = {};
+#endif
 
 static uint64_t sssp_hybrid_eligible_windows[NUM_CORES] = {};
 static uint64_t sssp_hybrid_routed_windows[NUM_CORES] = {};
@@ -155,7 +173,35 @@ static void
 PublishSsspHybridPage(int tid, size_t logical_page, int index_tile,
                       int value_tile, int index_completion_tile,
                       int value_completion_tile, int page_reg, int offset_reg,
-                      int generation_reg) {
+                      int generation_reg, WeightT *dist) {
+#ifdef SSSP_INLINE_OPERAND_RETIREMENT
+    (void)index_completion_tile;
+    (void)value_completion_tile;
+    (void)page_reg;
+    (void)offset_reg;
+    (void)generation_reg;
+    if (logical_page >= gem5::maa::InlineOperandPageFedABI::Pages)
+        abort();
+    uint32_t &generation = sssp_hybrid_publish_generations[tid];
+    if (logical_page == 0) {
+        if (++generation == 0)
+            abort();
+        for (auto &record : sssp_inline_retirement_ring[tid]) {
+            record.destination = UINT32_MAX;
+            record.value_bits = 0;
+        }
+        atomic_thread_fence(memory_order_seq_cst);
+        maa_indirect_rmw_vector_inline_operand_page_fed_open(
+            reinterpret_cast<float *>(dist),
+            sssp_inline_retirement_ring[tid],
+            gem5::maa::InlineOperandPageFedABI::RetirementRingRecords,
+            Operation_t::MIN_OP, generation);
+    }
+    maa_inline_operand_page_fed_admit(
+        generation, logical_page, index_tile, value_tile);
+    sssp_inline_paired_admissions[tid]++;
+#else
+    (void)dist;
     if (logical_page >= 4)
         abort();
     const uint32_t page = static_cast<uint32_t>(logical_page);
@@ -182,6 +228,7 @@ PublishSsspHybridPage(int tid, size_t logical_page, int index_tile,
         page_reg, offset_reg, generation_reg);
     wait_ready(value_completion_tile);
     sssp_hybrid_value_publish_pages[tid]++;
+#endif
 }
 
 template <typename T>
@@ -313,6 +360,59 @@ RunSsspHybridWindow(int tid, WeightT *dist, int num_nodes, WeightT delta,
                     vector<vector<NodeID>> &local_bins,
                     unordered_map<NodeID, WeightT> &page_finals, int min_reg,
                     int max_reg, int stride_reg, int completion_tile) {
+#ifdef SSSP_INLINE_OPERAND_RETIREMENT
+    (void)dist;
+    (void)page_finals;
+    (void)min_reg;
+    (void)max_reg;
+    (void)stride_reg;
+    (void)completion_tile;
+    const uint64_t generation = sssp_hybrid_publish_generations[tid];
+    if (generation == 0)
+        abort();
+    maa_inline_operand_page_fed_close(generation);
+    constexpr uint32_t records_per_line =
+        gem5::maa::InlineOperandPageFedABI::RetirementRecordsPerLine;
+    constexpr uint32_t expected_lines =
+        kSsspLogicalWords / records_per_line;
+    for (uint32_t sequence = 0; sequence < expected_lines; ++sequence) {
+        const uint32_t slot = sequence %
+            gem5::maa::InlineOperandPageFedABI::RetirementRingLines;
+        volatile maa_inline_retirement_record *line =
+            &sssp_inline_retirement_ring[tid][slot * records_per_line];
+        for (;;) {
+            bool visible = true;
+            for (uint32_t word = 0; word < records_per_line; ++word)
+                visible = visible && line[word].destination != UINT32_MAX;
+            if (visible)
+                break;
+            __asm__ __volatile__("pause" ::: "memory");
+        }
+        for (uint32_t word = 0; word < records_per_line; ++word) {
+            const NodeID destination =
+                static_cast<NodeID>(line[word].destination);
+            const WeightT final_distance =
+                static_cast<WeightT>(line[word].value_bits);
+            if (destination < 0 || destination >= num_nodes ||
+                final_distance < 0 || final_distance > kDistInf)
+                abort();
+            const size_t dest_bin = final_distance / delta;
+            if (dest_bin >= local_bins.size())
+                local_bins.resize(dest_bin + 1);
+            local_bins[dest_bin].push_back(destination);
+            line[word].destination = UINT32_MAX;
+            line[word].value_bits = 0;
+            sssp_inline_retirement_records[tid]++;
+        }
+        atomic_thread_fence(memory_order_seq_cst);
+        maa_inline_operand_retirement_ack(
+            generation, static_cast<uint16_t>(sequence));
+        sssp_inline_retirement_acked_lines[tid]++;
+    }
+    atomic_thread_fence(memory_order_seq_cst);
+    sssp_inline_logical_operations[tid]++;
+    sssp_hybrid_routed_windows[tid]++;
+#else
     atomic_thread_fence(memory_order_seq_cst);
     for (size_t lane = 0; lane < kSsspLogicalWords; ++lane) {
         if (sssp_hybrid_predicates[tid][lane] != 1 ||
@@ -373,6 +473,7 @@ RunSsspHybridWindow(int tid, WeightT *dist, int num_nodes, WeightT delta,
     }
     sssp_hybrid_routed_windows[tid]++;
     sssp_hybrid_old_result_words[tid] += kSsspLogicalWords;
+#endif
 }
 #endif
 
@@ -507,6 +608,13 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
     add_mem_region(&sssp_hybrid_old_results[0][0],
                    &sssp_hybrid_old_results[0][0] +
                        NUM_CORES * kSsspLogicalWords);
+#ifdef SSSP_INLINE_OPERAND_RETIREMENT
+    add_mem_region(&sssp_inline_retirement_ring[0][0],
+                   &sssp_inline_retirement_ring[0][0] +
+                       NUM_CORES *
+                           gem5::maa::InlineOperandPageFedABI::
+                               RetirementRingRecords);
+#endif
 #ifdef SSSP_CONFLICT_SNAPSHOT_PROTOTYPE
     add_mem_region(hybrid_source_snapshot.beginp(),
                    hybrid_source_snapshot.endp());
@@ -931,7 +1039,7 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                                 PublishSsspHybridPage(
                                     tid, logical_page, tilev, tile2, tile1,
                                     tileu, reg0, reg1,
-                                    hybrid_generation_reg);
+                                    hybrid_generation_reg, dist.data());
                                 if (logical_page == 3) {
                                     RunSsspHybridWindow(
                                         tid, dist.data(), num_nodes, delta,
@@ -1078,6 +1186,12 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
     uint64_t predicate_restore_words = 0;
     uint64_t coherent_tail_batches = 0;
     uint64_t coherent_tail_words = 0;
+#ifdef SSSP_INLINE_OPERAND_RETIREMENT
+    uint64_t inline_logical_operations = 0;
+    uint64_t inline_paired_admissions = 0;
+    uint64_t inline_retirement_records = 0;
+    uint64_t inline_retirement_acked_lines = 0;
+#endif
     bool fallback_thread_closure = true;
     for (int core = 0; core < NUM_CORES; ++core) {
         eligible_windows += sssp_hybrid_eligible_windows[core];
@@ -1104,6 +1218,13 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
         value_publish_pages += sssp_hybrid_value_publish_pages[core];
         old_result_words += sssp_hybrid_old_result_words[core];
         legacy_words += sssp_hybrid_legacy_words[core];
+#ifdef SSSP_INLINE_OPERAND_RETIREMENT
+        inline_logical_operations += sssp_inline_logical_operations[core];
+        inline_paired_admissions += sssp_inline_paired_admissions[core];
+        inline_retirement_records += sssp_inline_retirement_records[core];
+        inline_retirement_acked_lines +=
+            sssp_inline_retirement_acked_lines[core];
+#endif
         const auto &fallback = sssp_hybrid_fallback_counters[core];
         host_spd_reads += fallback.host_spd_reads;
         illegal_host_spd_line_starts +=
@@ -1126,9 +1247,19 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
     const bool counts_close =
         routed_windows + unsafe_eligible_windows == eligible_windows &&
         reason_covered_unsafe_windows == unsafe_eligible_windows &&
+#ifdef SSSP_INLINE_OPERAND_RETIREMENT
+        index_publish_pages == 0 && value_publish_pages == 0 &&
+        old_result_words == 0 &&
+        inline_logical_operations == routed_windows &&
+        inline_paired_admissions == routed_windows * 4 &&
+        inline_retirement_records == routed_windows * kSsspLogicalWords &&
+        inline_retirement_acked_lines ==
+            routed_windows * kSsspLogicalWords / 8 &&
+#else
         index_publish_pages == routed_windows * 4 &&
         value_publish_pages == routed_windows * 4 &&
         old_result_words == routed_windows * kSsspLogicalWords &&
+#endif
         fallback_pages == unsafe_eligible_windows * 4 &&
         fallback_thread_closure &&
         fallback_publication_issue_pages ==
@@ -1140,9 +1271,16 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
             fallback_pages * kSsspPhysicalWords + coherent_tail_words &&
         predicate_restore_words == fallback_pages * kSsspPhysicalWords &&
         legacy_words == fallback_consumed_words;
-    std::cout << "SSSP_OLD_RESULT_HYBRID_TERMINAL treatment="
+    std::cout <<
+#ifdef SSSP_INLINE_OPERAND_RETIREMENT
+        "SSSP_INLINE_OPERAND_RETIREMENT_TERMINAL treatment="
+#else
+        "SSSP_OLD_RESULT_HYBRID_TERMINAL treatment="
+#endif
 #ifdef SSSP_CONFLICT_SNAPSHOT_PROTOTYPE
               << "conflict_snapshot_prototype"
+#elif defined(SSSP_INLINE_OPERAND_RETIREMENT)
+              << "inline_operand_retirement"
 #else
               << "old_result_hybrid"
 #endif
@@ -1167,6 +1305,22 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
               << " index_publish_pages=" << index_publish_pages
               << " value_publish_pages=" << value_publish_pages
               << " old_result_words=" << old_result_words
+#ifdef SSSP_INLINE_OPERAND_RETIREMENT
+              << " logical_operations=" << inline_logical_operations
+              << " paired_admissions=" << inline_paired_admissions
+              << " operand_insertions="
+              << inline_paired_admissions * kSsspPhysicalWords
+              << " operand_consumptions=" << inline_retirement_records
+              << " retirement_records=" << inline_retirement_records
+              << " retirement_acked_lines="
+              << inline_retirement_acked_lines
+              << " inline_operand_live_bytes=65536"
+              << " row_offset_incremental_bytes=0"
+              << " incremental_sram_bytes_per_unit="
+              << MAA_INLINE_RETIREMENT_INCREMENTAL_SRAM_BYTES
+              << " external_retirement_ring_bytes_per_unit="
+              << gem5::maa::InlineOperandPageFedABI::RetirementRingBytes
+#endif
               << " legacy_words=" << legacy_words
               << " fallback_pages=" << fallback_pages
               << " fallback_publication_issue_pages="

@@ -77,6 +77,9 @@ constexpr uint64_t MAA_SOA_JIT_MASKED_INDEX_MODE_TAG = UINT64_MAX;
 constexpr uint8_t MAA_SOA_JIT_OLD_RESULT_MODE_TAG = 0xfe;
 constexpr uint8_t MAA_SOA_JIT_PAGE_FED_MODE_TAG =
     gem5::maa::PageFedSoaJitABI::ModeTag;
+constexpr uint8_t MAA_INLINE_OPERAND_PAGE_FED_MODE_TAG =
+    gem5::maa::InlineOperandPageFedABI::ModeTag;
+constexpr uint32_t MAA_INLINE_RETIREMENT_INCREMENTAL_SRAM_BYTES = 592;
 
 volatile uint64_t *INSTR_opcode_datatype_optype_tdst1_tdst2;
 volatile uint64_t *INSTR_tsrc1_tsrc2_rdst1_rdst2_rsrc1_rsrc2_rsrc3_csrc;
@@ -951,6 +954,82 @@ inline void maa_soa_jit_page_fed_close(uint64_t generation) {
            generation <= gem5::maa::PageFedSoaJitABI::GenerationMask);
     *INSTR_page_fed_command =
         gem5::maa::PageFedSoaJitABI::encodeClose(generation);
+    __asm__ __volatile__("mfence;" ::: "memory");
+}
+
+struct maa_inline_retirement_record
+{
+    uint32_t destination;
+    uint32_t value_bits;
+};
+static_assert(sizeof(maa_inline_retirement_record) == 8);
+
+/** Open one generic FP32 inline-operand, success-retiring vector MIN. */
+inline void maa_indirect_rmw_vector_inline_operand_page_fed_open(
+    float *data, maa_inline_retirement_record *retirement_ring,
+    uint32_t retirement_records,
+    Operation_t o_type, uint64_t generation) {
+    assert(data != nullptr);
+    assert(retirement_ring != nullptr);
+    assert((reinterpret_cast<uintptr_t>(retirement_ring) & 63) == 0);
+    assert(retirement_records ==
+           gem5::maa::InlineOperandPageFedABI::RetirementRingRecords);
+    assert(o_type == Operation_t::MIN_OP);
+    assert(generation > 0 && generation <=
+           gem5::maa::InlineOperandPageFedABI::GenerationMask);
+    *INSTR_opcode_datatype_optype_tdst1_tdst2 =
+        ((uint64_t)OpcodeType::INDIR_RMW_VECTOR << 32) |
+        ((uint64_t)DataType::FLOAT32_TYPE << 24) |
+        ((uint64_t)o_type << 16) |
+        ((uint64_t)MAA_INLINE_OPERAND_PAGE_FED_MODE_TAG << 8) |
+        (uint64_t)NA_UINT8;
+    *INSTR_tsrc1_tsrc2_rdst1_rdst2_rsrc1_rsrc2_rsrc3_csrc =
+        ((uint64_t)NA_UINT8 << 56) | ((uint64_t)NA_UINT8 << 48) |
+        ((uint64_t)NA_UINT8 << 40) | ((uint64_t)NA_UINT8 << 32) |
+        ((uint64_t)NA_UINT8 << 24) | ((uint64_t)NA_UINT8 << 16) |
+        ((uint64_t)NA_UINT8 << 8) | (uint64_t)NA_UINT8;
+    *INSTR_baseaddr = reinterpret_cast<uint64_t>(data);
+    *INSTR_backingaddr = reinterpret_cast<uint64_t>(retirement_ring);
+    *INSTR_indexaddr =
+        gem5::maa::InlineOperandPageFedABI::NoIndexBacking;
+    *INSTR_predicateaddr = retirement_records;
+    *INSTR_resultaddr = generation;
+    __asm__ __volatile__("mfence;" ::: "memory");
+}
+
+/** Admit one ordered pair and release both completed physical tiles. */
+inline void maa_inline_operand_page_fed_admit(
+    uint64_t generation, unsigned logical_page, int index_tile,
+    int value_tile) {
+    assert(logical_page < gem5::maa::InlineOperandPageFedABI::Pages);
+    assert(index_tile >= 0 && index_tile < NUM_TILES);
+    assert(value_tile >= 0 && value_tile < NUM_TILES);
+    assert(index_tile != value_tile);
+    assert(generation > 0 && generation <=
+           gem5::maa::InlineOperandPageFedABI::GenerationMask);
+    *INSTR_page_fed_command =
+        gem5::maa::InlineOperandPageFedABI::encodeAdmitPair(
+            generation, static_cast<uint8_t>(logical_page),
+            static_cast<uint8_t>(index_tile),
+            static_cast<uint8_t>(value_tile));
+    __asm__ __volatile__("mfence;" ::: "memory");
+}
+
+inline void maa_inline_operand_page_fed_close(uint64_t generation) {
+    assert(generation > 0 && generation <=
+           gem5::maa::InlineOperandPageFedABI::GenerationMask);
+    *INSTR_page_fed_command =
+        gem5::maa::InlineOperandPageFedABI::encodeClose(generation);
+    __asm__ __volatile__("mfence;" ::: "memory");
+}
+
+inline void maa_inline_operand_retirement_ack(uint64_t generation,
+                                               uint16_t line_sequence) {
+    assert(generation > 0 && generation <=
+           gem5::maa::InlineOperandPageFedABI::GenerationMask);
+    *INSTR_page_fed_command =
+        gem5::maa::InlineOperandPageFedABI::encodeAck(
+            generation, line_sequence);
     __asm__ __volatile__("mfence;" ::: "memory");
 }
 

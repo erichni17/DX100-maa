@@ -79,6 +79,107 @@ class PageFedSoaJitABI
 };
 
 /**
+ * Default-off paired-page inline-operand extension.
+ *
+ * This is deliberately a new wire tag rather than an overload of the existing
+ * index-only page-fed mode.  One admit command names two already-complete 4K
+ * SPD pages.  The low 32-bit generation leaves room for both physical tile
+ * identities without adding a command queue or descriptor backing store.
+ */
+class InlineOperandPageFedABI
+{
+  public:
+    static constexpr uint16_t Magic = 0xd5b;
+    static constexpr unsigned MagicShift = 52;
+    static constexpr uint64_t GenerationMask = UINT32_MAX;
+    static constexpr uint8_t ModeTag = 0xfc;
+    static constexpr uint64_t NoIndexBacking = UINT64_MAX;
+    static constexpr uint32_t Pages = PageFedSoaJitABI::Pages;
+    static constexpr uint32_t PageElements = PageFedSoaJitABI::PageElements;
+    static constexpr uint32_t LogicalElements =
+        PageFedSoaJitABI::LogicalElements;
+    static constexpr uint32_t RetirementRecordBytes = 8;
+    static constexpr uint32_t RetirementRecordsPerLine = 8;
+    static constexpr uint32_t RetirementRingRecords = 4096;
+    static constexpr uint32_t RetirementRingLines =
+        RetirementRingRecords / RetirementRecordsPerLine;
+    static constexpr uint32_t RetirementRingBytes =
+        RetirementRingRecords * RetirementRecordBytes;
+
+    enum class Action : uint8_t
+    {
+        AdmitPair = 0,
+        Close = 1,
+        AckRetirementLine = 2,
+    };
+
+    struct Command
+    {
+        Action action = Action::AdmitPair;
+        uint8_t page = 0;
+        uint8_t indexTile = 0;
+        uint8_t valueTile = 0;
+        uint16_t retirementLine = 0;
+        uint64_t generation = 0;
+    };
+
+    static constexpr uint64_t
+    encodeAdmitPair(uint64_t generation, uint8_t page, uint8_t indexTile,
+                    uint8_t valueTile)
+    {
+        return (uint64_t{Magic} << MagicShift) |
+            (uint64_t{static_cast<uint8_t>(Action::AdmitPair)} << 50) |
+            (uint64_t{page} << 48) | (uint64_t{indexTile} << 40) |
+            (uint64_t{valueTile} << 32) | generation;
+    }
+
+    static constexpr uint64_t
+    encodeClose(uint64_t generation)
+    {
+        return (uint64_t{Magic} << MagicShift) |
+            (uint64_t{static_cast<uint8_t>(Action::Close)} << 50) |
+            generation;
+    }
+
+    static constexpr uint64_t
+    encodeAck(uint64_t generation, uint16_t retirementLine)
+    {
+        return (uint64_t{Magic} << MagicShift) |
+            (uint64_t{static_cast<uint8_t>(Action::AckRetirementLine)}
+             << 50) |
+            (static_cast<uint64_t>(retirementLine >> 8) << 40) |
+            (static_cast<uint64_t>(retirementLine & 0xff) << 32) |
+            generation;
+    }
+
+    static bool
+    decode(uint64_t word, Command &command)
+    {
+        if ((word >> MagicShift) != Magic)
+            return false;
+        const uint8_t action = (word >> 50) & 0x3;
+        if (action > static_cast<uint8_t>(Action::AckRetirementLine))
+            return false;
+        command.action = static_cast<Action>(action);
+        command.page = (word >> 48) & 0x3;
+        command.indexTile = (word >> 40) & 0xff;
+        command.valueTile = (word >> 32) & 0xff;
+        command.retirementLine =
+            (static_cast<uint16_t>(command.indexTile) << 8) |
+            command.valueTile;
+        command.generation = word & GenerationMask;
+        if (command.generation == 0)
+            return false;
+        if (command.action == Action::AdmitPair)
+            return command.page < Pages;
+        if (command.action == Action::Close)
+            return command.page == 0 && command.indexTile == 0 &&
+                   command.valueTile == 0;
+        return command.page == 0;
+    }
+};
+
+/**
  * Exact persistent state for one bounded page-fed operation.
  *
  * admittedCount is also the next required logical ordinal, so no ordinal

@@ -168,6 +168,7 @@ public:
     bool soaJitMaskedIndex;
     bool soaJitOldResult;
     bool soaJitPageFed;
+    bool soaJitInlineOperand;
     bool fusedP16CoefficientWordReceived;
     static_assert(
         sizeof(fusedP16CoefficientWordReceived) <=
@@ -177,6 +178,7 @@ public:
     bool soaJitPredicateWordReceived;
     bool soaJitResultWordReceived;
     uint64_t soaJitPageFedGeneration;
+    uint32_t soaJitRetirementRecords;
     int16_t soaJitScalarRegID;
     Addr logicalSourceBackingAddr;
     Addr logicalSource2BackingAddr, logicalDestinationBackingAddr;
@@ -294,7 +296,11 @@ public:
         return isSoaJitVectorRmw() && soaJitOldResult;
     }
     bool isSoaJitPageFedRmw() const {
-        return isSoaJitVectorRmw() && soaJitPageFed;
+        return isSoaJitVectorRmw() &&
+               (soaJitPageFed || soaJitInlineOperand);
+    }
+    bool isSoaJitInlineOperandRmw() const {
+        return isSoaJitVectorRmw() && soaJitInlineOperand;
     }
     bool isGuestResponseBearingPublish() const {
         return opcode == OpcodeType::STREAM_ST && !controllerManaged &&
@@ -333,7 +339,9 @@ public:
                                : soaJitScalarRegID == -1));
     }
     bool hasValidSoaJitRmwShape() const {
-        return isSoaJitRmw() && dst1SpdID == -1 && dst2SpdID != -1 &&
+        return isSoaJitRmw() && dst1SpdID == -1 &&
+               (isSoaJitInlineOperandRmw() ? dst2SpdID == -1
+                                           : dst2SpdID != -1) &&
                dst1RegID == -1 && dst2RegID == -1 &&
                (isSoaJitPageFedRmw() ||
                 (src1RegID != -1 && src2RegID != -1 &&

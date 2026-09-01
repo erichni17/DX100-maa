@@ -172,6 +172,24 @@ int OffsetTable::insert(int itr, int wid, int last_entry, int pass) {
     }
     return entry_id;
 }
+void OffsetTable::beginInlineOperandMode() {
+    panic_if(summary_mode || inline_operand_mode || occupancy() != 0,
+             "Offset Table inline-operand mode requires one empty, ordinary "
+             "epoch\n");
+    inline_operand_mode = true;
+}
+void OffsetTable::endInlineOperandMode() {
+    panic_if(!inline_operand_mode || summary_mode || occupancy() != 0,
+             "Offset Table inline-operand mode closed with live aux state\n");
+    inline_operand_mode = false;
+}
+uint32_t OffsetTable::inlineOperandBits(int entry) const {
+    panic_if(!inline_operand_mode || summary_mode || entry < 0 ||
+                 entry >= num_entries || !entries_valid[entry],
+             "Offset Table inline operand read from invalid entry %d\n",
+             entry);
+    return static_cast<uint32_t>(entries[entry].pass);
+}
 std::vector<OffsetTableEntry> OffsetTable::get_entry_recv(int first_itr) {
     std::vector<OffsetTableEntry> result;
     assert(first_itr != -1);
@@ -226,7 +244,8 @@ int OffsetTable::count_entries(int itr) const {
     return count;
 }
 void OffsetTable::beginSummary() {
-    panic_if(summary_mode, "Offset Table summary phase started twice\n");
+    panic_if(summary_mode || inline_operand_mode,
+             "Offset Table summary conflicts with inline aux ownership\n");
     panic_if(occupancy() != 0,
              "Offset Table summary phase requires empty reorder state\n");
     for (int i = 0; i < num_entries; ++i) {
@@ -277,7 +296,8 @@ void OffsetTable::endSummary() {
     summary_probes = 0;
 }
 void OffsetTable::check_reset() {
-    panic_if(summary_mode, "Offset Table reset check during summary phase\n");
+    panic_if(summary_mode || inline_operand_mode,
+             "Offset Table reset check with an active aux owner\n");
     for (int i = 0; i < num_entries; i++) {
         panic_if(entries_valid[i], "Entry %d is valid: wid(%d) next_itr(%d)!\n",
                  i, entries[i].wid, entries[i].next_itr);
@@ -297,7 +317,8 @@ void OffsetTable::check_reset() {
              static_cast<int>(free_entries.size()), num_entries);
 }
 void OffsetTable::reset() {
-    panic_if(summary_mode, "Offset Table reset during summary phase\n");
+    panic_if(summary_mode || inline_operand_mode,
+             "Offset Table reset with an active aux owner\n");
     free_entries.clear();
     for (int i = num_entries - 1; i >= 0; i--) {
         entries_valid[i] = false;

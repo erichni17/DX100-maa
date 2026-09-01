@@ -40,6 +40,11 @@ class MAA(ClockedObject):
         "Opt in to bounded four-page direct SPD-index admission for one "
         "logical-16K SoA/JIT RMW",
     )
+    inline_operand_page_fed_rmw = Param.Bool(
+        False,
+        "Opt in to paired 4K index/value admission with inline FP32 "
+        "operands and WriteResp-gated dense MIN retirement",
+    )
     num_regs_per_core = Param.Unsigned(
         8,
         "Number of 32-bit scalar registers per core attached to the DX100 instance",

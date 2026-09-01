@@ -123,6 +123,7 @@ MAA::MAA(const MAAParams &p)
       logical_spd_cache_mode(p.logical_spd_cache_mode),
       logical_tile_page_scheduler(p.logical_tile_page_scheduler),
       page_fed_soa_jit(p.page_fed_soa_jit),
+      inline_operand_page_fed_rmw(p.inline_operand_page_fed_rmw),
       page_materialization_wakeup_batches(
           p.page_materialization_wakeup_batches),
       page_materialization_fragment_buffers(
@@ -494,6 +495,29 @@ MAA::MAA(const MAAParams &p)
                  "globally Row/Offset-informed A issue with exact coherent "
                  "WriteResp; replay, native-order attribution, and idealized "
                  "ACKs are forbidden\n");
+    }
+    if (inline_operand_page_fed_rmw) {
+        panic_if(num_tile_elements !=
+                         maa::InlineOperandPageFedABI::LogicalElements ||
+                     physical_tile_elements !=
+                         maa::InlineOperandPageFedABI::PageElements,
+                 "Inline-operand page-fed RMW requires logical16K/physical4K, "
+                 "got %u/%u\n", num_tile_elements,
+                 physical_tile_elements);
+        panic_if(!page_fed_soa_jit || !reorder_row_table ||
+                     reconfigure_row_table ||
+                     num_offset_table_entries < num_tile_elements ||
+                     num_offset_table_epoch_entries < num_tile_elements,
+                 "Inline-operand page-fed RMW requires the page-fed decoder, "
+                 "one fixed reordered 16K Row/Offset epoch\n");
+        panic_if(virtual_index_partitions != 1 ||
+                     virtual_index_range_passes ||
+                     virtual_index_descriptor_spool ||
+                     virtual_descriptor_spool_read_ahead ||
+                     virtual_bounded_global_merge ||
+                     virtual_idealized_write_ack,
+                 "Inline-operand mode forbids partition passes, descriptor "
+                 "replay, early/global drains, and idealized ACKs\n");
     }
     panic_if(virtual_index_range_policy != 2 &&
                  !virtual_index_range_boundaries.empty(),

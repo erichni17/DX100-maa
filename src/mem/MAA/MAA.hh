@@ -417,6 +417,7 @@ public:
     unsigned int logical_spd_cache_mode;
     bool logical_tile_page_scheduler;
     bool page_fed_soa_jit;
+    bool inline_operand_page_fed_rmw;
     unsigned int page_materialization_wakeup_batches;
     unsigned int page_materialization_fragment_buffers;
     bool page_materialization_direct_spd_fragments;

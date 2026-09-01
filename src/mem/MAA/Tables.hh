@@ -73,6 +73,10 @@ public:
                   MAA *_maa,
                   bool _is_stream = false);
     int insert(int itr, int wid, int last_entry, int pass = -1);
+    void beginInlineOperandMode();
+    void endInlineOperandMode();
+    uint32_t inlineOperandBits(int entry) const;
+    bool inlineOperandMode() const { return inline_operand_mode; }
     std::vector<OffsetTableEntry> get_entry_recv(int first_itr);
     OffsetTableEntry peek_entry(int itr) const;
     int count_entries(int itr) const;
@@ -112,6 +116,7 @@ public:
     uint32_t summary_records = 0;
     uint32_t summary_observations = 0;
     uint64_t summary_probes = 0;
+    bool inline_operand_mode = false;
 };
 
 class RowTableEntry {

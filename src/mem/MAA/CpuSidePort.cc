@@ -230,6 +230,54 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
             if (element_id == 7) {
                 panic_if(!page_fed_soa_jit,
                          "Page-fed command doorbell is disabled\n");
+                maa::InlineOperandPageFedABI::Command inline_command;
+                if (maa::InlineOperandPageFedABI::decode(
+                        data, inline_command)) {
+                    panic_if(!inline_operand_page_fed_rmw,
+                             "Inline-operand page-fed command is disabled\n");
+                    const auto core = my_RID_to_core_id.find(
+                        pkt->requestorId());
+                    panic_if(core == my_RID_to_core_id.end(),
+                             "Inline page-fed command arrived before its "
+                             "descriptor established requestor identity\n");
+                    IndirectAccessUnit *owner = nullptr;
+                    for (unsigned int unit = 0;
+                         unit < num_indirect_units_total; ++unit) {
+                        if (!indirectAccessUnits[unit].
+                                inlineOperandActiveForCore(core->second))
+                            continue;
+                        panic_if(owner != nullptr,
+                                 "Core %d owns duplicate inline page-fed "
+                                 "contexts\n", core->second);
+                        owner = &indirectAccessUnits[unit];
+                    }
+                    panic_if(owner == nullptr,
+                             "Core %d inline page-fed command has no active "
+                             "context\n", core->second);
+                    Cycles latency(1);
+                    if (inline_command.action ==
+                        maa::InlineOperandPageFedABI::Action::AdmitPair) {
+                        latency = owner->admitPageFedSoaJitIndexValuePage(
+                            inline_command.generation, inline_command.page,
+                            inline_command.indexTile,
+                            inline_command.valueTile);
+                    } else if (inline_command.action ==
+                               maa::InlineOperandPageFedABI::Action::Close) {
+                        latency = owner->closePageFedSoaJit(
+                            inline_command.generation);
+                    } else {
+                        latency = owner->ackInlineRetirementLine(
+                            inline_command.generation,
+                            inline_command.retirementLine);
+                    }
+                    pkt->makeTimingResponse();
+                    const Tick old_header_delay = pkt->headerDelay;
+                    pkt->headerDelay = pkt->payloadDelay = 0;
+                    cpuSidePorts[core_id]->schedTimingResp(
+                        pkt, getClockEdge(latency) + old_header_delay);
+                    respond_immediately = false;
+                    break;
+                }
                 maa::PageFedSoaJitABI::Command command;
                 panic_if(!maa::PageFedSoaJitABI::decode(data, command),
                          "Malformed page-fed command word 0x%016lx\n",
@@ -315,10 +363,14 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                     raw_dst1 == SoaJitSafety::OldResultModeTag;
                 current_instruction->soaJitPageFed =
                     raw_dst1 == maa::PageFedSoaJitABI::ModeTag;
+                current_instruction->soaJitInlineOperand =
+                    raw_dst1 == maa::InlineOperandPageFedABI::ModeTag;
                 current_instruction->dst1SpdID =
                     (raw_dst1 == NA_UINT8 ||
                      current_instruction->soaJitOldResult ||
-                     current_instruction->soaJitPageFed) ? -1 : raw_dst1;
+                     current_instruction->soaJitPageFed ||
+                     current_instruction->soaJitInlineOperand)
+                        ? -1 : raw_dst1;
                 data = data >> 8;
                 current_instruction->optype = (data & NA_UINT8) == NA_UINT8 ? Instruction::OPType::MAX : static_cast<Instruction::OPType>(data & NA_UINT8);
                 data = data >> 8;
@@ -346,6 +398,11 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                              current_instruction->opcode !=
                                  Instruction::OpcodeType::INDIR_RMW_VECTOR,
                          "Page-fed mode tag is only valid for guarded "
+                         "INDIR_RMW_VECTOR\n");
+                panic_if(current_instruction->soaJitInlineOperand &&
+                             current_instruction->opcode !=
+                                 Instruction::OpcodeType::INDIR_RMW_VECTOR,
+                         "Inline-operand mode tag is only valid for guarded "
                          "INDIR_RMW_VECTOR\n");
                 if (logical_header.kind ==
                     maa::LogicalSPDCacheABI::HeaderKind::LogicalALUScalar) {
@@ -580,9 +637,11 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                          (current_instruction->src1RegID >= num_regs ||
                           current_instruction->src2RegID >= num_regs ||
                           current_instruction->src3RegID >= num_regs)) ||
-                            current_instruction->dst2SpdID < 0 ||
-                            current_instruction->dst2SpdID >=
-                                static_cast<int>(num_tiles),
+                            (!current_instruction->
+                                  isSoaJitInlineOperandRmw() &&
+                             (current_instruction->dst2SpdID < 0 ||
+                              current_instruction->dst2SpdID >=
+                                  static_cast<int>(num_tiles))),
                         "Rejected SoA/JIT RMW register or completion-token "
                         "range before address-word dispatch\n");
                     panic_if(
@@ -600,6 +659,13 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                                  Instruction::DataType::FLOAT32_TYPE),
                         "Page-fed SoA/JIT requires the default-off enable "
                         "and FP32 vector operands\n");
+                    panic_if(
+                        current_instruction->isSoaJitInlineOperandRmw() &&
+                            (!inline_operand_page_fed_rmw ||
+                             current_instruction->optype !=
+                                 Instruction::OPType::MIN_OP),
+                        "Inline-operand prototype requires its default-off "
+                        "selector and typed MIN\n");
                 }
                 if (current_instruction->accessType !=
                     Instruction::AccessType::COMPUTE) {
@@ -707,6 +773,15 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                     addrRegions[current_instruction->backingAddrRangeID].first;
                 current_instruction->backingMaxAddr = addrRegions[
                     current_instruction->backingAddrRangeID].second;
+                if (current_instruction->isSoaJitInlineOperandRmw()) {
+                    panic_if(
+                        (data & 63) != 0 ||
+                            current_instruction->backingMaxAddr - data <
+                                maa::InlineOperandPageFedABI::
+                                    RetirementRingBytes,
+                        "Inline retirement ring must be 64-byte aligned and "
+                        "provide exactly bounded 32-KiB backing\n");
+                }
                 if (current_instruction->isSoaJitRmw())
                     break;
                 if (current_instruction->opcode ==
@@ -1041,6 +1116,17 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                 panic_if(!current_instruction->isSoaJitRmw(),
                          "Instruction word five is only valid for the "
                          "guarded SoA/JIT RMW shape\n");
+                if (current_instruction->isSoaJitInlineOperandRmw()) {
+                    panic_if(data != maa::InlineOperandPageFedABI::
+                                         RetirementRingRecords,
+                             "Inline-operand word five must declare the "
+                             "bounded 4096-record retirement ring\n");
+                    current_instruction->soaJitRetirementRecords =
+                        static_cast<uint32_t>(data);
+                    current_instruction->predicateAddr = 0;
+                    current_instruction->soaJitPredicateWordReceived = true;
+                    break;
+                }
                 panic_if(current_instruction->soaJitPredicateWordReceived,
                          "Received duplicate SoA/JIT predicate word\n");
                 panic_if(!current_instruction->hasValidSoaJitRmwOperands(),
@@ -1114,6 +1200,10 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                          "Received SoA/JIT extension word before instruction "
                          "header!\n");
                 if (current_instruction->isSoaJitPageFedRmw()) {
+                    const uint64_t generation_mask =
+                        current_instruction->isSoaJitInlineOperandRmw()
+                            ? maa::InlineOperandPageFedABI::GenerationMask
+                            : maa::PageFedSoaJitABI::GenerationMask;
                     panic_if(
                         !current_instruction->
                              hasValidSoaJitRmwOperands() ||
@@ -1125,8 +1215,13 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                             current_instruction->indexAddrRangeID != -1 ||
                             current_instruction->predicateAddrRangeID != -1 ||
                             data == 0 ||
-                            data >
-                                maa::PageFedSoaJitABI::GenerationMask,
+                            data > generation_mask ||
+                            (current_instruction->
+                                 isSoaJitInlineOperandRmw() &&
+                             current_instruction->
+                                 soaJitRetirementRecords !=
+                                 maa::InlineOperandPageFedABI::
+                                     RetirementRingRecords),
                         "Malformed page-fed SoA/JIT generation/operand "
                         "closure\n");
                     current_instruction->soaJitPageFedGeneration = data;

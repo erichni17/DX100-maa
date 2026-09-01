@@ -1002,7 +1002,8 @@ bool IndirectAccessUnit::legalCompleteLineTail(
     return valid_words == expected;
 }
 bool IndirectAccessUnit::strictPageFedTwoPhaseOperation() const {
-    return maa->virtual_strict_two_phase && isSoaJitPageFedRmw();
+    return maa->virtual_strict_two_phase && isSoaJitPageFedRmw() &&
+           !isSoaJitInlineOperandRmw();
 }
 bool IndirectAccessUnit::isFusedP16Product() const {
     return my_instruction != nullptr &&
@@ -1026,6 +1027,10 @@ bool IndirectAccessUnit::isSoaJitOldResultRmw() const {
 bool IndirectAccessUnit::isSoaJitPageFedRmw() const {
     return my_instruction != nullptr &&
            my_instruction->isSoaJitPageFedRmw();
+}
+bool IndirectAccessUnit::isSoaJitInlineOperandRmw() const {
+    return my_instruction != nullptr &&
+           my_instruction->isSoaJitInlineOperandRmw();
 }
 bool IndirectAccessUnit::usesBoundedDirectIndexPasses() const {
     return isDirectIndexLoad() && !isSoaJitRmw() &&
@@ -1539,9 +1544,17 @@ IndirectAccessUnit::validateSoaJitAddressSpans()
     spans[span_count++] = {"mutable-A", my_base_addr, my_max_addr};
     if (!isSoaJitScalarRmw()) {
         spans[span_count++] = {
-            "values", my_backing_addr,
-            checkedEnd(my_backing_addr, source_elements, my_word_size,
-                       "values")};
+            isSoaJitInlineOperandRmw() ? "retirement-ring" : "values",
+            my_backing_addr,
+            isSoaJitInlineOperandRmw()
+                ? checkedEnd(
+                      my_backing_addr,
+                      gem5::maa::InlineOperandPageFedABI::
+                          RetirementRingRecords,
+                      sizeof(gem5::maa::InlineRetirementRecord),
+                      "retirement-ring")
+                : checkedEnd(my_backing_addr, source_elements, my_word_size,
+                             "values")};
     }
     size_t index_span = spans.size();
     if (!isSoaJitPageFedRmw()) {
@@ -3850,7 +3863,9 @@ bool IndirectAccessUnit::checkReadyForFinish() {
 
 bool
 IndirectAccessUnit::insertPageFedSoaJitIndex(uint32_t index,
-                                             uint32_t ordinal)
+                                             uint32_t ordinal,
+                                             uint32_t operand_bits,
+                                             bool inline_operand)
 {
     panic_if(!isSoaJitPageFedRmw() || state != Status::Fill ||
                  ordinal != static_cast<uint32_t>(my_i) ||
@@ -3890,7 +3905,8 @@ IndirectAccessUnit::insertPageFedSoaJitIndex(uint32_t index,
     bool first_cl_access = false;
     attribution_row_insert_attempts++;
     if (!RT[my_RT_config][rt_idx].insert(
-            grow_addr, block_paddr, ordinal, wid, first_cl_access)) {
+            grow_addr, block_paddr, ordinal, wid, first_cl_access,
+            inline_operand ? static_cast<int>(operand_bits) : -1)) {
         attribution_row_pressure_events++;
         return false;
     }
@@ -3898,6 +3914,91 @@ IndirectAccessUnit::insertPageFedSoaJitIndex(uint32_t index,
     commitSoaJitSourceOrdinal(ordinal, true);
     ++my_i;
     return true;
+}
+
+bool
+IndirectAccessUnit::inlineOperandActiveForCore(int core_id) const
+{
+    return pageFedActiveForCore(core_id) && isSoaJitInlineOperandRmw();
+}
+
+Cycles
+IndirectAccessUnit::admitPageFedSoaJitIndexValuePage(
+    uint64_t generation, uint8_t page, uint8_t index_tile,
+    uint8_t value_tile)
+{
+    panic_if(!inlineOperandActiveForCore(my_instruction->core_id) ||
+                 state != Status::Fill,
+             "I[%d] paired inline admission reached a non-Fill context\n",
+             my_indirect_id);
+    const auto begin = soa_jit_page_fed_state.beginPage(generation, page);
+    panic_if(begin != gem5::maa::PageFedSoaJitState::Result::Accepted,
+             "I[%d] paired page %u begin failed: %s\n", my_indirect_id,
+             page, gem5::maa::PageFedSoaJitState::resultName(begin));
+    const auto completed_page = [this](uint8_t tile) {
+        return tile < maa->num_tiles &&
+            !maa->ifile->hasTileReference(my_instruction->maa_id, tile) &&
+            maa->spd->getTileStatus(tile) == SPD::TileStatus::Finished &&
+            maa->spd->getSize(tile) == static_cast<int>(
+                gem5::maa::InlineOperandPageFedABI::PageElements);
+    };
+    panic_if(index_tile == value_tile || !completed_page(index_tile) ||
+                 !completed_page(value_tile),
+             "I[%d] paired page %u requires two distinct, unowned, "
+             "completed physical-4K tiles\n", my_indirect_id, page);
+    for (uint32_t lane = 0;
+         lane < gem5::maa::InlineOperandPageFedABI::PageElements; ++lane) {
+        const uint32_t ordinal =
+            page * gem5::maa::InlineOperandPageFedABI::PageElements + lane;
+        const uint32_t index =
+            maa->spd->getData<uint32_t>(index_tile, lane);
+        const uint32_t operand =
+            maa->spd->getData<uint32_t>(value_tile, lane);
+        if (!insertPageFedSoaJitIndex(index, ordinal, operand, true)) {
+            soa_jit_page_fed_state.failCapacity();
+            panic("I[%d] paired page %u requires a forbidden Offset epoch "
+                  "drain at ordinal %u\n", my_indirect_id, page, ordinal);
+        }
+        const auto admitted = soa_jit_page_fed_state.admitOrdinal(
+            generation, page, ordinal);
+        panic_if(admitted !=
+                     gem5::maa::PageFedSoaJitState::Result::Accepted,
+                 "I[%d] paired ordinal %u failed: %s\n", my_indirect_id,
+                 ordinal,
+                 gem5::maa::PageFedSoaJitState::resultName(admitted));
+    }
+    const auto finished = soa_jit_page_fed_state.finishPage(
+        generation, page);
+    panic_if(finished !=
+                 gem5::maa::PageFedSoaJitState::Result::Accepted,
+             "I[%d] paired page %u closure failed: %s\n", my_indirect_id,
+             page, gem5::maa::PageFedSoaJitState::resultName(finished));
+    soa_jit_page_fed_admit_commands++;
+    soa_jit_page_fed_command_responses++;
+    soa_jit_page_fed_admitted_words +=
+        gem5::maa::InlineOperandPageFedABI::PageElements;
+    soa_jit_page_fed_spd_index_reads +=
+        gem5::maa::InlineOperandPageFedABI::PageElements;
+    inline_operand_spd_value_reads +=
+        gem5::maa::InlineOperandPageFedABI::PageElements;
+    inline_operand_insertions +=
+        gem5::maa::InlineOperandPageFedABI::PageElements;
+    soa_jit_page_fed_row_writes +=
+        gem5::maa::InlineOperandPageFedABI::PageElements;
+    const Cycles latency = updateLatency(
+        gem5::maa::InlineOperandPageFedABI::PageElements * 2, 0, 0, 0,
+        gem5::maa::InlineOperandPageFedABI::PageElements,
+        total_num_RT_subslices);
+    soa_jit_page_fed_admission_cycles += static_cast<uint64_t>(latency);
+    DPRINTF(MAAVirtualTrace,
+            "event=inline_operand_pair_admit schema=1 unit=%d "
+            "operation_tick=%lu generation=%lu page=%u index_tile=%u "
+            "value_tile=%u words=%u coherent_index_value_lines=0\n",
+            my_indirect_id, my_decode_start_tick, generation, page,
+            index_tile, value_tile,
+            gem5::maa::InlineOperandPageFedABI::PageElements);
+    scheduleNextExecution(true);
+    return latency;
 }
 
 bool
@@ -5010,7 +5111,8 @@ IndirectAccessUnit::soaJitLookaheadOccupancy() const
 bool
 IndirectAccessUnit::soaJitValuePrefetchComplete() const
 {
-    return isSoaJitScalarRmw() || soa_jit_value_prefetch_credits == 0 ||
+    return isSoaJitScalarRmw() || isSoaJitInlineOperandRmw() ||
+           soa_jit_value_prefetch_credits == 0 ||
            (soa_jit_value_prefetch_cursor.nextLogical ==
                 static_cast<uint32_t>(my_max) &&
             soa_jit_value_coalescer.prefetchComplete());
@@ -5019,7 +5121,8 @@ IndirectAccessUnit::soaJitValuePrefetchComplete() const
 bool
 IndirectAccessUnit::serviceSoaJitValuePrefetch()
 {
-    if (isSoaJitScalarRmw() || soa_jit_value_prefetch_credits == 0)
+    if (isSoaJitScalarRmw() || isSoaJitInlineOperandRmw() ||
+        soa_jit_value_prefetch_credits == 0)
         return false;
     panic_if(!isSoaJitRmw() || soa_jit_generation == 0 || my_max < 0 ||
                  (my_word_size != 4 && my_word_size != 8) ||
@@ -5456,6 +5559,47 @@ IndirectAccessUnit::issueSoaJitValueRead(
     return true;
 }
 bool
+IndirectAccessUnit::issueSoaJitInlineOperand(
+    size_t context_index, size_t slot_index, int offset)
+{
+    panic_if(!isSoaJitInlineOperandRmw() ||
+                 context_index >=
+                     static_cast<size_t>(soa_jit_active_contexts) ||
+                 slot_index >= SoaJitValueCoalescer::MaxLookahead,
+             "I[%d] invalid inline-operand lookahead owner\n",
+             my_indirect_id);
+    SoaJitContext &context = soa_jit_contexts[context_index];
+    SoaJitLookaheadSlot &slot = context.lookahead[slot_index];
+    const bool pre_a = context.state == SoaJitContextState::AwaitARead;
+    panic_if(context.generation != soa_jit_generation ||
+                 (context.state != SoaJitContextState::Active &&
+                  !(soa_jit_pre_a_value_lookahead && pre_a)) ||
+                 slot.state != SoaJitLookaheadState::Free || offset < 0 ||
+                 context.issueOffset != offset || context.remaining <= 0,
+             "I[%d] invalid inline-operand lookahead state\n",
+             my_indirect_id);
+    const OffsetTableEntry entry = offset_table->peek_entry(offset);
+    const uint32_t bits = offset_table->inlineOperandBits(offset);
+    slot = SoaJitLookaheadSlot();
+    slot.generation = soa_jit_generation;
+    slot.offset = offset;
+    slot.logicalItr = entry.itr;
+    slot.aWord = static_cast<uint16_t>(entry.wid);
+    std::memcpy(slot.value.data(), &bits, sizeof(bits));
+    slot.state = SoaJitLookaheadState::Ready;
+    context.issueOffset = entry.next_itr;
+    context.lookaheadOccupancy++;
+    soa_jit_lookahead_issues++;
+    soa_jit_lookahead_responses++;
+    soa_jit_value_deliveries++;
+    inline_operand_consumptions++;
+    if (pre_a)
+        soa_jit_pre_a_value_issues++;
+    soa_jit_lookahead_high_water = std::max<uint64_t>(
+        soa_jit_lookahead_high_water, soaJitLookaheadOccupancy());
+    return true;
+}
+bool
 IndirectAccessUnit::fillSoaJitLookahead(size_t context_index)
 {
     SoaJitContext &context = soa_jit_contexts[context_index];
@@ -5478,6 +5622,9 @@ IndirectAccessUnit::fillSoaJitLookahead(size_t context_index)
             std::distance(context.lookahead.begin(), slot);
         const bool success = isSoaJitScalarRmw()
             ? issueSoaJitScalar(
+                  context_index, slot_index, context.issueOffset)
+            : isSoaJitInlineOperandRmw()
+            ? issueSoaJitInlineOperand(
                   context_index, slot_index, context.issueOffset)
             : issueSoaJitValueRead(
                   context_index, slot_index, context.issueOffset);
@@ -5624,8 +5771,7 @@ IndirectAccessUnit::serviceSoaJitLookahead()
                      "I[%d] SoA/JIT alias chain has incomplete lookahead "
                      "closure\n",
                      my_indirect_id);
-            issueSoaJitWrite(context);
-            progressed = true;
+            progressed = issueSoaJitWrite(context) || progressed;
         }
     }
     return progressed;
@@ -5673,6 +5819,9 @@ bool IndirectAccessUnit::applySoaJitValue(
         TYPE rhs{}; \
         std::memcpy(&lhs, destination, sizeof(TYPE)); \
         std::memcpy(&rhs, value, sizeof(TYPE)); \
+        const bool strict_success = \
+            my_instruction->optype == Instruction::OPType::MIN_OP && \
+            rhs < lhs; \
         if (my_instruction->optype == Instruction::OPType::ADD_OP) \
             lhs += rhs; \
         else if (my_instruction->optype == Instruction::OPType::MIN_OP) \
@@ -5683,6 +5832,21 @@ bool IndirectAccessUnit::applySoaJitValue(
             panic("I[%d] invalid SoA/JIT RMW operation\n", \
                   my_indirect_id); \
         std::memcpy(destination, &lhs, sizeof(TYPE)); \
+        if (isSoaJitInlineOperandRmw() && strict_success) { \
+            panic_if(sizeof(TYPE) != sizeof(uint32_t) || a_word >= 16, \
+                     "I[%d] invalid inline typed success word\n", \
+                     my_indirect_id); \
+            const Addr base_paddr = addrBlockAligner( \
+                translatePacket(my_base_addr), block_size); \
+            panic_if(context.aPaddr < base_paddr, \
+                     "I[%d] inline destination precedes A base\n", \
+                     my_indirect_id); \
+            context.inlineSuccessMask |= uint16_t{1} << a_word; \
+            context.inlineDestinations[a_word] = \
+                static_cast<uint32_t>( \
+                    (context.aPaddr - base_paddr) / my_word_size + a_word); \
+            inline_retirement_successes++; \
+        } \
     } while (false)
     switch (my_instruction->datatype) {
       case Instruction::DataType::UINT32_TYPE: APPLY_SOA_JIT(uint32_t); break;
@@ -5798,13 +5962,36 @@ IndirectAccessUnit::completeSoaJitOldResultWrite(
             identity.validWords);
     return true;
 }
-void IndirectAccessUnit::issueSoaJitWrite(SoaJitContext &context)
+bool IndirectAccessUnit::issueSoaJitWrite(SoaJitContext &context)
 {
     panic_if(context.generation != soa_jit_generation ||
                  context.nextOffset != -1 || context.remaining != 0 ||
                  context.preAUsesPending != 0,
              "I[%d] SoA/JIT A write issued before alias drain\n",
              my_indirect_id);
+    if (isSoaJitInlineOperandRmw()) {
+        const unsigned successes = __builtin_popcount(
+            static_cast<unsigned>(context.inlineSuccessMask));
+        const unsigned lines = (successes + 7) / 8;
+        if (inline_retirement_state.freeCredits() < lines) {
+            inline_retirement_credit_stalls++;
+            return false;
+        }
+        context.inlineRetirementCreditCount = lines;
+        unsigned remaining = successes;
+        for (unsigned line = 0; line < lines; ++line) {
+            uint8_t credit = 0;
+            const uint8_t records = std::min<unsigned>(remaining, 8);
+            const auto reserved = inline_retirement_state.reserve(
+                records, credit);
+            panic_if(reserved != maa::InlineOperandRetirementState::
+                                     Result::Accepted,
+                     "I[%d] inline retirement reservation failed\n",
+                     my_indirect_id);
+            context.inlineRetirementCredits[line] = credit;
+            remaining -= records;
+        }
+    }
     RequestPtr req = std::make_shared<Request>(
         context.aPaddr, block_size, flags, maa->requestorId);
     req->setRegion(my_addr_range_id);
@@ -5838,6 +6025,7 @@ void IndirectAccessUnit::issueSoaJitWrite(SoaJitContext &context)
             "operation_tick=%lu generation=%lu addr=0x%lx aliases=%lu\n",
             my_indirect_id, my_decode_start_tick, soa_jit_generation,
             context.aPaddr, soa_jit_aliases_applied);
+    return true;
 }
 bool
 IndirectAccessUnit::beginFusedP16ResponseHead(
@@ -6018,9 +6206,106 @@ bool IndirectAccessUnit::completeSoaJitWrite(
             "operation_tick=%lu generation=%lu addr=0x%lx\n",
             my_indirect_id, my_decode_start_tick, soa_jit_generation,
             identity.address);
+    if (isSoaJitInlineOperandRmw())
+        issueInlineRetirementWrites(context);
     context = SoaJitContext();
     observeSoaJitResultPipeline();
     return true;
+}
+
+void
+IndirectAccessUnit::issueInlineRetirementWrites(SoaJitContext &context)
+{
+    panic_if(!isSoaJitInlineOperandRmw(),
+             "I[%d] inline retirement used by another mode\n",
+             my_indirect_id);
+    std::array<maa::InlineRetirementRecord, 16> records{};
+    size_t count = 0;
+    for (uint16_t word = 0; word < 16; ++word) {
+        if ((context.inlineSuccessMask & (uint16_t{1} << word)) == 0)
+            continue;
+        records[count].destination = context.inlineDestinations[word];
+        std::memcpy(&records[count].valueBits,
+                    context.aLine.data() + word * sizeof(uint32_t),
+                    sizeof(uint32_t));
+        ++count;
+    }
+    size_t consumed = 0;
+    for (uint8_t line = 0;
+         line < context.inlineRetirementCreditCount; ++line) {
+        const uint8_t credit_index =
+            context.inlineRetirementCredits[line];
+        auto &credit = inline_retirement_state.credit(credit_index);
+        const uint8_t line_records = credit.records;
+        panic_if(consumed + line_records > count ||
+                     inline_retirement_state.fill(
+                         credit_index, records.data() + consumed,
+                         line_records) !=
+                         maa::InlineOperandRetirementState::Result::Accepted,
+                 "I[%d] inline retirement dense pack failed\n",
+                 my_indirect_id);
+        const Addr vaddr = my_backing_addr +
+            (credit.sequence %
+             maa::InlineOperandPageFedABI::RetirementRingLines) *
+                block_size;
+        const Addr paddr = translatePacket(vaddr, BaseMMU::Write, block_size);
+        RequestPtr req = std::make_shared<Request>(
+            paddr, block_size, flags, maa->requestorId);
+        req->setRegion(my_backing_addr_range_id);
+        PacketPtr pkt = new Packet(req, MemCmd::WriteReq);
+        pkt->headerDelay = pkt->payloadDelay = 0;
+        pkt->dataStatic(credit.payload.data());
+        auto *sender = new InlineRetirementSenderState;
+        sender->generation = credit.generation;
+        sender->sequence = credit.sequence;
+        sender->credit = credit_index;
+        sender->physicalAddress = paddr;
+        pkt->pushSenderState(sender);
+        panic_if(inline_retirement_state.markWriteIssued(credit_index) !=
+                     maa::InlineOperandRetirementState::Result::Accepted,
+                 "I[%d] inline retirement issue state rejected\n",
+                 my_indirect_id);
+        inline_retirement_write_issues++;
+        maa->sendPacket(FuncUnitType::INDIRECT, my_indirect_id, pkt,
+                        maa->getClockEdge(Cycles(0)), true, true);
+        consumed += line_records;
+    }
+    panic_if(consumed != count,
+             "I[%d] inline retirement lost success records %lu/%lu\n",
+             my_indirect_id, consumed, count);
+}
+
+bool
+IndirectAccessUnit::completeInlineRetirementWrite(
+    uint8_t credit, uint64_t generation, uint32_t sequence)
+{
+    if (!isSoaJitInlineOperandRmw() ||
+        generation != soa_jit_generation)
+        return false;
+    const auto &expected = inline_retirement_state.credit(credit);
+    if (expected.generation != generation ||
+        expected.sequence != sequence)
+        return false;
+    if (inline_retirement_state.markWriteResponse(credit) !=
+        maa::InlineOperandRetirementState::Result::Accepted)
+        return false;
+    inline_retirement_write_responses++;
+    return true;
+}
+
+Cycles
+IndirectAccessUnit::ackInlineRetirementLine(
+    uint64_t generation, uint16_t sequence)
+{
+    panic_if(!isSoaJitInlineOperandRmw() ||
+                 inline_retirement_state.acknowledge(
+                     generation, sequence) !=
+                     maa::InlineOperandRetirementState::Result::Accepted,
+             "I[%d] rejected inline retirement ACK generation=%lu "
+             "sequence=%u\n", my_indirect_id, generation, sequence);
+    inline_retirement_acks++;
+    scheduleNextExecution(true);
+    return Cycles(1);
 }
 void IndirectAccessUnit::checkSoaJitTerminal()
 {
@@ -6053,8 +6338,32 @@ void IndirectAccessUnit::checkSoaJitTerminal()
          my_predicate_addr_range_id == -1 &&
          my_index_addr ==
              gem5::maa::PageFedSoaJitABI::NoIndexBacking);
+    const bool inline_terminal = !isSoaJitInlineOperandRmw() ||
+        (!inline_retirement_state.isActive() &&
+         !offset_table->inlineOperandMode() &&
+         inline_operand_spd_value_reads ==
+             gem5::maa::InlineOperandPageFedABI::LogicalElements &&
+         inline_operand_insertions ==
+             gem5::maa::InlineOperandPageFedABI::LogicalElements &&
+         inline_operand_consumptions ==
+             gem5::maa::InlineOperandPageFedABI::LogicalElements &&
+         inline_retirement_state.recordCount() <=
+             inline_retirement_successes &&
+         inline_retirement_write_issues ==
+             inline_retirement_write_responses &&
+         inline_retirement_write_responses == inline_retirement_acks &&
+         inline_retirement_write_issues ==
+             inline_retirement_state.issuedLines() &&
+         inline_retirement_write_responses ==
+             inline_retirement_state.respondedLines() &&
+         inline_retirement_acks == inline_retirement_state.ackedLines() &&
+         soa_jit_value_read_issues == 0 &&
+         soa_jit_value_read_responses == 0 &&
+         soa_jit_predicate_line_issues == 0 &&
+         soa_jit_old_result_captures == 0 &&
+         soa_jit_old_result_write_issues == 0);
     panic_if(!isSoaJitRmw() || soa_jit_generation == 0 ||
-                 !page_fed_terminal ||
+                 !page_fed_terminal || !inline_terminal ||
                  !soa_jit_all_rows_claimed || !soaJitContextsEmpty() ||
                  soa_jit_epoch_drained || soa_jit_retry_valid ||
                  soa_jit_retry_condition || soa_jit_retry_ordinal != -1 ||
@@ -6945,6 +7254,17 @@ void IndirectAccessUnit::executeInstruction() {
         soa_jit_page_fed_admission_cycles = 0;
         soa_jit_page_fed_coherent_index_read_lines = 0;
         soa_jit_page_fed_coherent_index_write_lines = 0;
+        inline_operand_spd_value_reads = 0;
+        inline_operand_insertions = 0;
+        inline_operand_consumptions = 0;
+        inline_retirement_successes = 0;
+        inline_retirement_write_issues = 0;
+        inline_retirement_write_responses = 0;
+        inline_retirement_acks = 0;
+        inline_retirement_credit_stalls = 0;
+        panic_if(inline_retirement_state.isActive(),
+                 "I[%d] retained inline retirement generation at decode\n",
+                 my_indirect_id);
         strict_page_fed_b_first_tick = 0;
         strict_page_fed_b_last_tick = 0;
         strict_page_fed_row_first_tick = 0;
@@ -7169,6 +7489,21 @@ void IndirectAccessUnit::executeInstruction() {
                         my_instruction->soaJitPageFedGeneration,
                         gem5::maa::PageFedSoaJitState::resultName(opened));
                     soa_jit_page_fed_open_commands = 1;
+                    if (isSoaJitInlineOperandRmw()) {
+                        panic_if(offset_table->inlineOperandMode(),
+                                 "I[%d] retained inline Offset aux owner\n",
+                                 my_indirect_id);
+                        offset_table->beginInlineOperandMode();
+                        const auto retirement_open =
+                            inline_retirement_state.open(
+                                maa->inline_operand_page_fed_rmw,
+                                my_instruction->soaJitPageFedGeneration);
+                        panic_if(retirement_open !=
+                                     maa::InlineOperandRetirementState::
+                                         Result::Accepted,
+                                 "I[%d] inline retirement open failed\n",
+                                 my_indirect_id);
+                    }
                     maa->signalPageFedSoaJitOpen(
                         my_instruction->core_id,
                         my_instruction->soaJitPageFedGeneration);
@@ -8052,6 +8387,30 @@ void IndirectAccessUnit::executeInstruction() {
                             static_cast<unsigned>(finish));
                         soa_jit_old_result_finished = true;
                     }
+                }
+                if (isSoaJitInlineOperandRmw()) {
+                    if (!inline_retirement_state.isClosed()) {
+                        panic_if(inline_retirement_state.close() !=
+                                     maa::InlineOperandRetirementState::
+                                         Result::Accepted,
+                                 "I[%d] inline retirement close failed\n",
+                                 my_indirect_id);
+                    }
+                    if (inline_retirement_state.issuedLines() !=
+                            inline_retirement_state.respondedLines() ||
+                        inline_retirement_state.respondedLines() !=
+                            inline_retirement_state.ackedLines())
+                        break;
+                    panic_if(inline_retirement_state.finish() !=
+                                 maa::InlineOperandRetirementState::
+                                     Result::Accepted,
+                             "I[%d] inline retirement terminal failed\n",
+                             my_indirect_id);
+                    panic_if(!offset_table->inlineOperandMode() ||
+                                 offset_table->occupancy() != 0,
+                             "I[%d] inline Offset aux did not drain\n",
+                             my_indirect_id);
+                    offset_table->endInlineOperandMode();
                 }
                 checkSoaJitTerminal();
                 state = Status::Response;
@@ -9201,6 +9560,54 @@ void IndirectAccessUnit::executeInstruction() {
                     fixed_prefetch_credit_bytes,
                     soa_jit_value_prefetch_credits,
                     fixed_prefetch_cursor_bytes);
+            if (isSoaJitInlineOperandRmw()) {
+                DPRINTF(MAAVirtualTrace,
+                        "event=inline_operand_retirement_complete schema=1 "
+                        "unit=%d operation_tick=%lu generation=%lu "
+                        "logical_operations=1 paired_admissions=%lu "
+                        "index_insertions=%lu operand_insertions=%lu "
+                        "operand_consumptions=%lu spd_index_reads=%lu "
+                        "spd_value_reads=%lu epoch_drains=%lu "
+                        "coherent_index_reads=0 coherent_predicate_reads=0 "
+                        "coherent_value_reads=0 old_result_captures=%lu "
+                        "old_result_writes=%lu a_read_issues=%lu "
+                        "a_read_responses=%lu a_write_issues=%lu "
+                        "a_write_responses=%lu strict_successes=%lu "
+                        "retirement_records=%u retirement_write_issues=%lu "
+                        "retirement_write_responses=%lu "
+                        "retirement_acked_lines=%lu credit_hwm=%lu "
+                        "credit_stalls=%lu inline_operand_live_bytes=65536 "
+                        "row_offset_incremental_bytes=0 "
+                        "incremental_sram_bytes_per_unit=%lu "
+                        "external_retirement_ring_bytes_per_unit=%u "
+                        "physical_spd_words=4096 terminal_storage_closure=1 "
+                        "terminal=1\n",
+                        my_indirect_id, my_decode_start_tick,
+                        soa_jit_generation,
+                        soa_jit_page_fed_admit_commands,
+                        soa_jit_page_fed_admitted_words,
+                        inline_operand_insertions,
+                        inline_operand_consumptions,
+                        soa_jit_page_fed_spd_index_reads,
+                        inline_operand_spd_value_reads,
+                        soa_jit_epoch_drains,
+                        soa_jit_old_result_captures,
+                        soa_jit_old_result_write_issues,
+                        soa_jit_a_read_issues,
+                        soa_jit_a_read_responses,
+                        soa_jit_a_write_issues,
+                        soa_jit_a_write_responses,
+                        inline_retirement_successes,
+                        inline_retirement_state.recordCount(),
+                        inline_retirement_write_issues,
+                        inline_retirement_write_responses,
+                        inline_retirement_acks,
+                        inline_retirement_state.creditHighWater(),
+                        inline_retirement_credit_stalls,
+                        maa::InlineOperandRetirementState::
+                            IncrementalSramBytes,
+                        maa::InlineOperandPageFedABI::RetirementRingBytes);
+            }
             if (isSoaJitPageFedRmw()) {
                 DPRINTF(MAAVirtualTrace,
                         "event=soa_jit_page_fed_complete schema=1 unit=%d "
@@ -13013,6 +13420,31 @@ void IndirectAccessUnit::retirementWriteComplete(
     Addr addr, const uint8_t *writeRespPayload, unsigned payloadBytes,
     PacketPtr responsePacket) {
     if (isSoaJitRmw()) {
+        auto *inline_peek = dynamic_cast<InlineRetirementSenderState *>(
+            responsePacket == nullptr ? nullptr :
+                                        responsePacket->senderState);
+        if (inline_peek != nullptr) {
+            panic_if(!isSoaJitInlineOperandRmw() ||
+                         inline_peek->physicalAddress != addr,
+                     "I[%d] inline retirement WriteResp lost exact "
+                     "ownership at 0x%lx\n", my_indirect_id, addr);
+            auto *sender = dynamic_cast<InlineRetirementSenderState *>(
+                responsePacket->popSenderState());
+            panic_if(sender != inline_peek,
+                     "I[%d] inline retirement sender stack diverged\n",
+                     my_indirect_id);
+            const uint64_t generation = sender->generation;
+            const uint32_t sequence = sender->sequence;
+            const uint8_t credit = sender->credit;
+            delete sender;
+            panic_if(!completeInlineRetirementWrite(
+                         credit, generation, sequence),
+                     "I[%d] rejected inline retirement WriteResp "
+                     "generation=%lu sequence=%u credit=%u\n",
+                     my_indirect_id, generation, sequence, credit);
+            scheduleNextExecution(true);
+            return;
+        }
         auto *old_peek = dynamic_cast<SoaJitOldResultSenderState *>(
             responsePacket == nullptr ? nullptr :
                                         responsePacket->senderState);

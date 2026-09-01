@@ -27,6 +27,7 @@
 #include "mem/MAA/DenseBackingLineTracker.hh"
 #include "mem/MAA/DirectIndexFeeder.hh"
 #include "mem/MAA/FusedP16ProductState.hh"
+#include "mem/MAA/InlineOperandRetirement.hh"
 #include "mem/MAA/ReorderSurvivalTracker.hh"
 #include "mem/MAA/SharedSourceOverlapScheduler.hh"
 #include "mem/MAA/SoaJitOldResultBuffer.hh"
@@ -623,6 +624,10 @@ protected:
         int remaining = 0;
         uint8_t lookaheadOccupancy = 0;
         uint8_t preAUsesPending = 0;
+        uint16_t inlineSuccessMask = 0;
+        std::array<uint32_t, 16> inlineDestinations{};
+        std::array<uint8_t, 2> inlineRetirementCredits{};
+        uint8_t inlineRetirementCreditCount = 0;
         SoaJitContextState state = SoaJitContextState::Free;
     };
     static_assert(sizeof(SoaJitContext) <= 512,
@@ -640,6 +645,13 @@ protected:
     struct SoaJitOldResultSenderState : public Packet::SenderState
     {
         SoaJitOldResultBuffer::Identity identity{};
+        Addr physicalAddress = 0;
+    };
+    struct InlineRetirementSenderState : public Packet::SenderState
+    {
+        uint64_t generation = 0;
+        uint32_t sequence = 0;
+        uint8_t credit = 0;
         Addr physicalAddress = 0;
     };
     struct SoaJitValuePrefetchCursor
@@ -748,12 +760,21 @@ protected:
     uint64_t soa_jit_context_stalls = 0;
     uint64_t soa_jit_context_high_water = 0;
     gem5::maa::PageFedSoaJitState soa_jit_page_fed_state;
+    gem5::maa::InlineOperandRetirementState inline_retirement_state;
     uint64_t soa_jit_page_fed_open_commands = 0;
     uint64_t soa_jit_page_fed_admit_commands = 0;
     uint64_t soa_jit_page_fed_close_commands = 0;
     uint64_t soa_jit_page_fed_command_responses = 0;
     uint64_t soa_jit_page_fed_admitted_words = 0;
     uint64_t soa_jit_page_fed_spd_index_reads = 0;
+    uint64_t inline_operand_spd_value_reads = 0;
+    uint64_t inline_operand_insertions = 0;
+    uint64_t inline_operand_consumptions = 0;
+    uint64_t inline_retirement_successes = 0;
+    uint64_t inline_retirement_write_issues = 0;
+    uint64_t inline_retirement_write_responses = 0;
+    uint64_t inline_retirement_acks = 0;
+    uint64_t inline_retirement_credit_stalls = 0;
     uint64_t soa_jit_page_fed_row_writes = 0;
     uint64_t soa_jit_page_fed_admission_cycles = 0;
     uint64_t soa_jit_page_fed_coherent_index_read_lines = 0;
@@ -820,6 +841,7 @@ protected:
     bool isSoaJitMaskedIndexRmw() const;
     bool isSoaJitOldResultRmw() const;
     bool isSoaJitPageFedRmw() const;
+    bool isSoaJitInlineOperandRmw() const;
     bool strictTwoPhaseOperation() const;
     bool denseWriteAllocateOperation() const;
     bool completeLineOnlyOperation() const;
@@ -866,7 +888,9 @@ protected:
                                      bool condition_taken);
     void commitSoaJitSourceOrdinal(int logical_itr,
                                    bool condition_taken);
-    bool insertPageFedSoaJitIndex(uint32_t index, uint32_t ordinal);
+    bool insertPageFedSoaJitIndex(uint32_t index, uint32_t ordinal,
+                                  uint32_t operand_bits = 0,
+                                  bool inline_operand = false);
     void resetSoaJitEpochTables();
     bool serviceSoaJitBuild();
     bool receiveSoaJitData(Addr addr, uint8_t *dataptr,
@@ -881,7 +905,9 @@ protected:
     bool issueSoaJitValueRead(size_t context_index, size_t slot_index,
                               int offset);
     bool issueSoaJitScalar(size_t context_index, size_t slot_index,
-                           int offset);
+                              int offset);
+    bool issueSoaJitInlineOperand(size_t context_index, size_t slot_index,
+                                  int offset);
     bool applySoaJitValue(SoaJitContext &context, uint16_t context_index,
                           uint16_t a_word, uint32_t logical_itr,
                           const uint8_t *value);
@@ -894,7 +920,10 @@ protected:
     bool serviceSoaJitOldResultWrites(SoaJitOldResultWriteMode mode);
     bool completeSoaJitOldResultWrite(
         const SoaJitOldResultBuffer::Identity &identity);
-    void issueSoaJitWrite(SoaJitContext &context);
+    bool issueSoaJitWrite(SoaJitContext &context);
+    void issueInlineRetirementWrites(SoaJitContext &context);
+    bool completeInlineRetirementWrite(uint8_t credit, uint64_t generation,
+                                       uint32_t sequence);
     bool completeSoaJitWrite(
         const SoaJitScalarBroadcast::WriteIdentity &identity);
     void validateSoaJitAddressSpans();
@@ -1037,8 +1066,14 @@ protected:
 public:
     void createReadPacket(Addr addr, int latency);
     bool pageFedActiveForCore(int core_id) const;
+    bool inlineOperandActiveForCore(int core_id) const;
     Cycles admitPageFedSoaJitIndexPage(uint64_t generation, uint8_t page,
                                       uint8_t index_tile);
+    Cycles admitPageFedSoaJitIndexValuePage(
+        uint64_t generation, uint8_t page, uint8_t index_tile,
+        uint8_t value_tile);
+    Cycles ackInlineRetirementLine(uint64_t generation,
+                                   uint16_t sequence);
     Cycles closePageFedSoaJit(uint64_t generation);
     void completeFusedP16Multiply(uint64_t generation,
                                   uint8_t response_slot,

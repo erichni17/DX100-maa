@@ -266,6 +266,15 @@ def addNoISAOptions(parser):
         ),
     )
     parser.add_argument(
+        "--maa_inline_operand_page_fed_rmw",
+        action="store_true",
+        help=(
+            "Opt in to paired physical-4K index/value page admission, "
+            "inline FP32 Row/Offset operands, and response-gated dense "
+            "conditional-MIN retirement"
+        ),
+    )
+    parser.add_argument(
         "--maa_num_regs_per_core",
         type=int,
         default=8,
