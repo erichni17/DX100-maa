@@ -1,0 +1,157 @@
+{
+  "schema": "ume.gradzatp-invert.ordered-reduction.linux-functional.v1",
+  "status": "PASS_FIXED_EDITION_ALL_RECORDED_NATIVE_PROFILES",
+  "host": {
+    "system": "Linux",
+    "machine": "x86_64",
+    "affinity": [
+      6
+    ]
+  },
+  "original_kernel_sha256": "13e7bef03c855bba53ff907e9454540be79b33a6757520f4f4e15c529d930d9c",
+  "fixed_kernel_sha256": "cd1dc53143262be56b4767395fe7183597c82dc479bd90503863ecc4a45bcb19",
+  "compiler_profiles": [
+    {
+      "tag": "c0-O2",
+      "path": "/usr/bin/x86_64-linux-gnu-g++-9",
+      "sha256": "4abceae4f8baab11e448e4aaa741dfd8671f67069241fd36d50fa40183f16dbe",
+      "version": "x86_64-linux-gnu-g++-9 (Ubuntu 9.5.0-1ubuntu1~22.04.1) 9.5.0",
+      "flags": [
+        "-std=c++11",
+        "-O2",
+        "-g",
+        "-fopenmp",
+        "-fno-fast-math",
+        "-ffp-contract=off",
+        "-DFUNC",
+        "-DMAA",
+        "-DVERIFY",
+        "-DNUM_CORES=4",
+        "-DTILE_SIZE=16384"
+      ],
+      "native_stress": false
+    },
+    {
+      "tag": "c0-O3",
+      "path": "/usr/bin/x86_64-linux-gnu-g++-9",
+      "sha256": "4abceae4f8baab11e448e4aaa741dfd8671f67069241fd36d50fa40183f16dbe",
+      "version": "x86_64-linux-gnu-g++-9 (Ubuntu 9.5.0-1ubuntu1~22.04.1) 9.5.0",
+      "flags": [
+        "-std=c++11",
+        "-O3",
+        "-g",
+        "-fopenmp",
+        "-fno-fast-math",
+        "-ffp-contract=off",
+        "-DFUNC",
+        "-DMAA",
+        "-DVERIFY",
+        "-DNUM_CORES=4",
+        "-DTILE_SIZE=16384"
+      ],
+      "native_stress": false
+    },
+    {
+      "tag": "c0-O3-native",
+      "path": "/usr/bin/x86_64-linux-gnu-g++-9",
+      "sha256": "4abceae4f8baab11e448e4aaa741dfd8671f67069241fd36d50fa40183f16dbe",
+      "version": "x86_64-linux-gnu-g++-9 (Ubuntu 9.5.0-1ubuntu1~22.04.1) 9.5.0",
+      "flags": [
+        "-std=c++11",
+        "-O3",
+        "-g",
+        "-fopenmp",
+        "-fno-fast-math",
+        "-ffp-contract=off",
+        "-DFUNC",
+        "-DMAA",
+        "-DVERIFY",
+        "-DNUM_CORES=4",
+        "-DTILE_SIZE=16384",
+        "-march=native"
+      ],
+      "native_stress": true
+    },
+    {
+      "tag": "c1-O2",
+      "path": "/usr/bin/x86_64-linux-gnu-g++-12",
+      "sha256": "88315fd2d961a1f4e4070b104d7bd4c7670df19d9949409879ba269466c196d3",
+      "version": "x86_64-linux-gnu-g++-12 (Ubuntu 12.3.0-1ubuntu1~22.04.3) 12.3.0",
+      "flags": [
+        "-std=c++11",
+        "-O2",
+        "-g",
+        "-fopenmp",
+        "-fno-fast-math",
+        "-ffp-contract=off",
+        "-DFUNC",
+        "-DMAA",
+        "-DVERIFY",
+        "-DNUM_CORES=4",
+        "-DTILE_SIZE=16384"
+      ],
+      "native_stress": false
+    },
+    {
+      "tag": "c1-O3",
+      "path": "/usr/bin/x86_64-linux-gnu-g++-12",
+      "sha256": "88315fd2d961a1f4e4070b104d7bd4c7670df19d9949409879ba269466c196d3",
+      "version": "x86_64-linux-gnu-g++-12 (Ubuntu 12.3.0-1ubuntu1~22.04.3) 12.3.0",
+      "flags": [
+        "-std=c++11",
+        "-O3",
+        "-g",
+        "-fopenmp",
+        "-fno-fast-math",
+        "-ffp-contract=off",
+        "-DFUNC",
+        "-DMAA",
+        "-DVERIFY",
+        "-DNUM_CORES=4",
+        "-DTILE_SIZE=16384"
+      ],
+      "native_stress": false
+    },
+    {
+      "tag": "c1-O3-native",
+      "path": "/usr/bin/x86_64-linux-gnu-g++-12",
+      "sha256": "88315fd2d961a1f4e4070b104d7bd4c7670df19d9949409879ba269466c196d3",
+      "version": "x86_64-linux-gnu-g++-12 (Ubuntu 12.3.0-1ubuntu1~22.04.3) 12.3.0",
+      "flags": [
+        "-std=c++11",
+        "-O3",
+        "-g",
+        "-fopenmp",
+        "-fno-fast-math",
+        "-ffp-contract=off",
+        "-DFUNC",
+        "-DMAA",
+        "-DVERIFY",
+        "-DNUM_CORES=4",
+        "-DTILE_SIZE=16384",
+        "-march=native"
+      ],
+      "native_stress": true
+    }
+  ],
+  "simulation_executions": 0,
+  "multiworker_or_hardware_validation": false,
+  "performance_qualified": false,
+  "original_finite_strict_failures_reproduced": 0,
+  "original_failure_profiles": [],
+  "fixed_finite_exact_passes": 48,
+  "expected_caller_failures_preserved": 12,
+  "max_individual_child_RSS_KiB": 170564,
+  "total_output_bytes": 54012573,
+  "raw_result": {
+    "path": "/data1/nier/dx100-diagnostic-private/20261103-ume-invert-ordered-reduction-hostcheck-r1/result.json",
+    "sha256": "21c763ff8b28079677c9114a0dccfa7c59d2c033116f2e11a9a07d4b12d172cb"
+  },
+  "original_finite_exact_oracle_mismatches": 0,
+  "unchanged_checker_sha256": "700577aab51a36e4b202dfcfececa35589daf321a252e3dcada35adaaa531ba7",
+  "checker_control_checks": 48,
+  "compiler_reports_show_original_indexed_loop_not_vectorized": true,
+  "upstream_failure_scope": "GCC15.2 macOS arm64, as documented by Josh; not reproduced on these Linux compilers",
+  "upstream_fixture_bytes_identical": true,
+  "fixture_sha256": "68bdf89ee9d070be7c8caf84ac5831de98fc4c2e18c286f8469c358126f94010"
+}

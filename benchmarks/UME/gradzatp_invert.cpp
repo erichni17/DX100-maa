@@ -202,7 +202,7 @@ void gradzatp_invert_MAA_CSR() {
                 curr_tilej_size = min(j_max - j_base, TILE_SIZE);
                 wait_ready(tilei);
                 wait_ready(tile0);
-#pragma omp simd simdlen(4)
+// ordered-reduction-v1: repeated point IDs carry dependencies; preserve loop order.
                 for (int j = 0; j < curr_tilej_size; j++) {
                     curr_point_volume[tilei_ptr[j]] += tilej_ptr[j];
                     curr_point_gradient[tilei_ptr[j]] += tile5_ptr[j] * tile0_ptr[j];

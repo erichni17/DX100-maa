@@ -1,0 +1,35 @@
+{
+  "repository": "https://github.com/petecao/ArchEvolve",
+  "commit": "8ec862e",
+  "original_kernel_revision": "e4fc4afdf894f295442cef3604667a469fab8e62",
+  "original_kernel_sha256": "13e7bef03c855bba53ff907e9454540be79b33a6757520f4f4e15c529d930d9c",
+  "repaired_kernel_sha256": "cd1dc53143262be56b4767395fe7183597c82dc479bd90503863ecc4a45bcb19",
+  "upstream_files": {
+    "harness.cpp": {
+      "upstream_path": "tools/ume_validation/gradzatp_invert/harness.cpp",
+      "sha256": "be72e9c9180009dbf65e892c38a99fe0b184ef348ab817970fa4620eed747791"
+    },
+    "strict_compare.hpp": {
+      "upstream_path": "tools/ume_validation/strict_compare.hpp",
+      "sha256": "700577aab51a36e4b202dfcfececa35589daf321a252e3dcada35adaaa531ba7"
+    },
+    "checker_controls.cpp": {
+      "upstream_path": "tools/ume_validation/sync_v1/checker_controls.cpp",
+      "sha256": "3f8a5baf46607e6eb4914361227ae5a56e68738465d8095fb744ec9eafaa188a"
+    },
+    "run.py:gradzatp_invert": {
+      "upstream_path": "tools/ume_validation/gradzatp_invert/run.py",
+      "sha256": "498863f4651558731d861446e3c6f658bb10a8b29cddf5bbf92988f84738fed3"
+    },
+    "run_gradzatz.py:ume_validation": {
+      "upstream_path": "tools/ume_validation/run_gradzatz.py",
+      "sha256": "9966aba19451dc40b02272667b64aa6c4ca1a8339ebe6cf53e1491d17d715bd4"
+    },
+    "run.py:reduction_v1": {
+      "upstream_path": "tools/ume_validation/gradzatp_invert/reduction_v1/run.py",
+      "sha256": "4b6a20c78305fd319adbdc540fe37abca86b2b17e89d4967517609e269c79ffc"
+    }
+  },
+  "checker_unchanged": true,
+  "fixture_oracle_function_bodies_unchanged": true
+}
