@@ -1,0 +1,3798 @@
+diff --git a/configs/common/MAAConfig.py b/configs/common/MAAConfig.py
+index 243dcef0..f293c255 100644
+--- a/configs/common/MAAConfig.py
++++ b/configs/common/MAAConfig.py
+@@ -31,6 +31,23 @@ def _get_maa_opts(options):
+             options, "maa_logical_spd_cache_mode"
+         )
+ 
++    if getattr(options, "maa_device_owned_spd_paging", False):
++        assert opts.get("logical_spd_cache_mode", 0) == 0
++        assert 3 <= options.maa_device_owned_spd_frames <= 32
++        opts["logical_spd_cache_mode"] = (
++            options.maa_device_owned_spd_frames + 1
++        )
++        if getattr(options, "maa_device_owned_spd_fixed_map", False):
++            assert options.maa_device_owned_spd_frames == 32
++            assert not getattr(options, "maa_device_owned_spd_overlap", False)
++            opts["logical_spd_cache_mode"] = 65
++        if getattr(options, "maa_device_owned_spd_overlap", False):
++            assert options.maa_device_owned_spd_frames == 32
++            opts["logical_spd_cache_mode"] = 97
++    else:
++        assert not getattr(options, "maa_device_owned_spd_overlap", False)
++        assert not getattr(options, "maa_device_owned_spd_fixed_map", False)
++
+     if hasattr(options, "maa_logical_tile_page_scheduler"):
+         opts["logical_tile_page_scheduler"] = getattr(
+             options, "maa_logical_tile_page_scheduler"
+@@ -307,6 +324,11 @@ def _get_maa_opts(options):
+             options, "maa_soa_jit_active_value_owners"
+         )
+ 
++    if hasattr(options, "maa_soa_jit_stock_service"):
++        opts["soa_jit_stock_service"] = getattr(
++            options, "maa_soa_jit_stock_service"
++        )
++
+     if hasattr(options, "maa_soa_jit_apply_lanes"):
+         opts["soa_jit_apply_lanes"] = getattr(
+             options, "maa_soa_jit_apply_lanes"
+@@ -357,6 +379,8 @@ def _get_maa_opts(options):
+             options, "maa_virtual_bounded_global_merge"
+         )
+ 
++    if hasattr(options, "maa_virtual_pre_a_policy"):
++        opts["virtual_pre_a_policy"] = options.maa_virtual_pre_a_policy
+     if hasattr(options, "maa_virtual_pre_a_window"):
+         opts["virtual_pre_a_window"] = options.maa_virtual_pre_a_window
+ 
+@@ -526,6 +550,17 @@ def config_maa(options, system):
+     # existed). Drop opts the compiled SharedMAA does not declare so old binaries
+     # still restore instead of AttributeError-ing at config time.
+     _valid = set(SharedMAA._params.keys())
++    assert (
++        "virtual_pre_a_policy" in _valid
++    ), "new compiled policy parameter missing"
++    assert opts.get("virtual_pre_a_policy") in (
++        "sorted",
++        "row_group",
++    ), "fixed policy missing or unknown"
++    assert (
++        opts.get("virtual_pre_a_window", False)
++        or opts["virtual_pre_a_policy"] == "sorted"
++    ), "row_group requires pre-A"
+     _dropped = [k for k in list(opts.keys()) if k not in _valid]
+     for _k in _dropped:
+         del opts[_k]
+@@ -539,7 +574,9 @@ def config_maa(options, system):
+     retirement_cache_size = getattr(
+         options, "maa_retirement_cache_size", "1kB"
+     )
+-    if has_retirement_ports:
++    if has_retirement_ports and not getattr(
++        options, "maa_device_owned_spd_paging", False
++    ):
+         retirement_cache_assoc = getattr(
+             options, "maa_retirement_cache_assoc", 4
+         )
+@@ -648,22 +685,80 @@ def config_maa(options, system):
+         * options.num_cpus
+     )
+     if has_retirement_ports:
+-        max_capacity.value += (
+-            MemorySize(retirement_cache_size).value * options.num_cpus
++        retirement_data_bytes = (
++            512
++            if getattr(options, "maa_device_owned_spd_paging", False)
++            else MemorySize(retirement_cache_size).value
+         )
++        max_capacity.value += retirement_data_bytes * options.num_cpus
+     system.membus.snoop_filter.max_capacity = max_capacity
+     system.tol3bus.snoop_filter.max_capacity = max_capacity
+     print(
+         f"MAA max snoop filter capacity: {system.tol3bus.snoop_filter.max_capacity}/{system.membus.snoop_filter.max_capacity}"
+     )
+ 
+-    for _ in range(options.num_cpus):
+-        system.maa.cpu_sides = system.membus.mem_side_ports
+-
++    if getattr(options, "maa_device_owned_spd_paging", False):
++        # Device demands must not own the LLC's memory-side retry while
++        # waiting for coherent backing traffic through that same LLC.
++        # Route the aperture to a distinct tol3bus destination. Keep backing
++        # traffic, including dirty-owner acquisition, on the stock LLC path.
++        aperture_start = int(opts["addr_ranges"][0].start)
++        aperture_end = int(opts["addr_ranges"][-1].end)
++        llc_ranges = []
++        for region in system.l3.addr_ranges:
++            assert not region.masks, "LLC aperture split requires plain ranges"
++            start, end = int(region.start), int(region.end)
++            if end <= aperture_start or start >= aperture_end:
++                llc_ranges.append(region)
++            else:
++                if start < aperture_start:
++                    llc_ranges.append(AddrRange(start, aperture_start))
++                if end > aperture_end:
++                    llc_ranges.append(AddrRange(aperture_end, end))
++        system.l3.addr_ranges = llc_ranges
++        for _ in range(options.num_cpus):
++            system.maa.cpu_sides = system.tol3bus.mem_side_ports
++        # Retain the original below-LLC snoop path for ordinary memory.
++        # These ports advertise no demand ranges; native region invalidation
++        # and cached/uncached probes must still see dirty LLC owners.
++        for _ in range(options.num_cpus):
++            system.maa.cpu_sides = system.membus.mem_side_ports
++    else:
++        for _ in range(options.num_cpus):
++            system.maa.cpu_sides = system.membus.mem_side_ports
++
++    # Native cache-like ReadEx/Writeback traffic keeps its original path.
+     for _ in range(options.num_cpus):
+         system.maa.cache_sides = system.tol3bus.cpu_side_ports
+ 
+-    if has_retirement_ports:
++    if getattr(options, "maa_device_owned_spd_paging", False):
++        assert has_retirement_ports, "Paging requires a dedicated backing bank"
++        # A raw device WriteReq is not a cache-coherence ownership request.
++        # Stock cache miss handling acquires ownership before upward fanout,
++        # copies accepted store bytes, and returns the original WriteResp.
++        # Four-core cost: 2KiB data, 32 MSHRs, and 32 normal plus
++        # 32 MSHR-reserve write-buffer entries (stock Queue accounting).
++        system.maa_coherent_frontends = [
++            Cache(
++                size="512B",
++                assoc=8,
++                tag_latency=1,
++                data_latency=1,
++                response_latency=1,
++                mshrs=8,
++                tgts_per_mshr=8,
++                write_buffers=8,
++                clk_domain=system.maa.clk_domain,
++            )
++            for _ in range(options.num_cpus)
++        ]
++        for frontend in system.maa_coherent_frontends:
++            frontend.cpu_sides = system.maa.retirement_sides
++            frontend.mem_sides = system.tol3bus.cpu_side_ports
++
++    if has_retirement_ports and not getattr(
++        options, "maa_device_owned_spd_paging", False
++    ):
+         for cache in system.maa_retirement_caches:
+             system.maa.retirement_sides = cache.cpu_sides
+             cache.mem_sides = system.tol3bus.cpu_side_ports
+diff --git a/configs/common/Options.py b/configs/common/Options.py
+index d9c64336..66a9662e 100644
+--- a/configs/common/Options.py
++++ b/configs/common/Options.py
+@@ -248,6 +248,27 @@ def addNoISAOptions(parser):
+             "gather/multiply/dense-store direct retirement"
+         ),
+     )
++    parser.add_argument(
++        "--maa-device-owned-spd-paging",
++        action="store_true",
++        help="Translate original native commands through a shared physical SPD page directory",
++    )
++    parser.add_argument(
++        "--maa-device-owned-spd-overlap",
++        action="store_true",
++        help="Opt in to stable32-frame worker0 per-engine generation leases",
++    )
++    parser.add_argument(
++        "--maa-device-owned-spd-fixed-map",
++        action="store_true",
++        help="Use fixed tile*4+page placement with serialized commands (32 frames only)",
++    )
++    parser.add_argument(
++        "--maa-device-owned-spd-frames",
++        type=int,
++        default=32,
++        help="Usable frames in the physical32-frame pool; the remainder are reserved",
++    )
+     parser.add_argument(
+         "--maa_logical_spd_cache_mode",
+         type=int,
+@@ -653,6 +674,12 @@ def addNoISAOptions(parser):
+         choices=(4, 8, 16, 32, 64, 96, 128),
+         help="Active SoA/JIT value owners; physical hardware maximum is 128",
+     )
++    parser.add_argument(
++        "--maa_soa_jit_stock_service",
++        action="store_true",
++        default=False,
++        help="HY-only stock-rule ready local RMW service (no ingress bypass)",
++    )
+     parser.add_argument(
+         "--maa_soa_jit_apply_lanes",
+         type=int,
+@@ -726,6 +753,12 @@ def addNoISAOptions(parser):
+             "backing and merge them with four finite heads"
+         ),
+     )
++    parser.add_argument(
++        "--maa_virtual_pre_a_policy",
++        choices=("sorted", "row_group"),
++        default="sorted",
++        help="Fixed finite pre-A metadata policy",
++    )
+     parser.add_argument(
+         "--maa_virtual_pre_a_window",
+         action="store_true",
+diff --git a/src/mem/MAA/ALU.cc b/src/mem/MAA/ALU.cc
+index 4dc7ed94..a7051340 100644
+--- a/src/mem/MAA/ALU.cc
++++ b/src/mem/MAA/ALU.cc
+@@ -344,6 +344,16 @@ void ALUUnit::executeInstruction() {
+                 DPRINTF(MAAALU, "A[%d] %s: my_i (%d) >= my_max (%d), finished!\n", my_alu_id, __func__, my_i, my_max);
+                 break;
+             }
++            if (maa->devicePaging()) {
++                if (maa->deviceEpoch != -1 && maa->deviceEpoch != my_i / 4096)
++                    maa->releaseDevicePages(my_instruction);
++                if (!maa->ensureDevicePages(my_instruction, my_i)) {
++                    updateLatency(num_spd_read_data_accesses,
++                                  num_spd_read_cond_accesses,
++                                  num_spd_write_accesses, num_alu_accesses);
++                    return;
++                }
++            }
+             bool cond_ready = my_instruction->controllerManaged ||
+                 my_cond_tile == -1 ||
+                 maa->spd->getElementFinished(my_cond_tile, my_i, 4,
+diff --git a/src/mem/MAA/ALU.hh b/src/mem/MAA/ALU.hh
+index 93da359e..063ece0c 100644
+--- a/src/mem/MAA/ALU.hh
++++ b/src/mem/MAA/ALU.hh
+@@ -45,6 +45,10 @@ public:
+     void allocate(MAA *_maa, int _my_alu_id, Cycles _ALU_lane_latency, int _num_ALU_lanes, int _num_tile_elements);
+ 
+     Status getState() const { return state; }
++    void wakeDevicePage() {
++        if (state == Status::Work && !executeInstructionEvent.scheduled())
++            scheduleExecuteInstructionEvent(1);
++    }
+ 
+     void setInstruction(Instruction *_instruction);
+ 
+diff --git a/src/mem/MAA/CacheSidePort.cc b/src/mem/MAA/CacheSidePort.cc
+index 135f2464..67d6d14d 100644
+--- a/src/mem/MAA/CacheSidePort.cc
++++ b/src/mem/MAA/CacheSidePort.cc
+@@ -31,12 +31,13 @@ namespace gem5 {
+ bool MAA::CacheSidePort::recvTimingResp(PacketPtr pkt) {
+     /// print the packet
+     DPRINTF(MAACachePort, "%s: received %s\n", __func__, pkt->print());
+-    const bool direct_response = maa->recvDirectRetirementTimingResp(
++    const bool device_response = maa->devicePaging() && maa->spd->pagerResponse(pkt);
++    const bool direct_response = !device_response && maa->recvDirectRetirementTimingResp(
+         pkt, static_cast<uint8_t>(core_id));
+     const bool logical_response =
+-        !direct_response && maa->recvLogicalSPDTimingResp(
++        !device_response && !direct_response && maa->recvLogicalSPDTimingResp(
+                                 pkt, static_cast<uint8_t>(core_id));
+-    if (!direct_response && !logical_response)
++    if (!device_response && !direct_response && !logical_response)
+         maa->recvTimingResp(pkt, true);
+     outstandingCacheSidePackets--;
+     if (blockReason == BlockReason::MAX_XBAR_PACKETS) {
+@@ -128,6 +129,10 @@ bool MAA::CacheSidePort::sendPacket(
+         }
+         return false;
+     }
++    // Downstream snooping may set cacheResponding during sendTimingReq.
++    // Its normal response still consumes this original obligation.
++    const bool expects_response =
++        pkt->needsResponse() && !pkt->cacheResponding();
+     if (sendTimingReq(pkt) == false) {
+         // Cache cannot receive a new request
+         DPRINTF(MAACachePort, "%s Send failed because cache returned false...\n", __func__);
+@@ -139,7 +144,7 @@ bool MAA::CacheSidePort::sendPacket(
+         return false;
+     }
+     DPRINTF(MAACachePort, "%s Send is successfull...\n", __func__);
+-    if (pkt->needsResponse() && !pkt->cacheResponding())
++    if (expects_response)
+         outstandingCacheSidePackets++;
+     return true;
+ }
+@@ -152,6 +157,17 @@ bool MAA::sendPacketCache(
+     return cacheSidePorts[pkt_bus_id]->sendPacket(pkt, refusal);
+ }
+ bool MAA::sendPacketRetirementCache(PacketPtr pkt) {
++    if (devicePaging()) {
++        panic_if(pkt->req->getRegion() != 31 ||
++                     (pkt->cmd != MemCmd::ReadReq &&
++                      pkt->cmd != MemCmd::WriteReq) ||
++                     pkt->getSize() != 64 || (pkt->getAddr() & 63) ||
++                     pkt->req->isUncacheable() || pkt->isMaskedWrite(),
++                 "Pager backing bank received noncanonical traffic: %s",
++                 pkt->print());
++        panic_if(retirementSidePorts.size() != num_cores,
++                 "Pager backing bank must have one port per address bank");
++    }
+     int pkt_bus_id = core_addr(pkt->getAddr());
+     return retirementSidePorts[pkt_bus_id]->sendPacket(pkt);
+ }
+diff --git a/src/mem/MAA/CoherentProgress.inc b/src/mem/MAA/CoherentProgress.inc
+new file mode 100644
+index 00000000..6374e5d3
+--- /dev/null
++++ b/src/mem/MAA/CoherentProgress.inc
+@@ -0,0 +1,159 @@
++// Included inside namespace gem5 by coherent_xbar.cc.
++CoherentXBar::ProgressRespQueue::ProgressRespQueue(EventManager &em,
++    ResponsePort &port, CoherentXBar &owner)
++    : RespPacketQueue(em, port), xbar(owner) {}
++bool CoherentXBar::ProgressRespQueue::sendTiming(PacketPtr packet)
++{
++    const RequestPtr request = packet->req;
++    const auto token = xbar.progressState ? xbar.progressState->active(request) : 0;
++    panic_if(xbar.progressState && !token, "Unowned normal progress response");
++    if (token) xbar.progressCheck(xbar.progressState->beginDelivery(request, token));
++    const bool accepted = RespPacketQueue::sendTiming(packet);
++    // The peer may have deleted packet. Only the retained Request/token is used.
++    if (token) {
++        xbar.progressCheck(xbar.progressState->finishDelivery(request, token, accepted));
++        xbar.armProgressWake();
++    }
++    return accepted;
++}
++Cycles CoherentXBar::chargeProgressAdmission(uint64_t token)
++{
++    if(token){++progressAdmissionCycles;return Cycles(1);}
++    return Cycles(0);
++}
++void CoherentXBar::progressCheck(ProgressResult result) const
++{
++    panic_if(result != ProgressResult::Granted, "Progress ownership transition failed");
++}
++void CoherentXBar::registerProducer(RequestPort &port, RequestorID id)
++{
++    panic_if(!progressState || !port.isConnected(), "Missing configured progress broker");
++    unsigned matches = 0;
++    for (unsigned i=0;i<cpuSidePorts.size();++i) {
++        if (&cpuSidePorts[i]->getPeer() != &port) continue;
++        panic_if(progressProducerPorts[i], "Duplicate direct producer port");
++        progressProducerPorts[i]=true;progressProducerIDs[i]=id;++matches;
++    }
++    panic_if(matches!=1, "Producer must connect directly to this XBar, not via retirement cache");
++}
++void CoherentXBar::registerSpdConsumer(const AddrRange &range)
++{
++    panic_if(!progressState || progressSpdRegistered, "Duplicate/missing progress SPD owner");
++    progressSpdRange=range;progressSpdRegistered=true;
++}
++void CoherentXBar::registerCache(const std::vector<ResponsePort*> &ports,
++    unsigned banks,unsigned entries,unsigned targets,unsigned block,
++    std::function<maa::ProgressCachePlan(PacketPtr)> plan,
++    std::function<void(unsigned)> wake)
++{
++    panic_if(!progressState || progressCachePlan || banks!=4 || entries!=64 ||
++        targets!=8 || block!=64 || ports.size()!=4 || memSidePorts.size()!=4,
++        "Progress cache geometry differs from selected 4x64/8/64");
++    for(unsigned i=0;i<4;++i)
++        panic_if(!ports[i]->isConnected() || &ports[i]->getPeer()!=memSidePorts[i],
++                 "Progress cache/XBar bank peer mismatch");
++    progressCachePlan=std::move(plan);progressCacheWake=std::move(wake);
++}
++bool CoherentXBar::isSpdLine(Addr address) const
++{
++    panic_if(!progressSpdRegistered,"Progress SPD range unregistered");
++    return progressSpdRange.contains(address);
++}
++uint64_t CoherentXBar::authorizeSpdReceive(const RequestPtr&r,Addr line,unsigned port)const
++{
++    return progressState ? progressState->authorize(r,line,port) : 0;
++}
++void CoherentXBar::claimDeferredReceiver(const RequestPtr&r,uint64_t token,unsigned port)
++{ progressCheck(progressState->receiverOwns(r,token,port)); }
++void CoherentXBar::beginResponseHandoff(const RequestPtr&r,uint64_t token,unsigned port)
++{ progressCheck(progressState->beginResponse(r,token,port)); }
++void CoherentXBar::endResponseHandoff(const RequestPtr&r,uint64_t token,unsigned port,bool accepted)
++{ progressCheck(progressState->endResponse(r,token,port,accepted));armProgressWake(); }
++void CoherentXBar::progressResponseAccepted(const RequestPtr&r,uint64_t token)
++{ progressCheck(progressState->responseAccepted(r,token));armProgressWake(); }
++void CoherentXBar::armProgressWake()
++{
++    if (!progressState || !progressState->wakeNeeded()) return;
++    if (!progressState->hasWaiters()) { progressState->consumeWake(); return; }
++    if (!progressWakeEvent.scheduled()) schedule(progressWakeEvent,clockEdge(Cycles(1)));
++}
++void CoherentXBar::wakeProgress()
++{
++    panic_if(!progressState->consumeWake(),"Progress wake inside synchronous handoff");
++    ++progressWakeups;
++    // State changes are complete; callbacks occur on a later clock edge only.
++    for(unsigned n=0;n<cpuSidePorts.size();++n) {
++        unsigned i=(n+progressNextPort)%cpuSidePorts.size();
++        if(progressState->takeWaiter(i)) cpuSidePorts[i]->sendRetryReq();
++    }
++    progressNextPort=(progressNextPort+1)%cpuSidePorts.size();
++    for(unsigned bank=0;bank<4;++bank)
++        if(progressState->takeWaiter(12+bank))progressCacheWake(bank);
++    armProgressWake();
++}
++uint64_t CoherentXBar::reserveProgress(PacketPtr packet,unsigned port)
++{
++    panic_if(!progressSpdRegistered || !progressCachePlan || port>=12,
++             "Incomplete progress registration");
++    const auto bank=findPort(packet);const Addr line=packet->getBlockAddr(64);
++    panic_if(bank<0 || bank>=4 || !packet->req,"Unqualified progress bank/request");
++    const bool producer=progressProducerPorts[port] &&
++        packet->req->requestorId()==progressProducerIDs[port];
++    const auto plan=progressCachePlan(packet);++progressLookups;
++    if(isSpdLine(line)&&plan.targetBlocked) {
++        panic_if(!progressState->setWaiter(port),"Progress waiter bound");
++        ++progressDenied;return 0;
++    }
++    uint64_t token=0;
++    const auto result=progressState->reserve(packet->req,bank,line,producer,
++        isSpdLine(line),bank,plan.parent,plan.continuation,false,token,packet->isSecure());
++    if(result==ProgressResult::Pressure||result==ProgressResult::HandoffBusy) {
++        panic_if(!progressState->setWaiter(port),"Progress waiter bound");
++        ++progressDenied;return 0;
++    }
++    progressCheck(result);progressCheck(progressState->beginSend(token));return token;
++}
++uint64_t CoherentXBar::reserveInternalPrefetch(PacketPtr packet,unsigned bank)
++{
++    panic_if(!progressState || bank>=4 || !progressCachePlan,"Unregistered internal PF owner");
++    const auto plan=progressCachePlan(packet);const Addr line=packet->getBlockAddr(64);
++    ++progressLookups;uint64_t token=0;
++    auto result=ProgressResult::Pressure;
++    if(!plan.targetBlocked)
++        result=progressState->reserve(packet->req,bank,line,false,isSpdLine(line),
++            bank,plan.parent,false,true,token,packet->isSecure());
++    if(result==ProgressResult::Pressure||result==ProgressResult::HandoffBusy){
++        panic_if(!progressState->setWaiter(12+bank),"Internal PF waiter bound");
++        ++progressDenied;return 0;
++    }
++    progressCheck(result);progressCheck(progressState->beginSend(token));
++    ++progressAdmissionCycles;return token;
++}
++void CoherentXBar::finishInternalAdmission(uint64_t token,bool accepted)
++{ progressCheck(progressState->finishSend(token,accepted));armProgressWake(); }
++void CoherentXBar::completeInternalPrefetch(const RequestPtr&r)
++{ progressCheck(progressState->internalComplete(r));armProgressWake(); }
++void CoherentXBar::bindCacheClone(const RequestPtr&a,const RequestPtr&b)
++{
++    panic_if(!a||!b||a.get()==b.get()||!a->hasPaddr()||!b->hasPaddr()||
++        !a->hasSize()||!b->hasSize()||a->getPaddr()!=b->getPaddr()||
++        a->getSize()!=b->getSize()||a->getFlags()!=b->getFlags()||
++        a->requestorId()!=b->requestorId(),"Unqualified cache Request clone");
++    progressCheck(progressState->attachClone(a,b));
++}
++void CoherentXBar::bindMshr(const RequestPtr&r,uintptr_t mshr)
++{ progressCheck(progressState->bindMshr(r,mshr)); }
++uint64_t CoherentXBar::mshrOwner(uintptr_t mshr)const
++{ return progressState?progressState->mshrOwner(mshr):0; }
++void CoherentXBar::releaseMshr(uintptr_t mshr)
++{ progressCheck(progressState->releaseMshr(mshr));armProgressWake(); }
++void CoherentXBar::cacheResourcesChanged()
++{ if(progressState){progressState->changed();armProgressWake();} }
++void CoherentXBar::chargeDeferredService() { ++progressDeferredCycles; }
++bool CoherentXBar::quiescent()const
++{ return !progressState || (progressState->quiescent()&&!progressWakeEvent.scheduled()); }
++DrainState CoherentXBar::drain()
++{
++    panic_if(!quiescent(),"Progress broker cannot checkpoint live credits/owners/waiters/events");
++    return DrainState::Drained; // Original port/layer Drainables retain their own drain checks.
++}
+diff --git a/src/mem/MAA/CpuSidePort.cc b/src/mem/MAA/CpuSidePort.cc
+index 1e72e773..4248d2f3 100644
+--- a/src/mem/MAA/CpuSidePort.cc
++++ b/src/mem/MAA/CpuSidePort.cc
+@@ -12,6 +12,7 @@
+ #include "debug/MAAVirtualTrace.hh"
+ #include "mem/MAA/ALU.hh"
+ #include "mem/MAA/CpuSpdAperture.hh"
++#include "mem/MAA/FullRequestEnable.hh"
+ #include "mem/MAA/FusedP16ProductState.hh"
+ #include "mem/MAA/IF.hh"
+ #include "mem/MAA/IndirectAccess.hh"
+@@ -36,6 +37,21 @@ namespace gem5 {
+ namespace
+ {
+ 
++void
++requireFullyEnabledRequest(PacketPtr packet, unsigned cacheLineSize)
++{
++    const auto &request = packet->req;
++    panic_if(!request || !request->hasPaddr() || !request->hasSize(),
++             "SPD/MMIO request lacks physical span");
++    const bool lineRead = packet->cmd == MemCmd::ReadSharedReq ||
++                          packet->cmd == MemCmd::ReadExReq;
++    panic_if(!maa::fullRequestEnabled(request->getByteEnable(),
++                 request->hasPaddr(), request->hasSize(),
++                 request->getPaddr(), request->getSize(),
++                 packet->getAddr(), packet->getSize(), lineRead, cacheLineSize),
++             "SPD/MMIO request has disabled bytes or malformed/overflowing span");
++}
++
+ bool
+ isDroppableBoundaryPrefetch(PacketPtr pkt)
+ {
+@@ -101,7 +117,8 @@ bool MAA::CpuSidePort::tryTiming(PacketPtr pkt) {
+     }
+ 
+     if (pkt->cmd == MemCmd::ReadExReq ||
+-        pkt->cmd == MemCmd::ReadSharedReq) {
++        pkt->cmd == MemCmd::ReadSharedReq ||
++        (maa.devicePaging() && pkt->cmd == MemCmd::WritebackDirty)) {
+         AddressRangeType address_range =
+             AddressRangeType(pkt->getAddr(), maa.addrRanges);
+         if (address_range.isValid() &&
+@@ -114,7 +131,11 @@ bool MAA::CpuSidePort::tryTiming(PacketPtr pkt) {
+                          maa.logicalCompletionLaneOwned(tile_id),
+                      "Guest cacheable read references reserved/owned SPD "
+                      "lane %d\n", tile_id);
+-            if (!maa.spd->getTileReady(tile_id)) {
++            const int element = (offset % (maa.num_tile_elements * 4)) / 4;
++            const bool is_read = pkt->cmd != MemCmd::WritebackDirty;
++            if ((is_read && !maa.spd->getTileReady(tile_id)) ||
++                (maa.devicePaging() &&
++                 !maa.spd->ensurePage(tile_id, element, false))) {
+                 assert(retryTileID == -1);
+                 assert(!tileRequestRetryOutstanding);
+                 mustRetryTileRequest = true;
+@@ -140,10 +161,23 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
+             pkt->getSize());
+     AddressRangeType address_range = AddressRangeType(pkt->getAddr(), addrRanges);
+     DPRINTF(MAACpuPort, "%s: address range type: %s\n", __func__, address_range.print());
+-    for (int i = 0; i < pkt->getSize(); i++) {
+-        panic_if(pkt->req->getByteEnable()[i] == false, "Byte enable [%d] is not set for the request\n", i);
+-    }
++    requireFullyEnabledRequest(pkt, system->cacheLineSize());
+     switch (pkt->cmd.toInt()) {
++    case MemCmd::CleanEvict:
++    case MemCmd::WritebackClean: {
++        // The paging aperture is a terminal coherent destination on tol3bus.
++        // Clean notifications previously terminated in the LLC. As at
++        // AbstractMemory, they do not change authoritative data, map a page,
++        // or generate a response. In particular, never copy an old clean
++        // cache line into a newly produced SPD generation.
++        panic_if(!devicePaging() || address_range.getType() !=
++                     AddressRangeType::Type::SPD_DATA_CACHEABLE_RANGE ||
++                     pkt->needsResponse(),
++                 "Unexpected clean notification at SPD endpoint: %s",
++                 pkt->print());
++        pendingDelete.reset(pkt);
++        break;
++    }
+     case MemCmd::WritebackDirty: {
+         assert(pkt->isMaskedWrite() == false);
+         switch (address_range.getType()) {
+@@ -1595,7 +1629,7 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
+             // Here we reset the timing of the packet.
+             Tick old_header_delay = pkt->headerDelay;
+             pkt->headerDelay = pkt->payloadDelay = 0;
+-            cpuSidePorts[core_id]->schedTimingResp(pkt, getClockEdge(Cycles(1)) + old_header_delay);
++            cpuSidePorts[core_id]->schedTimingResp(pkt, getClockEdge(devicePaging() ? spd->getDataLatency(1) : Cycles(1)) + old_header_delay);
+             break;
+         }
+         default:
+@@ -1605,10 +1639,12 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
+         break;
+     }
+     default:
+-        assert(false);
++        panic("Unsupported MAA CPU request: %s", pkt->print());
+     }
+ }
+ bool MAA::CpuSidePort::recvTimingReq(PacketPtr pkt) {
++    panic_if(core_id >= maa.num_cores,
++             "Demand reached snoop-only MAA port: %s", pkt->print());
+     assert(pkt->isRequest());
+     /// print the packet
+     DPRINTF(MAACpuPort, "%s: received %s\n", __func__, pkt->print());
+@@ -1647,7 +1683,8 @@ bool MAA::CpuSidePort::recvTimingReq(PacketPtr pkt) {
+             const auto decision = gem5::maa::CpuSpdAperture::classify(
+                 address_range.getOffset(), pkt->getSize(),
+                 maa.system->cacheLineSize(), maa.num_tile_elements,
+-                maa.physical_tile_elements, sizeof(uint32_t),
++                maa.devicePaging() ? maa.num_tile_elements : maa.physical_tile_elements,
++                sizeof(uint32_t),
+                 droppable_prefetch);
+             if (decision.disposition ==
+                 gem5::maa::CpuSpdAperture::Disposition::
+@@ -1698,6 +1735,35 @@ bool MAA::CpuSidePort::recvTimingReq(PacketPtr pkt) {
+             }
+         }
+     }
++    requireFullyEnabledRequest(pkt, maa.system->cacheLineSize());
++    // This insertion follows the original complete aperture/reserved-lane
++    // classification. No data is touched until original readiness is true.
++    if (maa.progressCreditOwner &&
++        (pkt->cmd == MemCmd::ReadExReq || pkt->cmd == MemCmd::ReadSharedReq)) {
++        const AddressRangeType range(pkt->getAddr(), maa.addrRanges);
++        if (range.isValid() && range.getType() ==
++            AddressRangeType::Type::SPD_DATA_CACHEABLE_RANGE) {
++            const unsigned tile = range.getOffset() /
++                (maa.num_tile_elements * sizeof(uint32_t));
++            { // Selected shared policy queues ready reads too; original backend latency is retained.
++                panic_if(mustRetryTileRequest || is_retry_attempt,
++                         "Legacy retry cannot cross new progress cohort");
++                const uint64_t token = maa.progressCreditOwner->authorizeSpdReceive(
++                    pkt->req, pkt->getBlockAddr(maa.system->cacheLineSize()), core_id);
++                panic_if(!token, "Unready SPD packet lacks in-flight/accepted permit");
++                panic_if(!pkt->needsResponse(), "Deferred SPD has no response");
++                // The broker claim records ownership inside synchronous send.
++                // A false downstream return may not roll back this ownership.
++                maa.progressCreditOwner->claimDeferredReceiver(pkt->req, token, core_id);
++                panic_if(!maa.deferredSpdOwners.accept(
++                             reinterpret_cast<std::uintptr_t>(pkt), pkt->req,
++                             token, tile, core_id),
++                         "Deferred SPD ownership/capacity inconsistency");
++                maa.scheduleProgressDeferred();
++                return true;
++            }
++        }
++    }
+     if (tryTiming(pkt)) {
+         if (is_retry_attempt) {
+             maa.stats.cpu_spd_data_read_retry_acceptances++;
+@@ -1724,6 +1790,7 @@ Tick MAA::CpuSidePort::recvAtomic(PacketPtr pkt) {
+ }
+ 
+ AddrRangeList MAA::CpuSidePort::getAddrRanges() const {
++    if (core_id >= maa.num_cores) return {};
+     return maa.getAddrRanges(core_id);
+ }
+ 
+@@ -1731,7 +1798,8 @@ bool MAA::CpuSidePort::sendSnoopInvalidatePacket(PacketPtr pkt) {
+     /// print the packet
+     DPRINTF(MAACpuPort, "%s: sending invalidation %s\n", __func__, pkt->print());
+     int pkt_core_id = maa.core_addr(pkt->getAddr());
+-    panic_if(pkt_core_id != core_id, "%s: packet is for core %d\n", __func__, pkt_core_id);
++    panic_if(pkt_core_id != core_id % maa.num_cores,
++             "%s: packet is for core %d\n", __func__, pkt_core_id);
+     panic_if(is_blocked, "%s: port is blocked\n", __func__);
+     if (outstandingCpuSidePackets == maxOutstandingCpuSidePackets) {
+         // XBAR is full
+@@ -1767,12 +1835,20 @@ void MAA::CpuSidePort::retryTileRequest() {
+ bool MAA::sendSnoopInvalidateCpu(PacketPtr pkt) {
+     panic_if(pkt->isExpressSnoop() == false, "Packet is not an express snoop packet\n");
+     int pkt_core_id = core_addr(pkt->getAddr());
++    const AddressRangeType range(pkt->getAddr(), addrRanges);
++    if (devicePaging() && (!range.isValid() || range.getType() !=
++            AddressRangeType::Type::SPD_DATA_CACHEABLE_RANGE))
++        pkt_core_id += num_cores;
+     return cpuSidePorts[pkt_core_id]->sendSnoopInvalidatePacket(pkt);
+ }
+ 
+ void MAA::sendSnoopPacketCpu(PacketPtr pkt) {
+     panic_if(pkt->isExpressSnoop() == false, "Packet is not an express snoop packet\n");
+     int pkt_core_id = core_addr(pkt->getAddr());
++    const AddressRangeType range(pkt->getAddr(), addrRanges);
++    if (devicePaging() && (!range.isValid() || range.getType() !=
++            AddressRangeType::Type::SPD_DATA_CACHEABLE_RANGE))
++        pkt_core_id += num_cores;
+     cpuSidePorts[pkt_core_id]->sendTimingSnoopReq(pkt);
+ }
+ 
+@@ -1780,6 +1856,10 @@ void MAA::CpuSidePort::allocate(int _core_id, int _maxOutstandingCpuSidePackets)
+     outstandingCpuSidePackets = 0;
+     core_id = _core_id;
+     maxOutstandingCpuSidePackets = _maxOutstandingCpuSidePackets - 16;
++    // Split the old per-core snoop budget across the two physical banks;
++    // topology separation must not manufacture additional response credits.
++    if (maa.devicePaging()) maxOutstandingCpuSidePackets /= 2;
++    panic_if(maxOutstandingCpuSidePackets <= 0, "Empty CPU snoop budget");
+     is_blocked = false;
+     mustRetryTileRequest = false;
+     tileRequestRetryOutstanding = false;
+diff --git a/src/mem/MAA/DeferredOwnerPool.hh b/src/mem/MAA/DeferredOwnerPool.hh
+new file mode 100644
+index 00000000..1a35d682
+--- /dev/null
++++ b/src/mem/MAA/DeferredOwnerPool.hh
+@@ -0,0 +1,49 @@
++#ifndef UME_DEFERRED_OWNER_POOL_HH
++#define UME_DEFERRED_OWNER_POOL_HH
++#include <array>
++#include <cstdint>
++namespace gem5::maa {
++template<class RequestRef>
++class DeferredOwnerPool {
++ enum class Phase { Empty, Waiting, Dispatched, Handoff };
++ struct Cell { std::uintptr_t packet=0;RequestRef request{};std::uint64_t token=0;unsigned tile=0,port=0;Phase phase=Phase::Empty; };
++ std::array<Cell,64> cells{};unsigned used=0,nextReady=0;
++ static bool same(const RequestRef&a,const RequestRef&b){return a&&b&&a.get()==b.get()&&!a.owner_before(b)&&!b.owner_before(a);}
++ public:
++ struct Handoff { bool valid=true,tracked=false;std::uintptr_t packet=0;RequestRef request{};std::uint64_t token=0;unsigned port=0; };
++ bool accept(std::uintptr_t p,const RequestRef&r,std::uint64_t token,unsigned tile,unsigned port){
++  if(!p||!r||!token||tile>=32||port>=4||used==cells.size())return false;
++  for(const auto &c:cells)if(c.phase!=Phase::Empty&&(c.packet==p||c.token==token||c.request.get()==r.get()))return false;
++  for(auto &c:cells)if(c.phase==Phase::Empty){c={p,r,token,tile,port,Phase::Waiting};++used;return true;}
++  return false;
++ }
++ template<class Ready,class Dispatch>void ready(Ready test,Dispatch dispatch){
++  for(auto &c:cells)if(c.phase==Phase::Waiting&&test(c.tile)){c.phase=Phase::Dispatched;dispatch(c.packet,c.port);}
++ }
++ Handoff begin(std::uintptr_t p,const RequestRef&r,unsigned port){
++  for(auto &c:cells)if(c.phase!=Phase::Empty&&c.packet==p){
++   Handoff h{true,true,p,c.request,c.token,port};
++   if(c.phase!=Phase::Dispatched||c.port!=port||!same(c.request,r)){h.valid=false;return h;}
++   c.phase=Phase::Handoff;return h;
++  }
++  return {};
++ }
++ bool finish(const Handoff&h,bool accepted){
++  if(!h.valid)return false;
++  if(!h.tracked)return true;
++  for(auto &c:cells)if(c.phase==Phase::Handoff&&c.packet==h.packet&&c.token==h.token&&same(c.request,h.request)&&c.port==h.port){
++   if(accepted){c={};--used;}else c.phase=Phase::Dispatched;return true;
++  }
++  return false;
++ }
++ bool hasWaiting()const{for(const auto&c:cells)if(c.phase==Phase::Waiting)return true;return false;}
++ template<class Ready,class Dispatch>bool readyOne(Ready test,Dispatch dispatch){
++  for(unsigned n=0;n<cells.size();++n){unsigned i=(nextReady+n)%cells.size();auto&c=cells[i];
++   if(c.phase==Phase::Waiting&&test(c.tile)){c.phase=Phase::Dispatched;nextReady=(i+1)%cells.size();dispatch(c.packet,c.port);return true;}
++  }
++  return false;
++ }
++ unsigned size()const{return used;}
++};
++}
++#endif
+diff --git a/src/mem/MAA/DeferredSpdOwners.hh b/src/mem/MAA/DeferredSpdOwners.hh
+new file mode 100644
+index 00000000..cdcaeb16
+--- /dev/null
++++ b/src/mem/MAA/DeferredSpdOwners.hh
+@@ -0,0 +1,6 @@
++#ifndef UME_DEFERRED_SPD_OWNERS_HH
++#define UME_DEFERRED_SPD_OWNERS_HH
++#include "mem/request.hh"
++#include "mem/MAA/DeferredOwnerPool.hh"
++namespace gem5::maa { using DeferredSpdOwners = DeferredOwnerPool<RequestPtr>; }
++#endif
+diff --git a/src/mem/MAA/FullRequestEnable.hh b/src/mem/MAA/FullRequestEnable.hh
+new file mode 100644
+index 00000000..71b2e15a
+--- /dev/null
++++ b/src/mem/MAA/FullRequestEnable.hh
+@@ -0,0 +1,21 @@
++#ifndef UME_FULL_REQUEST_ENABLE_HH
++#define UME_FULL_REQUEST_ENABLE_HH
++#include <cstdint>
++#include <limits>
++namespace gem5::maa {
++template<class Mask>
++bool fullRequestEnabled(const Mask &mask,bool hasPaddr,bool hasSize,
++    std::uint64_t requestAddr,std::uint64_t requestSize,
++    std::uint64_t packetAddr,std::uint64_t packetSize,
++    bool cacheLineRead,std::uint64_t cacheLineSize)
++{
++ if(!hasPaddr||!hasSize||!requestSize||!packetSize||mask.size()!=requestSize)return false;
++ for(bool enabled:mask)if(!enabled)return false;
++ const auto max=std::numeric_limits<std::uint64_t>::max();
++ if(requestSize-1>max-requestAddr||packetSize-1>max-packetAddr)return false;
++ if(cacheLineRead){if(!cacheLineSize||packetSize!=cacheLineSize||packetAddr%cacheLineSize)return false;}
++ else if(requestSize!=packetSize||requestAddr!=packetAddr)return false;
++ return requestAddr>=packetAddr&&requestSize<=packetSize&&requestAddr-packetAddr<=packetSize-requestSize;
++}
++}
++#endif
+diff --git a/src/mem/MAA/IF.cc b/src/mem/MAA/IF.cc
+index 9d535841..3ba4e7f6 100644
+--- a/src/mem/MAA/IF.cc
++++ b/src/mem/MAA/IF.cc
+@@ -762,6 +762,10 @@ IF::hasLiveResponseBearingPublish(int maa_id, int region_id) const
+     return false;
+ }
+ Instruction *IF::getReady(FuncUnitType funcUniType, int maa_id) {
++    // Do not reserve another instruction's memory permit while the single
++    // active worker still owns pages and coherent requests.
++    if (maa->devicePaging() && maa->deviceDispatchBlocked(funcUniType))
++        return nullptr;
+     int rand_base = rand() % num_instructions_per_maa;
+     if (funcUniType == FuncUnitType::INVALIDATOR) {
+         panic_if(maa_id != -1, "Invalidator cannot have maa_id!\n");
+@@ -824,6 +828,8 @@ Instruction *IF::getReady(FuncUnitType funcUniType, int maa_id) {
+                          Instruction::TileStatus::WaitForService) &&
+                 instructions[maa_id][instr_idx].funcUniType == funcUniType) {
+                 if (maa->num_maas == 1 || maa->getAddrRegionPermit(&instructions[maa_id][instr_idx])) {
++                    if (!maa->admitDeviceInstruction(&instructions[maa_id][instr_idx]))
++                        continue;
+                     issueInstructionCompute(&instructions[maa_id][instr_idx]);
+                     DPRINTF(MAAController, "%s: returned instruction[%d] %s for execute!\n", __func__, instr_idx, instructions[maa_id][instr_idx].print());
+                     return &instructions[maa_id][instr_idx];
+diff --git a/src/mem/MAA/IndirectAccess.cc b/src/mem/MAA/IndirectAccess.cc
+index 2796457f..5f799da0 100644
+--- a/src/mem/MAA/IndirectAccess.cc
++++ b/src/mem/MAA/IndirectAccess.cc
+@@ -1,4 +1,9 @@
+ #include "mem/MAA/IndirectAccess.hh"
++// MAA_WINDOW_OBSERVER_BEGIN IndirectAccess_exit_include
++#if defined(MAA_WINDOW_TIMING_OBSERVER) && MAA_WINDOW_TIMING_OBSERVER
++#include "sim/sim_exit.hh"
++#endif
++// MAA_WINDOW_OBSERVER_END IndirectAccess_exit_include
+ 
+ #include <algorithm>
+ #include <cassert>
+@@ -20,6 +25,7 @@
+ #include "debug/MAAVirtualTrace.hh"
+ #include "mem/MAA/IF.hh"
+ #include "mem/MAA/MAA.hh"
++#include "params/MAA.hh"
+ #include "mem/MAA/SPD.hh"
+ #include "mem/MAA/SharedPayloadTransfer.hh"
+ #include "mem/MAA/SoaJitRmwSemantics.hh"
+@@ -145,6 +151,12 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
+                                   int _num_cores,
+                                   MAA *_maa) {
+     my_indirect_id = _my_indirect_id;
++// MAA_WINDOW_OBSERVER_BEGIN IndirectAccess_exit_summary
++#if defined(MAA_WINDOW_TIMING_OBSERVER) && MAA_WINDOW_TIMING_OBSERVER
++    if (window_timing_observer.register_once())
++        registerExitCallback([this] { window_timing_observer.summary(my_indirect_id, 0); });
++#endif
++// MAA_WINDOW_OBSERVER_END IndirectAccess_exit_summary
+     maa = _maa;
+     num_tile_elements = _num_tile_elements;
+     num_RT_rows_per_slice = _num_row_table_rows_per_slice;
+@@ -1012,7 +1024,20 @@ bool IndirectAccessUnit::claimVirtualRow(
+         panic_if(!pre_a_window || !pre_a_window->closed(),
+                  "I[%d] pre-A source claim before metadata closure\n",
+                  my_indirect_id);
++// MAA_WINDOW_OBSERVER_BEGIN pre_claim
++#if defined(MAA_WINDOW_TIMING_OBSERVER) && MAA_WINDOW_TIMING_OBSERVER
++        window_timing_observer.touch(
++            my_indirect_id, my_instruction->core_id, my_decode_start_tick,
++            isSoaJitRmw() ? soa_jit_generation : 0,
++            isSoaJitRmw() ? soa_jit_epoch_drains : 0, my_max,
++            isVirtualLoad() ? 1 : (isSoaJitRmw() ? 2 : 3), curTick());
++        const bool observer_claimed = pre_a_window->claim(slice, addr, head, words, commit);
++        window_timing_observer.committed_claim(curTick(), observer_claimed, commit);
++        return observer_claimed;
++#else
+         return pre_a_window->claim(slice, addr, head, words, commit);
++#endif
++// MAA_WINDOW_OBSERVER_END pre_claim
+     }
+     return RT[my_RT_config][slice].claim_entry_send(
+         addr, head, words, my_fill_finished, maa->virtual_grow_order, commit);
+@@ -3808,6 +3833,7 @@ void IndirectAccessUnit::checkTileReady() {
+     }
+ }
+ bool IndirectAccessUnit::checkElementReady() {
++    if (!maa->ensureDevicePages(my_instruction, my_i)) return false;
+     bool idx_ready = isDirectIndexLoad()
+         ? ensureDirectIndex(my_i)
+         : maa->spd->getElementFinished(
+@@ -4475,10 +4501,28 @@ void IndirectAccessUnit::fillRowTable(
+                 break;
+             }
+         }
++        if (maa->devicePaging() && !maa->deviceFit32() &&
++            maa->deviceEpoch != -1 &&
++            maa->deviceEpoch != my_i / 4096) {
++            if (offset_table->occupancy() != 0) {
++                needDrain = true;
++                break;
++            }
++            maa->releaseDevicePages(my_instruction);
++        }
+         if (checkElementReady() == false) {
+             // Row table parallelism = total #sub-banks. Each bank can be inserted once at a cycle
+             // updateLatency(0, num_spd_read_condidx_accesses, 0, num_rowtable_accesses, total_num_RT_subslices);
+-            waitForElement = true;
++            if (maa->devicePaging() &&
++                maa->spd->lastPageResult == SPD::PageResult::NoVictim &&
++                offset_table->occupancy() != 0)
++                needDrain = true; // stock work can release the owned pages
++            else {
++                panic_if(maa->devicePaging() &&
++                         maa->spd->lastPageResult == SPD::PageResult::NoVictim,
++                         "Device SPD has no victim and no RowTable work to drain");
++                waitForElement = true;
++            }
+             break;
+         }
+         const DirectIndexWord direct_word_value = isDirectIndexLoad()
+@@ -5869,8 +5913,153 @@ IndirectAccessUnit::fillSoaJitLookahead(size_t context_index)
+     return issued;
+ }
+ bool
++IndirectAccessUnit::serviceSoaJitStockLookahead()
++{
++    // Same local-service abstraction as stock native, not a wider ingress.
++    // Only existing returned value lines / bounded lookahead slots are read.
++    bool progressed = false;
++    const size_t context_count = soa_jit_active_contexts;
++    for (size_t i = 0; i < context_count; ++i) {
++        const auto &context = soa_jit_contexts[i];
++        if (context.state == SoaJitContextState::Free)
++            continue;
++        panic_if(context.generation != soa_jit_generation,
++                 "I[%d] stock-service stale context\n", my_indirect_id);
++        for (size_t j = 0; j < i; ++j) {
++            const auto &other = soa_jit_contexts[j];
++            panic_if(other.state != SoaJitContextState::Free &&
++                         soaJitPhysicalAddress(other.aPaddr) ==
++                             soaJitPhysicalAddress(context.aPaddr),
++                     "I[%d] stock-service duplicate A-line owner\n",
++                     my_indirect_id);
++        }
++    }
++    for (size_t i = 0; i < context_count; ++i)
++        progressed = fillSoaJitLookahead(i) || progressed;
++
++    for (size_t i = 0; i < context_count; ++i) {
++        auto &context = soa_jit_contexts[i];
++        if (context.state != SoaJitContextState::Active &&
++            !(soa_jit_pre_a_value_lookahead &&
++              context.state == SoaJitContextState::AwaitARead))
++            continue;
++        for (size_t s = 0; s < context.lookahead.size(); ++s) {
++            auto &slot = context.lookahead[s];
++            if (slot.state != SoaJitLookaheadState::Waiting)
++                continue;
++            const uint16_t waiter = static_cast<uint16_t>(
++                i * SoaJitValueCoalescer::MaxLookahead + s);
++            SoaJitValueCoalescer::Delivery delivery;
++            const auto result = soa_jit_value_coalescer.deliverStockReady(
++                soa_jit_generation, waiter, delivery);
++            panic_if(result == SoaJitValueCoalescer::DeliveryResult::Stale ||
++                         result == SoaJitValueCoalescer::DeliveryResult::Invalid,
++                     "I[%d] stock-service invalid value owner\n",
++                     my_indirect_id);
++            if (result != SoaJitValueCoalescer::DeliveryResult::Delivered)
++                continue;
++            panic_if(slot.generation != context.generation ||
++                         slot.valueWord * my_word_size + my_word_size >
++                             delivery.data.size() ||
++                         my_word_size > static_cast<int>(slot.value.size()),
++                     "I[%d] stock-service invalid ready operand\n",
++                     my_indirect_id);
++            std::memcpy(slot.value.data(),
++                        delivery.data.data() + slot.valueWord * my_word_size,
++                        my_word_size);
++            slot.state = SoaJitLookaheadState::Ready;
++            soa_jit_value_deliveries++;
++            soa_jit_lookahead_responses++;
++            progressed = true;
++        }
++    }
++
++    for (size_t i = 0; i < context_count; ++i) {
++        auto &context = soa_jit_contexts[i];
++        if (context.state != SoaJitContextState::Active)
++            continue; // A data must have actually arrived before any apply.
++        size_t applied = 0;
++        // Bound work by the existing eight slots, never an unbounded alias walk.
++        for (size_t n = 0; n < context.lookahead.size(); ++n) {
++            auto slot = std::find_if(
++                context.lookahead.begin(), context.lookahead.end(),
++                [&context](const SoaJitLookaheadSlot &candidate) {
++                    return candidate.state == SoaJitLookaheadState::Ready &&
++                           candidate.offset == context.nextOffset;
++                });
++            if (slot == context.lookahead.end())
++                break; // Never skip an unready ordered head.
++            panic_if(slot->generation != context.generation ||
++                         context.remaining <= 0 ||
++                         context.lookaheadOccupancy == 0 ||
++                         slot->logicalItr < 0 || slot->logicalItr >= my_max ||
++                         slot->aWord * my_word_size + my_word_size >
++                             context.aLine.size(),
++                     "I[%d] stock-service invalid ordered alias\n",
++                     my_indirect_id);
++            // Validate the actual Offset owner BEFORE mutating A.
++            const auto &entry = offset_table->peek_entry(context.nextOffset);
++            panic_if(entry.itr != slot->logicalItr || entry.wid != slot->aWord,
++                     "I[%d] stock-service Offset owner mismatch\n",
++                     my_indirect_id);
++            if (!applySoaJitValue(context, static_cast<uint16_t>(i),
++                                 slot->aWord,
++                                 static_cast<uint32_t>(slot->logicalItr),
++                                 slot->value.data()))
++                break;
++            const auto consumed = offset_table->consume_entry(
++                context.nextOffset);
++            panic_if(consumed.itr != slot->logicalItr ||
++                         consumed.wid != slot->aWord,
++                     "I[%d] stock-service Offset changed during apply\n",
++                     my_indirect_id);
++            context.remaining--;
++            context.lookaheadOccupancy--;
++            if (context.preAUsesPending != 0) {
++                context.preAUsesPending--;
++                soa_jit_pre_a_value_uses++;
++            }
++            *slot = SoaJitLookaheadSlot();
++            soa_jit_aliases_applied++;
++            ++applied;
++            progressed = true;
++            // New requests may fill freed slots; they cannot be delivered or
++            // applied by this pass unless their real response was already ready.
++            fillSoaJitLookahead(i);
++        }
++        // Stock native charges aliases to its bank-parallel Offset walker,
++        // not to a separate per-add ALU or per-word returned-value copy width.
++        const Cycles local_latency = applied == 0 ? Cycles(0) :
++            updateLatency(0, 0, 0, static_cast<int>(applied), 0,
++                          total_num_RT_subslices);
++        if (context.remaining == 0) {
++            panic_if(context.nextOffset != -1 || context.issueOffset != -1 ||
++                         context.lookaheadOccupancy != 0,
++                     "I[%d] stock-service incomplete alias closure\n",
++                     my_indirect_id);
++            // Retain the original packet/WriteResp owner. The packet cannot
++            // enter the port before the stock walker has paid for this batch.
++            progressed = issueSoaJitWrite(
++                context, maa->getClockEdge(local_latency)) || progressed;
++        }
++    }
++    return progressed;
++}
++bool
+ IndirectAccessUnit::serviceSoaJitLookahead()
+ {
++    // Explicit HY-only service-policy sensitivity; native never enters here.
++    if (static_cast<const MAAParams &>(maa->params()).soa_jit_stock_service) {
++        panic_if(!my_instruction->isSoaJitVectorRmw() ||
++                     my_instruction->isSoaJitMaskedIndexRmw() ||
++                     my_instruction->isSoaJitPageFedRmw() ||
++                     my_instruction->hasSoaJitOldResult() ||
++                     my_instruction->datatype != Instruction::DataType::FLOAT32_TYPE ||
++                     my_instruction->optype != Instruction::OPType::ADD_OP,
++                 "I[%d] stock service requires ordinary no-old-result FP32 ADD "
++                 "SoA/JIT vector RMW\n", my_indirect_id);
++        return serviceSoaJitStockLookahead();
++    }
+     bool progressed = false;
+     const size_t context_count = soa_jit_active_contexts;
+     soa_jit_apply_lane_pool.beginCycle(curTick());
+@@ -6208,7 +6397,8 @@ IndirectAccessUnit::completeSoaJitOldResultWrite(
+             identity.validWords);
+     return true;
+ }
+-bool IndirectAccessUnit::issueSoaJitWrite(SoaJitContext &context)
++bool IndirectAccessUnit::issueSoaJitWrite(SoaJitContext &context,
++                                          Tick stock_ready_tick)
+ {
+     panic_if(context.generation != soa_jit_generation ||
+                  context.nextOffset != -1 || context.remaining != 0 ||
+@@ -6271,7 +6461,8 @@ bool IndirectAccessUnit::issueSoaJitWrite(SoaJitContext &context)
+     // bounded retirement cache as backing writes, which acquires ownership
+     // coherently and returns WriteResp with this exact sender identity.
+     maa->sendPacket(FuncUnitType::INDIRECT, my_indirect_id, pkt,
+-                    maa->getClockEdge(Cycles(0)), true, true);
++                    stock_ready_tick == 0 ? maa->getClockEdge(Cycles(0))
++                                          : stock_ready_tick, true, true);
+     DPRINTF(MAAVirtualTrace,
+             "event=soa_jit_a_write_issue schema=1 unit=%d "
+             "operation_tick=%lu generation=%lu addr=0x%lx aliases=%lu "
+@@ -7776,9 +7967,22 @@ void IndirectAccessUnit::executeInstruction() {
+                 if (!pre_a_window)
+                     pre_a_window = std::make_unique<maa::PreAWindow>();
+                 panic_if(!pre_a_window->begin(
+-                             my_max, num_RT_slices[my_RT_config]),
++                             my_max, num_RT_slices[my_RT_config],
++                             maa->virtual_pre_a_policy == "row_group" ?
++                                 maa::PreAWindow::Policy::RowGroup :
++                                 maa::PreAWindow::Policy::Sorted),
+                          "I[%d] finite pre-A begin rejected\n",
+                          my_indirect_id);
++// MAA_WINDOW_OBSERVER_BEGIN pre_begin
++#if defined(MAA_WINDOW_TIMING_OBSERVER) && MAA_WINDOW_TIMING_OBSERVER
++        window_timing_observer.touch(
++            my_indirect_id, my_instruction->core_id, my_decode_start_tick,
++            isSoaJitRmw() ? soa_jit_generation : 0,
++            isSoaJitRmw() ? soa_jit_epoch_drains : 0, my_max,
++            isVirtualLoad() ? 1 : (isSoaJitRmw() ? 2 : 3), curTick());
++        window_timing_observer.pre_begin(curTick());
++#endif
++// MAA_WINDOW_OBSERVER_END pre_begin
+                 const Cycles initialize_cost(rowtable_latency *
+                     (maa::PreAWindow::HashSlots +
+                      3 * maa::PreAWindow::MaxSlices));
+@@ -7790,14 +7994,15 @@ void IndirectAccessUnit::executeInstruction() {
+                         "event=pre_a_window_begin schema=1 unit=%d "
+                         "operation_tick=%lu logical=%d physical=%u "
+                         "line_capacity=%u address_arrays_bytes=%lu "
+-                        "address_object_bytes=%lu scratch_bytes=%lu "
++                        "address_object_bytes=%lu scratch_bytes=%lu scratch_used_bytes=%lu "
+                         "offset_capacity=%d "
+                         "legacy_tables_retained=1 metadata_ports=1 "
+                         "probe_cycles=%lu payload_bytes=0\n",
+                         my_indirect_id, my_decode_start_tick, my_max,
+                         maa->physical_tile_elements, maa::PreAWindow::Capacity,
+                         maa::PreAWindow::arrayBytes(), sizeof(maa::PreAWindow),
+-                        maa::PreAWindow::scratchBytes(),
++                        maa::PreAWindow::reservedScratchBytes(),
++                        pre_a_window->usedScratchBytes(),
+                         offset_table->capacity(),
+                         static_cast<uint64_t>(rowtable_latency));
+             }
+@@ -8313,6 +8518,16 @@ void IndirectAccessUnit::executeInstruction() {
+                  soa_jit_retry_ordinal, soa_jit_epoch_drained);
+         bool buildReady = false;
+         if (waitForFinish) {
++// MAA_WINDOW_OBSERVER_BEGIN wait_finish
++#if defined(MAA_WINDOW_TIMING_OBSERVER) && MAA_WINDOW_TIMING_OBSERVER
++        window_timing_observer.touch(
++            my_indirect_id, my_instruction->core_id, my_decode_start_tick,
++            isSoaJitRmw() ? soa_jit_generation : 0,
++            isSoaJitRmw() ? soa_jit_epoch_drains : 0, my_max,
++            isVirtualLoad() ? 1 : (isSoaJitRmw() ? 2 : 3), curTick());
++        window_timing_observer.cause(0);
++#endif
++// MAA_WINDOW_OBSERVER_END wait_finish
+             DPRINTF(MAAVirtualTrace,
+                     "event=indirect_stall schema=2 unit=%d occurrence=%lu "
+                     "operation_tick=%lu sequence=%lu "
+@@ -8338,7 +8553,32 @@ void IndirectAccessUnit::executeInstruction() {
+                 pre_a_metadata_finish_tick =
+                     std::max(curTick(), pre_a_metadata_finish_tick) +
+                     maa->getCyclesToTicks(close_cost);
++// MAA_WINDOW_OBSERVER_BEGIN pre_close
++#if defined(MAA_WINDOW_TIMING_OBSERVER) && MAA_WINDOW_TIMING_OBSERVER
++        window_timing_observer.touch(
++            my_indirect_id, my_instruction->core_id, my_decode_start_tick,
++            isSoaJitRmw() ? soa_jit_generation : 0,
++            isSoaJitRmw() ? soa_jit_epoch_drains : 0, my_max,
++            isVirtualLoad() ? 1 : (isSoaJitRmw() ? 2 : 3), curTick());
++        window_timing_observer.pre_close(curTick(), pre_a_metadata_finish_tick);
++#endif
++// MAA_WINDOW_OBSERVER_END pre_close
+                 (*maa->stats.IND_CyclesRTAccess[my_indirect_id]) += close_cost;
++                DPRINTF(MAAOperationSummary,
++                        "event=pre_a_policy_cost schema=1 unit=%d "
++                        "operation_tick=%lu policy=%s close_rw_available=%u "
++                        "close_reads=%lu close_writes=%lu close_accesses=%lu "
++                        "scratch_reserved_bytes=%lu scratch_used_bytes=%lu "
++                        "ports=1 latency=%u\n",
++                        my_indirect_id, my_decode_start_tick,
++                        pre_a_window->policyName(),
++                        pre_a_window->policy() == maa::PreAWindow::Policy::RowGroup,
++                        pre_a_window->policyCloseReads(),
++                        pre_a_window->policyCloseWrites(),
++                        pre_a_window->closeAccesses(),
++                        maa::PreAWindow::reservedScratchBytes(),
++                        pre_a_window->usedScratchBytes(),
++                        static_cast<unsigned>(rowtable_latency));
+                 DPRINTF(MAAOperationSummary,
+                         "event=pre_a_window_closed schema=1 unit=%d "
+                         "operation_tick=%lu descriptors=%u rejected=%u "
+@@ -8405,6 +8645,16 @@ void IndirectAccessUnit::executeInstruction() {
+             }
+             buildReady = true;
+         } else if (waitForElement) {
++// MAA_WINDOW_OBSERVER_BEGIN wait_element
++#if defined(MAA_WINDOW_TIMING_OBSERVER) && MAA_WINDOW_TIMING_OBSERVER
++        window_timing_observer.touch(
++            my_indirect_id, my_instruction->core_id, my_decode_start_tick,
++            isSoaJitRmw() ? soa_jit_generation : 0,
++            isSoaJitRmw() ? soa_jit_epoch_drains : 0, my_max,
++            isVirtualLoad() ? 1 : (isSoaJitRmw() ? 2 : 3), curTick());
++        window_timing_observer.cause(1);
++#endif
++// MAA_WINDOW_OBSERVER_END wait_element
+             DPRINTF(MAAVirtualTrace,
+                     "event=indirect_stall schema=2 unit=%d occurrence=%lu "
+                     "operation_tick=%lu sequence=%lu "
+@@ -8416,6 +8666,16 @@ void IndirectAccessUnit::executeInstruction() {
+                     "I[%d] %s: waiting for fill element %s!\n",
+                     my_indirect_id, __func__, my_instruction->print());
+         } else if (needDrain) {
++// MAA_WINDOW_OBSERVER_BEGIN pressure_drain
++#if defined(MAA_WINDOW_TIMING_OBSERVER) && MAA_WINDOW_TIMING_OBSERVER
++        window_timing_observer.touch(
++            my_indirect_id, my_instruction->core_id, my_decode_start_tick,
++            isSoaJitRmw() ? soa_jit_generation : 0,
++            isSoaJitRmw() ? soa_jit_epoch_drains : 0, my_max,
++            isVirtualLoad() ? 1 : (isSoaJitRmw() ? 2 : 3), curTick());
++        window_timing_observer.cause(2);
++#endif
++// MAA_WINDOW_OBSERVER_END pressure_drain
+             panic_if(preAWindowOperation(),
+                      "I[%d] pre-A cannot drain before complete admission\n",
+                      my_indirect_id);
+@@ -9124,6 +9384,8 @@ void IndirectAccessUnit::executeInstruction() {
+                 DPRINTF(MAAIndirect, "I[%d] %s: requesting is still not ready, returning!\n", my_indirect_id, __func__);
+                 break;
+             }
++            if (maa->devicePaging() && offset_table->occupancy() == 0)
++                maa->releaseDevicePages(my_instruction);
+             if (virtual_build_incomplete) {
+                 state = Status::Build;
+                 transitionAttributionStage(AttributionStage::Build,
+@@ -9202,7 +9464,8 @@ void IndirectAccessUnit::executeInstruction() {
+             ? !virtual_build_incomplete
+             : legacy_refill_allowed;
+         if (!my_fill_finished && !direct_index_partition_barrier &&
+-            !retain_global_merge_combiner && refill_allowed) {
++            !retain_global_merge_combiner && refill_allowed &&
++            (!maa->devicePaging() || maa->deviceFit32())) {
+             bool finished, waitForFinish, waitForElement, needDrain;
+             int num_spd_read_condidx_accesses, num_rowtable_accesses;
+             int num_direct_index_filter_words;
+@@ -11039,6 +11302,17 @@ void IndirectAccessUnit::executeInstruction() {
+         transitionAttributionStage(AttributionStage::None,
+                                    "instruction_complete");
+         maa->stats.cycles += total_cycles;
++// MAA_WINDOW_OBSERVER_BEGIN instruction_complete
++#if defined(MAA_WINDOW_TIMING_OBSERVER) && MAA_WINDOW_TIMING_OBSERVER
++        window_timing_observer.touch(
++            my_indirect_id, my_instruction->core_id, my_decode_start_tick,
++            isSoaJitRmw() ? soa_jit_generation : 0,
++            isSoaJitRmw() ? soa_jit_epoch_drains : 0, my_max,
++            isVirtualLoad() ? 1 : (isSoaJitRmw() ? 2 : 3), curTick());
++        window_timing_observer.finish(curTick(), isVirtualLoad() ? macro_backing_last_ack_tick : 0,
++                                      isSoaJitRmw() ? soa_jit_epoch_drains : 0);
++#endif
++// MAA_WINDOW_OBSERVER_END instruction_complete
+         my_decode_start_tick = 0;
+         state = Status::Idle;
+         check_reset();
+@@ -11161,6 +11435,19 @@ void IndirectAccessUnit::createReadPacket(Addr addr, int latency) {
+         macro_a_lines++;
+         macro_a_bytes += block_size;
+     }
++// MAA_WINDOW_OBSERVER_BEGIN first_A_created
++#if defined(MAA_WINDOW_TIMING_OBSERVER) && MAA_WINDOW_TIMING_OBSERVER
++        window_timing_observer.touch(
++            my_indirect_id, my_instruction->core_id, my_decode_start_tick,
++            isSoaJitRmw() ? soa_jit_generation : 0,
++            isSoaJitRmw() ? soa_jit_epoch_drains : 0, my_max,
++            isVirtualLoad() ? 1 : (isSoaJitRmw() ? 2 : 3), curTick());
++        window_timing_observer.first_a(curTick(), offset_table->occupancy(), my_i,
++                                      isSoaJitRmw() ? soa_jit_epoch_drains : 0,
++                                      attribution_row_insert_successes,
++                                      isSoaJitRmw() ? soa_jit_epoch_start_ordinal : -1);
++#endif
++// MAA_WINDOW_OBSERVER_END first_A_created
+     const uint64_t sequence = source_issue_sequence++;
+     for (int byte = 0; byte < 8; ++byte) {
+         source_issue_digest ^=
+diff --git a/src/mem/MAA/IndirectAccess.hh b/src/mem/MAA/IndirectAccess.hh
+index 3dbb7461..7fedab1b 100644
+--- a/src/mem/MAA/IndirectAccess.hh
++++ b/src/mem/MAA/IndirectAccess.hh
+@@ -1,5 +1,10 @@
+ #ifndef __MEM_MAA_INDIRECT_ACCESS_HH__
+ #define __MEM_MAA_INDIRECT_ACCESS_HH__
++// MAA_WINDOW_OBSERVER_BEGIN IndirectAccess_include
++#if defined(MAA_WINDOW_TIMING_OBSERVER) && MAA_WINDOW_TIMING_OBSERVER
++#include "mem/MAA/WindowTimingObserver.hh"
++#endif
++// MAA_WINDOW_OBSERVER_END IndirectAccess_include
+ 
+ #include <array>
+ #include <cassert>
+@@ -410,6 +415,11 @@ public:
+ 
+ protected:
+     Instruction *my_instruction;
++// MAA_WINDOW_OBSERVER_BEGIN IndirectAccess_state
++#if defined(MAA_WINDOW_TIMING_OBSERVER) && MAA_WINDOW_TIMING_OBSERVER
++    maa::WindowTimingObserver window_timing_observer;
++#endif
++// MAA_WINDOW_OBSERVER_END IndirectAccess_state
+     bool my_is_load;
+     Request::Flags flags = 0;
+     const Addr block_size = 64;
+@@ -926,6 +936,7 @@ protected:
+     void checkFusedP16Terminal();
+     bool fillSoaJitLookahead(size_t context_index);
+     bool serviceSoaJitLookahead();
++    bool serviceSoaJitStockLookahead();
+     bool issueSoaJitValueRead(size_t context_index, size_t slot_index,
+                               int offset);
+     bool issueSoaJitScalar(size_t context_index, size_t slot_index,
+@@ -944,7 +955,8 @@ protected:
+     bool serviceSoaJitOldResultWrites(SoaJitOldResultWriteMode mode);
+     bool completeSoaJitOldResultWrite(
+         const SoaJitOldResultBuffer::Identity &identity);
+-    bool issueSoaJitWrite(SoaJitContext &context);
++    bool issueSoaJitWrite(SoaJitContext &context,
++                           Tick stock_ready_tick = 0);
+     void issueInlineRetirementWrites(SoaJitContext &context);
+     void issueInlineRetirementCredit(
+         uint8_t credit, const maa::InlineRetirementRecord *records,
+diff --git a/src/mem/MAA/Invalidator.cc b/src/mem/MAA/Invalidator.cc
+index 7787d161..36ff523f 100644
+--- a/src/mem/MAA/Invalidator.cc
++++ b/src/mem/MAA/Invalidator.cc
+@@ -621,10 +621,16 @@ void Invalidator::executeInstruction() {
+             }
+         }
+         for (; my_i < num_tile_elements; my_i++) {
++            if (maa->devicePaging() && my_i % 4096 == 0) {
++                if (my_received_responses != my_total_invalidations_sent) return;
++                maa->releaseDevicePages();
++            }
+             my_cl_id = get_cl_id(my_invalidating_tile, my_i, my_word_size);
+             if (cl_status[my_cl_id] == CLStatus::ReadCached || cl_status[my_cl_id] == CLStatus::WriteCached) {
+                 DPRINTF(MAAInvalidator, "%s T[%d] E[%d] CL[%d]: %s, invalidating\n",
+                         __func__, my_invalidating_tile, my_i, my_cl_id, cl_status[my_cl_id] == CLStatus::ReadCached ? "ReadCached" : "WriteCached");
++                if (maa->devicePaging() &&
++                    !maa->spd->ensurePage(my_invalidating_tile, my_i)) return;
+                 Addr curr_block_addr = my_base_addr + my_cl_id * 64;
+                 if (curr_block_addr != my_last_block_addr) {
+                     my_last_block_addr = curr_block_addr;
+@@ -645,6 +651,7 @@ void Invalidator::executeInstruction() {
+         assert(my_instruction != nullptr);
+         DPRINTF(MAAInvalidator, "%s: responding %s!\n", __func__, my_instruction->print());
+         if (my_received_responses == my_total_invalidations_sent) {
++            if (maa->devicePaging()) maa->releaseDevicePages(true);
+             state = Status::Idle;
+             maa->finishInstructionInvalidate(my_instruction, my_invalidating_tile);
+             DPRINTF(MAAInvalidator, "%s: state set to idle for request %s!\n", __func__, my_instruction->print());
+@@ -677,6 +684,7 @@ bool Invalidator::sendOutstandingPacket() {
+         DPRINTF(MAAInvalidator, "%s: send failed, leaving send packet...\n", __func__);
+         return false;
+     }
++    if (maa->devicePaging()) my_outstanding_pkt = false;
+     if (my_pkt->cacheResponding() == true) {
+         DPRINTF(MAAInvalidator, "INV %s: a cache in the O/M state will respond, send successfull...\n", __func__);
+     } else if (my_pkt->hasSharers() == true) {
+@@ -702,7 +710,10 @@ bool Invalidator::recvData(int tile_id, int element_id, uint8_t *dataptr) {
+     for (int i = 0; i < 16; i++) {
+         maa->spd->setData<uint32_t>(tile_id, element_id + i, dataptr_u32_typed[i]);
+     }
+-    if (state == Status::Response && my_received_responses == my_total_invalidations_sent) {
++    if (maa->devicePaging() && state == Status::Request &&
++        my_received_responses == my_total_invalidations_sent) {
++        wakeDevicePage();
++    } else if (state == Status::Response && my_received_responses == my_total_invalidations_sent) {
+         DPRINTF(MAAInvalidator, "%s: all words received, calling execution again!\n", __func__);
+         scheduleExecuteInstructionEvent();
+     } else {
+diff --git a/src/mem/MAA/Invalidator.hh b/src/mem/MAA/Invalidator.hh
+index 460ab29e..cda0bbec 100644
+--- a/src/mem/MAA/Invalidator.hh
++++ b/src/mem/MAA/Invalidator.hh
+@@ -71,6 +71,10 @@ public:
+     bool getAddrRegionPermit(Instruction *instruction);
+     void finishInstruction(Instruction *instruction);
+     Status getState() const { return state; }
++    void wakeDevicePage() {
++        if (state == Status::Request && !executeInstructionEvent.scheduled())
++            scheduleExecuteInstructionEvent(1);
++    }
+ 
+ protected:
+     bool getSoaJitAddrRegionPermit(Instruction *instruction);
+diff --git a/src/mem/MAA/MAA.cc b/src/mem/MAA/MAA.cc
+index 73587b6e..b45ba078 100644
+--- a/src/mem/MAA/MAA.cc
++++ b/src/mem/MAA/MAA.cc
+@@ -1,3 +1,4 @@
++#include "mem/cache/base.hh"
+ #include "mem/MAA/MAA.hh"
+ 
+ #include <algorithm>
+@@ -16,6 +17,7 @@
+ #include "debug/MAACpuPort.hh"
+ #include "debug/MAAMacroEvent.hh"
+ #include "debug/MAAMemPort.hh"
++#include "debug/MAAOperationSummary.hh"
+ #include "debug/MAAVirtualTrace.hh"
+ #include "mem/MAA/ALU.hh"
+ #include "mem/MAA/DirectRetirementPortDomain.hh"
+@@ -105,14 +107,27 @@ class ImmediateLogicalSPDTranslation final : public BaseMMU::Translation
+ 
+ } // anonymous namespace
+ 
++MAA::OwnedRespQueue::OwnedRespQueue(MAA &m, MAAResponsePort &p,
++    const std::string &label) : RespPacketQueue(m, p, true, label), owner(p) {}
++bool MAA::OwnedRespQueue::sendTiming(PacketPtr packet) {
++    // Strong original request plus exact monotonic token captured before peer.
++    const auto handoff = owner.beginResponse(packet);
++    const bool accepted = RespPacketQueue::sendTiming(packet);
++    // Packet may be destroyed/reused. Completion touches only captured identity.
++    // Local cell is released before broker admission/wake barrier is lifted.
++    owner.finishResponse(handoff, accepted);
++    return accepted;
++}
++
+ MAA::MAAResponsePort::MAAResponsePort(const std::string &_name, MAA &_maa, const std::string &_label)
+     : QueuedResponsePort(_name, queue),
+       maa{_maa},
+-      queue(_maa, *this, true, _label) {
++      queue(_maa, *this, _label) {
+ }
+ 
+ MAA::MAA(const MAAParams &p)
+     : ClockedObject(p),
++      progressDeferredEvent([this]{serviceProgressDeferred();},name()+".progressDeferred"),
+       addrRanges(p.addr_ranges.begin(), p.addr_ranges.end()),
+       num_tiles(p.num_tiles_per_core * p.num_cores),
+       num_tile_elements(p.num_tile_elements),
+@@ -205,6 +220,7 @@ MAA::MAA(const MAAParams &p)
+       virtual_bounded_global_merge(p.virtual_bounded_global_merge),
+       virtual_strict_two_phase(p.virtual_strict_two_phase),
+       virtual_pre_a_window(p.virtual_pre_a_window),
++      virtual_pre_a_policy(p.virtual_pre_a_policy),
+       virtual_index_range_policy(p.virtual_index_range_policy),
+       virtual_index_range_boundaries(p.virtual_index_range_boundaries),
+       virtual_index_filter_words_per_cycle(
+@@ -247,16 +263,20 @@ MAA::MAA(const MAAParams &p)
+       sendMemEvent([this] { sendOutstandingMemPacket(); }, name()) {
+ 
+     m_core_addr_bits = calc_log2(num_cores);
++    progressCreditOwner = dynamic_cast<maa::ProgressCreditOwner *>(
++        p.progress_credit_broker);
++    panic_if(p.progress_credit_broker && !progressCreditOwner,
++             "Selected progress owner missing API");
+     panic_if(num_cores % num_maas != 0, "Number of cores %d must be a multiple of the number of MAAs %s\n", num_cores, num_maas);
+     panic_if(num_indirect_units_per_maa == 0, "Number of indirect units per MAA must be positive\n");
+     panic_if(physical_tile_elements > num_tile_elements,
+              "Physical tile capacity %u exceeds logical capacity %u\n",
+              physical_tile_elements, num_tile_elements);
+     panic_if(transparent_spd_mode > 3,
+-             "Invalid transparent SPD mode %u (expected 0..3)\n",
++             "Invalid transparent SPD mode %u (expected 0..97)\n",
+              transparent_spd_mode);
+-    panic_if(logical_spd_cache_mode > 1,
+-             "Invalid logical SPD cache mode %u (expected 0 or 1)\n",
++    panic_if(logical_spd_cache_mode > 97,
++             "Invalid logical SPD cache mode %u (expected 0..97)\n",
+              logical_spd_cache_mode);
+     if (logical_tile_page_scheduler) {
+         panic_if(num_tile_elements != LogicalPageScheduler::LogicalElements ||
+@@ -375,7 +395,7 @@ MAA::MAA(const MAAParams &p)
+                  "issue order\n");
+     }
+     panic_if(virtual_index_range_policy > 3,
+-             "Invalid virtual index range policy %u (expected 0..3)\n",
++             "Invalid virtual index range policy %u (expected 0..97)\n",
+              virtual_index_range_policy);
+     panic_if(!virtual_index_range_passes && virtual_index_range_policy != 0,
+              "Virtual index range policy %u requires range passes\n",
+@@ -463,6 +483,11 @@ MAA::MAA(const MAAParams &p)
+              "least %lu total words\n",
+              static_cast<unsigned long>(
+                  VirtualCombinePayloadStore::MaxLineWords + 1));
++    panic_if(virtual_pre_a_policy != "sorted" &&
++                 virtual_pre_a_policy != "row_group",
++             "Unknown fixed pre-A scheduling policy\n");
++    panic_if(!virtual_pre_a_window && virtual_pre_a_policy != "sorted",
++             "A nondefault pre-A policy requires the finite pre-A window\n");
+     if (virtual_pre_a_window) {
+         panic_if(num_tile_elements != 16384 ||
+                      physical_tile_elements != 4096 ||
+@@ -592,12 +617,24 @@ MAA::MAA(const MAAParams &p)
+     rf = new RF(num_regs);
+     // The logical cache deliberately has a two-value contract independent of
+     // the three-value transparent-controller experiment knob.
++    if (devicePaging()) {
++        panic_if(logical_tile_page_scheduler || transparent_spd_mode ||
++                     virtual_pre_a_window || page_fed_soa_jit || progressCreditOwner,
++                 "Device paging requires ordinary native instruction dispatch");
++        panic_if(deviceOverlap() && num_indirect_units_per_maa != 1,
++                 "Fit32 overlap initially supports one Indirect engine");
++        spd->enablePaging(deviceFixedMap() ? 32 : logical_spd_cache_mode - 1,
++                          deviceFixedMap());
++    }
+     const LogicalSPDCacheRuntime::Mode logicalSpdMode =
+         logical_spd_cache_mode == 0
+             ? LogicalSPDCacheRuntime::Mode::Serial4K
+             : LogicalSPDCacheRuntime::Mode::PingPong2K;
+-    logicalSpdBridge = std::make_unique<LogicalSPDCacheGem5Bridge>(
+-        num_maas, logicalSpdMode);
++    // The old descriptor Runtime owns an extra private payload bank. It is
++    // absent in native device paging: all payload lives in the physical SPD.
++    if (!devicePaging())
++        logicalSpdBridge = std::make_unique<LogicalSPDCacheGem5Bridge>(
++            num_maas, logicalSpdMode);
+     logicalSpdExecutions.resize(num_maas);
+     logicalPageDescriptors.resize(num_maas);
+     logicalPageExecutions.resize(num_maas);
+@@ -637,7 +674,9 @@ MAA::MAA(const MAAParams &p)
+     rangeUnits = new RangeFuserUnit[num_maas];
+     rangeUnitsIdle = new bool[num_maas];
+     for (int i = 0; i < num_maas; i++) {
+-        rangeUnits[i].allocate(physical_tile_elements, this, i);
++        rangeUnits[i].allocate(
++            devicePaging() ? num_tile_elements : physical_tile_elements,
++            this, i);
+         rangeUnitsIdle[i] = true;
+     }
+     invalidatorIdle = true;
+@@ -658,7 +697,10 @@ MAA::MAA(const MAAParams &p)
+         retirementSidePorts[i]->allocate(
+             i, p.max_outstanding_cache_side_packets);
+     }
+-    panic_if(p.port_cpu_sides_connection_count != num_cores, "Number of CPU ports must be equal to the number of cores");
++    panic_if(p.port_cpu_sides_connection_count !=
++                 num_cores * (devicePaging() ? 2 : 1),
++             "CPU ports require one demand bank and, for paging, one "
++             "ordinary-memory snoop bank");
+     for (int i = 0; i < num_cores; ++i) {
+         cpuPortAddrRanges.push_back(AddrRangeList());
+     }
+@@ -719,6 +761,16 @@ MAA::MAA(const MAAParams &p)
+ }
+ 
+ void MAA::init() {
++    if (progressCreditOwner) {
++        panic_if(addrRanges.empty(), "Missing SPD address range");
++        progressCreditOwner->registerSpdConsumer(addrRanges.front());
++        for (auto *port : cacheSidePorts)
++            progressCreditOwner->registerProducer(*port, requestorId);
++        for (auto *port : retirementSidePorts)
++            BaseCache::registerProgressProducerHop(
++                *progressCreditOwner, *port, requestorId);
++    }
++
+     for (auto port : cpuSidePorts) {
+         if (!port->isConnected())
+             fatal("Cache ports on %s are not connected\n", name());
+@@ -750,8 +802,21 @@ void MAA::addAddrRegion(Addr start, Addr end, int8_t id) {
+     panic_if(id >= MAX_CMD_REGIONS, "Region ID %d exceeds the maximum number of regions %d\n", id, MAX_CMD_REGIONS);
+     panic_if(start >= end, "Region ID %d start address 0x%x >= end address 0x%x\n", id, start, end);
+     panic_if(end == 0, "Region ID %d end address 0x%x is invalid\n", id, end);
++    if (devicePaging() && id == 31) {
++        panic_if((start & 63) != 0 || end - start <
++                     static_cast<Addr>(num_tiles) * num_tile_elements * 4 ||
++                     (addrRegions[31].first != 0 &&
++                      addrRegions[31] != AddrRegion(start, end)),
++                 "Device SPD init region31 collision/invalid backing span");
++    }
+     maxRegionID = -1;
+     for (int i = 0; i < MAX_CMD_REGIONS; i++) {
++        if (devicePaging() && id == 31 && i == 31 &&
++            addrRegions[31] == AddrRegion(start, end)) continue;
++        if (devicePaging() && (id == 31 || i == 31)) {
++            panic_if(start < addrRegions[i].second && addrRegions[i].first < end,
++                     "Device SPD backing region31 overlaps an app region");
++        }
+         if (start <= addrRegions[i].first && addrRegions[i].first < end) {
+             panic("Region[%d]:[0x%x-0x%x] overlaps with new Region[%d]:[0x%x-0x%x]\n", i, addrRegions[i].first, addrRegions[i].second, id, start, end);
+         } else {
+@@ -769,7 +834,8 @@ void MAA::clearAddrRegion() {
+     DPRINTF(MAA, "all addr regions cleared\n");
+     maxRegionID = -1;
+     for (int i = 0; i < MAX_CMD_REGIONS; i++) {
+-        addrRegions[i] = {0, 0};
++        if (!devicePaging() || i != 31)
++            addrRegions[i] = {0, 0};
+     }
+ }
+ 
+@@ -5091,6 +5157,7 @@ MAA::retireLogicalPageInstruction(
+ void
+ MAA::serviceLogicalSPD()
+ {
++    if (devicePaging()) { spd->servicePager(); return; }
+     serviceLogicalPageScheduler();
+     using Bridge = LogicalSPDCacheGem5Bridge;
+     using Slice = Bridge::Runtime::Slice;
+@@ -5251,6 +5318,7 @@ void
+ MAA::notifyLogicalSPDPortEvent(
+     uint8_t actualPort, LogicalSPDCacheLiveAdapterState::PortEvent event)
+ {
++    if (devicePaging()) { scheduleLogicalSPDEvent(); return; }
+     const LogicalSPDCacheLiveAdapterState::Notification notification =
+         logicalSpdLiveBoundary.notify(actualPort, event);
+     if (!notification.granted)
+@@ -5298,7 +5366,12 @@ MAA::hasLiveSoaJitState() const
+ DrainState
+ MAA::drain()
+ {
+-    logicalSpdBridge->closeAdmission();
++    panic_if(!progressOwnersQuiescent(),
++             "Progress/deferred owner state cannot be checkpointed: live "
++             "reserved/sending/accepted/handoff/retry/event obligations");
++    panic_if(devicePaging() && spd->pagingHasState(),
++             "Device SPD page/directory checkpoint serialization is unsupported");
++    if (logicalSpdBridge) logicalSpdBridge->closeAdmission();
+     for (int stream = 0; stream < num_maas; ++stream) {
+         panic_if(!streamAccessUnits[stream]
+                       .responseBearingPublisherQuiescent(),
+@@ -5324,7 +5397,7 @@ MAA::drain()
+                  directRetirementOutstandingRequestCount() != 0,
+              "Direct-retirement checkpoint/drain requested with live line "
+              "credits; serialization is unsupported\n");
+-    panic_if(!logicalSpdBridge->allQuiescent(),
++    panic_if(logicalSpdBridge && !logicalSpdBridge->allQuiescent(),
+              "Logical SPD checkpoint/drain requested with live state; "
+              "serialization is unsupported\n");
+     panic_if(std::any_of(
+@@ -5382,7 +5455,7 @@ MAA::drainResume()
+                  directRetirementRetryPackets.count() != 0 ||
+                  directRetirementOutstandingRequestCount() != 0,
+              "Direct-retirement drain resumed with live line credits\n");
+-    panic_if(!logicalSpdBridge->allQuiescent(),
++    panic_if(logicalSpdBridge && !logicalSpdBridge->allQuiescent(),
+              "Logical SPD drain resumed with non-quiescent live state\n");
+     panic_if(std::any_of(
+                  logicalPageExecutions.begin(), logicalPageExecutions.end(),
+@@ -5407,7 +5480,7 @@ MAA::drainResume()
+              "generations\n");
+     panic_if(hasLiveSoaJitState(),
+              "SoA/JIT drain resumed with live protocol state\n");
+-    logicalSpdBridge->reopenAdmission();
++    if (logicalSpdBridge) logicalSpdBridge->reopenAdmission();
+ }
+ 
+ void MAA::dispatchRegister() {
+@@ -5460,6 +5533,26 @@ void MAA::dispatchInstruction() {
+            recv_it != my_instruction_recvs.end() && rid_it != my_instruction_RIDs.end()) {
+         if (*recv_it == true) {
+             InstructionPtr instruction = *instruction_it;
++            if (devicePaging()) {
++                using O = Instruction::OpcodeType;
++                // Validate the complete mask/data lease before replacing any
++                // producer generation, including masked ALU and paired Range.
++                deviceOperands(instruction);
++                panic_if(instruction->dst1SpdID != -1 &&
++                         (instruction->dst1SpdID == instruction->src1SpdID ||
++                          instruction->dst1SpdID == instruction->src2SpdID ||
++                          instruction->dst1SpdID == instruction->condSpdID),
++                         "Device SPD does not support in-place/partial "
++                         "alias generations");
++                panic_if(instruction->hasLogicalOperands() ||
++                         (instruction->opcode != O::RANGE_LOOP &&
++                          instruction->opcode != O::STREAM_LD &&
++                          instruction->opcode != O::INDIR_LD &&
++                          instruction->opcode != O::ALU_VECTOR &&
++                          instruction->opcode != O::ALU_SCALAR &&
++                          instruction->opcode != O::INDIR_RMW_VECTOR),
++                         "Device SPD requires supported original native encodings");
++            }
+             PacketPtr pkt = *pkt_it;
+             panic_if(logical_tile_page_scheduler &&
+                          !instruction->hasLogicalOperands() &&
+@@ -5621,8 +5714,15 @@ void MAA::dispatchInstruction() {
+                     continue;
+                 const int destinationWordSize =
+                     getInstructionTileWordSize(instruction, destination);
++                if (devicePaging() && spd->pageTransferPending(destination))
++                    DPRINTF(MAAOperationSummary,
++                            "pager_admission_transfer_wait dst=%d "
++                            "command=%s\n",
++                            destination, instruction->print());
+                 materializerDestinationBusy =
+                     materializerDestinationBusy ||
++                    (devicePaging() &&
++                     spd->pageTransferPending(destination)) ||
+                     pageMaterializerOwnsDestination(
+                         instruction->maa_id, destination,
+                         destinationWordSize) ||
+@@ -5689,8 +5789,12 @@ void MAA::dispatchInstruction() {
+                     const int dst1_word_size =
+                         getInstructionTileWordSize(
+                             instruction, instruction->dst1SpdID);
+-                    spd->setTileIdle(
+-                        instruction->dst1SpdID, dst1_word_size);
++                    if (devicePaging() && instruction->condSpdID != -1)
++                        spd->setTileIdleMasked(instruction->dst1SpdID,
++                                               dst1_word_size);
++                    else
++                        spd->setTileIdle(instruction->dst1SpdID,
++                                         dst1_word_size);
+                     spd->setTileNotReady(
+                         instruction->dst1SpdID, dst1_word_size);
+                     if (responseBearingPublish) {
+@@ -5819,6 +5923,16 @@ void MAA::finishInstructionCompute(Instruction *instruction) {
+     if (instruction->src2SpdID != -1) {
+         setTileReady(instruction->src2SpdID, instruction->getWordSize(instruction->src2SpdID));
+     }
++    if (devicePaging()) {
++        if (deviceOverlap()) {
++            releaseDevicePages(instruction, true);
++        } else {
++            panic_if(deviceInstruction != instruction,
++                     "Device SPD instruction ownership mismatch at retirement");
++            releaseDevicePages(instruction, true);
++            deviceInstruction = nullptr;
++        }
++    }
+     ifile->finishInstructionCompute(instruction);
+     if (num_maas > 1)
+         invalidator->finishInstruction(instruction);
+@@ -5926,6 +6040,25 @@ void MAA::finishInstructionCompute(Instruction *instruction) {
+         my_last_idle_tick = curTick();
+     }
+ }
++bool MAA::progressOwnersQuiescent() const {
++    return deferredSpdOwners.size()==0 && !progressDeferredEvent.scheduled() &&
++        (!progressCreditOwner || progressCreditOwner->quiescent());
++}
++void MAA::scheduleProgressDeferred() {
++    if(progressCreditOwner && deferredSpdOwners.hasWaiting() &&
++       !progressDeferredEvent.scheduled())
++        schedule(progressDeferredEvent,getClockEdge(Cycles(1)));
++}
++void MAA::serviceProgressDeferred() {
++    panic_if(!progressCreditOwner,"Deferred service without selected owner");
++    progressCreditOwner->chargeDeferredService();
++    const bool dispatched=deferredSpdOwners.readyOne(
++        [this](unsigned tile){return spd->getTileReady(tile);},
++        [this](uintptr_t identity,unsigned port){recvTimingReq(reinterpret_cast<PacketPtr>(identity),port);});
++    // One global CPU-SPD read per clock, never 64 same-cycle reads.
++    // An empty readiness scan stops; actual setTileReady/admission re-arms it.
++    if(dispatched)scheduleProgressDeferred();
++}
+ void MAA::setTileReady(int tileID, int wordSize) {
+     DPRINTF(MAAController, "%s: tile[%d] is ready!\n", __func__, tileID);
+     spd->setTileReady(tileID, wordSize);
+@@ -5952,6 +6085,7 @@ void MAA::setTileReady(int tileID, int wordSize) {
+             tile_id_it++;
+         }
+     }
++    scheduleProgressDeferred();
+     for (auto *port : cpuSidePorts) {
+         port->retryTileRequest();
+     }
+@@ -7566,6 +7700,11 @@ Tick MAA::getCurTick() {
+ 
+ void MAA::MAAStats::preDumpStats() {
+     statistics::Group::preDumpStats();
++    maa->spd->reportPaging();
++    if (maa->deviceOverlap())
++        inform("device_spd_engine_leases bytes=%lu peak_active=%u "
++               "owners=4 stable_frames=32",
++               sizeof(maa->deviceEngineLeases), maa->devicePeakActive);
+ 
+     cycles_TOTAL = maa->getTicksToCycles(maa->getCurTick() - maa->my_last_reset_tick);
+     if (maa->allFuncUnitsIdle())
+@@ -9487,3 +9626,261 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
+     (*INV_AvgInvalidatedCachelinesPerInst).flags(statistics::nozero | statistics::nonan);
+ }
+ } // namespace gem5
++
++namespace gem5 {
++Addr MAA::devicePageBacking() const {
++    panic_if(addrRegions[31].first == 0 ||
++                 (addrRegions[31].first & 63) != 0 ||
++                 addrRegions[31].second - addrRegions[31].first <
++                     static_cast<Addr>(num_tiles) * num_tile_elements * 4,
++             "Device SPD needs dedicated aligned backing in init region31");
++    return addrRegions[31].first;
++}
++std::array<int, 4>
++MAA::deviceOperands(const Instruction *instruction) const {
++    using O = Instruction::OpcodeType;
++    panic_if(instruction->condSpdID != -1 &&
++                 instruction->opcode != O::STREAM_LD &&
++                 instruction->opcode != O::INDIR_LD &&
++                 instruction->opcode != O::INDIR_RMW_VECTOR &&
++                 instruction->opcode != O::ALU_VECTOR &&
++                 instruction->opcode != O::ALU_SCALAR,
++             "Device SPD masks support native Stream/gather/vector RMW only");
++    std::array<int, 4> tiles{{-1, -1, -1, -1}};
++    unsigned count = 0;
++    // Lease the predicate alongside the data, including its generation.
++    // Original native engines retain all readiness tests and mask decisions.
++    for (int tile : {instruction->condSpdID, instruction->src1SpdID,
++                     instruction->src2SpdID, instruction->dst1SpdID,
++                     instruction->dst2SpdID}) {
++        if (tile == -1) continue;
++        // Original OpenMP allocation assigns IDs in allocation order, not
++        // core_id order. Dynamic paging shares the existing 32-ID namespace;
++        // the single admitted command owns its complete generation lease.
++        panic_if(tile < 0 || tile >= static_cast<int>(num_tiles) ||
++                     (deviceFixedMap() && tile >= 8),
++                 "Device SPD operand leaves supported logical namespace");
++        if (std::find(tiles.begin(), tiles.end(), tile) != tiles.end())
++            continue;
++        panic_if(count == tiles.size(),
++                 "Device SPD command exceeds four page leases");
++        tiles[count++] = tile;
++    }
++    return tiles;
++}
++bool MAA::admitDeviceInstruction(Instruction *instruction) {
++    if (!devicePaging()) return true;
++    if (!deviceOverlap() && deviceInstruction) return false;
++    devicePageBacking();
++    panic_if(instruction->core_id < 0 ||
++                 instruction->core_id >= static_cast<int>(num_cores) ||
++                 instruction->maa_id != 0 ||
++                 (deviceFixedMap() && instruction->core_id != 0) ||
++                 instruction->hasLogicalOperands() ||
++                 instruction->controllerManaged ||
++                 instruction->WordSize() != 4,
++             "Device SPD requires original 32-bit native commands on MAA0; "
++             "fixed mapping supports worker0 only");
++    using O = Instruction::OpcodeType;
++    panic_if(instruction->opcode != O::RANGE_LOOP &&
++                 instruction->opcode != O::STREAM_LD &&
++                 instruction->opcode != O::INDIR_LD &&
++                 instruction->opcode != O::ALU_VECTOR &&
++                 instruction->opcode != O::ALU_SCALAR &&
++                 instruction->opcode != O::INDIR_RMW_VECTOR,
++             "Unsupported native opcode in device SPD mode");
++    const auto tiles = deviceOperands(instruction);
++    // Reuse one existing lease record for serialized mode. This adds mask
++    // generation checks without a new payload bank or a fourth operand slot.
++    auto &lease = deviceEngineLeases[
++        deviceOverlap() ? deviceOwnerIndex(instruction) : 0];
++    if (lease.instruction) return false;
++    lease.instruction = instruction;
++    lease.tiles = tiles;
++    for (unsigned i = 0; i < lease.tiles.size(); ++i)
++        if (lease.tiles[i] != -1)
++            lease.generations[i] = spd->tileGeneration(lease.tiles[i]);
++    if (deviceOverlap()) {
++        unsigned active = 0;
++        for (const auto &owner : deviceEngineLeases) active += owner.instruction != nullptr;
++        devicePeakActive = std::max(devicePeakActive, active);
++    } else {
++        deviceInstruction = instruction;
++        deviceEpoch = -1;
++    }
++    return true;
++}
++void MAA::releaseDevicePages(bool final) {
++    panic_if(deviceOverlap() && hasDeviceCommands(),
++             "Global SPD unpin attempted with live engine owners");
++    // Fit32 can retain all pages of every supported command. Stock RT refill
++    // may still own offsets after a response epoch, so keep pins until final
++    // instruction retirement rather than inferring lifetime from responses.
++    if (deviceFit32() && !final) return;
++    spd->releasePages(); deviceEpoch = -1;
++    for (auto *port : cpuSidePorts) port->retryTileRequest();
++}
++bool MAA::ensureDevicePages(Instruction *instruction, int ordinal) {
++    if (!devicePaging()) return true;
++    if (deviceOverlap()) {
++        const unsigned owner = deviceOwnerIndex(instruction);
++        auto &lease = deviceEngineLeases[owner];
++        panic_if(lease.instruction != instruction || ordinal < 0 || ordinal > 16384,
++                 "Invalid engine-owned SPD lease");
++        // Native units use one-past-the-tile to await producer Finished.
++        // There is no page to map for that readiness-only sentinel.
++        if (ordinal == 16384) { lease.epoch = 4; return true; }
++        lease.epoch = ordinal / 4096;
++        for (unsigned i = 0; i < lease.tiles.size(); ++i) {
++            if (lease.tiles[i] == -1) continue;
++            panic_if(spd->tileGeneration(lease.tiles[i]) != lease.generations[i],
++                     "SPD generation changed under an active reader/producer");
++            if (!spd->leasePage(lease.tiles[i], ordinal, true, 1U << owner)) {
++                lease.epoch |= DeviceMappingWait;
++                return false;
++            }
++        }
++        return true;
++    }
++    panic_if(deviceInstruction != instruction || ordinal < 0 || ordinal > 16384,
++             "Device SPD page lease has invalid instruction/ordinal");
++    if (ordinal == 16384) return true;
++    const int epoch = ordinal / 4096;
++    panic_if(!deviceFit32() && deviceEpoch != -1 && deviceEpoch != epoch,
++             "Device SPD advanced without draining its previous page lease");
++    deviceEpoch = epoch;
++    const auto &lease = deviceEngineLeases[0];
++    panic_if(lease.instruction != instruction,
++             "Device SPD serial lease owner mismatch");
++    for (unsigned i = 0; i < lease.tiles.size(); ++i) {
++        const int tile = lease.tiles[i];
++        if (tile == -1) continue;
++        panic_if(spd->tileGeneration(tile) != lease.generations[i],
++                 "Device SPD mask/data generation changed "
++                 "under serial command");
++        if (!spd->ensurePage(tile, ordinal)) return false;
++    }
++    return true;
++}
++void MAA::wakeDevicePager() {
++    if (deviceOverlap()) {
++        for (auto &lease : deviceEngineLeases) {
++            Instruction *instruction = lease.instruction;
++            if (!instruction || lease.epoch < 0 ||
++                !(lease.epoch & DeviceMappingWait)) continue;
++            // Consume one coalesced mapping notification. An existing native
++            // event already promises a retry; later page completions must not
++            // mistake an extent/element wait for another mapping wait.
++            lease.epoch &= ~DeviceMappingWait;
++            const int unit = instruction->func_unit_id;
++            switch (instruction->funcUniType) {
++              case FuncUnitType::STREAM:
++                streamAccessUnits[unit].wakeDevicePage(); break;
++              case FuncUnitType::INDIRECT:
++                if (indirectAccessUnits[unit].getState() == IndirectAccessUnit::Status::Fill ||
++                    indirectAccessUnits[unit].getState() == IndirectAccessUnit::Status::Request)
++                    indirectAccessUnits[unit].scheduleNextExecution(true);
++                break;
++              case FuncUnitType::ALU:
++                aluUnits[unit].wakeDevicePage(); break;
++              case FuncUnitType::RANGE:
++                rangeUnits[unit].scheduleNextExecution(true); break;
++              default: panic("Unsupported overlapping SPD wakeup");
++            }
++        }
++    }
++    if (deviceInstruction) {
++        const int unit = deviceInstruction->func_unit_id;
++        switch (deviceInstruction->funcUniType) {
++          case FuncUnitType::STREAM:
++            streamAccessUnits[unit].scheduleExecuteInstructionEvent(1); break;
++          case FuncUnitType::INDIRECT:
++            indirectAccessUnits[unit].scheduleExecuteInstructionEvent(1); break;
++          case FuncUnitType::ALU:
++            aluUnits[unit].scheduleExecuteInstructionEvent(1); break;
++          case FuncUnitType::RANGE:
++            rangeUnits[unit].scheduleNextExecution(true); break;
++          default: panic("Unsupported device SPD wakeup");
++        }
++    }
++    if (!hasDeviceCommands() && !invalidatorIdle)
++        invalidator->wakeDevicePage();
++    // Serialized admission also waits on CPU-originated destination transfers.
++    // Completion releases that wait even when no engine is currently active.
++    DPRINTF(MAAOperationSummary, "pager_admission_completion_wake serial=%d\n",
++            !deviceOverlap());
++    scheduleDispatchInstructionEvent();
++    for (auto *port : cpuSidePorts) port->retryTileRequest();
++}
++unsigned MAA::deviceOwnerIndex(const Instruction *instruction) const {
++    panic_if(instruction->core_id != 0 || instruction->maa_id != 0,
++             "Engine leases initially support worker0/MAA0 only");
++    switch (instruction->funcUniType) {
++      case FuncUnitType::STREAM: return 0;
++      case FuncUnitType::INDIRECT: return 1;
++      case FuncUnitType::ALU: return 2;
++      case FuncUnitType::RANGE: return 3;
++      default: panic("Unsupported SPD engine owner");
++    }
++}
++bool MAA::hasDeviceCommands() const {
++    if (deviceInstruction) return true;
++    for (const auto &lease : deviceEngineLeases)
++        if (lease.instruction) return true;
++    return false;
++}
++bool MAA::deviceDispatchBlocked(FuncUnitType type) const {
++    if (!deviceOverlap())
++        return deviceInstruction || (type != FuncUnitType::INVALIDATOR && !invalidatorIdle);
++    // Invalidation has its own global owner, never sharing a release with
++    // native engine leases. Original IF operand/producer hazards stay active.
++    return type == FuncUnitType::INVALIDATOR ? hasDeviceCommands() : !invalidatorIdle;
++}
++void MAA::releaseDevicePages(Instruction *instruction, bool final) {
++    if (!final) {
++        if (!deviceOverlap()) releaseDevicePages(false);
++        return; // Offsets/responses may still reference earlier pages.
++    }
++    const unsigned owner = deviceOverlap() ? deviceOwnerIndex(instruction) : 0;
++    auto &lease = deviceEngineLeases[owner];
++    panic_if(lease.instruction != instruction, "SPD engine retirement owner mismatch");
++    for (unsigned i = 0; i < lease.tiles.size(); ++i)
++        panic_if(lease.tiles[i] != -1 &&
++                 spd->tileGeneration(lease.tiles[i]) != lease.generations[i],
++                 "SPD generation changed before engine retirement");
++    if (deviceOverlap()) spd->releaseOwnerPages(1U << owner);
++    else releaseDevicePages(true);
++    lease = DeviceEngineLease{};
++    for (auto *port : cpuSidePorts) port->retryTileRequest();
++}
++
++}
++
++namespace gem5 {
++bool MAA::ensureDeviceRangePages(Instruction *instruction, int row, int edge) {
++    if (!devicePaging()) return true;
++    const unsigned owner = deviceOverlap() ? deviceOwnerIndex(instruction) : 0;
++    auto &lease = deviceEngineLeases[owner];
++    panic_if(lease.instruction != instruction || row < 0 || row >= 16384 ||
++             edge < 0 || edge >= 16384, "Invalid Range page cursor");
++    const int epoch = (row / 4096) * 4 + edge / 4096;
++    if ((lease.epoch & ~DeviceMappingWait) != epoch) {
++        spd->releaseOwnerPages(1U << owner);
++        lease.epoch = epoch;
++    }
++    for (unsigned i = 0; i < lease.tiles.size(); ++i) {
++        const int tile = lease.tiles[i];
++        if (tile == -1) continue;
++        panic_if(spd->tileGeneration(tile) != lease.generations[i],
++                 "Range generation changed under lease");
++        const bool output = tile == instruction->dst1SpdID ||
++                            tile == instruction->dst2SpdID;
++        if (!spd->leasePage(tile, output ? edge : row, true, 1U << owner)) {
++            lease.epoch = epoch | DeviceMappingWait;
++            return false;
++        }
++    }
++    lease.epoch = epoch;
++    return true;
++}
++}
+diff --git a/src/mem/MAA/MAA.hh b/src/mem/MAA/MAA.hh
+index 698c72af..c9e4d6f8 100644
+--- a/src/mem/MAA/MAA.hh
++++ b/src/mem/MAA/MAA.hh
+@@ -47,6 +47,9 @@
+ #define ADDR_COLUMN_LEVEL    5
+ #define ADDR_MAX_LEVEL       6
+ 
++#include "mem/MAA/ProgressCreditOwner.hh"
++#include "mem/MAA/DeferredSpdOwners.hh"
++
+ namespace gem5 {
+ 
+ struct MAAParams;
+@@ -76,6 +79,13 @@ class MAA : public ClockedObject {
+      * incoming requests. If blocked, the port will issue a retry once
+      * unblocked.
+      */
++    class MAAResponsePort;
++    class OwnedRespQueue : public RespPacketQueue {
++      MAAResponsePort &owner;
++      public:
++      OwnedRespQueue(MAA &, MAAResponsePort &, const std::string &);
++      bool sendTiming(PacketPtr) override;
++    };
+     class MAAResponsePort : public QueuedResponsePort {
+ 
+     protected:
+@@ -84,7 +94,10 @@ class MAA : public ClockedObject {
+         MAA &maa;
+ 
+         /** A normal packet queue used to store responses. */
+-        RespPacketQueue queue;
++        OwnedRespQueue queue;
++      public:
++        virtual maa::DeferredSpdOwners::Handoff beginResponse(PacketPtr) { return {}; }
++        virtual void finishResponse(const maa::DeferredSpdOwners::Handoff&, bool) {}
+     };
+ 
+     /**
+@@ -117,6 +130,22 @@ class MAA : public ClockedObject {
+     public:
+         bool sendSnoopInvalidatePacket(PacketPtr pkt);
+         void retryTileRequest();
++        maa::DeferredSpdOwners::Handoff beginResponse(PacketPtr packet) override {
++            const auto h = maa.deferredSpdOwners.begin(
++                reinterpret_cast<std::uintptr_t>(packet), packet->req, core_id);
++            panic_if(!h.valid, "Deferred response identity mismatch");
++            if (h.tracked) {
++                panic_if(!maa.progressCreditOwner, "Missing response credit owner");
++                maa.progressCreditOwner->beginResponseHandoff(h.request, h.token, core_id);
++            }
++            return h;
++        }
++        void finishResponse(const maa::DeferredSpdOwners::Handoff &h, bool accepted) override {
++            panic_if(!maa.deferredSpdOwners.finish(h, accepted),
++                     "Deferred local handoff completion mismatch");
++            if (h.tracked)
++                maa.progressCreditOwner->endResponseHandoff(h.request, h.token, core_id, accepted);
++        }
+         void allocate(int _core_id, int _maxOutstandingCpuSidePackets);
+ 
+     public:
+@@ -293,6 +322,12 @@ protected:
+     std::vector<CacheSidePort *> retirementSidePorts;
+ 
+ public:
++    maa::ProgressCreditOwner *progressCreditOwner = nullptr;
++    maa::DeferredSpdOwners deferredSpdOwners;
++    EventFunctionWrapper progressDeferredEvent;
++    void scheduleProgressDeferred();
++    void serviceProgressDeferred();
++    bool progressOwnersQuiescent() const;
+     SPD *spd;
+     RF *rf;
+     IF *ifile;
+@@ -478,6 +513,7 @@ public:
+     bool virtual_bounded_global_merge;
+     bool virtual_strict_two_phase;
+     bool virtual_pre_a_window;
++    std::string virtual_pre_a_policy;
+     unsigned int virtual_index_range_policy;
+     std::vector<Addr> virtual_index_range_boundaries;
+     unsigned int virtual_index_filter_words_per_cycle;
+@@ -496,6 +532,32 @@ public:
+     unsigned int num_request_table_addresses;
+     unsigned int num_request_table_entries_per_address;
+     unsigned int num_memory_channels;
++    // Device paging uses the existing mode parameter: N>=4 means N-1 usable frames.
++    // Architectural partition remains eight logical IDs per software core.
++    void scheduleLogicalSPDEvent(int latency = 0);
++    bool devicePaging() const { return logical_spd_cache_mode >= 2; }
++    bool deviceInvalidating() const { return !invalidatorIdle; }
++    static constexpr int DeviceMappingWait = 1 << 8;
++    bool deviceOverlap() const { return logical_spd_cache_mode == 97; }
++    bool deviceFixedMap() const {
++        return logical_spd_cache_mode == 65 || deviceOverlap();
++    }
++    bool deviceFit32() const {
++        return logical_spd_cache_mode == 33 || deviceFixedMap();
++    }
++    bool deviceDispatchBlocked(FuncUnitType type) const;
++    bool hasDeviceCommands() const;
++    unsigned deviceOwnerIndex(const Instruction *instruction) const;
++    Instruction *deviceInstruction = nullptr;
++    int deviceEpoch = -1;
++    bool admitDeviceInstruction(Instruction *instruction);
++    bool ensureDevicePages(Instruction *instruction, int ordinal);
++    bool ensureDeviceRangePages(Instruction *instruction, int row, int edge);
++    std::array<int, 4> deviceOperands(const Instruction *instruction) const;
++    void releaseDevicePages(bool final = false);
++    void releaseDevicePages(Instruction *instruction, bool final = false);
++    void wakeDevicePager();
++    Addr devicePageBacking() const;
+     unsigned int num_cores;
+     unsigned int num_channels;
+     unsigned int num_maas;
+@@ -1007,7 +1069,6 @@ protected:
+             &request);
+     bool recvLogicalSPDTimingResp(PacketPtr pkt, uint8_t respondingPort);
+     void serviceLogicalSPD();
+-    void scheduleLogicalSPDEvent(int latency = 0);
+     void notifyLogicalSPDPortEvent(
+         uint8_t actualPort,
+         LogicalSPDCacheLiveAdapterState::PortEvent event);
+@@ -1718,6 +1779,17 @@ public:
+                                     int maa_id) const;
+     bool allIndirectPacketsSent(int maaID);
+     bool allStreamPacketsSent(int maaID);
++
++    // Appended to preserve existing member offsets for read-only common
++    // objects. Three finite records: Stream, Indirect, ALU; no payload.
++    struct DeviceEngineLease {
++        Instruction *instruction = nullptr;
++        std::array<uint64_t, 4> generations{};
++        std::array<int, 4> tiles{{-1, -1, -1, -1}};
++        int epoch = -1;
++    };
++    std::array<DeviceEngineLease, 4> deviceEngineLeases{};
++    unsigned devicePeakActive = 0;
+ };
+ /**
+  * Returns the address of the closest aligned fixed-size block to the given
+diff --git a/src/mem/MAA/MAA.py b/src/mem/MAA/MAA.py
+index 6fd9f866..acab5cc4 100644
+--- a/src/mem/MAA/MAA.py
++++ b/src/mem/MAA/MAA.py
+@@ -9,6 +9,7 @@ class MAA(ClockedObject):
+     type = "MAA"
+     cxx_header = "mem/MAA/MAA.hh"
+     cxx_class = "gem5::MAA"
++    progress_credit_broker = Param.SimObject(NULL, "Explicit joint bank/deferred/target credit owner; default disabled")
+     cxx_exports = [PyBindMethod("addRamulator")]
+ 
+     num_tiles_per_core = Param.Unsigned(
+@@ -28,7 +29,7 @@ class MAA(ClockedObject):
+     )
+     logical_spd_cache_mode = Param.Unsigned(
+         0,
+-        "Logical SPD cache mode: 0=Serial4K, 1=PingPong2K",
++        "SPD mode: 0=Serial4K, 1=PingPong2K, N=4..33 device paging with N-1 frames;97=stable fit32 engine overlap",
+     )
+     logical_tile_page_scheduler = Param.Bool(
+         False,
+@@ -252,6 +253,9 @@ class MAA(ClockedObject):
+         False,
+         "Materialize four RowTable-sorted runs and merge four finite heads",
+     )
++    virtual_pre_a_policy = Param.String(
++        "sorted", "Fixed finite pre-A policy: sorted or row_group; scratch reserve120B"
++    )
+     virtual_pre_a_window = Param.Bool(
+         False,
+         "Retain translated line/Offset links in a finite 16K shared address "
+@@ -314,6 +318,11 @@ class MAA(ClockedObject):
+         "Active SoA/JIT value owners (4, 8, 16, 32, 64, 96, or 128; "
+         "physical maximum is 128)",
+     )
++    soa_jit_stock_service = Param.Bool(
++        False,
++        "HY-only ordinary FP32 ADD local RMW service uses stock Offset-walker "
++        "timing; actual coherent operands and WriteResp ownership remain",
++    )
+     soa_jit_apply_lanes = Param.Unsigned(
+         1,
+         "Active independent SoA/JIT A-line apply lanes "
+diff --git a/src/mem/MAA/PreAWindow.hh b/src/mem/MAA/PreAWindow.hh
+index 1fb989b2..2a70ecf5 100644
+--- a/src/mem/MAA/PreAWindow.hh
++++ b/src/mem/MAA/PreAWindow.hh
+@@ -43,16 +43,23 @@ class PreAWindow
+         }
+     };
+ 
+-    bool begin(uint32_t logical, uint32_t slices) {
++    enum class Policy : uint32_t { Sorted = 0, RowGroup = 2 };
++    Policy policy() const { return Policy(slices_ >> 30); }
++    const char *policyName() const {
++        return policy() == Policy::RowGroup ? "row_group" : "sorted";
++    }
++    bool begin(uint32_t logical, uint32_t slices,
++               Policy selected = Policy::Sorted) {
+         if (active_ || logical > Capacity ||
+-            slices == 0 || slices > MaxSlices)
++            slices == 0 || slices > MaxSlices ||
++            (selected != Policy::Sorted && selected != Policy::RowGroup))
+             return false;
+         hash.fill(None);
+         heads.fill(None);
+         tails.fill(None);
+         cursors.fill(None);
+         logical_ = logical;
+-        slices_ = slices;
++        slices_ = slices | (uint32_t(selected) << 30);
+         lines_ = descriptors_ = rejected_ = claimed_ = 0;
+         probes_ = occupied_line_reads_ = 0;
+         comparisons_ = swaps_ = 0;
+@@ -62,7 +69,7 @@ class PreAWindow
+     }
+     Lookup lookup(uint64_t address, uint64_t grow, uint32_t slice) const {
+         Lookup result;
+-        if (!active_ || closed_ || slice >= slices_)
++        if (!active_ || closed_ || slice >= (slices_ & 0x3fffffff))
+             return result;
+         // Only translated physical line addresses are keys. Slice/grow are
+         // checked too, so a changed mapping cannot append to another owner.
+@@ -105,7 +112,7 @@ class PreAWindow
+     bool insert(const Lookup &found, uint64_t address, uint64_t grow,
+                 uint32_t slice, int offset, bool &first) {
+         first = false;
+-        if (!canInsert(found) || slice >= slices_ || offset < 0)
++        if (!canInsert(found) || slice >= (slices_ & 0x3fffffff) || offset < 0)
+             return false;
+         uint32_t id = hash[found.slot];
+         if (id == None) {
+@@ -142,6 +149,80 @@ class PreAWindow
+         if (!active_ || closed_ || !feederEmpty ||
+             descriptors_ + rejected_ != logical_ || offsets != descriptors_)
+             return false;
++        if (policy() == Policy::RowGroup) {
++        // Reuse the no-longer-needed address hash as a finite grow hash.
++        // No record moves: Offset heads/tails and ordinal chains stay intact.
++        comparisons_ = swaps_ = 0;
++        for (uint32_t i = 0; i < HashSlots; ++i) writeGroupHash(i, None);
++        for (uint32_t id = 0; id < lines_; ++id) {
++            Line line = readGroupLine(id);
++            line.next = None;
++            line.claimed = 0;
++            uint64_t key = line.grow ^ (uint64_t(line.slice) << 32);
++            key ^= key >> 30; key *= 0xbf58476d1ce4e5b9ULL;
++            key ^= key >> 27; key *= 0x94d049bb133111ebULL;
++            key ^= key >> 31;
++            uint32_t slot = key & (HashSlots - 1);
++            bool linked = false;
++            for (uint32_t probe = 0; probe < HashSlots; ++probe) {
++                const uint32_t first = readGroupHash(slot);
++                if (first == None) {
++                    // Only group headers temporarily hold tail+1 in claimed.
++                    line.claimed = id + 1;
++                    writeGroupHash(slot, id);
++                    linked = true;
++                    break;
++                }
++                Line head = readGroupLine(first);
++                if (head.slice == line.slice && head.grow == line.grow) {
++                    const uint32_t tail = head.claimed - 1;
++                    if (tail == first) {
++                        head.next = id;
++                    } else {
++                        Line last = readGroupLine(tail);
++                        last.next = id;
++                        writeGroupLine(tail, last);
++                    }
++                    head.claimed = id + 1;
++                    writeGroupLine(first, head);
++                    linked = true;
++                    break;
++                }
++                slot = (slot + 1) & (HashSlots - 1);
++            }
++            if (!linked) return false; // At most Capacity groups/HashSlots=2C.
++            writeGroupLine(id, line);
++        }
++        for (uint32_t s = 0; s < MaxSlices; ++s) {
++            heads[s] = tails[s] = cursors[s] = None;
++            swaps_ += 3;
++        }
++        for (uint32_t id = 0; id < lines_; ++id) {
++            Line head = readGroupLine(id);
++            if (head.claimed == 0) continue;
++            const uint32_t tail = head.claimed - 1;
++            const uint32_t previous = tails[head.slice];
++            ++comparisons_;
++            if (previous == None) {
++                heads[head.slice] = id;
++                ++swaps_;
++            } else {
++                Line last = readGroupLine(previous);
++                last.next = id;
++                writeGroupLine(previous, last);
++            }
++            tails[head.slice] = tail;
++            ++swaps_;
++            head.claimed = 0;
++            writeGroupLine(id, head);
++        }
++        for (uint32_t s = 0; s < MaxSlices; ++s) {
++            cursors[s] = heads[s];
++            ++comparisons_; ++swaps_;
++        }
++            closed_ = true;
++            return true;
++        }
+         // In-place bounded heapsort exposes the complete admitted window to
+         // bank/DRAM-row-directed scheduling. It uses one Line of scratch,
+         // no recursion and no separate index or address copy.
+@@ -169,7 +250,7 @@ class PreAWindow
+     }
+     bool claim(uint32_t slice, uint64_t &address, int &head, int &words,
+                bool commit) {
+-        if (!active_ || !closed_ || slice >= slices_ ||
++        if (!active_ || !closed_ || slice >= (slices_ & 0x3fffffff) ||
+             cursors[slice] == None)
+             return false;
+         auto &line = records[cursors[slice]];
+@@ -201,12 +282,29 @@ class PreAWindow
+     uint64_t probes() const { return probes_; }
+     uint64_t occupiedLineReads() const { return occupied_line_reads_; }
+     uint64_t lookupReads() const { return probes_ + occupied_line_reads_; }
+-    uint64_t sortComparisons() const { return comparisons_; }
+-    uint64_t sortSwaps() const { return swaps_; }
++    uint64_t sortComparisons() const { return policy() == Policy::Sorted ? comparisons_ : 0; }
++    uint64_t sortSwaps() const { return policy() == Policy::Sorted ? swaps_ : 0; }
++    uint64_t policyCloseReads() const {
++        return policy() == Policy::RowGroup ? comparisons_ : 0;
++    }
++    uint64_t policyCloseWrites() const {
++        return policy() == Policy::RowGroup ? swaps_ : 0;
++    }
++    // Same new-model reservation for both policies, before line count is known.
++    static constexpr uint64_t reservedScratchBytes() { return 3 * sizeof(Line); }
++    uint64_t usedScratchBytes() const {
++        return policy() == Policy::RowGroup ? 3 * sizeof(Line) : sizeof(Line);
++    }
+     uint64_t closeAccesses() const {
++        if (policy() != Policy::Sorted)
++            return policyCloseReads() + policyCloseWrites();
+         // One serial metadata port: two record reads per comparison,
+         // six transfers per swap including the charged scratch record;
+-        // initialize heads/tails/cursors, relink and copy head cursors.
++        // Historical 4S convention: two necessary heads/tails clears plus
++        // one head read and one cursor write per slice. The close-time
++        // cursors.fill(None) in the unchanged sorted path is dead:
++        // no legal read precedes cursors=heads, and claim rejects !closed_.
++        // Keep both the historical C++ clear and its accepted timing formula.
+         return 2 * comparisons_ + 6 * swaps_ + 4 * MaxSlices + 6 * lines_;
+     }
+     static constexpr uint64_t scratchBytes() { return sizeof(Line); }
+@@ -216,6 +314,22 @@ class PreAWindow
+     }
+ 
+   private:
++    // Reuse the existing counter words only while the selected policy does not
++    // sort. Policy is packed in unused high bits of slices_: no extra SRAM.
++    // Each full record transfer also charges its scratch write/read, matching
++    // the existing heap scratch convention. At most three Line scratch slots.
++    Line readGroupLine(uint32_t id) {
++        ++comparisons_; ++swaps_; return records[id];
++    }
++    void writeGroupLine(uint32_t id, const Line &line) {
++        ++comparisons_; ++swaps_; records[id] = line;
++    }
++    uint32_t readGroupHash(uint32_t id) {
++        ++comparisons_; return hash[id];
++    }
++    void writeGroupHash(uint32_t id, uint32_t value) {
++        ++swaps_; hash[id] = value;
++    }
+     bool less(uint32_t a, uint32_t b) {
+         ++comparisons_;
+         const auto &x = records[a];
+diff --git a/src/mem/MAA/ProgressCreditOwner.hh b/src/mem/MAA/ProgressCreditOwner.hh
+new file mode 100644
+index 00000000..3b3ad8d1
+--- /dev/null
++++ b/src/mem/MAA/ProgressCreditOwner.hh
+@@ -0,0 +1,35 @@
++#ifndef UME_PROGRESS_CREDIT_OWNER_HH
++#define UME_PROGRESS_CREDIT_OWNER_HH
++#include <functional>
++#include <vector>
++#include "mem/port.hh"
++#include "mem/packet.hh"
++#include "mem/request.hh"
++#include "base/addr_range.hh"
++namespace gem5::maa {
++struct ProgressCachePlan { uint64_t parent=0;bool targetBlocked=false,continuation=false; };
++class ProgressCreditOwner {
++ public:
++ virtual ~ProgressCreditOwner() = default;
++ virtual void registerProducer(RequestPort&, RequestorID) = 0;
++ virtual void registerSpdConsumer(const AddrRange&) = 0;
++ virtual void registerCache(const std::vector<ResponsePort*>&,unsigned,unsigned,unsigned,unsigned,
++      std::function<ProgressCachePlan(PacketPtr)>,std::function<void(unsigned)>) = 0;
++ virtual uint64_t authorizeSpdReceive(const RequestPtr&, Addr, unsigned) const = 0;
++ virtual void claimDeferredReceiver(const RequestPtr&, uint64_t, unsigned) = 0;
++ virtual void beginResponseHandoff(const RequestPtr&, uint64_t, unsigned) = 0;
++ virtual void endResponseHandoff(const RequestPtr&, uint64_t, unsigned, bool) = 0;
++ virtual uint64_t reserveInternalPrefetch(PacketPtr,unsigned) = 0;
++ virtual void finishInternalAdmission(uint64_t,bool) = 0;
++ virtual void completeInternalPrefetch(const RequestPtr&) = 0;
++ virtual void bindCacheClone(const RequestPtr&,const RequestPtr&) = 0;
++ virtual void bindMshr(const RequestPtr&,uintptr_t) = 0;
++ virtual uint64_t mshrOwner(uintptr_t) const = 0;
++ virtual void releaseMshr(uintptr_t) = 0;
++ virtual void cacheResourcesChanged() = 0;
++ virtual bool isSpdLine(Addr) const = 0;
++ virtual void chargeDeferredService() = 0;
++ virtual bool quiescent() const = 0;
++};
++}
++#endif
+diff --git a/src/mem/MAA/RangeFuser.cc b/src/mem/MAA/RangeFuser.cc
+index 9576d5e3..d060e498 100644
+--- a/src/mem/MAA/RangeFuser.cc
++++ b/src/mem/MAA/RangeFuser.cc
+@@ -171,18 +171,40 @@ void RangeFuserUnit::executeInstruction() {
+             //     DPRINTF(MAARangeFuser, "R[%d] %s: my_last_i (%d) >= num_tile_elements (%d), finished!\n", __func__, my_last_i, num_tile_elements);
+             //     break;
+             // }
+-            bool cond_ready = my_cond_tile == -1 || maa->spd->getElementFinished(my_cond_tile, my_last_i, 4, (uint8_t)FuncUnitType::RANGE, my_range_id);
+-            bool min_ready = cond_ready && maa->spd->getElementFinished(my_min_tile, my_last_i, 4, (uint8_t)FuncUnitType::RANGE, my_range_id);
+-            bool max_ready = min_ready && maa->spd->getElementFinished(my_max_tile, my_last_i, 4, (uint8_t)FuncUnitType::RANGE, my_range_id);
+-            if (cond_ready == false) {
+-                DPRINTF(MAARangeFuser, "R[%d] %s: cond tile[%d] element[%d] not ready, returning!\n", my_range_id, __func__, my_cond_tile, my_last_i);
+-            } else if (min_ready == false) {
+-                DPRINTF(MAARangeFuser, "R[%d] %s: min tile[%d] element[%d] not ready, returning!\n", my_range_id, __func__, my_min_tile, my_last_i);
+-            } else if (max_ready == false) {
+-                DPRINTF(MAARangeFuser, "R[%d] %s: max tile[%d] element[%d] not ready, returning!\n", my_range_id, __func__, my_max_tile, my_last_i);
++            if (!maa->ensureDeviceRangePages(my_instruction,
++                    my_last_i, my_idx_j)) {
++                updateLatency(num_spd_read_accesses,
++                              num_spd_write_accesses, num_computed_words);
++                return;
++            }
++            bool cond_ready = my_cond_tile == -1 ||
++                maa->spd->getElementFinished(my_cond_tile, my_last_i, 4,
++                    (uint8_t)FuncUnitType::RANGE, my_range_id);
++            bool min_ready = cond_ready &&
++                maa->spd->getElementFinished(my_min_tile, my_last_i, 4,
++                    (uint8_t)FuncUnitType::RANGE, my_range_id);
++            bool max_ready = min_ready &&
++                maa->spd->getElementFinished(my_max_tile, my_last_i, 4,
++                    (uint8_t)FuncUnitType::RANGE, my_range_id);
++            if (!cond_ready) {
++                DPRINTF(MAARangeFuser,
++                        "R[%d] %s: cond tile[%d] element[%d] "
++                        "not ready, returning!\n",
++                        my_range_id, __func__, my_cond_tile, my_last_i);
++            } else if (!min_ready) {
++                DPRINTF(MAARangeFuser,
++                        "R[%d] %s: min tile[%d] element[%d] "
++                        "not ready, returning!\n",
++                        my_range_id, __func__, my_min_tile, my_last_i);
++            } else if (!max_ready) {
++                DPRINTF(MAARangeFuser,
++                        "R[%d] %s: max tile[%d] element[%d] "
++                        "not ready, returning!\n",
++                        my_range_id, __func__, my_max_tile, my_last_i);
+             }
+-            if (cond_ready == false || min_ready == false || max_ready == false) {
+-                updateLatency(num_spd_read_accesses, num_spd_write_accesses, num_computed_words);
++            if (!cond_ready || !min_ready || !max_ready) {
++                updateLatency(num_spd_read_accesses,
++                              num_spd_write_accesses, num_computed_words);
+                 return;
+             }
+             if (my_cond_tile != -1) {
+@@ -198,6 +220,13 @@ void RangeFuserUnit::executeInstruction() {
+                 num_spd_read_accesses++;
+                 num_computed_words++;
+                 for (; my_last_j < my_max_j && my_idx_j < num_tile_elements; my_last_j += my_stride, my_idx_j++) {
++                    if (maa->devicePaging() && my_idx_j != 0 &&
++                        my_idx_j % 4096 == 0 && num_spd_write_accesses != 0) {
++                        updateLatency(num_spd_read_accesses,
++                              num_spd_write_accesses, num_computed_words);
++                        scheduleNextExecution(true);
++                        return;
++                    }
+                     maa->spd->setData(my_dst_i_tile, my_idx_j, my_last_i);
+                     maa->spd->setData(my_dst_j_tile, my_idx_j, my_last_j);
+                     num_spd_write_accesses++;
+@@ -216,8 +245,11 @@ void RangeFuserUnit::executeInstruction() {
+         my_cond_tile_ready = true;
+         my_min_tile_ready = true;
+         my_max_tile_ready = true;
+-        updateLatency(num_spd_read_accesses, num_spd_write_accesses, num_computed_words);
+-        DPRINTF(MAARangeFuser, "R[%d] %s: setting state to finish for request %s!\n", my_range_id, __func__, my_instruction->print());
++        updateLatency(num_spd_read_accesses,
++                              num_spd_write_accesses, num_computed_words);
++        DPRINTF(MAARangeFuser,
++                "R[%d] %s: setting state to finish for request %s!\n",
++                my_range_id, __func__, my_instruction->print());
+         state = Status::Finish;
+         scheduleNextExecution(true);
+         break;
+@@ -268,4 +300,4 @@ void RangeFuserUnit::scheduleExecuteInstructionEvent(int latency) {
+     //         maa->reschedule(executeInstructionEvent, new_when);
+     // }
+ }
+-} // namespace gem5
+\ No newline at end of file
++} // namespace gem5
+diff --git a/src/mem/MAA/SPD.cc b/src/mem/MAA/SPD.cc
+index 24d6a3cb..d9a4c3e5 100644
+--- a/src/mem/MAA/SPD.cc
++++ b/src/mem/MAA/SPD.cc
+@@ -1,11 +1,14 @@
+ #include "mem/MAA/SPD.hh"
+ 
++#include <algorithm>
+ #include <cassert>
++#include <cstdlib>
+ #include <cstring>
+ #include <limits>
+ 
+ #include "base/trace.hh"
+ #include "base/types.hh"
++#include "debug/MAAOperationSummary.hh"
+ #include "debug/SPD.hh"
+ #include "mem/MAA/ALU.hh"
+ #include "mem/MAA/IF.hh"
+@@ -14,6 +17,7 @@
+ #include "mem/MAA/RangeFuser.hh"
+ #include "mem/MAA/StreamAccess.hh"
+ #include "sim/cur_tick.hh"
++#include "sim/sim_exit.hh"
+ 
+ #ifndef TRACING_ON
+ #define TRACING_ON 1
+@@ -21,12 +25,362 @@
+ 
+ namespace gem5 {
+ 
++namespace {
++struct DevicePageSenderState : public Packet::SenderState
++{
++    SPD *owner;
++    int frame, line, slot;
++    uint64_t generation;
++    bool write;
++};
++class DevicePageTranslation : public BaseMMU::Translation
++{
++  public:
++    bool done = false, delayed = false;
++    Fault fault = NoFault;
++    Addr address = 0;
++    void markDelayed() override { delayed = true; }
++    void finish(const Fault &f, const RequestPtr &req, ThreadContext *,
++                BaseMMU::Mode) override {
++        fault = f; address = req->getPaddr(); done = true;
++    }
++};
++}
++
++int SPD::pageIndex(int tile, int element) const {
++    return tile * (num_tile_elements / physical_tile_elements) +
++           element / physical_tile_elements;
++}
++int SPD::readyIndex(int tile, int element, int bytes) const {
++    return tile * (paged() ? num_tile_elements : physical_tile_elements) +
++           element * bytes / 4;
++}
++uint8_t *SPD::payload(int tile, int element, int bytes) {
++    if (!paged())
++        return tiles_data + tile * physical_tile_elements * 4 + element * bytes;
++    const Page &p = pages[pageIndex(tile, element)];
++    panic_if(p.frame < 0 || frames[p.frame].generation != p.generation ||
++                 (transferFrame == p.frame && requestedPage != -1),
++             "Device SPD access without a resident page tile=%d element=%d",
++             tile, element);
++    return tiles_data + (p.frame * physical_tile_elements +
++                         element % physical_tile_elements) * 4;
++}
++void SPD::enablePaging(unsigned budget, bool stableFit) {
++    panic_if(visible_tile_count != 32 || physical_tile_elements != 4096 ||
++                 num_tile_elements != 16384 || (budget < 3 || budget > frames.size()),
++             "Device SPD requires logical32x16384, physical32x4096, budget3..32");
++    // Runtime diagnostic knob; one metadata record per coherent line.
++    // No payload is allocated: packets still reference pinned frame SRAM.
++    unsigned credits = 32;
++    if (const char *value = std::getenv("DX100_PAGER_LINE_CREDITS")) {
++        char *end = nullptr;
++        const unsigned long parsed = std::strtoul(value, &end, 10);
++        panic_if(!*value || *end || parsed < 1 || parsed > 256,
++                 "Pager line credits must be in [1,256]");
++        credits = parsed;
++    }
++    pageLines.resize(credits);
++    frameBudget = budget;
++    stableCore0Fit = stableFit;
++    panic_if(stableFit && budget != 32, "Fixed mapping requires all32 frames");
++    registerExitCallback([this] { reportPaging(); });
++    pages.resize(visible_tile_count * 4);
++    element_finished.assign(visible_tile_count * num_tile_elements, true);
++    // Frames [budget,32) are RESERVED, never victims or silently borrowed.
++}
++void SPD::resetPages(int tile, bool preservePayload) {
++    for (unsigned i = 0; i < 4; ++i) {
++        const int key = tile * 4 + i;
++        Page &p = pages[key];
++        panic_if(requestedPage == key ||
++                     (p.frame >= 0 && (frames[p.frame].pinned ||
++                                       transferFrame == p.frame)),
++                 "Device SPD generation overwrite with a live owner");
++        if (p.frame >= 0 && !preservePayload)
++            frames[p.frame] = Frame{};
++        panic_if(p.generation == UINT64_MAX, "Device SPD generation exhausted");
++        ++p.generation;
++        if (preservePayload) {
++            // Native masked loads leave false-lane bytes untouched. Carry
++            // the old SRAM/backing bytes into the new generation; readiness
++            // is still reset, and native setFakeData completes false lanes.
++            if (p.frame >= 0) frames[p.frame].generation = p.generation;
++        } else {
++            p.frame = -1; p.backed = false;
++        }
++    }
++}
++void SPD::releasePages() {
++    for (unsigned f = 0; f < frameBudget; ++f)
++        frames[f].pinned = false;
++}
++bool SPD::pageTransferPending(int tile) const {
++    if (requestedPage == -1) return false;
++    return requestedPage / 4 == tile ||
++        (transferFrame >= 0 && frames[transferFrame].page >= 0 &&
++         frames[transferFrame].page / 4 == tile);
++}
++void SPD::releaseOwnerPages(uint8_t owner) {
++    // A native unit can discover its final extent while a speculative page
++    // lookup is pending. Do not install a retired owner's bit later.
++    requestedOwners &= ~owner;
++    for (unsigned f = 0; f < frameBudget; ++f)
++        frames[f].pinned &= ~owner;
++}
++bool SPD::ensurePage(int tile, int element, bool pin) {
++    return leasePage(tile, element, pin, 1);
++}
++bool SPD::leasePage(int tile, int element, bool pin, uint8_t owner) {
++    lastPageResult = PageResult::Ready;
++    if (!paged()) return true;
++    check_tile_element_id(tile, element, 4);
++    panic_if(stableCore0Fit && tile >= 8,
++             "Stable fit overlap supports worker0 logical IDs0..7 only");
++    panic_if(pin && !owner, "A pinned SPD lease needs an engine owner");
++    const int key = pageIndex(tile, element);
++    Page &p = pages[key];
++    if (p.frame >= 0 && transferFrame != p.frame) {
++        Frame &f = frames[p.frame];
++        panic_if(f.page != key || f.generation != p.generation,
++                 "Device SPD directory ownership mismatch");
++        if (!pin || !(f.pinned & owner)) { ++directoryLookups; ++lookupCycles; }
++        if (pin) f.pinned |= owner;
++        f.age = ++pageClock;
++        return true;
++    }
++    lastPageResult = PageResult::Pending;
++    if (requestedPage != -1) return false;
++    int victim = -1;
++    if (stableCore0Fit) {
++        // All8 worker0 logical IDs have exactly4 pages. This profile never
++        // evicts or changes a frame's page identity; IF hazards qualify the
++        // next producer generation before any reader can acquire it.
++        panic_if(key >= 32 || (frames[key].page != -1 && frames[key].page != key),
++                 "Stable SPD frame identity changed");
++        if (!frames[key].pinned) victim = key;
++    }
++    for (unsigned f = 0; !stableCore0Fit && f < frameBudget; ++f) {
++        if (frames[f].pinned) continue;
++        if (victim == -1 || frames[f].page == -1 ||
++            frames[f].age < frames[victim].age) victim = f;
++        if (frames[f].page == -1) break;
++    }
++    if (victim == -1) {
++        lastPageResult = PageResult::NoVictim;
++        return false;
++    }
++
++    ++directoryLookups; ++pageMisses;
++    panic_if(transferOutstanding || lineReadReserved,
++             "Device SPD new page transfer with live line ownership");
++    requestedPage = key; requestedOwners = pin ? owner : 0;
++    pageWaitStart = curTick();
++    transferFrame = victim; transferLine = 0;
++    spilling = frames[victim].page != -1 && frames[victim].dirty;
++    if (spilling) ++dirtyEvictions;
++    transferGeneration = frames[victim].generation;
++    DPRINTF(MAAOperationSummary,
++            "pager_begin page=%d frame=%d spill=%d backed=%d\n",
++            key, victim, spilling, p.backed);
++    // One shared directory lookup port, one cycle on a page-lease miss.
++    transferReady = maa->getClockEdge(Cycles(1));
++    maa->scheduleLogicalSPDEvent();
++    return false;
++}
++void SPD::publishPage() {
++    panic_if(transferOutstanding,
++             "Device SPD publish with live transfer credits");
++    pageWaitTicks += curTick() - pageWaitStart;
++    DPRINTF(MAAOperationSummary, "pager_end page=%d\n", requestedPage);
++    requestedPage = -1; transferFrame = -1;
++    unsigned mapped = 0;
++    for (unsigned f = 0; f < frameBudget; ++f)
++        mapped += frames[f].page >= 0;
++    mappedFramePeak = std::max(mappedFramePeak, mapped);
++    maa->wakeDevicePager();
++}
++void SPD::servicePager() {
++    if (requestedPage == -1) return;
++    // A ReadResp is not sufficient to release a credit: wait for the charged
++    // write-port completion too. Responses may arrive in any line order.
++    for (auto &slot : pageLines) {
++        if (slot.line < 0 || slot.waiting) continue;
++        if (slot.ready <= curTick()) {
++            slot = PageLine{};
++            --transferOutstanding;
++        } else {
++            maa->scheduleLogicalSPDEvent(
++                maa->getTicksToCycles(slot.ready - curTick()));
++        }
++    }
++    if (creditFull && transferOutstanding < pageLines.size()) {
++        creditFullTicks += curTick() - creditFullSince;
++        creditFull = false;
++    }
++    if (curTick() < transferReady) {
++        maa->scheduleLogicalSPDEvent(
++            maa->getTicksToCycles(transferReady - curTick())); return;
++    }
++    Frame &f = frames[transferFrame];
++    if (transferLine == 256) {
++        if (transferOutstanding) return;
++        if (spilling) {
++            // Only all256 WriteResp acknowledgments authorize frame reuse.
++            pages[f.page].backed = true;
++            f.dirty = false;
++            spilling = false;
++            transferLine = 0;
++        } else {
++            publishPage();
++            return;
++        }
++    }
++    if (!spilling && transferLine == 0 && f.page != requestedPage) {
++        panic_if(transferOutstanding, "Device SPD reassign with live lines");
++        if (f.page >= 0) pages[f.page].frame = -1;
++        f = Frame{};
++        f.page = requestedPage; f.pinned = requestedOwners; f.age = ++pageClock;
++        f.generation = pages[requestedPage].generation;
++        transferGeneration = f.generation;
++        pages[requestedPage].frame = transferFrame;
++        if (!pages[requestedPage].backed) {
++            lookupCycles++;
++            publishPage(); return;
++        }
++    }
++    int available = -1;
++    for (unsigned i = 0; i < pageLines.size(); ++i) {
++        if (pageLines[i].line == -1) { available = i; break; }
++    }
++    if (available == -1) {
++        if (!creditFull) {
++            creditFull = true;
++            creditFullSince = curTick();
++        }
++        return;
++    }
++    if (spilling && !lineReadReserved) {
++        // Keep the exact SRAM reservation across transport retries.
++        lineReadReserved = true;
++        transferReady = maa->getClockEdge(getDataLatency(1));
++        DPRINTF(MAAOperationSummary, "pager_read_port line=%d ready=%lu\n",
++                transferLine, transferReady);
++        if (curTick() < transferReady) {
++            maa->scheduleLogicalSPDEvent(
++                maa->getTicksToCycles(transferReady - curTick()));
++            return;
++        }
++    }
++    const int key = spilling ? f.page : requestedPage;
++    const Addr base = maa->devicePageBacking();
++    const Addr address = base + static_cast<Addr>(key) * 16384 + transferLine * 64;
++    auto virtualReq = std::make_shared<Request>(
++        address, 64, Request::Flags(0), maa->requestorId, 0, 0);
++    DevicePageTranslation translation;
++    maa->mmu->translateTiming(virtualReq, maa->system->threads[0], &translation,
++                             spilling ? BaseMMU::Write : BaseMMU::Read);
++    panic_if(!translation.done || translation.delayed || translation.fault != NoFault,
++             "Device SPD backing translation failed at %#lx", address);
++    auto req = std::make_shared<Request>(translation.address, 64,
++                                         Request::Flags(0), maa->requestorId);
++    req->setRegion(31);
++    auto *pkt = new Packet(req, spilling ? MemCmd::WriteReq : MemCmd::ReadReq);
++    pkt->dataStatic(tiles_data + transferFrame * 16384 + transferLine * 64);
++    auto *state = new DevicePageSenderState;
++    state->owner = this; state->frame = transferFrame; state->line = transferLine;
++    state->slot = available;
++    state->generation = transferGeneration; state->write = spilling;
++    pkt->pushSenderState(state);
++    if (!maa->sendPacketRetirementCache(pkt)) {
++        pkt->popSenderState(); delete state; delete pkt;
++        ++transferRetries;
++        // A response or port retry/capacity callback restarts this line.
++        return;
++    }
++    if (!acceptedLines) firstAcceptedTick = curTick();
++    lastAcceptedTick = curTick();
++    ++acceptedLines;
++    auto &slot = pageLines[available];
++    slot.line = transferLine;
++    slot.waiting = true;
++    ++transferOutstanding;
++    peakTransferOutstanding =
++        std::max(peakTransferOutstanding, transferOutstanding);
++    DPRINTF(MAAOperationSummary, "pager_send write=%d line=%d\n",
++            spilling, transferLine);
++    ++transferLine;
++    lineReadReserved = false;
++    // One issue opportunity per device cycle, through the same coherent port.
++    transferReady = maa->getClockEdge(Cycles(1));
++    maa->scheduleLogicalSPDEvent(1);
++}
++bool SPD::pagerResponse(PacketPtr pkt) {
++    auto *state = dynamic_cast<DevicePageSenderState *>(pkt->senderState);
++    if (!state) return false;
++    panic_if(state->owner != this || requestedPage == -1 ||
++                 state->slot < 0 || state->slot >= pageLines.size() ||
++                 state->frame != transferFrame ||
++                 state->generation != transferGeneration ||
++                 state->write != spilling || pkt->isError() ||
++                 (spilling ? pkt->cmd != MemCmd::WriteResp :
++                  pkt->cmd != MemCmd::ReadResp &&
++                  pkt->cmd != MemCmd::ReadRespWithInvalidate),
++             "Device SPD stale or invalid coherent response");
++    auto &slot = pageLines[state->slot];
++    panic_if(!slot.waiting || slot.line != state->line,
++             "Device SPD response does not own its line credit");
++    DPRINTF(MAAOperationSummary, "pager_response write=%d line=%d\n",
++            spilling, state->line);
++    slot.waiting = false;
++    if (spilling) ++spillLines; else ++fillLines;
++    const Cycles latency = spilling ? Cycles(0) :
++        setDataLatency(requestedPage / 4, 1);
++    slot.ready = maa->getClockEdge(latency);
++    if (!spilling)
++        DPRINTF(MAAOperationSummary, "pager_write_port line=%d ready=%lu\n",
++                state->line, slot.ready);
++    pkt->popSenderState(); delete state;
++    maa->scheduleLogicalSPDEvent();
++    return true;
++}
++void SPD::reportPaging() const {
++    if (!paged()) return;
++    inform("pager_credit_cap shared_spill_fill=1 credits=%u "
++           "metadata_per_credit=%lu accepted_lines=%lu "
++           "first_accepted_tick=%lu last_accepted_tick=%lu "
++           "credit_full_ticks=%lu rejected_attempts=%lu peak=%u",
++           unsigned(pageLines.size()), sizeof(PageLine), acceptedLines,
++           firstAcceptedTick, lastAcceptedTick,
++           creditFullTicks + (creditFull ? curTick()-creditFullSince : 0),
++           transferRetries, peakTransferOutstanding);
++    inform("device_spd tick=%lu pages=128 directory_entry_bytes=%lu "
++           "frame_entries=32 "
++           "frame_budget=%u reserved_frames=%u payload_bytes=524288 "
++           "ready_bitmap_bytes=65536 directory_bytes=%lu frame_metadata_bytes=%lu "
++           "misses=%lu lookups=%lu fill_lines=%lu spill_lines=%lu "
++           "dirty_evictions=%lu transfer_credits=%u "
++           "transfer_metadata_bytes=%lu "
++           "peak_transfer_credits=%u transfer_retries=%lu "
++           "mapped_frame_peak=%u page_wait_ticks=%lu", curTick(), sizeof(Page),
++           frameBudget, 32-frameBudget, pages.size()*sizeof(Page),
++           sizeof(frames), pageMisses, directoryLookups, fillLines, spillLines,
++           dirtyEvictions, unsigned(pageLines.size()),
++           pageLines.size() * sizeof(PageLine),
++           peakTransferOutstanding,
++           transferRetries, mappedFramePeak, pageWaitTicks);
++}
++
+ ///////////////
+ //
+ // SPD
+ //
+ ///////////////
+ Cycles SPD::getDataLatency(int num_accesses) {
++    if (paged()) {
++        num_accesses += lookupCycles;
++        lookupCycles = 0;
++    }
+     if (num_accesses == 0) {
+         return Cycles(0);
+     }
+@@ -79,13 +433,26 @@ SPD::TileStatus SPD::getTileStatus(int tile_id) {
+     return tiles_status[tile_id];
+ }
+ void SPD::setTileIdle(int tile_id, int word_size) {
++    setTileIdleImpl(tile_id, word_size, false);
++}
++void SPD::setTileIdleMasked(int tile_id, int word_size) {
++    panic_if(!paged() || word_size != 4,
++             "Masked device SPD requires32-bit paging");
++    setTileIdleImpl(tile_id, word_size, true);
++}
++void SPD::setTileIdleImpl(int tile_id, int word_size, bool preservePayload) {
+     check_tile_id(tile_id, word_size);
+     tiles_status[tile_id] = SPD::TileStatus::Idle;
+     if (word_size == 8) {
+         tiles_status[tile_id + 1] = SPD::TileStatus::Idle;
+     }
+-    for (int i = 0; i < physical_tile_elements * word_size / 4; i++) {
+-        element_finished[tile_id * physical_tile_elements + i] = false;
++    if (paged()) {
++        panic_if(word_size != 4, "Device paging supports 32-bit tiles only");
++        resetPages(tile_id, preservePayload);
++    }
++    const unsigned capacity = paged() ? num_tile_elements : physical_tile_elements;
++    for (int i = 0; i < capacity * word_size / 4; i++) {
++        element_finished[tile_id * capacity + i] = false;
+     }
+ }
+ void SPD::setTileFinished(int tile_id, int word_size) {
+@@ -97,6 +464,15 @@ void SPD::setTileFinished(int tile_id, int word_size) {
+ }
+ void SPD::setTileService(int tile_id, int word_size) {
+     check_tile_id(tile_id, word_size);
++    if (paged() && tiles_status[tile_id] == SPD::TileStatus::Idle) {
++        // A dirty CPU line returned by invalidation belongs to the replaced
++        // value. It may update SRAM, but cannot publish elements of the new
++        // producer generation. Clear readiness after invalidation, before IF
++        // readers can acquire Service leases; do not change that generation.
++        std::fill(element_finished.begin() + tile_id * num_tile_elements,
++                  element_finished.begin() + (tile_id + 1) * num_tile_elements,
++                  false);
++    }
+     tiles_status[tile_id] = SPD::TileStatus::Service;
+     if (word_size == 8) {
+         tiles_status[tile_id + 1] = SPD::TileStatus::Service;
+@@ -156,12 +532,11 @@ bool SPD::getElementFinished(int tile_id, int element_id, int word_size,
+     // Functional units use one-past-the-tile as a sentinel while waiting for
+     // the producer to mark the whole tile finished. With a smaller physical
+     // tile, that sentinel begins at physical rather than logical capacity.
+-    if (element_id >= physical_tile_elements) {
++    if (element_id >= (paged() ? num_tile_elements : physical_tile_elements)) {
+         is_element_finished = false;
+     } else {
+         check_tile_element_id(tile_id, element_id, word_size);
+-        int tile_element_id = tile_id * physical_tile_elements +
+-                              element_id * word_size / 4;
++        int tile_element_id = readyIndex(tile_id, element_id, word_size);
+         is_element_finished = element_finished[tile_element_id];
+     }
+     if (is_element_finished == false &&
+@@ -214,7 +589,7 @@ int SPD::getSize(int tile_id) {
+ int SPD::getSizeForReadyElement(int tile_id, int element_id, int word_size) {
+     check_tile_element_id(tile_id, element_id, word_size);
+     const int tile_element_id =
+-        tile_id * physical_tile_elements + element_id * word_size / 4;
++        readyIndex(tile_id, element_id, word_size);
+     panic_if(!element_finished[tile_element_id],
+              "Tile %d element %d is not ready to publish its size\n",
+              tile_id, element_id);
+@@ -222,7 +597,7 @@ int SPD::getSizeForReadyElement(int tile_id, int element_id, int word_size) {
+ }
+ void SPD::setSize(int tile_id, int size) {
+     check_tile_id(tile_id, sizeof(uint32_t));
+-    panic_if(size < 0 || size > static_cast<int>(physical_tile_elements),
++    panic_if(size < 0 || size > static_cast<int>(paged() ? num_tile_elements : physical_tile_elements),
+              "SPD tile size %d exceeds physical capacity %u "
+              "(logical capacity %u) for tile[%d]!\n",
+              size, physical_tile_elements, num_tile_elements, tile_id);
+@@ -283,7 +658,7 @@ SPD::SPD(MAA *_maa,
+         tiles_dirty[i] = false;
+         tiles_ready[i] = 0;
+     }
+-    element_finished = new bool[allocated_element_count];
++    element_finished.resize(allocated_element_count);
+     for (std::size_t i = 0; i < allocated_element_count; i++) {
+         element_finished[i] = true;
+     }
+@@ -315,8 +690,6 @@ SPD::~SPD() {
+     delete[] read_port_busy_until;
+     assert(write_port_busy_until != nullptr);
+     delete[] write_port_busy_until;
+-    assert(element_finished != nullptr);
+-    delete[] element_finished;
+     assert(waiting_units_funcs != nullptr);
+     delete[] waiting_units_funcs;
+     assert(waiting_units_ids != nullptr);
+diff --git a/src/mem/MAA/SPD.hh b/src/mem/MAA/SPD.hh
+index 9035bf41..1413bbc1 100644
+--- a/src/mem/MAA/SPD.hh
++++ b/src/mem/MAA/SPD.hh
+@@ -4,9 +4,12 @@
+ #include <cassert>
+ #include <cstdint>
+ #include <cstring>
++#include <array>
++#include <vector>
+ #include "base/logging.hh"
+ #include "base/trace.hh"
+ #include "base/types.hh"
++#include "mem/packet.hh"
+ #include "debug/SPD.hh"
+ 
+ namespace gem5 {
+@@ -32,7 +35,7 @@ protected:
+     bool *tiles_dirty;
+     uint16_t *tiles_ready;
+     uint32_t *tiles_size;
+-    bool *element_finished;
++    std::vector<bool> element_finished;
+     std::vector<uint8_t> *waiting_units_funcs;
+     std::vector<int> *waiting_units_ids;
+     unsigned int visible_tile_count;
+@@ -44,6 +47,63 @@ protected:
+     const int num_read_ports, num_write_ports;
+     MAA *maa;
+ 
++    // Payload remains exclusively in tiles_data: 32 x 4096 x 4 bytes.
++    // One finite directory entry per architectural page; one page transfer.
++    struct Page
++    {
++        int frame = -1;
++        uint64_t generation = 1;
++        bool backed = false;
++    };
++    struct Frame {
++        int page = -1;
++        uint64_t generation = 0;
++        bool dirty = false;
++        uint8_t pinned = 0; // per-engine owner bits; never a shared release bit
++        uint64_t age = 0;
++    };
++    std::vector<Page> pages;
++    std::array<Frame, 32> frames{};
++    unsigned frameBudget = 0;
++    uint64_t pageClock = 0;
++    int requestedPage = -1;
++    int transferFrame = -1;
++    int transferLine = 0;
++    uint8_t requestedOwners = 0;
++    bool stableCore0Fit = false;
++    bool spilling = false;
++    bool lineReadReserved = false;
++    // Credits cover both coherent response ownership and SPD fill completion.
++    // Packets refer directly to distinct lines of the pinned existing frame.
++    struct PageLine
++    {
++        int line = -1;
++        bool waiting = false;
++        Tick ready = 0;
++    };
++    std::vector<PageLine> pageLines;
++    bool creditFull = false;
++    Tick creditFullSince = 0, creditFullTicks = 0;
++    Tick firstAcceptedTick = 0, lastAcceptedTick = 0;
++    uint64_t acceptedLines = 0;
++    unsigned transferOutstanding = 0, peakTransferOutstanding = 0;
++    uint64_t transferRetries = 0;
++    unsigned mappedFramePeak = 0;
++    Tick pageWaitStart = 0, pageWaitTicks = 0;
++    Tick transferReady = 0;
++    uint64_t transferGeneration = 0;
++    uint64_t lookupCycles = 0;
++    uint64_t directoryLookups = 0, pageMisses = 0;
++    uint64_t spillLines = 0, fillLines = 0, dirtyEvictions = 0;
++
++    int pageIndex(int tile, int element) const;
++    uint8_t *payload(int tile, int element, int bytes = 4);
++    int readyIndex(int tile, int element, int bytes) const;
++    void resetPages(int tile, bool preservePayload = false);
++    void setTileIdleImpl(int tile, int wordSize, bool preservePayload);
++    void publishPage();
++
++
+ public:
+     void check_tile_id(int tile_id, int word_size) {
+         panic_if(tile_id < 0 || tile_id >= visible_tile_count,
+@@ -58,7 +118,9 @@ public:
+     }
+     void check_tile_element_id(int tile_id, int element_id, int word_size) {
+         check_tile_id(tile_id, word_size);
+-        panic_if(element_id < 0 || element_id >= physical_tile_elements,
++        panic_if(paged() && word_size != 4,
++                 "Device SPD paging supports 32-bit data only");
++        panic_if(element_id < 0 || element_id >= (paged() ? num_tile_elements : physical_tile_elements),
+                  "SPD element %d exceeds physical tile capacity %u "
+                  "(logical capacity %u)\n",
+                  element_id, physical_tile_elements, num_tile_elements);
+@@ -66,22 +128,19 @@ public:
+     template <typename T>
+     T getData(int tile_id, int element_id) {
+         check_tile_element_id(tile_id, element_id, sizeof(T));
+-        return *((T *)(tiles_data + tile_id * physical_tile_elements * 4 +
+-                       element_id * sizeof(T)));
++        return *reinterpret_cast<T *>(payload(tile_id, element_id, sizeof(T)));
+     }
+     uint8_t *getDataPtr(int tile_id, int element_id) {
+         check_tile_element_id(tile_id, element_id, sizeof(uint32_t));
+-        return (uint8_t *)(tiles_data +
+-                           tile_id * physical_tile_elements * 4 +
+-                           element_id * 4);
++        return payload(tile_id, element_id);
+     }
+     template <typename T>
+     void setData(int tile_id, int element_id, T _data) {
+         check_tile_element_id(tile_id, element_id, sizeof(T));
+-        *((T *)(tiles_data + tile_id * physical_tile_elements * 4 +
+-                element_id * sizeof(T))) = _data;
+-        int tile_element_id = tile_id * physical_tile_elements +
+-                              element_id * sizeof(T) / 4;
++        *reinterpret_cast<T *>(payload(tile_id, element_id, sizeof(T))) = _data;
++        if (paged())
++            frames[pages[pageIndex(tile_id, element_id)].frame].dirty = true;
++        int tile_element_id = readyIndex(tile_id, element_id, sizeof(T));
+         element_finished[tile_element_id] = true;
+         DPRINTF(SPD,
+                 "%s: tile[%d] element[%d] tile_element[%d] finished\n",
+@@ -93,13 +152,13 @@ public:
+     template <typename T>
+     void stageData(int tile_id, int element_id, T _data) {
+         check_tile_element_id(tile_id, element_id, sizeof(T));
+-        *((T *)(tiles_data + tile_id * physical_tile_elements * 4 +
+-                element_id * sizeof(T))) = _data;
++        *reinterpret_cast<T *>(payload(tile_id, element_id, sizeof(T))) = _data;
++        if (paged())
++            frames[pages[pageIndex(tile_id, element_id)].frame].dirty = true;
+     }
+     void setFakeData(int tile_id, int element_id, int word_size) {
+         check_tile_element_id(tile_id, element_id, word_size);
+-        int tile_element_id = tile_id * physical_tile_elements +
+-                              element_id * word_size / 4;
++        int tile_element_id = readyIndex(tile_id, element_id, word_size);
+         element_finished[tile_element_id] = true;
+         DPRINTF(SPD,
+                 "%s: tile[%d] element[%d] tile_element[%d] fake finished\n",
+@@ -112,6 +171,7 @@ public:
+     bool getElementFinished(int tile_id, int element_id, int word_size,
+                             uint8_t func, int id);
+     void setTileIdle(int tile_id, int word_size);
++    void setTileIdleMasked(int tile_id, int word_size);
+     void setTileService(int tile_id, int word_size);
+     void setTileFinished(int tile_id, int word_size);
+     void setTileDirty(int tile_id, int word_size);
+@@ -126,6 +186,21 @@ public:
+     void setVirtualSize(int tile_id, int size);
+ 
+ public:
++    enum class PageResult { Ready, Pending, NoVictim };
++    PageResult lastPageResult = PageResult::Ready;
++    bool paged() const { return frameBudget != 0; }
++    void enablePaging(unsigned budget, bool stableFit = false);
++    bool ensurePage(int tile, int element, bool pin = true);
++    bool leasePage(int tile, int element, bool pin, uint8_t owner);
++    void releaseOwnerPages(uint8_t owner);
++    bool pageTransferPending(int tile) const;
++    uint64_t tileGeneration(int tile) const { return pages.at(tile * 4).generation; }
++    void releasePages();
++    void servicePager();
++    bool pagerResponse(PacketPtr pkt);
++    void reportPaging() const;
++    bool pagingHasState() const { return pageMisses != 0; }
++
+     SPD(MAA *_maa,
+         unsigned int _visible_tile_count,
+         unsigned int _num_tile_elements,
+diff --git a/src/mem/MAA/SharedProgressState.hh b/src/mem/MAA/SharedProgressState.hh
+new file mode 100644
+index 00000000..6a4fc59f
+--- /dev/null
++++ b/src/mem/MAA/SharedProgressState.hh
+@@ -0,0 +1,121 @@
++#ifndef UME_SHARED_PROGRESS_STATE_HH
++#define UME_SHARED_PROGRESS_STATE_HH
++#include <array>
++#include <cstdint>
++#include <limits>
++namespace gem5::maa {
++// Fixed transaction storage; existing physical cache capacity remains 4x64.
++// MSHR ownership survives early responses, clones and deferred/locked targets.
++template<class Ref> class SharedProgressState {
++ public:
++ using Token=std::uint64_t;
++ enum class Phase { Empty, Reserved, Sending, Accepted };
++ enum class Result { Granted, Pressure, Invalid, HandoffBusy };
++ static constexpr unsigned Banks=4, Entries=2048, Deferred=64, Targets=7;
++ struct Cell {
++  Ref request{},clone{};Token token=0,parent=0;std::uint64_t line=0;
++  std::uintptr_t mshr=0;unsigned bank=0,port=0;
++  Phase phase=Phase::Empty;
++  bool secure=false,producer=false,spd=false,physical=false,receiver=false,handoff=false;
++  bool response=false,responseBeforeHandoff=false,clonePending=false,internal=false,delivering=false;
++ };
++ private:
++ std::array<Cell,Entries> cells{};
++ std::array<unsigned,Banks> physical{},ordinary{};
++ std::array<bool,16> waiters{};
++ unsigned deferred=0,used=0,ordinaryTransactions=0,handoffs=0,deliveries=0;
++ Token next=1;bool wake=false;
++ static bool same(const Ref&a,const Ref&b){return a&&b&&a.get()==b.get()&&!a.owner_before(b)&&!b.owner_before(a);}
++ bool bound(const Cell&c,const Ref&r)const{return same(c.request,r)||same(c.clone,r);}
++ Cell*find(Token t){for(auto&c:cells)if(t&&c.token==t)return &c;return nullptr;}
++ const Cell*find(Token t)const{for(const auto&c:cells)if(t&&c.token==t)return &c;return nullptr;}
++ void releasePhysical(Cell&c){if(c.physical){--physical[c.bank];if(!c.producer)--ordinary[c.bank];c.physical=false;wake=true;}}
++ void erase(Cell&c){releasePhysical(c);if(c.spd)--deferred;if(!c.producer)--ordinaryTransactions;--used;c={};wake=true;}
++ void settle(){if(handoffs||deliveries)return;for(auto&c:cells)if(c.phase==Phase::Accepted&&c.response&&!c.receiver&&!c.handoff&&!c.mshr&&!c.clonePending)erase(c);}
++ public:
++ Result reserve(const Ref&r,unsigned bank,std::uint64_t line,bool producer,bool spd,unsigned port,Token parent,bool continuation,bool internal,Token&out,bool secure=false){
++  out=0;if(!r||bank>=Banks||port>=Banks||line%64||(producer&&spd))return Result::Invalid;
++  if(handoffs||deliveries)return Result::HandoffBusy;
++  const Cell*pc=parent?find(parent):nullptr;
++  if(parent&&(!pc||!pc->mshr||pc->bank!=bank||pc->line!=line||pc->secure!=secure))return Result::Invalid;
++  // A locked write releases its existing target; it is not another deferred read.
++  if(continuation){if(!pc)return Result::Invalid;if(!pc->response)return Result::Pressure;spd=false;}
++  for(const auto&c:cells)if(c.phase!=Phase::Empty&&bound(c,r)){
++   if(!(continuation&&parent==c.token&&c.response&&c.mshr))return Result::Invalid;
++  }
++  if(used==Entries||(!producer&&!continuation&&ordinaryTransactions>=Entries-4))return Result::Pressure;
++  if(!parent&&(physical[bank]>=64||(!producer&&ordinary[bank]>=63)))return Result::Pressure;
++  if(spd&&deferred==Deferred)return Result::Pressure;
++  unsigned targets=0;for(const auto&c:cells)if(c.phase!=Phase::Empty&&c.spd&&c.line==line&&c.secure==secure)++targets;
++  if(spd&&targets>=Targets)return Result::Pressure;
++  if(next==std::numeric_limits<Token>::max())return Result::Invalid;
++  for(auto&c:cells)if(c.phase==Phase::Empty){
++   c.request=r;c.token=next++;c.parent=parent;c.line=line;c.bank=bank;c.port=port;
++   c.phase=Phase::Reserved;c.secure=secure;c.producer=producer;c.spd=spd;c.physical=!parent;c.internal=internal;
++   ++used;if(!producer)++ordinaryTransactions;if(spd)++deferred;
++   if(c.physical){++physical[bank];if(!producer)++ordinary[bank];}
++   out=c.token;return Result::Granted;
++  }
++  return Result::Invalid;
++ }
++ Token active(const Ref&r)const{
++  Token found=0;for(const auto&c:cells)if(c.phase!=Phase::Empty&&bound(c,r)&&!c.response){if(found)return 0;found=c.token;}return found;
++ }
++ Result beginSend(Token t){auto*c=find(t);if(!c||c->phase!=Phase::Reserved)return Result::Invalid;c->phase=Phase::Sending;return Result::Granted;}
++ Result finishSend(Token t,bool accepted){auto*c=find(t);if(!c||c->phase!=Phase::Sending)return Result::Invalid;
++  if(!accepted){if(c->receiver||c->handoff||c->delivering||c->response||c->mshr||c->clonePending)return Result::Invalid;erase(*c);return Result::Granted;}
++  c->phase=Phase::Accepted;settle();return Result::Granted;
++ }
++ Result attachClone(const Ref&original,const Ref&clone){auto*c=find(active(original));if(!c||!clone||c->clone||c->clonePending||(c->phase!=Phase::Sending&&c->phase!=Phase::Accepted))return Result::Invalid;c->clone=clone;c->clonePending=true;return Result::Granted;}
++ Result bindMshr(const Ref&r,std::uintptr_t mshr){Cell*c=nullptr;
++  for(auto&x:cells)if((x.phase==Phase::Sending||x.phase==Phase::Accepted)&&bound(x,r)&&x.physical&&!x.mshr){if(c)return Result::Invalid;c=&x;}
++  if(!c||!mshr)return Result::Invalid;
++  for(const auto&x:cells)if(x.mshr==mshr)return Result::Invalid;
++  c->mshr=mshr;c->clonePending=false;return Result::Granted;
++ }
++ Token mshrOwner(std::uintptr_t mshr)const{for(const auto&c:cells)if(c.mshr==mshr&&mshr)return c.token;return 0;}
++ Result releaseMshr(std::uintptr_t mshr){auto*c=find(mshrOwner(mshr));if(!c)return Result::Invalid;c->mshr=0;releasePhysical(*c);settle();return Result::Granted;}
++ Token authorize(const Ref&r,std::uint64_t line,unsigned port)const{
++  for(const auto&c:cells)if(bound(c,r)&&c.spd&&c.line==line&&c.port==port&&!c.receiver&&(c.phase==Phase::Sending||c.phase==Phase::Accepted))return c.token;
++  return 0;
++ }
++ Result receiverOwns(const Ref&r,Token t,unsigned port){auto*c=find(t);if(!c||!bound(*c,r)||!c->spd||c->port!=port||c->receiver||(c->phase!=Phase::Sending&&c->phase!=Phase::Accepted))return Result::Invalid;c->receiver=true;return Result::Granted;}
++ Result beginResponse(const Ref&r,Token t,unsigned port){auto*c=find(t);if(!c||!bound(*c,r)||c->port!=port||!c->receiver||c->handoff)return Result::Invalid;c->handoff=true;c->responseBeforeHandoff=c->response;++handoffs;return Result::Granted;}
++ Result endResponse(const Ref&r,Token t,unsigned port,bool accepted){auto*c=find(t);if(!c||!bound(*c,r)||c->port!=port||!c->handoff||!handoffs||(!accepted&&c->response&&!c->responseBeforeHandoff))return Result::Invalid;
++  if(accepted)c->receiver=false;
++  c->handoff=false;--handoffs;settle();
++  if(!handoffs&&!deliveries)for(bool w:waiters)if(w){wake=true;break;}
++  return Result::Granted;
++ }
++ // General response delivery may reenter admission before the peer returns.
++ // Retain the original Request and token until success/refusal is known. Neither
++ // local receiver capacity nor shared credits may retire during either barrier.
++ Result beginDelivery(const Ref&r,Token t){auto*c=find(t);
++  if(!c||!bound(*c,r)||c->response||c->delivering||(c->phase!=Phase::Sending&&c->phase!=Phase::Accepted))return Result::Invalid;
++  c->delivering=true;++deliveries;return Result::Granted;
++ }
++ Result finishDelivery(const Ref&r,Token t,bool accepted){auto*c=find(t);
++  if(!c||!bound(*c,r)||!c->delivering||!deliveries||c->response)return Result::Invalid;
++  if(accepted)c->response=true;
++  c->delivering=false;--deliveries;settle();
++  // Refusal also ends a barrier that may have registered a reentrant waiter.
++  if(!handoffs&&!deliveries&&hasWaiters())wake=true;
++  return Result::Granted;
++ }
++ Result responseAccepted(const Ref&r,Token t){auto*c=find(t);if(!c||!bound(*c,r)||c->response||c->delivering||(c->phase!=Phase::Sending&&c->phase!=Phase::Accepted))return Result::Invalid;c->response=true;settle();return Result::Granted;}
++ Result internalComplete(const Ref&r){auto*c=find(active(r));if(!c||!c->internal)return Result::Invalid;return responseAccepted(r,c->token);}
++ bool isInternal(const Ref&r)const{const auto*c=find(active(r));return c&&c->internal;}
++ bool setWaiter(unsigned i){if(i>=waiters.size())return false;waiters[i]=true;return true;}
++ bool waiting(unsigned i)const{return i<waiters.size()&&waiters[i];}
++ bool takeWaiter(unsigned i){if(!waiting(i))return false;waiters[i]=false;return true;}
++ bool hasWaiters()const{for(bool w:waiters)if(w)return true;return false;}
++ void changed(){if(hasWaiters())wake=true;}
++ bool wakeNeeded()const{return wake&&!handoffs&&!deliveries;}
++ bool consumeWake(){if(handoffs||deliveries)return false;wake=false;return true;}
++ bool quiescent()const{return !used&&!handoffs&&!deliveries&&!wake&&!hasWaiters();}
++ unsigned bankUsed(unsigned i)const{return physical.at(i);}
++ unsigned deferredUsed()const{return deferred;}
++ unsigned transactionCount()const{return used;}
++};
++}
++#endif
+diff --git a/src/mem/MAA/SoaJitOverlapState.hh b/src/mem/MAA/SoaJitOverlapState.hh
+index 0b1c7d4d..95108de5 100644
+--- a/src/mem/MAA/SoaJitOverlapState.hh
++++ b/src/mem/MAA/SoaJitOverlapState.hh
+@@ -436,6 +436,30 @@ class SoaJitValueCoalescer
+         return DeliveryResult::NotReady;
+     }
+ 
++    // Local copies of already returned lines use the stock callback rule.
++    // No memory request/response, owner capacity or readiness is bypassed.
++    DeliveryResult deliverStockReady(uint64_t generation, uint16_t waiter,
++                                    Delivery &delivery)
++    {
++        if (generation == 0 || waiter >= MaxWaiters)
++            return DeliveryResult::Invalid;
++        for (auto &line : cache) {
++            if (!line.waiterMask.test(waiter))
++                continue;
++            if (line.generation != generation)
++                return DeliveryResult::Stale;
++            if (line.state != LineState::Ready)
++                return DeliveryResult::NotReady;
++            delivery.data = line.data;
++            line.waiterMask.reset(waiter);
++            touch(line);
++            if (!cacheEnabled && line.waiterMask.none())
++                line = CacheLine();
++            return DeliveryResult::Delivered;
++        }
++        return DeliveryResult::NotReady;
++    }
++
+     bool clearGeneration(uint64_t generation)
+     {
+         for (const auto &line : cache) {
+diff --git a/src/mem/MAA/StreamAccess.cc b/src/mem/MAA/StreamAccess.cc
+index a8e5f2a9..3731f9ff 100644
+--- a/src/mem/MAA/StreamAccess.cc
++++ b/src/mem/MAA/StreamAccess.cc
+@@ -1,4 +1,9 @@
+ #include "mem/MAA/StreamAccess.hh"
++// MAA_WINDOW_OBSERVER_BEGIN StreamAccess_exit_include
++#if defined(MAA_WINDOW_TIMING_OBSERVER) && MAA_WINDOW_TIMING_OBSERVER
++#include "sim/sim_exit.hh"
++#endif
++// MAA_WINDOW_OBSERVER_END StreamAccess_exit_include
+ 
+ #include <cassert>
+ 
+@@ -33,6 +38,12 @@ StreamAccessUnit::StreamAccessUnit()
+ }
+ void StreamAccessUnit::allocate(int _my_stream_id, unsigned int _num_request_table_addresses, unsigned int _num_request_table_entries_per_address, unsigned int _num_tile_elements, MAA *_maa) {
+     my_stream_id = _my_stream_id;
++// MAA_WINDOW_OBSERVER_BEGIN StreamAccess_exit_summary
++#if defined(MAA_WINDOW_TIMING_OBSERVER) && MAA_WINDOW_TIMING_OBSERVER
++    if (window_timing_observer.register_once())
++        registerExitCallback([this] { window_timing_observer.summary(my_stream_id, 1); });
++#endif
++// MAA_WINDOW_OBSERVER_END StreamAccess_exit_summary
+     num_tile_elements = _num_tile_elements;
+     num_request_table_addresses = _num_request_table_addresses;
+     num_request_table_entries_per_address = _num_request_table_entries_per_address;
+@@ -120,6 +131,26 @@ StreamAccessUnit::PageInfo StreamAccessUnit::getPageInfo(int i, Addr base_addr,
+     return StreamAccessUnit::PageInfo(min_itr, min_idx, gbg_addr);
+ }
+ bool StreamAccessUnit::fillCurrentPageInfos() {
++    if (maa->devicePaging() && !maa->deviceFit32()) {
++        if (!my_current_page_info.empty() ||
++            my_received_responses != my_sent_requests || my_all_page_info.empty())
++            return false;
++        // Release only the drained page lease, not the logical instruction.
++        maa->releaseDevicePages(my_instruction);
++        auto it = my_all_page_info.begin();
++        PageInfo page = *it;
++        my_all_page_info.erase(it);
++        const int cut = 4096 - page.curr_idx % 4096;
++        if (page.max_itr - page.curr_itr > cut) {
++            PageInfo tail = page;
++            tail.curr_itr += cut; tail.curr_idx += cut;
++            tail.last_block_vaddr = 0;
++            page.max_itr = tail.curr_itr;
++            my_all_page_info.insert(tail);
++        }
++        my_current_page_info.push_back(page);
++        return true;
++    }
+     bool inserted = false;
+     for (auto it = my_all_page_info.begin(); it != my_all_page_info.end();) {
+         if (std::find_if(my_current_page_info.begin(), my_current_page_info.end(), [it](const PageInfo &page) {
+@@ -168,6 +199,15 @@ void StreamAccessUnit::executeInstruction() {
+             my_max = maa->rf->getData<int>(my_instruction->src2RegID);
+             my_stride = maa->rf->getData<int>(my_instruction->src3RegID);
+         }
++        // Native PageInfo keeps curr_itr in source coordinates and curr_idx
++        // relative to min. RequestTable word_id selects partial cache-line
++        // words; SPD leases use curr_idx, never the absolute source index.
++        // Original vector allocations need only32-bit alignment, and later
++        // chunks retain their original base with a nonzero source minimum.
++        panic_if(maa->devicePaging() &&
++                     (my_stride != 1 || my_min < 0 || my_max < my_min ||
++                      (my_base_addr & 3) != 0),
++                 "Device SPD stream requires a dense word-aligned range");
+         my_response_bearing_publish =
+             isResponseBearingPublishInstruction(my_instruction);
+         my_publish_partial_shape = false;
+@@ -383,6 +423,14 @@ void StreamAccessUnit::executeInstruction() {
+                        page_it->curr_idx < my_size;
+                      page_it->curr_itr += my_stride, page_it->curr_idx++) {
+                     const int spd_idx = my_element_base + page_it->curr_idx;
++                    if (!maa->ensureDevicePages(my_instruction, spd_idx)) {
++                        // Do not retire a partial PageInfo: its pending last
++                        // cache line and RequestTable owners remain pinned.
++                        delete[] channel_sent;
++                        updateLatency(num_spd_condread_accesses, 0, 0,
++                                      num_request_table_cacheline_accesses);
++                        return;
++                    }
+                     if (my_cond_tile != -1) {
+                         if (!maa->spd->getElementFinished(
+                                 my_cond_tile, spd_idx, 4,
+@@ -497,6 +545,11 @@ void StreamAccessUnit::executeInstruction() {
+         if (my_received_responses != my_sent_requests) {
+             DPRINTF(MAAStream, "S[%d] %s: Waiting for responses, received (%d) != send (%d)...\n", my_stream_id, __func__, my_received_responses, my_sent_requests);
+         } else {
++            if (maa->devicePaging() && (!my_all_page_info.empty() ||
++                                        !my_current_page_info.empty())) {
++                scheduleExecuteInstructionEvent(1);
++                break;
++            }
+             if (my_cond_tile != -1 && maa->spd->getTileStatus(my_cond_tile) != SPD::TileStatus::Finished) {
+                 DPRINTF(MAAStream, "S[%d] %s: Waiting for cond tile %d to finish...\n", my_stream_id, __func__, my_cond_tile);
+             } else if (!my_instruction->controllerManaged &&
+@@ -583,6 +636,14 @@ void StreamAccessUnit::executeInstruction() {
+                 my_base_addr - logical_byte_offset,
+                 my_publish_logical_page, my_publish_guest_generation,
+                 curTick());
++// MAA_WINDOW_OBSERVER_BEGIN publication_complete_UNBOUND
++#if defined(MAA_WINDOW_TIMING_OBSERVER) && MAA_WINDOW_TIMING_OBSERVER
++
++            window_timing_observer.publication(my_stream_id, my_instruction->core_id,
++                my_decode_start_tick, response_publisher_sequence, my_publish_guest_generation,
++                my_publish_logical_page, my_base_addr - logical_byte_offset, my_max, curTick());
++#endif
++// MAA_WINDOW_OBSERVER_END publication_complete_UNBOUND
+             panic_if(response_publisher.reset() !=
+                          ResponsePublisher::ResetResult::Reset,
+                      "S[%d] could not reset completed publisher\n",
+@@ -709,6 +770,11 @@ StreamAccessUnit::executeResponseBearingPublish()
+         response_publisher.occupiedCredits() ==
+             ResponsePublisher::Credits) {
+         ++my_publish_credit_stall_observations;
++// MAA_WINDOW_OBSERVER_BEGIN publication_credit_observation
++#if defined(MAA_WINDOW_TIMING_OBSERVER) && MAA_WINDOW_TIMING_OBSERVER
++        window_timing_observer.publication_credit();
++#endif
++// MAA_WINDOW_OBSERVER_END publication_credit_observation
+         (*maa->stats.STR_PublishCreditStalls[my_stream_id])++;
+         DPRINTF(MAATrace,
+                 "event=spd_publish_credit_stall schema=1 unit=%d "
+diff --git a/src/mem/MAA/StreamAccess.hh b/src/mem/MAA/StreamAccess.hh
+index d1fb6059..36d8b4e4 100644
+--- a/src/mem/MAA/StreamAccess.hh
++++ b/src/mem/MAA/StreamAccess.hh
+@@ -1,5 +1,10 @@
+ #ifndef __MEM_MAA_STREAMACCESS_HH__
+ #define __MEM_MAA_STREAMACCESS_HH__
++// MAA_WINDOW_OBSERVER_BEGIN StreamAccess_include
++#if defined(MAA_WINDOW_TIMING_OBSERVER) && MAA_WINDOW_TIMING_OBSERVER
++#include "mem/MAA/WindowTimingObserver.hh"
++#endif
++// MAA_WINDOW_OBSERVER_END StreamAccess_include
+ 
+ #include <cassert>
+ #include <cstddef>
+@@ -57,7 +62,7 @@ public:
+     // share these exact eight payload credits; there is no second datatype-
+     // specific payload bank.
+     using ResponsePublisher =
+-        ResponseBearingSpdPublisher<sizeof(uint32_t), 2, 8>;
++        ResponseBearingSpdPublisher<sizeof(uint32_t), 2, 256>;
+ 
+     struct ResponseBearingPublishSenderState : public Packet::SenderState
+     {
+@@ -145,6 +150,10 @@ public:
+     void allocate(int _my_stream_id, unsigned int _num_request_table_addresses, unsigned int _num_request_table_entries_per_address, unsigned int _num_tile_elements, MAA *_maa);
+ 
+     Status getState() const { return state; }
++    void wakeDevicePage() {
++        if (state == Status::Request && !executeInstructionEvent.scheduled())
++            scheduleExecuteInstructionEvent(1);
++    }
+ 
+     void setInstruction(Instruction *_instruction);
+ 
+@@ -176,6 +185,11 @@ public:
+ 
+ protected:
+     Instruction *my_instruction;
++// MAA_WINDOW_OBSERVER_BEGIN StreamAccess_state
++#if defined(MAA_WINDOW_TIMING_OBSERVER) && MAA_WINDOW_TIMING_OBSERVER
++    maa::WindowTimingObserver window_timing_observer;
++#endif
++// MAA_WINDOW_OBSERVER_END StreamAccess_state
+     bool my_is_load;
+     Request::Flags flags = 0;
+     const Addr block_size = 64;
+diff --git a/src/mem/MAA/WindowTimingObserver.hh b/src/mem/MAA/WindowTimingObserver.hh
+new file mode 100644
+index 00000000..9f0b3fa8
+--- /dev/null
++++ b/src/mem/MAA/WindowTimingObserver.hh
+@@ -0,0 +1,240 @@
++#ifndef GEM5_MAA_WINDOW_TIMING_OBSERVER_HH
++#define GEM5_MAA_WINDOW_TIMING_OBSERVER_HH
++#if defined(MAA_WINDOW_TIMING_OBSERVER) && MAA_WINDOW_TIMING_OBSERVER
++#include <cinttypes>
++#include <cerrno>
++#include <cstdint>
++#include <cstdio>
++
++namespace gem5::maa {
++// Host-only diagnostic state. No simulated storage, latency, readiness or
++// scheduling decisions. Disabled builds include neither this type nor hooks.
++struct WindowTimingObserver {
++    using U64 = uint64_t;
++    static constexpr unsigned Bins = 65;
++    static constexpr unsigned Metrics = 6;
++    static constexpr U64 RecordLimit = 512;
++    struct Sample {
++        U64 unit = 0;
++        U64 core = 0;
++        U64 uid = 0;       // Existing unit + my_decode_start_tick, run-scoped.
++        U64 generation = 0; // Existing SoA generation; zero means not supplied.
++        U64 epoch = 0;
++        U64 kind = 0;      // 1 virtual producer, 2 SoA RMW, 3 other indirect.
++        U64 logical = 0;
++        bool logical_known = false;
++        U64 observed = 0;
++        U64 begin = 0;
++        U64 close = 0;
++        U64 ready = 0;
++        U64 claim = 0;
++        U64 first_a = 0;
++        U64 offsets = 0;
++        U64 admissions = 0; // Existing cumulative row-insert successes for UID.
++        int64_t cursor = -1;
++        int64_t epoch_start = -1; // Existing SoA epoch ordinal, otherwise unknown.
++        U64 drains = 0;
++        U64 complete = 0;
++        U64 backing_ack = 0;
++        U64 seen = 0; // 1 begin,2 close,4 committed claim,8 A-created,16 complete,32 ack.
++    } current{};
++    bool active = false;
++    bool summarized = false;
++    bool exit_registered = false;
++    U64 emitted = 0;
++    U64 dropped = 0;
++    U64 epochs = 0;
++    U64 invalid_intervals = 0;
++    U64 causes[3] = {}; // Fill-wait-finish, Fill-wait-element, Offset/Row drain.
++    U64 publication_credit_observations = 0;
++    U64 publications = 0;
++    U64 hist[Metrics][Bins] = {};
++
++    bool register_once() {
++        if (exit_registered) return false;
++        exit_registered = true;
++        return true;
++    }
++    static U64 inc(U64 n) { return n == UINT64_MAX ? n : n + 1; }
++    static unsigned bucket(U64 value) {
++        unsigned n = 0;
++        while (value != 0) {
++            ++n;
++            value >>= 1;
++        }
++        return n;
++    }
++    void sample(unsigned metric, U64 value) {
++        const unsigned b = bucket(value);
++        hist[metric][b] = inc(hist[metric][b]);
++    }
++    void interval(unsigned metric, U64 start, U64 end) {
++        if (end < start) {
++            invalid_intervals = inc(invalid_intervals);
++            return;
++        }
++        sample(metric, end - start);
++    }
++    // I/O only: state transitions and the hard record cap live in flush().
++    void emit_epoch(unsigned reason) const {
++        const int saved_errno = errno;
++        const Sample &s = current;
++        std::fprintf(stderr,
++            "UME_WINDOW_OBSERVER v1 type=epoch unit=%" PRIu64 " core=%" PRIu64
++            " uid=%" PRIu64 " generation=%" PRIu64 " epoch=%" PRIu64
++            " kind=%" PRIu64 " generation_is_soa=%u logical=%" PRIu64 " logical_known=%u"
++            " observed=%" PRIu64 " begin=%" PRIu64 " close=%" PRIu64
++            " ready=%" PRIu64 " claim=%" PRIu64 " a_created=%" PRIu64
++            " first_a_offsets=%" PRIu64 " first_a_cursor=%" PRId64
++            " first_a_admissions_total=%" PRIu64 " first_a_epoch_start=%" PRId64
++            " drains=%" PRIu64 " complete=%" PRIu64 " backing_ack=%" PRIu64
++            " seen=%" PRIu64 " reason=%u publication_to_A=UNBOUND\n",
++            s.unit,s.core,s.uid,s.generation,s.epoch,s.kind,unsigned(s.kind == 2),s.logical,
++            unsigned(s.logical_known),s.observed,s.begin,s.close,s.ready,
++            s.claim,s.first_a,s.offsets,s.cursor,s.admissions,s.epoch_start,s.drains,s.complete,
++            s.backing_ack,s.seen,reason);
++        errno = saved_errno;
++    }
++    void flush(unsigned reason) {
++        if (!active) return;
++        if (emitted < RecordLimit) {
++            emit_epoch(reason);
++            emitted = inc(emitted);
++        } else {
++            dropped = inc(dropped);
++        }
++        active = false;
++    }
++    void touch(U64 unit, U64 core, U64 uid, U64 generation, U64 epoch,
++               int64_t logical, U64 kind, U64 now) {
++        if (summarized) return;
++        if (active && current.unit == unit && current.core == core &&
++            current.uid == uid && current.generation == generation && current.epoch == epoch)
++            return;
++        flush(1); // New identity/epoch, NOT a fabricated completion.
++        current = Sample{};
++        current.unit = unit;
++        current.core = core;
++        current.uid = uid;
++        current.generation = generation;
++        current.epoch = epoch;
++        current.kind = kind;
++        if (logical >= 0) {
++            current.logical = logical;
++            current.logical_known = true;
++        }
++        current.observed = now;
++        active = true;
++        epochs = inc(epochs);
++    }
++    void pre_begin(U64 now) {
++        if (!active || (current.seen & 1)) return;
++        current.begin = now;
++        current.seen |= 1;
++    }
++    void pre_close(U64 now, U64 ready_tick) {
++        if (!active || (current.seen & 2)) return;
++        current.close = now;
++        current.ready = ready_tick;
++        current.seen |= 2;
++        if (current.seen & 1) interval(0, current.begin, now);
++    }
++    void committed_claim(U64 now, bool accepted, bool commit) {
++        if (!active || !accepted || !commit || (current.seen & 4)) return;
++        current.claim = now;
++        current.seen |= 4;
++        if (current.seen & 2) interval(1, current.close, now);
++    }
++    void first_a(U64 now, U64 offsets, int64_t cursor, U64 drains,
++                 U64 admissions, int64_t epoch_start) {
++        if (!active || (current.seen & 8)) return;
++        current.first_a = now;
++        current.offsets = offsets;
++        current.cursor = cursor;
++        current.admissions = admissions;
++        current.epoch_start = epoch_start;
++        current.drains = drains;
++        current.seen |= 8;
++        sample(4, offsets);
++        if (cursor >= 0) sample(5, cursor);
++        if (current.seen & 2) {
++            interval(2, current.close, now);
++            interval(3, current.ready, now);
++        }
++    }
++    void cause(unsigned which) {
++        if (summarized) return;
++        if (which < 3) causes[which] = inc(causes[which]);
++        // Counts of observed existing branches, NOT stall durations/ROI cycles.
++    }
++    void finish(U64 now, U64 ack, U64 drains) {
++        if (!active) return;
++        current.complete = now;
++        current.drains = drains;
++        current.seen |= 16;
++        if (ack != 0) {
++            current.backing_ack = ack;
++            current.seen |= 32;
++        }
++        flush(2);
++    }
++    void emit_publication(U64 unit, U64 core, U64 uid, U64 sequence,
++                          U64 generation, U64 page, U64 backing, U64 elements,
++                          U64 now) const {
++        const int saved_errno = errno;
++            std::fprintf(stderr,
++                "UME_WINDOW_OBSERVER v1 type=publication unit=%" PRIu64
++                " core=%" PRIu64 " uid=%" PRIu64 " sequence=%" PRIu64
++                " generation=%" PRIu64 " page=%" PRIu64 " backing=%" PRIu64
++                " elements=%" PRIu64 " complete=%" PRIu64 " consumer=UNBOUND\n",
++                unit,core,uid,sequence,generation,page,backing,elements,now);
++        errno = saved_errno;
++    }
++    void publication(U64 unit, U64 core, U64 uid, U64 sequence,
++                     U64 generation, U64 page, U64 backing, U64 elements,
++                     U64 now) {
++        if (summarized) return;
++        publications = inc(publications);
++        // No retained cross-UID/backing-address join and no causal latency.
++        if (emitted < RecordLimit) {
++            emit_publication(unit, core, uid, sequence, generation, page, backing, elements, now);
++            emitted = inc(emitted);
++        } else {
++            dropped = inc(dropped);
++        }
++    }
++    void publication_credit() {
++        if (summarized) return;
++        publication_credit_observations = inc(publication_credit_observations);
++    }
++    void emit_summary(U64 unit, unsigned kind) const {
++        const int saved_errno = errno;
++        std::fprintf(stderr,
++            "UME_WINDOW_OBSERVER v1 type=summary unit=%" PRIu64
++            " unit_kind=%u emitted=%" PRIu64 " dropped=%" PRIu64
++            " epochs=%" PRIu64 " invalid_intervals=%" PRIu64
++            " wait_finish_observations=%" PRIu64 " wait_element_observations=%" PRIu64
++            " drain_branch_observations=%" PRIu64 " publication_credit_observations=%" PRIu64
++            " publications=%" PRIu64 " state_bytes=%zu no_ROI_sum=1 join=UNBOUND\n",
++            unit,kind,emitted,dropped,epochs,invalid_intervals,causes[0],causes[1],
++            causes[2],publication_credit_observations,publications,sizeof(*this));
++        for (unsigned metric = 0; metric < Metrics; ++metric) {
++            std::fprintf(stderr,"UME_WINDOW_OBSERVER v1 type=hist unit=%" PRIu64
++                " unit_kind=%u metric=%u bins=",unit,kind,metric);
++            for (unsigned b = 0; b < Bins; ++b)
++                std::fprintf(stderr,"%s%" PRIu64,b ? "," : "",hist[metric][b]);
++            std::fprintf(stderr,"\n");
++        }
++        errno = saved_errno;
++    }
++    void summary(U64 unit, unsigned kind) {
++        if (summarized) return;
++        flush(3); // Exit with incomplete context remains explicitly incomplete.
++        summarized = true;
++        emit_summary(unit, kind);
++    }
++};
++static_assert(sizeof(WindowTimingObserver) <= 4096, "bounded host observer state");
++} // namespace gem5::maa
++#endif
++#endif
+diff --git a/src/mem/snoop_filter.cc b/src/mem/snoop_filter.cc
+index 4fa374f7..47fff365 100644
+--- a/src/mem/snoop_filter.cc
++++ b/src/mem/snoop_filter.cc
+@@ -137,6 +137,17 @@ SnoopFilter::lookupRequest(const Packet *cpkt, const ResponsePort &
+     } else { // if (!cpkt->needsResponse())
+         assert(cpkt->isEviction());
+         // make sure that the sender actually had the line
++        if ((sf_item.holder & req_port).none()) {
++            warn("SF_EVICTION_CONTRACT object=%s source=%s packet=%s "
++                 "from_cache=%d block_cached=%d responding=%d "
++                 "invalidate=%d writable=%d requester=%x requested=%x "
++                 "holder=%x",
++                 name(), cpu_side_port.name(), cpkt->print(),
++                 cpkt->fromCache(), cpkt->isBlockCached(),
++                 cpkt->cacheResponding(), cpkt->isInvalidate(),
++                 cpkt->needsWritable(), req_port,
++                 sf_item.requested, sf_item.holder);
++        }
+         panic_if((sf_item.holder & req_port).none(), "requestor %x is not a "
+                                                      "holder :( SF value %x.%x\n",
+                  req_port,
+@@ -221,6 +232,17 @@ SnoopFilter::lookupSnoop(const Packet *cpkt) {
+     // we need a special case for Writebacks. Additionally cache maintenance
+     // operations can generate snoops as they clean and/or invalidate all
+     // caches down to the specified point of reference.
++    if (!(cpkt->isWriteback() || cpkt->req->isUncacheable() ||
++          (cpkt->isInvalidate() == cpkt->needsWritable()) ||
++          cpkt->req->isCacheMaintenance())) {
++        warn("SNOOP_CONTRACT object=%s packet=%s invalidate=%d "
++             "writable=%d write=%d read=%d from_cache=%d express=%d "
++             "cache_responding=%d uncacheable=%d",
++             name(), cpkt->print(), cpkt->isInvalidate(),
++             cpkt->needsWritable(), cpkt->isWrite(), cpkt->isRead(),
++             cpkt->fromCache(), cpkt->isExpressSnoop(),
++             cpkt->cacheResponding(), cpkt->req->isUncacheable());
++    }
+     assert(cpkt->isWriteback() || cpkt->req->isUncacheable() ||
+            (cpkt->isInvalidate() == cpkt->needsWritable()) ||
+            cpkt->req->isCacheMaintenance());
